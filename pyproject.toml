@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpu-control"
+version = "1.1.0"
+description = "Three-node ComfyUI GPU scheduling and operations platform"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "alembic==1.16.4",
+  "argon2-cffi==25.1.0",
+  "asyncpg==0.30.0",
+  "fastapi==0.116.1",
+  "httpx==0.28.1",
+  "jsonschema==4.25.0",
+  "Pillow==11.3.0",
+  "prometheus-client==0.22.1",
+  "pydantic==2.11.7",
+  "pydantic-settings==2.10.1",
+  "PyJWT==2.10.1",
+  "python-multipart==0.0.20",
+  "PyYAML==6.0.2",
+  "redis==6.2.0",
+  "SQLAlchemy==2.0.41",
+  "structlog==25.4.0",
+  "uvicorn[standard]==0.35.0",
+  "websockets==15.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "aiosqlite==0.21.0",
+  "mypy==1.17.0",
+  "pytest==8.4.1",
+  "pytest-asyncio==1.1.0",
+  "ruff==0.12.5",
+]
+load = ["locust==2.37.14"]
+
+[project.scripts]
+gpu-control-api = "gpu_control_api.main:run"
+gpu-control-scheduler = "gpu_control_scheduler.main:run"
+gpu-node-agent = "gpu_node_agent.main:run"
+gpu-workflow = "gpu_control_core.workflow_cli:main"
+
+[tool.setuptools.packages.find]
+where = [".", "apps/api/src", "apps/scheduler/src", "apps/node_agent/src"]
+include = ["packages*", "gpu_control_api*", "gpu_control_scheduler*", "gpu_node_agent*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = [".", "apps/api/src", "apps/scheduler/src", "apps/node_agent/src"]
+testpaths = ["tests", "apps/api/tests", "apps/scheduler/tests", "apps/node_agent/tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+exclude = ["storage", "logs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "S"]
+ignore = ["E501", "E702", "S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S108"]
+"packages/gpu_control_core/settings.py" = ["S105"]
+"apps/api/src/gpu_control_api/main.py" = ["S104"]
+"apps/node_agent/src/gpu_node_agent/main.py" = ["S104", "S105"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+exclude = ["migrations/versions"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["yaml.*", "jsonschema.*"]
+ignore_missing_imports = true

@@ -1,0 +1,9 @@
+groups:
+  - name: gpu-control
+    rules:
+      - {alert: SchedulerLoopLag, expr: "gpu_control_scheduler_loop_lag_seconds > 2", for: 2m, labels: {severity: warning}, annotations: {summary: "调度器循环延迟过高", action: "检查 PostgreSQL 与 scheduler 日志"}}
+      - {alert: QueueBacklog, expr: "gpu_control_jobs_queued > 50", for: 5m, labels: {severity: warning}, annotations: {summary: "任务队列持续积压", action: "检查两台 3090 健康和工作流兼容性"}}
+      - {alert: OldestJobWaiting, expr: "gpu_control_oldest_queued_job_seconds > 600", for: 2m, labels: {severity: critical}, annotations: {summary: "最老任务等待超过 10 分钟", action: "检查节点模式、模型与 ComfyUI 队列"}}
+      - {alert: NodeDown, expr: "up{job=~\"workers|control-node\"} == 0", for: 1m, labels: {severity: critical}, annotations: {summary: "GPU 节点指标中断", action: "检查网络、Exporter 和节点电源"}}
+      - {alert: GPUHot, expr: "DCGM_FI_DEV_GPU_TEMP > 85", for: 5m, labels: {severity: critical}, annotations: {summary: "GPU 温度过高", action: "Drain 节点并检查散热"}}
+      - {alert: DiskLow, expr: "node_filesystem_avail_bytes{mountpoint=\"/srv\"}/node_filesystem_size_bytes{mountpoint=\"/srv\"} < 0.1", for: 5m, labels: {severity: critical}, annotations: {summary: "/srv 磁盘不足", action: "预览并执行保留策略清理"}}

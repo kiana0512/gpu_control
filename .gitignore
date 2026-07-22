@@ -1,0 +1,81 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.pytest-tmp/
+.pytest-tmp*/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build
+build/
+dist/
+*.egg-info/
+node_modules/
+.pnpm-store/
+tmp/
+
+# Runtime — SQLite databases and WAL files
+storage/*.db
+storage/*.db-shm
+storage/*.db-wal
+storage/*.sqlite
+
+# Runtime — generated output/input data
+storage/outputs/
+storage/inputs/
+storage/temp/
+storage/runtime/
+storage/job_logs/
+storage/pids/
+
+# Keep the gitkeep markers
+!storage/.gitkeep
+!storage/inputs/.gitkeep
+!storage/outputs/.gitkeep
+!storage/temp/.gitkeep
+
+# Logs — generated at runtime
+logs/
+!logs/.gitkeep
+
+# Environment
+.env
+.env.*
+!.env.example
+!.env.node.example
+configs/nodes.yaml
+configs/prometheus.yml
+*.pem
+*.key
+*.crt
+secrets/
+.venv/
+venv/
+env/
+ENV/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# GPU Control runtime and artifacts
+data/
+backups/
+diagnostics/
+models/
+*.tar
+*.tar.gz
+*.sha256
+image-metadata.json
+apps/web/dist/
+output/deploy/
+output/pdf/

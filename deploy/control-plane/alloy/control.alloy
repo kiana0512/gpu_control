@@ -1,0 +1,11 @@
+discovery.docker "local" { host = "unix:///var/run/docker.sock" }
+discovery.relabel "containers" {
+  targets = discovery.docker.local.targets
+  rule { source_labels = ["__meta_docker_container_name"] target_label = "container" regex = "/(.*)" replacement = "$1" }
+  rule { source_labels = ["__meta_docker_container_label_com_docker_compose_service"] target_label = "service" }
+  rule { target_label = "host" replacement = "control-4090" }
+  rule { target_label = "environment" replacement = "production" }
+}
+loki.source.docker "containers" { host = "unix:///var/run/docker.sock" targets = discovery.relabel.containers.output forward_to = [loki.write.central.receiver] }
+loki.source.journal "system" { path = "/var/log/journal" labels = {host = "control-4090", service = "systemd", environment = "production"} forward_to = [loki.write.central.receiver] }
+loki.write "central" { endpoint { url = "http://loki:3100/loki/api/v1/push" } }

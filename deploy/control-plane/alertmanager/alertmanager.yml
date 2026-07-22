@@ -1,0 +1,15 @@
+route:
+  receiver: gpu-control-api
+  group_by: [alertname, node_id]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+receivers:
+  - name: gpu-control-api
+    webhook_configs:
+      - url: http://api:8000/internal/alerts/webhook
+        send_resolved: true
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: /run/secrets/alertmanager_webhook_token

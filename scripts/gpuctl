@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${script_dir}/lib/common.sh"
+root="$(root_dir)"; cd "${root}"
+[[ -f .env ]] && { set -a; source .env; set +a; }
+
+usage(){ cat <<'TXT'
+GPU Control 统一启动器
+  gpuctl doctor
+  gpuctl host bootstrap control|node
+  gpuctl host driver [--branch 580-server]
+  gpuctl host nvidia-runtime
+  gpuctl init control --control-ip IP --worker-a-ip IP --worker-b-ip IP
+  gpuctl init node --node-id ID --node-ip IP --control-ip IP --agent-secret SECRET
+  gpuctl connectivity
+  gpuctl tls init --control-ip IP [--dns NAME]
+  gpuctl comfy build|start|stop|restart|status|logs|shell
+  gpuctl image export|import [脚本参数]
+  gpuctl models sync|verify [脚本参数]
+  gpuctl deploy control|node
+  gpuctl diagnostics [job JOB_ID]
+  gpuctl workflow import|validate|diff|enable|disable|test ...
+可设置 GPUCTL_YES=true 跳过已标记的确认（自动化环境使用）。
+TXT
+}
+compose_file(){ [[ "${GPU_CONTROL_ROLE:-control}" == node ]] && echo "deploy/gpu-node/compose.yaml" || echo "deploy/control-plane/compose.yaml"; }
+service_name(){ [[ "${GPU_CONTROL_ROLE:-control}" == node ]] && echo "comfyui" || echo "comfyui-4090"; }
+run(){ echo "即将执行: $*"; "$@"; }
+
+show_context
+case "${1:-}" in
+  host)
+    action="${2:-}"; shift 2 || true
+    case "${action}" in
+      bootstrap) role="${1:-}"; [[ "${role}" =~ ^(control|node)$ ]] || { usage; exit 2; }; [[ "${role}" == control ]] && run sudo "${script_dir}/bootstrap_control_4090.sh" || run sudo "${script_dir}/bootstrap_gpu_node.sh" ;;
+      driver) run sudo "${script_dir}/install_nvidia_driver_ubuntu.sh" "$@" ;;
+      nvidia-runtime) run sudo "${script_dir}/install_nvidia_container_runtime.sh" "$@" ;;
+      *) usage; exit 2 ;;
+    esac ;;
+  init) shift; run python3 "${script_dir}/generate_env.py" "$@" ;;
+  connectivity) shift; run "${script_dir}/connectivity_check.sh" "$@" ;;
+  tls) action="${2:-}"; shift 2 || true; [[ "${action}" == init ]] && run "${script_dir}/generate_lan_tls.sh" "$@" || { usage; exit 2; } ;;
+  doctor) shift; run "${script_dir}/preflight.sh" "$@" ;;
+  comfy)
+    action="${2:-}"; shift 2 || true
+    case "${action}" in
+      build) run "${script_dir}/build_comfyui_image.sh" "$@" ;;
+      start) [[ "${GPU_CONTROL_ROLE:-control}" == control ]] && run docker compose -f "$(compose_file)" --profile 4090-gpu up -d "$(service_name)" || run docker compose -f "$(compose_file)" up -d "$(service_name)" ;;
+      stop) confirm "确认停止 ComfyUI？运行任务会受影响" || exit 1; run docker compose -f "$(compose_file)" stop "$(service_name)" ;;
+      restart) confirm "确认安全重启 ComfyUI？请先 Drain 节点" || exit 1; run docker compose -f "$(compose_file)" restart "$(service_name)" ;;
+      status) run docker compose -f "$(compose_file)" ps ;;
+      logs) run docker compose -f "$(compose_file)" logs --tail 200 -f "$(service_name)" ;;
+      shell) run docker compose -f "$(compose_file)" exec "$(service_name)" /bin/bash ;;
+      *) usage; exit 2;; esac ;;
+  image) action="${2:-}"; shift 2 || true; [[ "${action}" == export ]] && run "${script_dir}/export_comfyui_image.sh" "$@" || { [[ "${action}" == import ]] && run "${script_dir}/import_comfyui_image.sh" "$@" || { usage; exit 2; }; } ;;
+  models) action="${2:-}"; shift 2 || true; [[ "${action}" == sync ]] && run "${script_dir}/sync_models.sh" "$@" || { [[ "${action}" == verify ]] && run "${script_dir}/verify_models.sh" "$@" || { usage; exit 2; }; } ;;
+  deploy) role="${2:-}"; [[ "${role}" == control ]] && run "${script_dir}/deploy_control.sh" || { [[ "${role}" == node ]] && run "${script_dir}/deploy_node.sh" || { usage; exit 2; }; } ;;
+  diagnostics) shift; run "${script_dir}/collect_diagnostics.sh" "$@" ;;
+  workflow) shift; run python3 -m packages.gpu_control_core.workflow_cli "$@" ;;
+  -h|--help|'') usage ;;
+  *) usage; exit 2 ;;
+esac

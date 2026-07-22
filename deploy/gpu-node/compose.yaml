@@ -1,0 +1,46 @@
+name: gpu-control-node
+x-logging: &default-logging
+  driver: json-file
+  options: {max-size: "20m", max-file: "5"}
+
+services:
+  comfyui:
+    image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:0.1.0}
+    restart: unless-stopped
+    ports: ["${NODE_BIND_IP:-192.168.10.11}:8188:8188"]
+    deploy: {resources: {reservations: {devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]}}}
+    volumes:
+      - ${MODEL_ROOT:-/srv/comfyui/models}:/opt/comfyui/models:ro
+      - /srv/comfyui/runtime/input:/opt/comfyui/input
+      - /srv/comfyui/runtime/output:/opt/comfyui/output
+      - /srv/comfyui/runtime/temp:/opt/comfyui/temp
+      - /srv/comfyui/runtime/user:/opt/comfyui/user
+    healthcheck: {test: ["CMD", "python3.11", "/usr/local/bin/comfy-healthcheck"], interval: 20s, timeout: 5s, start_period: 120s, retries: 6}
+    logging: *default-logging
+
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    restart: unless-stopped
+    ports: ["${NODE_BIND_IP:-192.168.10.11}:9100:9100"]
+    command: ["--path.rootfs=/host"]
+    volumes: ["/:/host:ro,rslave"]
+    logging: *default-logging
+
+  dcgm-exporter:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.2.3-4.1.1-ubuntu22.04
+    restart: unless-stopped
+    ports: ["${NODE_BIND_IP:-192.168.10.11}:9400:9400"]
+    deploy: {resources: {reservations: {devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]}}}
+    cap_add: [SYS_ADMIN]
+    logging: *default-logging
+
+  alloy:
+    image: grafana/alloy:v1.9.1
+    restart: unless-stopped
+    command: ["run", "/etc/alloy/config.alloy", "--storage.path=/var/lib/alloy/data"]
+    environment: {NODE_ID: "${NODE_ID}", CONTROL_HOST: "${CONTROL_HOST}"}
+    volumes: ["./alloy/worker.alloy:/etc/alloy/config.alloy:ro", "/var/run/docker.sock:/var/run/docker.sock:ro", "/var/log/journal:/var/log/journal:ro", "/run/log/journal:/run/log/journal:ro", "/etc/machine-id:/etc/machine-id:ro", "alloy-data:/var/lib/alloy/data"]
+    logging: *default-logging
+
+volumes:
+  alloy-data: {}

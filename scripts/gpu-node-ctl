@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly PROJECT_DIR="/opt/gpu-control"
+readonly ROLE_FILE="/etc/gpu-control/node-role"
+role="node"
+[[ -r "${ROLE_FILE}" ]] && source "${ROLE_FILE}"
+if [[ "${role}" == "control" ]]; then
+  readonly COMPOSE_FILE="/opt/gpu-control/deploy/control-plane/compose.yaml"
+  readonly SERVICE_NAME="comfyui-4090"
+  profile_args=(--profile 4090-gpu)
+else
+  readonly COMPOSE_FILE="/opt/gpu-control/deploy/gpu-node/compose.yaml"
+  readonly SERVICE_NAME="comfyui"
+  profile_args=()
+fi
+
+case "${1:-}" in
+  status) exec docker compose --project-directory "${PROJECT_DIR}" -f "${COMPOSE_FILE}" "${profile_args[@]}" ps "${SERVICE_NAME}" ;;
+  start) exec docker compose --project-directory "${PROJECT_DIR}" -f "${COMPOSE_FILE}" "${profile_args[@]}" up -d "${SERVICE_NAME}" ;;
+  stop) exec docker compose --project-directory "${PROJECT_DIR}" -f "${COMPOSE_FILE}" "${profile_args[@]}" stop -t 60 "${SERVICE_NAME}" ;;
+  restart) exec docker compose --project-directory "${PROJECT_DIR}" -f "${COMPOSE_FILE}" "${profile_args[@]}" restart -t 60 "${SERVICE_NAME}" ;;
+  logs)
+    readonly lines="${2:-200}"
+    [[ "${lines}" =~ ^[0-9]+$ ]] && (( lines >= 1 && lines <= 2000 )) || { echo "invalid log lines" >&2; exit 2; }
+    exec docker compose --project-directory "${PROJECT_DIR}" -f "${COMPOSE_FILE}" "${profile_args[@]}" logs --no-color --tail "${lines}" "${SERVICE_NAME}"
+    ;;
+  nvidia-smi) exec /usr/bin/nvidia-smi -q ;;
+  system) exec /usr/bin/systemd-run --pipe --wait --collect /bin/sh -c '/usr/bin/df -h /srv; /usr/bin/free -h; /usr/bin/docker version --format "{{.Server.Version}}"' ;;
+  diagnostics) exec /opt/gpu-control/scripts/collect_diagnostics.sh --stdout ;;
+  *) echo "allowed: status|start|stop|restart|logs <1-2000>|nvidia-smi|system|diagnostics" >&2; exit 2 ;;
+esac

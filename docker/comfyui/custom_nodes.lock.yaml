@@ -1,0 +1,3 @@
+schema_version: 1
+custom_nodes: []
+# 用户提供真实节点后，每项必须包含 name、repository、commit、enabled、requirements_lock 和 security_notes。

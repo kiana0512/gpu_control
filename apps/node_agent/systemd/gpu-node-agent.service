@@ -1,0 +1,22 @@
+[Unit]
+Description=GPU Control restricted node agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gpuagent
+Group=gpuagent
+WorkingDirectory=/opt/gpu-control
+EnvironmentFile=/etc/gpu-control/node-agent.env
+ExecStart=/opt/gpu-control/.venv/bin/gpu-node-agent
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

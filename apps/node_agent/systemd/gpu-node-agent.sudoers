@@ -1,0 +1,1 @@
+gpuagent ALL=(root) NOPASSWD: /usr/local/sbin/gpu-node-ctl

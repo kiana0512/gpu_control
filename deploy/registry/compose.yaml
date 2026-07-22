@@ -1,0 +1,7 @@
+services:
+  registry:
+    image: registry:2.8.3
+    restart: unless-stopped
+    ports: ["192.168.10.10:5000:5000"]
+    volumes: [/srv/gpu-control/registry:/var/lib/registry]
+    environment: {REGISTRY_STORAGE_DELETE_ENABLED: "false"}

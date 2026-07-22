@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["workflow_key", "version", "template_file", "parameter_schema", "bindings", "allowed_class_types"],
+  "properties": {
+    "workflow_key": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+    "version": {"type": "string", "minLength": 1},
+    "template_file": {"type": "string", "minLength": 1},
+    "parameter_schema": {"type": "object"},
+    "bindings": {"type": "object", "additionalProperties": {"type": "string"}},
+    "allowed_class_types": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "required_models": {"type": "array", "items": {"type": "string"}},
+    "required_custom_nodes": {"type": "array", "items": {"type": "string"}},
+    "min_vram_mb": {"type": "integer", "minimum": 0},
+    "timeout_seconds": {"type": "integer", "minimum": 10},
+    "output_nodes": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

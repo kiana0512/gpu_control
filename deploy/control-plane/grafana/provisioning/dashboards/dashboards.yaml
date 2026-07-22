@@ -1,0 +1,6 @@
+apiVersion: 1
+providers:
+  - name: GPU Control
+    folder: GPU Control
+    type: file
+    options: {path: /var/lib/grafana/dashboards}

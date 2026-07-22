@@ -1,0 +1,45 @@
+
+> gpu-control-web@1.0.0 test
+> vitest run
+
+
+ RUN  v3.2.4 C:/Users/rentian/PycharmProjects/gpu_control/apps/web
+
+ ✓ tests/dashboard.test.ts (1 test) 10ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  16:52:57
+   Duration  820ms (transform 40ms, setup 0ms, collect 102ms, tests 10ms, environment 359ms, prepare 88ms)
+
+
+> gpu-control-web@1.0.0 lint
+> eslint src --max-warnings=0
+
+
+> gpu-control-web@1.0.0 format:check
+> prettier --check .
+
+Checking formatting...
+All matched files use Prettier code style!
+
+> gpu-control-web@1.0.0 build
+> vue-tsc -b && vite build
+
+vite v7.0.6 building for production...
+transforming...
+✓ 2038 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                                           0.40 kB │ gzip:   0.27 kB
+dist/assets/index-DBx7POvs.css                                          353.13 kB │ gzip:  50.29 kB
+dist/assets/StatusMark.vue_vue_type_script_setup_true_lang-CGPGkfWh.js    0.29 kB │ gzip:   0.23 kB
+dist/assets/Login-eVrJtYaL.js                                             1.24 kB │ gzip:   0.79 kB
+dist/assets/Jobs-BwoOu6zC.js                                              1.36 kB │ gzip:   0.88 kB
+dist/assets/JobsTable.vue_vue_type_script_setup_true_lang-BBpaUgTT.js     1.56 kB │ gzip:   0.92 kB
+dist/assets/Nodes-BGOkcU5h.js                                             2.39 kB │ gzip:   1.22 kB
+dist/assets/ResourceList-g8kJJJQT.js                                      4.82 kB │ gzip:   2.38 kB
+dist/assets/index-D_YgYXcJ.js                                            74.04 kB │ gzip:  26.36 kB
+dist/assets/index-C2HIC5RK.js                                           126.13 kB │ gzip:  49.04 kB
+dist/assets/Dashboard-BQfsji-Q.js                                       467.60 kB │ gzip: 158.82 kB
+✓ built in 3.47s

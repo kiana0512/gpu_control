@@ -1,0 +1,9 @@
+All checks passed!
+Success: no issues found in 22 source files
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 20260721_0001, Create the complete GPU Control schema.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+20260721_0001 (head)
+OK: 15 YAML, 2445 JSON, all local Markdown links
