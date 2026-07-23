@@ -1,0 +1,8 @@
+# ModelViewCreator 保持为 /opt 下独立 Git/LFS 工程。
+# 容器通过只读 bind mount 获得该路径，不复制或移动模型。
+modelviewcreator:
+  base_path: /opt/modelviewcreator/model
+  text_encoders: clip
+  diffusion_models: unet
+  vae: vae
+  loras: lora

@@ -76,4 +76,10 @@ def test_image_validation_rejects_non_image_and_pixel_limit(tmp_path: Path) -> N
 
 def test_production_rejects_development_secrets() -> None:
     with pytest.raises(ValueError, match="production secrets"):
-        Settings(environment="production")
+        Settings(
+            environment="production",
+            jwt_secret="development-only-change-me",
+            api_key_pepper="development-only-change-me",
+            node_agent_hmac_secret="development-only-change-me",
+            alertmanager_webhook_token="development-only-change-me",
+        )

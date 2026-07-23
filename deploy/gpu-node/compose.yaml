@@ -5,23 +5,29 @@ x-logging: &default-logging
 
 services:
   comfyui:
-    image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:0.1.0}
+    image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:projects-0.2.2}
     restart: unless-stopped
-    ports: ["${NODE_BIND_IP:-192.168.10.11}:8188:8188"]
+    ports: ["${NODE_BIND_IP:-0.0.0.0}:8188:8188"]
     deploy: {resources: {reservations: {devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]}}}
     volumes:
-      - ${MODEL_ROOT:-/srv/comfyui/models}:/opt/comfyui/models:ro
+      - ${MODEL_ROOT:-/opt/imageclip/models}:/opt/comfyui/models:ro
+      - ${MODELVIEW_ROOT:-/opt/modelviewcreator}/model:/opt/modelviewcreator/model:ro
+      - ../../configs/comfyui-extra-model-paths.yaml:/opt/comfyui/extra_model_paths.yaml:ro
+      - ${IMAGECLIP_ROOT:-/opt/imageclip}/Cherry_lizi:/opt/comfyui/custom_nodes/Cherry_lizi:ro
+      - ${MODELVIEW_ROOT:-/opt/modelviewcreator}/custom_nodes/haoze-LiClick:/opt/comfyui/custom_nodes/haoze-LiClick:ro
       - /srv/comfyui/runtime/input:/opt/comfyui/input
       - /srv/comfyui/runtime/output:/opt/comfyui/output
       - /srv/comfyui/runtime/temp:/opt/comfyui/temp
       - /srv/comfyui/runtime/user:/opt/comfyui/user
+      - ${IMAGECLIP_ROOT:-/opt/imageclip}/ImageClip.json:/opt/comfyui/user/default/workflows/ImageClip.json:ro
+      - ${MODELVIEW_ROOT:-/opt/modelviewcreator}/flux_fill_inpaint.json:/opt/comfyui/user/default/workflows/ModelViewCreator_flux_fill_inpaint.json:ro
     healthcheck: {test: ["CMD", "python3.11", "/usr/local/bin/comfy-healthcheck"], interval: 20s, timeout: 5s, start_period: 120s, retries: 6}
     logging: *default-logging
 
   node-exporter:
     image: prom/node-exporter:v1.9.1
     restart: unless-stopped
-    ports: ["${NODE_BIND_IP:-192.168.10.11}:9100:9100"]
+    ports: ["${NODE_BIND_IP:-0.0.0.0}:9100:9100"]
     command: ["--path.rootfs=/host"]
     volumes: ["/:/host:ro,rslave"]
     logging: *default-logging
@@ -29,7 +35,7 @@ services:
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.2.3-4.1.1-ubuntu22.04
     restart: unless-stopped
-    ports: ["${NODE_BIND_IP:-192.168.10.11}:9400:9400"]
+    ports: ["${NODE_BIND_IP:-0.0.0.0}:9400:9400"]
     deploy: {resources: {reservations: {devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]}}}
     cap_add: [SYS_ADMIN]
     logging: *default-logging

@@ -109,7 +109,12 @@ OVERFLOW Guard：自动开关打开；队列数量或最长等待超过阈值；
 
 统一 Dockerfile 固定：Ubuntu CUDA runtime、Python、PyTorch CUDA wheel、ComfyUI 完整 commit、自定义节点完整 commit、Python requirements。运行容器没有临时安装步骤，不使用 `docker commit`。构建后导出 `tar.gz + SHA256`，两台 3090 导入同一归档并核对 Docker image ID。
 
-模型独立存放在三机 `/srv/comfyui/models`，挂载到容器默认 `/opt/comfyui/models:ro`。`models.manifest.yaml` 记录实际文件字节数和 SHA-256；空清单会直接失败，避免“没有真实模型却显示校验通过”。
+当前生产模型独立保存在 `/opt/imageclip/models` 与
+`/opt/modelviewcreator/model`，以只读方式挂载到容器。ImageClip 自带
+`models.manifest.yaml`，ModelViewCreator 使用
+`configs/modelviewcreator.models.manifest.yaml`；`scripts/verify_comfy_projects.sh`
+统一校验 9 个实际文件的字节数和 SHA-256。空清单或 Git LFS 指针都会失败，避免
+“没有真实模型却显示校验通过”。
 
 ## 9. 日志与诊断链路
 

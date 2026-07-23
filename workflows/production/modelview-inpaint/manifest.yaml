@@ -1,0 +1,52 @@
+workflow_key: modelview-inpaint
+version: 2026.07.23-b22bb377
+template_file: template.api.json
+parameter_schema:
+  type: object
+  properties:
+    image_filename:
+      type: string
+      minLength: 1
+      maxLength: 512
+  required:
+    - image_filename
+  additionalProperties: false
+bindings:
+  image_filename: 96.inputs.image
+allowed_class_types:
+  - CLIPTextEncode
+  - ConditioningZeroOut
+  - DifferentialDiffusion
+  - DualCLIPLoader
+  - FluxGuidance
+  - GrowMaskWithBlur
+  - InpaintCropImproved
+  - InpaintModelConditioning
+  - InpaintStitchImproved
+  - KSampler
+  - LoadImage
+  - LoraLoaderModelOnly
+  - NunchakuFluxDiTLoader
+  - Qwen3 VL Plus
+  - SaveImage
+  - VAEDecode
+  - VAELoader
+  - easy showAnything
+required_models:
+  - clip/clip_l.safetensors
+  - clip/t5xxl_fp16.safetensors
+  - lora/flux-turbo-alpha-8tp.safetensors
+  - unet/Nunchaku-svdq-int4_r32-flux.1-fill-dev.safetensors
+  - vae/ae.safetensors
+required_custom_nodes:
+  - ComfyUI-Inpaint-CropAndStitch
+  - ComfyUI-KJNodes
+  - ComfyUI-Nunchaku
+  - ComfyUI-Easy-Use
+  - haoze-LiClick@b22bb377
+min_vram_mb: 22000
+timeout_seconds: 1800
+node_labels: {}
+output_nodes:
+  - "9"
+enabled: false

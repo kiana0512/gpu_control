@@ -28,9 +28,12 @@ const menu = [
   ["/alerts", "告警", Bell],
   ["/audit", "审计日志", Document],
   ["/logs", "日志中心", Clock],
-  ["/settings", "系统设置", Setting],
+  ["/settings", "系统信息", Setting],
 ] as const;
 const showShell = computed(() => route.path != "/login");
+const currentSection = computed(
+  () => menu.find(([path]) => path === route.path)?.[1] ?? "控制台",
+);
 function logout() {
   session.clear();
   router.push("/login");
@@ -51,12 +54,15 @@ function logout() {
         >
       </nav>
       <div class="cluster-state">
-        <i></i><span>集群状态：正常</span><small>ComfyUI 集群 v1.1.0</small>
+        <i></i><span>控制平面在线</span
+        ><small>4090 主控 · GPU Control 1.1</small>
       </div>
     </aside>
     <section class="workspace">
       <header class="topbar">
-        <span></span>
+        <div class="breadcrumb">
+          <span>GPU Control</span><b>/</b><strong>{{ currentSection }}</strong>
+        </div>
         <div>
           <button class="environment"><i></i>生产环境</button
           ><button class="user" @click="logout">

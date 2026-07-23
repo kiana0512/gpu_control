@@ -1,14 +1,17 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from packages.gpu_control_core.database import Database
+from packages.gpu_control_core.enums import JobStatus
 from packages.gpu_control_core.models import (
     ApiClient,
     Base,
     Job,
+    JobAttempt,
     Node,
+    NodeLease,
     Workflow,
     WorkflowNodeCompatibility,
     WorkflowVersion,
@@ -126,4 +129,58 @@ async def test_incompatible_workflow_is_not_claimed(tmp_path: Path) -> None:
     async with database.session() as session:
         async with session.begin():
             assert await claim_next_job(session, "3090-a", 300) is None
+    await database.close()
+
+
+async def test_retry_reuses_durable_lease_with_fresh_token(tmp_path: Path) -> None:
+    database = await make_database(tmp_path / "retry-claim.db")
+    await seed(database)
+    async with database.session() as session:
+        async with session.begin():
+            first = await claim_next_job(session, "3090-a", 300)
+        assert first is not None
+        job_id = first[0].id
+        lease_id = first[1].id
+        first_token = first[1].token
+
+    async with database.session() as session:
+        job = await session.get(Job, job_id, with_for_update=True)
+        assert job is not None
+        await release_lease(
+            session,
+            job,
+            attempt_status=JobStatus.FAILED,
+            attempt_error={"code": "TEST_FAILURE"},
+        )
+        job.status = JobStatus.QUEUED.value
+        job.node_id = None
+        job.prompt_id = None
+        for other in (
+            await session.scalars(select(Job).where(Job.id != job_id))
+        ).all():
+            other.status = JobStatus.CANCELLED.value
+        await session.commit()
+
+    async with database.session() as session:
+        async with session.begin():
+            retried = await claim_next_job(session, "3090-a", 300)
+        assert retried is not None and retried[0].id == job_id
+        assert retried[1].id == lease_id
+        assert retried[1].token != first_token
+        assert retried[1].active is True
+        attempts = list(
+            (
+                await session.scalars(
+                    select(JobAttempt)
+                    .where(JobAttempt.job_id == job_id)
+                    .order_by(JobAttempt.attempt)
+                )
+            ).all()
+        )
+        assert [attempt.status for attempt in attempts] == ["FAILED", "CLAIMED"]
+        assert attempts[0].finished_at is not None
+        assert attempts[0].error == {"code": "TEST_FAILURE"}
+        assert await session.scalar(
+            select(func.count(NodeLease.id)).where(NodeLease.job_id == job_id)
+        ) == 1
     await database.close()

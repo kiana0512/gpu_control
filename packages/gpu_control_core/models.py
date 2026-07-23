@@ -240,7 +240,10 @@ class ApiClient(Base):
     max_running: Mapped[int] = mapped_column(Integer, default=1)
     daily_quota: Mapped[int] = mapped_column(Integer, default=1000)
     weight: Mapped[int] = mapped_column(Integer, default=1)
+    allowed_ips: Mapped[list[Any]] = mapped_column(JSON, default=list)
     callback_hosts: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    last_seen_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_scheduled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

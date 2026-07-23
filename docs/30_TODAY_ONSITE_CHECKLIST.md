@@ -2,6 +2,9 @@
 
 本表配合 `docs/28_TODAY_DEPLOYMENT_MANUAL.md` 使用。命令和故障解释以 28 号文档为准；本表负责现场顺序、预期结果和签字记录。
 
+> 2026-07-23 当前 3090 双项目接入以 `docs/33_3090_NODE_DEPLOYMENT_HANDOFF.md`
+> 为准；本表的三台空机通用步骤和签字项仍可使用。
+
 ## 0. 现场信息
 
 - [ ] 日期：`____________`
@@ -71,8 +74,8 @@ scripts/gpuctl doctor --role control
 
 ```bash
 scripts/gpuctl image build
-scripts/gpuctl image export --output /srv/gpu-control/images/comfyui-0.1.0.tar.gz
-sha256sum -c /srv/gpu-control/images/comfyui-0.1.0.tar.gz.sha256
+scripts/gpuctl image export --output /srv/gpu-control/images/comfyui-projects-registry-0.2.2.tar.gz
+sha256sum -c /srv/gpu-control/images/comfyui-projects-registry-0.2.2.tar.gz.sha256
 source .env
 docker image inspect "$COMFY_IMAGE" --format '{{.Id}}'
 ```
@@ -107,7 +110,7 @@ cd /opt/gpu-control
 chmod 600 .env
 sudo scripts/configure_ufw_gpu_node.sh --control-ip 192.168.10.10 --ssh-cidr 192.168.10.0/24
 sudo scripts/install_node_agent.sh --role node
-scripts/gpuctl image import --input /srv/gpu-control/images/comfyui-0.1.0.tar.gz
+scripts/gpuctl image import --input /srv/gpu-control/images/comfyui-projects-registry-0.2.2.tar.gz
 source .env
 docker image inspect "$COMFY_IMAGE" --format '{{.Id}}'
 ```
@@ -121,7 +124,7 @@ docker image inspect "$COMFY_IMAGE" --format '{{.Id}}'
 在 4090 执行 manifest 校验、dry-run 和正式同步；两台 3090 分别执行：
 
 ```bash
-scripts/gpuctl models verify
+scripts/verify_comfy_projects.sh
 GPU_CONTROL_ROLE=node scripts/gpuctl deploy node
 curl -fsS http://$(hostname -I | awk '{print $1}'):8188/system_stats | jq
 ```

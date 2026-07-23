@@ -233,7 +233,6 @@ main {
 .secondary,
 .node-actions button,
 .operation-list button,
-.setting-row button,
 .resource table button,
 .one-time-key button {
   height: 38px;
@@ -257,7 +256,6 @@ main {
 .secondary,
 .node-actions button,
 .operation-list button,
-.setting-row button,
 .resource table button,
 .one-time-key button {
   color: #dedbe5;
@@ -468,9 +466,6 @@ th {
   font-weight: 650;
 }
 
-.log-builder select,
-.log-builder input,
-.setting-row input,
 .login input {
   color: #f3eff7;
   border-color: var(--line-strong);
@@ -479,20 +474,9 @@ th {
   outline: none;
 }
 
-.log-builder select:focus,
-.log-builder input:focus,
-.setting-row input:focus,
 .login input:focus {
   border-color: #bb4bec;
   box-shadow: 0 0 0 3px rgba(187, 75, 236, 0.12);
-}
-
-.setting-row {
-  border-color: var(--line);
-}
-
-.setting-row label {
-  color: #c8c5d0;
 }
 
 .one-time-key {

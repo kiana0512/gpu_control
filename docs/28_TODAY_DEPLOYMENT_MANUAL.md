@@ -6,6 +6,10 @@
 
 > 本文是实际执行顺序。示例 IP 为 `192.168.10.10/11/12`；执行前替换为真实 IP。安全强化不阻塞首次上线，但三机应位于可信局域网，不要把 8188、9201、3100、9100、9400 暴露到公网。
 
+> 2026-07-23 现场已经升级为 ImageClip + ModelViewCreator 双项目结构。当前主控状态、
+> 固定提交、`projects-0.2.2` 镜像、Git LFS 和 3090 实际接入命令，以
+> `docs/33_3090_NODE_DEPLOYMENT_HANDOFF.md` 为准；本文继续作为通用三机全流程参考。
+
 ## 1. 部署结果与停止条件
 
 最终角色：
@@ -37,7 +41,7 @@ SSH_CIDR=192.168.10.0/24
 DEPLOY_USER=ubuntu
 REPO_URL='替换为仓库地址；无 Git 时使用 scp/rsync 复制本目录'
 RELEASE_REF='替换为本次交付 tag 或 commit'
-COMFY_ARCHIVE=/srv/gpu-control/images/comfyui-0.1.0.tar.gz
+COMFY_ARCHIVE=/srv/gpu-control/images/comfyui-projects-registry-0.2.2.tar.gz
 ```
 
 端口：用户到主控 80/443；主控到工作机 8188/9201/9100/9400；工作机到主控 3100；SSH 22。PostgreSQL 和 Redis 不发布宿主端口。

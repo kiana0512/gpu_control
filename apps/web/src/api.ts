@@ -1,24 +1,89 @@
 import type { AuditLog, Dashboard, JobInfo, NodeInfo } from "./types";
 
 const TOKEN_KEY = "gpu-control-session";
+const REFRESH_TOKEN_KEY = "gpu-control-refresh";
+const TOKEN_EXPIRES_KEY = "gpu-control-session-expires";
+export interface AdminSession {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  role: string;
+}
 export const session = {
   get: () => sessionStorage.getItem(TOKEN_KEY),
-  set: (value: string) => sessionStorage.setItem(TOKEN_KEY, value),
-  clear: () => sessionStorage.removeItem(TOKEN_KEY),
+  refresh: () => sessionStorage.getItem(REFRESH_TOKEN_KEY),
+  needsRefresh: () =>
+    Number(sessionStorage.getItem(TOKEN_EXPIRES_KEY) ?? 0) <=
+    Date.now() + 60_000,
+  set: (value: AdminSession) => {
+    sessionStorage.setItem(TOKEN_KEY, value.access_token);
+    sessionStorage.setItem(REFRESH_TOKEN_KEY, value.refresh_token);
+    sessionStorage.setItem(
+      TOKEN_EXPIRES_KEY,
+      String(Date.now() + value.expires_in * 1000),
+    );
+  },
+  clear: () => {
+    sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(REFRESH_TOKEN_KEY);
+    sessionStorage.removeItem(TOKEN_EXPIRES_KEY);
+  },
 };
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+let refreshPromise: Promise<boolean> | null = null;
+
+async function refreshSession(): Promise<boolean> {
+  const refreshToken = session.refresh();
+  if (!refreshToken) return false;
+  if (!refreshPromise) {
+    refreshPromise = fetch("/admin/auth/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    })
+      .then(async (response) => {
+        if (!response.ok) return false;
+        session.set((await response.json()) as AdminSession);
+        return true;
+      })
+      .catch(() => false)
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+  return refreshPromise;
+}
+
+async function request<T>(
+  path: string,
+  options: RequestInit = {},
+  retryAfterRefresh = true,
+): Promise<T> {
+  if (
+    session.get() &&
+    session.needsRefresh() &&
+    !path.startsWith("/admin/auth/")
+  )
+    await refreshSession();
   const token = session.get();
   const headers = new Headers(options.headers);
   if (token) headers.set("Authorization", `Bearer ${token}`);
   if (options.body && !(options.body instanceof FormData))
     headers.set("Content-Type", "application/json");
   const response = await fetch(path, { ...options, headers });
+  if (response.status === 401 && token && retryAfterRefresh) {
+    if (await refreshSession()) return request<T>(path, options, false);
+    session.clear();
+    window.location.assign("/login?expired=1");
+  }
   if (!response.ok) {
     const payload = (await response.json().catch(() => ({}))) as {
-      detail?: { message?: string };
+      detail?: { message?: string; code?: string } | string;
     };
-    throw new Error(payload.detail?.message ?? `请求失败 (${response.status})`);
+    const detail = payload.detail;
+    const message =
+      typeof detail === "string" ? detail : (detail?.message ?? detail?.code);
+    throw new Error(message ?? `请求失败 (${response.status})`);
   }
   return response.json() as Promise<T>;
 }
@@ -34,7 +99,7 @@ async function download(path: string): Promise<Blob> {
 
 export const api = {
   login: (username: string, password: string) =>
-    request<{ access_token: string; role: string }>("/admin/auth/login", {
+    request<AdminSession>("/admin/auth/login", {
       method: "POST",
       body: JSON.stringify({ username, password }),
     }),
@@ -67,6 +132,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  updateClient: (id: string, body: Record<string, unknown>) =>
+    request<Record<string, unknown>>(
+      `/admin/clients/${encodeURIComponent(id)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(body),
+      },
+    ),
   createKey: (id: string) =>
     request<{ api_key: string; warning: string }>(
       `/admin/clients/${encodeURIComponent(id)}/keys`,

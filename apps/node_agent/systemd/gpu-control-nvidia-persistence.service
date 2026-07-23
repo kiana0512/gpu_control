@@ -1,0 +1,12 @@
+[Unit]
+Description=GPU Control NVIDIA persistence mode
+After=nvidia-persistenced.service
+ConditionPathExists=/usr/bin/nvidia-smi
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/nvidia-smi --persistence-mode=1
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

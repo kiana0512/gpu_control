@@ -12,7 +12,7 @@ async function submit() {
   error.value = "";
   try {
     const result = await api.login(username.value, password.value);
-    session.set(result.access_token);
+    session.set(result);
     await router.push("/");
   } catch (e) {
     error.value = e instanceof Error ? e.message : "登录失败";

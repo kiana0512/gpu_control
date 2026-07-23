@@ -1,5 +1,6 @@
 import time
 
+import gpu_node_agent.main as node_agent
 import httpx
 from gpu_node_agent.main import NodeAgentSettings, create_app
 
@@ -41,3 +42,36 @@ async def test_node_agent_requires_signature_and_rejects_replay() -> None:
             assert first.status_code == 400
             replay = await client.post("/v1/operations", content=body, headers=headers)
             assert replay.status_code == 409
+
+
+async def test_gpu_metrics_are_signed_and_return_live_values(monkeypatch) -> None:
+    secret = "node-agent-test-secret"
+
+    async def fake_gpu_metrics() -> dict[str, int]:
+        return {"gpu_util_percent": 73, "free_vram_mb": 12000, "total_vram_mb": 24576}
+
+    monkeypatch.setattr(node_agent, "_gpu_metrics", fake_gpu_metrics)
+    app = create_app(Settings(environment="test", node_agent_hmac_secret=secret))
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://agent") as client:
+            assert (await client.get("/v1/gpu-metrics")).status_code == 401
+            timestamp = str(int(time.time()))
+            nonce = "gpu-metrics-nonce"
+            signature = sign_agent_request(
+                "GET", "/v1/gpu-metrics", b"", timestamp, nonce, secret
+            )
+            response = await client.get(
+                "/v1/gpu-metrics",
+                headers={
+                    "x-gpu-timestamp": timestamp,
+                    "x-gpu-nonce": nonce,
+                    "x-gpu-signature": signature,
+                },
+            )
+            assert response.status_code == 200
+            assert response.json() == {
+                "gpu_util_percent": 73,
+                "free_vram_mb": 12000,
+                "total_vram_mb": 24576,
+            }

@@ -5,6 +5,9 @@ const Dashboard = () => import("./views/Dashboard.vue");
 const Jobs = () => import("./views/Jobs.vue");
 const Nodes = () => import("./views/Nodes.vue");
 const ResourceList = () => import("./views/ResourceList.vue");
+const Scheduling = () => import("./views/Scheduling.vue");
+const Logs = () => import("./views/Logs.vue");
+const SystemInfo = () => import("./views/SystemInfo.vue");
 const Login = () => import("./views/Login.vue");
 
 export const router = createRouter({
@@ -26,8 +29,7 @@ export const router = createRouter({
     },
     {
       path: "/scheduling",
-      component: ResourceList,
-      props: { title: "调度策略", kind: "scheduling" },
+      component: Scheduling,
     },
     {
       path: "/alerts",
@@ -41,13 +43,11 @@ export const router = createRouter({
     },
     {
       path: "/logs",
-      component: ResourceList,
-      props: { title: "日志中心", kind: "logs" },
+      component: Logs,
     },
     {
       path: "/settings",
-      component: ResourceList,
-      props: { title: "系统设置", kind: "settings" },
+      component: SystemInfo,
     },
   ],
 });

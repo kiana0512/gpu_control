@@ -155,16 +155,22 @@ services:
     networks: [backend]
 
   comfyui-4090:
-    image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:0.1.0}
+    image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:projects-0.2.2}
     profiles: ["4090-gpu"]
     restart: unless-stopped
     deploy: {resources: {reservations: {devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]}}}
     volumes:
-      - ${MODEL_ROOT:-/srv/comfyui/models}:/opt/comfyui/models:ro
+      - ${MODEL_ROOT:-/opt/imageclip/models}:/opt/comfyui/models:ro
+      - ${MODELVIEW_ROOT:-/opt/modelviewcreator}/model:/opt/modelviewcreator/model:ro
+      - ../../configs/comfyui-extra-model-paths.yaml:/opt/comfyui/extra_model_paths.yaml:ro
+      - ${IMAGECLIP_ROOT:-/opt/imageclip}/Cherry_lizi:/opt/comfyui/custom_nodes/Cherry_lizi:ro
+      - ${MODELVIEW_ROOT:-/opt/modelviewcreator}/custom_nodes/haoze-LiClick:/opt/comfyui/custom_nodes/haoze-LiClick:ro
       - /srv/comfyui/4090/input:/opt/comfyui/input
       - /srv/comfyui/4090/output:/opt/comfyui/output
       - /srv/comfyui/4090/temp:/opt/comfyui/temp
       - /srv/comfyui/4090/user:/opt/comfyui/user
+      - ${IMAGECLIP_ROOT:-/opt/imageclip}/ImageClip.json:/opt/comfyui/user/default/workflows/ImageClip.json:ro
+      - ${MODELVIEW_ROOT:-/opt/modelviewcreator}/flux_fill_inpaint.json:/opt/comfyui/user/default/workflows/ModelViewCreator_flux_fill_inpaint.json:ro
     healthcheck: {test: ["CMD", "python3.11", "/usr/local/bin/comfy-healthcheck"], interval: 20s, timeout: 5s, start_period: 120s, retries: 6}
     logging: *default-logging
     networks: [backend]

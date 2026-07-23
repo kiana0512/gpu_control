@@ -1,3 +1,38 @@
 schema_version: 1
-custom_nodes: []
-# 用户提供真实节点后，每项必须包含 name、repository、commit、enabled、requirements_lock 和 security_notes。
+custom_nodes:
+  - name: ComfyUI-GGUF
+    repository: https://github.com/city96/ComfyUI-GGUF.git
+    commit: 6ea2651e7df66d7585f6ffee804b20e92fb38b8a
+    enabled: true
+    requirements_lock: requirements.gguf.lock.txt
+    security_notes: 官方公开仓库；固定提交；用于 UnetLoaderGGUF。
+  - name: rgthree-comfy
+    repository: https://github.com/rgthree/rgthree-comfy.git
+    commit: 27b4f4cdcf3b127c29d5d8135ac1536ecbd4c383
+    enabled: true
+    requirements_lock: requirements.rgthree.lock.txt
+    security_notes: 官方公开仓库；固定提交；用于 Image Comparer (rgthree)。
+  - name: ComfyUI-Easy-Use
+    repository: https://github.com/yolain/ComfyUI-Easy-Use.git
+    commit: 54d080bf6a4f52da287e984f305243c10db097f5
+    enabled: true
+    requirements_lock: requirements.easy-use.lock.txt
+    security_notes: 官方公开仓库；固定提交；ImageClip 当前仅使用 easy float。
+  - name: ComfyUI-nunchaku
+    repository: https://github.com/nunchaku-ai/ComfyUI-nunchaku.git
+    commit: d329ebab041199eee4d70689da17495df629bd64
+    enabled: true
+    requirements_lock: requirements.nunchaku.lock.txt
+    security_notes: 官方公开仓库；固定 v1.0.1 提交；后端固定 v1.0.0/torch2.7/cp311 Linux wheel；用于 ModelViewCreator NunchakuFluxDiTLoader。
+  - name: ComfyUI-Inpaint-CropAndStitch
+    repository: https://github.com/lquesada/ComfyUI-Inpaint-CropAndStitch.git
+    commit: daa7e85a69248f09dbc34269839a81bcc8c13589
+    enabled: true
+    requirements_lock: requirements.crop-stitch.lock.txt
+    security_notes: 官方公开仓库；固定工作流记录的较新提交；用于 InpaintCropImproved/InpaintStitchImproved。
+  - name: ComfyUI-KJNodes
+    repository: https://github.com/kijai/ComfyUI-KJNodes.git
+    commit: 6908c95cd63b9e8818a19dbf26250750ab753a2d
+    enabled: true
+    requirements_lock: requirements.kjnodes.lock.txt
+    security_notes: 官方公开仓库；固定 Comfy Registry 1.4.7 提交；用于 ModelViewCreator GrowMaskWithBlur。

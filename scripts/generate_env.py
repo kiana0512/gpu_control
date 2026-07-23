@@ -55,7 +55,8 @@ def worker_values(node_id: str, node_ip: str, control_ip: str, agent_secret: str
         "GPU_CONTROL_ROLE": "node",
         "CONTROL_HOST": control_ip,
         "NODE_ID": node_id,
-        "NODE_BIND_IP": node_ip,
+        "NODE_BIND_IP": "0.0.0.0",  # noqa: S104 - UFW restricts worker ports to control.
+        "NODE_ADVERTISE_IP": node_ip,
         "NODE_AGENT_HMAC_SECRET": agent_secret,
     }
 

@@ -4,13 +4,16 @@ import { GridComponent } from "echarts/components";
 import { init, use, type ECharts } from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 import { computed, onBeforeUnmount, onMounted } from "vue";
+import { useRouter } from "vue-router";
+import type { JobInfo } from "../types";
 
 import JobsTable from "../components/JobsTable.vue";
 import NodeTable from "../components/NodeTable.vue";
 import { useSystemStore } from "../stores/system";
+import { useAutoRefresh } from "../composables/useAutoRefresh";
 
 const store = useSystemStore();
-let timer: number | undefined;
+const router = useRouter();
 use([LineChart, GridComponent, CanvasRenderer]);
 
 let chart: ECharts | undefined;
@@ -38,6 +41,11 @@ const metrics = computed(() => [
     tone: "blue",
   },
 ]);
+const connectedNodes = computed(() =>
+  store.nodes.filter(
+    (node) => node.last_heartbeat_at || node.health !== "OFFLINE",
+  ),
+);
 
 function resizeChart() {
   chart?.resize();
@@ -46,7 +54,7 @@ function resizeChart() {
 function renderChart() {
   const element = document.getElementById("queue-chart");
   if (!element) return;
-  chart = init(element);
+  chart ??= init(element);
   chart.setOption({
     grid: { left: 40, right: 20, top: 30, bottom: 30 },
     xAxis: {
@@ -75,15 +83,22 @@ function renderChart() {
   });
 }
 
-onMounted(async () => {
+async function refresh() {
   await store.refresh();
   renderChart();
-  timer = window.setInterval(() => store.refresh(), 10_000);
+  if (store.error) throw new Error(store.error);
+}
+
+const { run, refreshing, lastUpdatedAt } = useAutoRefresh(refresh);
+function openJob(job: JobInfo) {
+  void router.push({ path: "/jobs", query: { job: job.job_id } });
+}
+
+onMounted(() => {
   window.addEventListener("resize", resizeChart);
 });
 
 onBeforeUnmount(() => {
-  if (timer) clearInterval(timer);
   window.removeEventListener("resize", resizeChart);
   chart?.dispose();
 });
@@ -93,11 +108,22 @@ onBeforeUnmount(() => {
     <div class="page-heading">
       <div>
         <h1>系统总览</h1>
-        <p>三节点计算池与任务队列的实时运行状态</p>
+        <p>已接入计算节点与任务队列的实时运行状态</p>
       </div>
-      <button class="primary" @click="store.refresh">
-        {{ store.loading ? "刷新中…" : "刷新数据" }}
-      </button>
+      <div class="heading-actions">
+        <span class="refresh-state"
+          ><i :class="{ spinning: refreshing }"></i>自动刷新 · 10 秒<br /><small
+            >最后更新
+            {{
+              lastUpdatedAt?.toLocaleTimeString("zh-CN", { hour12: false }) ??
+              "等待首次同步"
+            }}</small
+          ></span
+        >
+        <button class="primary" @click="run">
+          {{ refreshing ? "刷新中…" : "立即刷新" }}
+        </button>
+      </div>
     </div>
     <div v-if="store.error" class="error-banner">
       {{ store.error }} <button @click="store.refresh">重试</button>
@@ -108,7 +134,7 @@ onBeforeUnmount(() => {
         ><strong>{{ metric.value }}</strong>
       </div>
     </section>
-    <NodeTable :nodes="store.nodes" />
+    <NodeTable :nodes="connectedNodes" />
     <div class="dashboard-lower">
       <section class="ruled-section blue-rail chart-section">
         <div class="section-title">
@@ -133,6 +159,6 @@ onBeforeUnmount(() => {
         </div>
       </aside>
     </div>
-    <JobsTable :jobs="store.jobs" />
+    <JobsTable :jobs="store.jobs" @select="openJob" />
   </div>
 </template>

@@ -1,0 +1,17 @@
+manifest_version: 1
+models:
+  - path: clip/clip_l.safetensors
+    size_bytes: 246144152
+    sha256: 660c6f5b1abae9dc498ac2d21e1347d2abdb0cf6c0c0c8576cd796491d9a6cdd
+  - path: clip/t5xxl_fp16.safetensors
+    size_bytes: 9787841024
+    sha256: 6e480b09fae049a72d2a8c5fbccb8d3e92febeb233bbe9dfe7256958a9167635
+  - path: lora/flux-turbo-alpha-8tp.safetensors
+    size_bytes: 694082424
+    sha256: 77f7523a5e9c3da6cfc730c6b07461129fa52997ea06168e9ed5312228aa0bff
+  - path: unet/Nunchaku-svdq-int4_r32-flux.1-fill-dev.safetensors
+    size_bytes: 6770275936
+    sha256: 8ef7c319ec6634ad80358482000abe3761b6ed195c48c68ce0393ed6b866af68
+  - path: vae/ae.safetensors
+    size_bytes: 335304388
+    sha256: afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38

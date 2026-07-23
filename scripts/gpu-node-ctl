@@ -6,6 +6,15 @@ readonly ROLE_FILE="/etc/gpu-control/node-role"
 role="node"
 [[ -r "${ROLE_FILE}" ]] && source "${ROLE_FILE}"
 if [[ "${role}" == "control" ]]; then
+  readonly SERVER_CTL="/opt/gpu-control/scripts/comfyui-server.sh"
+  case "${1:-}" in
+    status|start|stop|restart) exec "${SERVER_CTL}" "$1" ;;
+    logs)
+      readonly lines="${2:-200}"
+      [[ "${lines}" =~ ^[0-9]+$ ]] && (( lines >= 1 && lines <= 2000 )) || { echo "invalid log lines" >&2; exit 2; }
+      exec docker logs --tail "${lines}" comfyui-4090
+      ;;
+  esac
   readonly COMPOSE_FILE="/opt/gpu-control/deploy/control-plane/compose.yaml"
   readonly SERVICE_NAME="comfyui-4090"
   profile_args=(--profile 4090-gpu)

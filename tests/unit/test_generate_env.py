@@ -53,8 +53,11 @@ def test_control_env_generator_produces_consistent_ready_to_copy_files(tmp_path:
     worker_b = parse_env(bundle / "worker-3090-b.env")
     assert worker_a["NODE_ID"] == "worker-3090-a"
     assert worker_b["NODE_ID"] == "worker-3090-b"
+    assert worker_a["NODE_BIND_IP"] == "0.0.0.0"  # noqa: S104
+    assert worker_a["NODE_ADVERTISE_IP"] == "10.20.0.11"
+    assert worker_b["NODE_ADVERTISE_IP"] == "10.20.0.12"
     assert worker_a["NODE_AGENT_HMAC_SECRET"] != worker_b["NODE_AGENT_HMAC_SECRET"]
     assert len(load_inventory(inventory)) == 3
     rendered_prometheus = prometheus.read_text(encoding="utf-8")
-    assert '"10.20.0.11:9100", "10.20.0.12:9100"' in rendered_prometheus
-    assert '"10.20.0.11:9400", "10.20.0.12:9400"' in rendered_prometheus
+    assert "http_sd_configs" in rendered_prometheus
+    assert "http://api:8000/internal/prometheus/workers" in rendered_prometheus

@@ -1,0 +1,1 @@
+# rgthree-comfy 在固定提交下没有额外 Python 依赖。

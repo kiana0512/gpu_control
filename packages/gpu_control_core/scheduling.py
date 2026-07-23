@@ -106,6 +106,7 @@ def choose_node(
     guard: OverflowGuard,
     heartbeat_timeout_seconds: int,
     now: datetime | None = None,
+    preferred_node_ids: set[str] | None = None,
 ) -> tuple[NodeLike | None, dict[str, str]]:
     current = now or datetime.now(UTC)
     exclusions: dict[str, str] = {}
@@ -125,7 +126,12 @@ def choose_node(
             else:
                 overflow.append(node)
     candidates = primary if primary else overflow
+    preferred = preferred_node_ids or set()
     candidates.sort(
-        key=lambda node: (node.last_assigned_at or datetime.min.replace(tzinfo=UTC), node.id)
+        key=lambda node: (
+            0 if node.id in preferred else 1,
+            node.last_assigned_at or datetime.min.replace(tzinfo=UTC),
+            node.id,
+        )
     )
     return (candidates[0] if candidates else None), exclusions

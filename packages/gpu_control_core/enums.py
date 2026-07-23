@@ -1,4 +1,10 @@
-from enum import StrEnum
+try:
+    from enum import StrEnum
+except ImportError:  # Python 3.10 compatibility for the Ubuntu 22.04 host Node Agent.
+    from enum import Enum
+
+    class StrEnum(str, Enum):  # type: ignore[no-redef]
+        pass
 
 
 class JobStatus(StrEnum):

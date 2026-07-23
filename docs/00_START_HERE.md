@@ -2,12 +2,18 @@
 
 本页是仓库文档导航。今天部署时不要从 30 多份文档逐一翻找，按下面的“现场主线”执行即可；其余文档是遇到具体问题时的细节手册。
 
-## 1. 今天上线只看这四项
+## 1. 今天上线只看这五项
 
 1. 根目录 `GPU_CONTROL_成品部署联调与核心逻辑手册.pdf`：产品结构、核心算法、三机命令、联调、日志、压测和故障定位的单文件版本。
 2. `docs/USER_INPUT_REQUIRED.md`：先补齐真实 IP、SSH 用户、模型、API 工作流和业务限制。
 3. `docs/28_TODAY_DEPLOYMENT_MANUAL.md`：从三台空 Ubuntu 主机开始的完整命令正文。
 4. `docs/30_TODAY_ONSITE_CHECKLIST.md`：现场操作者逐项打勾并记录结果。
+5. `docs/33_3090_NODE_DEPLOYMENT_HANDOFF.md`：2026-07-23 当前双项目镜像、模型和 3090 接入的唯一最新交接步骤。
+
+3090-A 的已完成部署、动态心跳、Web 修复和真实任务证据见
+`docs/34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md`。
+3090-B、动态热缓存、OOM/重试修复、GPU 指标与三卡 10 客户实测见
+`docs/35_2026-07-23_3090_B_AND_THREE_NODE_ACCEPTANCE.md`。
 
 部署完成后看 `docs/IMPLEMENTATION_STATUS.md`，把“现场待测”项改成实际日期、主机和结果，不要覆盖本机验证记录。
 
@@ -19,6 +25,9 @@
 | 产品与审计 | `00_REPOSITORY_AUDIT.md`、`29_PRODUCT_RELEASE_AND_TEST_REPORT.md` | 仓库现状、功能范围、实现证据和真实边界 |
 | 入门与架构 | `01_BEGINNER_OVERVIEW.md`、`02_ARCHITECTURE.md`、`14_SCHEDULER_DESIGN.md`、`27_CORE_LOGIC_AND_ALGORITHM_AUDIT.md` | 系统如何工作、任务状态机、3090/4090 算法 |
 | 当天部署主线 | `28_TODAY_DEPLOYMENT_MANUAL.md`、`30_TODAY_ONSITE_CHECKLIST.md` | 三机从空机到首单和 100 并发验收 |
+| 当前 3090 交接 | `33_3090_NODE_DEPLOYMENT_HANDOFF.md` | 将本机已验证的双项目环境复制到两台 3090 |
+| 3090-A 记录 | `34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md` | A 的实机身份、部署结果、断电恢复与真实任务证据 |
+| B 与三卡验收 | `35_2026-07-23_3090_B_AND_THREE_NODE_ACCEPTANCE.md` | B 的完整部署、性能优化、故障修复和 10 客户三卡实测 |
 | 分角色安装 | `03`—`11` | 网络、准备、4090、3090、镜像、模型、工作流、首次部署 |
 | 使用手册 | `12_WEB_ADMIN_GUIDE.md`、`13_PUBLIC_API_GUIDE.md` | 管理后台和业务 API |
 | 运维 | `15`—`22` | 日志、告警、备份、升级、故障、容量和 FAQ |

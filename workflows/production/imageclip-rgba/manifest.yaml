@@ -1,0 +1,54 @@
+workflow_key: imageclip-rgba
+version: 2026.07.23-bb243808
+template_file: template.api.json
+parameter_schema:
+  type: object
+  properties:
+    image_filename:
+      type: string
+      minLength: 1
+      maxLength: 512
+  required:
+    - image_filename
+  additionalProperties: false
+bindings:
+  image_filename: 28.inputs.image
+allowed_class_types:
+  - 122_ColorMatchToSource
+  - 122_FootRegionCrop
+  - 122_FootRegionPaste
+  - CLIPLoader
+  - CLIPTextEncode
+  - CherryAlphaDenoise
+  - CherryHoldoutSimple
+  - CherrySelfComposite
+  - ConditioningZeroOut
+  - EmptyFlux2LatentImage
+  - GetImageSize
+  - JoinImageWithAlpha
+  - KSampler
+  - LoadImage
+  - LoraLoaderModelOnly
+  - PrimitiveInt
+  - ReferenceLatent
+  - SaveImage
+  - UnetLoaderGGUF
+  - VAEDecodeTiled
+  - VAEEncode
+  - VAELoader
+  - easy float
+required_models:
+  - loras/Koutu_Flux2klein_v2_000007250.safetensors
+  - text_encoders/qwen_3_8b_fp8mixed.safetensors
+  - unet/flux-2-klein-9b-Q6_K.gguf
+  - vae/flux2-vae.safetensors
+required_custom_nodes:
+  - Cherry_lizi@bb243808
+  - ComfyUI-GGUF
+  - ComfyUI-Easy-Use
+min_vram_mb: 22000
+timeout_seconds: 1800
+node_labels: {}
+output_nodes:
+  - "25"
+enabled: false

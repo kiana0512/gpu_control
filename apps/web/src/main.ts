@@ -7,6 +7,7 @@ import { router } from "./router";
 import "./styles.css";
 import "./resource.css";
 import "./liclick-theme.css";
+import "./admin-refresh.css";
 
 createApp(App)
   .use(createPinia())

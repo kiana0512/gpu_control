@@ -6,3 +6,4 @@ scripts/gpuctl text eol=lf
 *.yml text eol=lf
 *.md text eol=lf
 *.ps1 text eol=crlf
+artifacts/comfyui/projects-0.2.2/*.part-* filter=lfs diff=lfs merge=lfs -text

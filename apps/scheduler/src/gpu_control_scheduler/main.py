@@ -6,7 +6,7 @@ import socket
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlparse
 
 import httpx
@@ -30,7 +30,11 @@ from packages.gpu_control_core.models import (
 )
 from packages.gpu_control_core.repository import claim_next_job, release_lease, transition_job
 from packages.gpu_control_core.scheduling import OverflowGuard, QueueSnapshot, choose_node
-from packages.gpu_control_core.security import derive_callback_secret, sign_callback_payload
+from packages.gpu_control_core.security import (
+    derive_callback_secret,
+    sign_agent_request,
+    sign_callback_payload,
+)
 from packages.gpu_control_core.settings import Settings, get_settings
 from packages.gpu_control_core.storage import LocalJobStorage
 
@@ -98,8 +102,7 @@ class Scheduler:
             await self.redis.publish("gpu-control:events", json.dumps(payload))
         except Exception as exc:
             logger().warning(
-                "redis_event_failed",
-                event="redis.publish_failed",
+                "redis.publish_failed",
                 error_code="REDIS_UNAVAILABLE",
                 error_type=type(exc).__name__,
             )
@@ -117,8 +120,7 @@ class Scheduler:
                             self.wakeup.set()
             except Exception as exc:
                 logger().warning(
-                    "redis_listener_degraded",
-                    event="redis.listen_failed",
+                    "redis.listen_failed",
                     error_code="REDIS_UNAVAILABLE",
                     error_type=type(exc).__name__,
                 )
@@ -207,8 +209,7 @@ class Scheduler:
         except Exception as exc:
             error_code = "CALLBACK_DELIVERY_FAILED"
             logger().warning(
-                "callback_delivery_failed",
-                event="callback.failed",
+                "callback.failed",
                 job_id=job.id,
                 error_code=error_code,
                 error_type=type(exc).__name__,
@@ -253,8 +254,7 @@ class Scheduler:
                 dispatched = await self.dispatch_one_callback()
             except Exception:
                 logger().exception(
-                    "callback_dispatcher_failed",
-                    event="callback.dispatcher_failed",
+                    "callback.dispatcher_failed",
                     error_code="CALLBACK_INTERNAL_ERROR",
                 )
                 dispatched = False
@@ -263,6 +263,83 @@ class Scheduler:
                     await asyncio.wait_for(self.stop_event.wait(), timeout=1)
                 except TimeoutError:
                     continue
+
+    async def node_agent_identity(self, node: Node) -> dict[str, Any] | None:
+        if not node.id.startswith("worker-") or not node.agent_url:
+            return None
+        path = "/v1/identity"
+        timestamp = str(int(datetime.now(UTC).timestamp()))
+        nonce = uuid.uuid4().hex
+        signature = sign_agent_request(
+            "GET",
+            path,
+            b"",
+            timestamp,
+            nonce,
+            self.settings.node_agent_secret(node.id),
+        )
+        async with httpx.AsyncClient(timeout=httpx.Timeout(3, connect=2)) as client:
+            response = await client.get(
+                f"{node.agent_url.rstrip('/')}{path}",
+                headers={
+                    "X-GPU-Timestamp": timestamp,
+                    "X-GPU-Nonce": nonce,
+                    "X-GPU-Signature": signature,
+                },
+            )
+            response.raise_for_status()
+            raw_identity = response.json()
+            if not isinstance(raw_identity, dict):
+                raise RuntimeError("invalid node agent identity response")
+            identity = cast(dict[str, Any], raw_identity)
+        if identity.get("node_id") != node.id:
+            raise RuntimeError("node agent identity mismatch")
+        labels = node.labels or {}
+        for key in ("mac", "gpu_uuid"):
+            expected = str(labels.get(key, ""))
+            reported = str(identity.get(key, ""))
+            if expected and expected.lower() != reported.lower():
+                raise RuntimeError(f"node agent {key} mismatch")
+        return identity
+
+    async def node_agent_gpu_metrics(self, node: Node) -> dict[str, Any] | None:
+        if not node.agent_url:
+            return None
+        path = "/v1/gpu-metrics"
+        timestamp = str(int(datetime.now(UTC).timestamp()))
+        nonce = uuid.uuid4().hex
+        signature = sign_agent_request(
+            "GET",
+            path,
+            b"",
+            timestamp,
+            nonce,
+            self.settings.node_agent_secret(node.id),
+        )
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(3, connect=2)) as client:
+                response = await client.get(
+                    f"{node.agent_url.rstrip('/')}{path}",
+                    headers={
+                        "X-GPU-Timestamp": timestamp,
+                        "X-GPU-Nonce": nonce,
+                        "X-GPU-Signature": signature,
+                    },
+                )
+                response.raise_for_status()
+            payload = response.json()
+            return {
+                "gpu_util_percent": float(payload["gpu_util_percent"]),
+                "free_vram_mb": int(payload["free_vram_mb"]),
+                "total_vram_mb": int(payload["total_vram_mb"]),
+            }
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            logger().warning(
+                "node.gpu_metrics_failed",
+                node_id=node.id,
+                error_type=type(exc).__name__,
+            )
+            return None
 
     async def update_node_health(self) -> None:
         while not self.stop_event.is_set():
@@ -273,8 +350,11 @@ class Scheduler:
                         async with ComfyClient(
                             node.base_url, connect_timeout=2, read_timeout=3
                         ) as client:
-                            stats, queue = await asyncio.gather(
-                                client.system_stats(), client.queue()
+                            stats, queue, _, gpu_metrics = await asyncio.gather(
+                                client.system_stats(),
+                                client.queue(),
+                                self.node_agent_identity(node),
+                                self.node_agent_gpu_metrics(node),
                             )
                         foreign = False
                         for section in ("queue_running", "queue_pending"):
@@ -295,7 +375,11 @@ class Scheduler:
                         )
                         node.last_heartbeat_at = datetime.now(UTC)
                         devices = stats.get("devices", [])
-                        if devices:
+                        if gpu_metrics is not None:
+                            node.gpu_util_percent = gpu_metrics["gpu_util_percent"]
+                            node.free_vram_mb = gpu_metrics["free_vram_mb"]
+                            node.total_vram_mb = gpu_metrics["total_vram_mb"]
+                        elif devices:
                             device = devices[0]
                             node.free_vram_mb = int(device.get("vram_free", 0)) // (1024 * 1024)
                             node.total_vram_mb = int(device.get("vram_total", 0)) // (1024 * 1024)
@@ -307,9 +391,8 @@ class Scheduler:
                         node.health = NodeHealth.OFFLINE.value
                         NODE_HEALTH.labels(node.id).set(0)
                         logger().warning(
-                            "node_health_failed",
+                            "node.health_failed",
                             node_id=node.id,
-                            event="node.health_failed",
                             error_code="COMFY_HEALTH_FAILED",
                             error_type=type(exc).__name__,
                         )
@@ -369,17 +452,21 @@ class Scheduler:
             for job in jobs:
                 if job.prompt_id and job.node_id:
                     logger().info(
-                        "recover_submitted_job",
+                        "scheduler.recover_submitted",
                         job_id=job.id,
                         prompt_id=job.prompt_id,
                         node_id=job.node_id,
-                        event="scheduler.recover_submitted",
                     )
                     self.executions[job.id] = asyncio.create_task(
                         self.execute(job.id, recovering=True)
                     )
                 elif job.status in {JobStatus.CLAIMED.value, JobStatus.UPLOADING.value}:
-                    await release_lease(session, job)
+                    await release_lease(
+                        session,
+                        job,
+                        attempt_status=JobStatus.FAILED,
+                        attempt_error={"code": "SCHEDULER_RECOVERY_PRE_SUBMIT"},
+                    )
                     await transition_job(
                         session, job, JobStatus.RETRY_WAIT, "scheduler.recover_pre_submit"
                     )
@@ -395,19 +482,41 @@ class Scheduler:
                     break
                 nodes = list((await session.scalars(select(Node))).all())
                 guard = await self.guard(session)
+                target_workflow = await session.scalar(
+                    select(Job.workflow_key)
+                    .where(Job.status == JobStatus.QUEUED.value)
+                    .order_by(Job.pinned.desc(), Job.created_at.asc())
+                    .limit(1)
+                )
+                warm_nodes = {
+                    candidate.id
+                    for candidate in nodes
+                    if target_workflow
+                    and str((candidate.labels or {}).get("warm_workflow", ""))
+                    == target_workflow
+                }
                 node, exclusions = choose_node(
-                    nodes, snapshot, guard, self.settings.node_heartbeat_timeout_seconds
+                    nodes,
+                    snapshot,
+                    guard,
+                    self.settings.node_heartbeat_timeout_seconds,
+                    preferred_node_ids=warm_nodes,
                 )
                 if node is None:
                     logger().debug(
-                        "no_eligible_node", event="scheduler.no_node", exclusions=exclusions
+                        "scheduler.no_node", exclusions=exclusions
                     )
                     break
+                # rollback() expires ORM instances. Keep scalar values before
+                # ending the read transaction so async SQLAlchemy never tries
+                # to lazy-load an expired Node outside greenlet_spawn.
+                node_id = node.id
+                node_pool = node.pool
                 await session.rollback()
                 async with session.begin():
                     assignment = await claim_next_job(
                         session,
-                        node.id,
+                        node_id,
                         self.settings.priority_aging_seconds,
                         queue_snapshot=snapshot,
                         overflow_guard=guard,
@@ -416,15 +525,16 @@ class Scheduler:
                 if assignment is None:
                     break
                 job, _ = assignment
-                if node.pool == "OVERFLOW":
+                if node_pool == "OVERFLOW":
                     OVERFLOW.inc()
                 logger().info(
-                    "job_assigned",
-                    event="scheduler.assigned",
+                    "scheduler.assigned",
                     job_id=job.id,
-                    node_id=node.id,
+                    node_id=node_id,
                     candidates=len(nodes),
                     exclusions=exclusions,
+                    cache_affinity=node_id in warm_nodes,
+                    target_workflow=target_workflow,
                 )
                 self.executions[job.id] = asyncio.create_task(self.execute(job.id))
         DECISION.observe(asyncio.get_running_loop().time() - started)
@@ -490,15 +600,61 @@ class Scheduler:
                             await transition_job(
                                 session, job, JobStatus.FAILED, "scheduler.recovery_unknown"
                             )
-                            await release_lease(session, job)
+                            await release_lease(
+                                session,
+                                job,
+                                attempt_status=JobStatus.FAILED,
+                                attempt_error={
+                                    "code": "COMFY_RECOVERY_UNKNOWN",
+                                    "message": job.error_message,
+                                },
+                            )
                             await session.commit()
                             return
                     if not job.prompt_id:
+                        previous_workflow = await session.scalar(
+                            select(Job.workflow_key)
+                            .where(
+                                Job.node_id == node.id,
+                                Job.id != job.id,
+                                Job.status.in_(
+                                    [status.value for status in TERMINAL_JOB_STATUSES]
+                                ),
+                                Job.finished_at.is_not(None),
+                            )
+                            .order_by(Job.finished_at.desc())
+                            .limit(1)
+                        )
+                        if previous_workflow != job.workflow_key:
+                            # Large model families cannot coexist on a 24 GiB 3090.
+                            # Release only on a family switch (or cold start); same-
+                            # workflow jobs keep their hot cache for lower latency.
+                            free_result = await client.free()
+                            logger().info(
+                                "executor.memory_released",
+                                job_id=job.id,
+                                previous_workflow=previous_workflow,
+                                current_workflow=job.workflow_key,
+                            )
+                        else:
+                            free_result = {
+                                "skipped": True,
+                                "reason": "same_workflow_cache",
+                                "workflow_key": job.workflow_key,
+                            }
+                            logger().info(
+                                "executor.memory_cache_reused",
+                                job_id=job.id,
+                                workflow_key=job.workflow_key,
+                            )
                         await transition_job(
                             session, job, JobStatus.UPLOADING, "executor.uploading"
                         )
                         await session.commit()
                         root = Path(job.job_dir)
+                        self.storage.atomic_json(
+                            root / "comfy" / "free.response.json", free_result
+                        )
                         uploads: list[dict[str, Any]] = []
                         for path in sorted((root / "input").glob("*")):
                             if path.is_file() and not path.name.endswith(".json"):
@@ -533,7 +689,9 @@ class Scheduler:
                         await transition_job(
                             session, job, JobStatus.CANCELLED, "executor.cancelled"
                         )
-                        await release_lease(session, job)
+                        await release_lease(
+                            session, job, attempt_status=JobStatus.CANCELLED
+                        )
                         await session.commit()
                         return
                     if job.status == JobStatus.SUBMITTED.value:
@@ -575,7 +733,9 @@ class Scheduler:
                         await transition_job(
                             session, job, JobStatus.CANCELLED, "executor.cancelled"
                         )
-                        await release_lease(session, job)
+                        await release_lease(
+                            session, job, attempt_status=JobStatus.CANCELLED
+                        )
                         await session.commit()
                         await self.publish({"event": "job.cancelled", "job_id": job.id})
                         return
@@ -590,8 +750,7 @@ class Scheduler:
                 raise
         except Exception as exc:
             logger().exception(
-                "job_execution_failed",
-                event="executor.failed",
+                "executor.failed",
                 job_id=job_id,
                 error_code="INTERNAL_ERROR",
             )
@@ -617,8 +776,7 @@ class Scheduler:
                     await client.interrupt()
                 except Exception as exc:
                     logger().warning(
-                        "cancel_interrupt_failed",
-                        event="executor.cancel_interrupt_failed",
+                        "executor.cancel_interrupt_failed",
                         job_id=job_id,
                         error_code="COMFY_INTERRUPT_FAILED",
                         error_type=type(exc).__name__,
@@ -639,8 +797,7 @@ class Scheduler:
             await asyncio.wait_for(client.interrupt(), timeout=5)
         except Exception as exc:
             logger().warning(
-                "timeout_interrupt_failed",
-                event="executor.timeout_interrupt_failed",
+                "executor.timeout_interrupt_failed",
                 job_id=job_id,
                 error_code="COMFY_INTERRUPT_FAILED",
                 error_type=type(exc).__name__,
@@ -658,7 +815,12 @@ class Scheduler:
                     "executor.timed_out",
                     {"timeout_seconds": timeout_seconds},
                 )
-                await release_lease(session, job)
+                await release_lease(
+                    session,
+                    job,
+                    attempt_status=JobStatus.TIMED_OUT,
+                    attempt_error={"code": "JOB_TIMEOUT", "message": job.error_message},
+                )
                 await session.commit()
                 timed_out = True
         if timed_out:
@@ -679,8 +841,29 @@ class Scheduler:
             raise ComfyError("COMFY_OUTPUT_MISSING", "history does not contain prompt")
         status = entry.get("status", {})
         if status.get("status_str") == "error":
-            raise ComfyError("COMFY_EXECUTION_ERROR", "ComfyUI execution error", {"status": status})
-        outputs = client.outputs(history, job.prompt_id or "")
+            error_message = "ComfyUI execution error"
+            for message in reversed(status.get("messages", [])):
+                if (
+                    isinstance(message, list)
+                    and len(message) == 2
+                    and message[0] == "execution_error"
+                    and isinstance(message[1], dict)
+                ):
+                    details = message[1]
+                    node = details.get("node_id", "?")
+                    node_type = details.get("node_type", "unknown")
+                    exception = details.get("exception_message") or details.get("exception_type")
+                    if exception:
+                        error_message = f"node {node} {node_type}: {exception}"
+                    break
+            raise ComfyError(
+                "COMFY_EXECUTION_ERROR", error_message[:1000], {"status": status}
+            )
+        outputs = client.outputs(
+            history,
+            job.prompt_id or "",
+            {str(node_id) for node_id in workflow.output_nodes},
+        )
         if not outputs:
             raise ComfyError("COMFY_OUTPUT_MISSING", "ComfyUI completed without outputs")
         if job.status != JobStatus.DOWNLOADING.value:
@@ -707,7 +890,16 @@ class Scheduler:
         await transition_job(
             session, job, JobStatus.SUCCEEDED, "executor.succeeded", {"outputs": len(outputs)}
         )
-        await release_lease(session, job)
+        if job.node_id:
+            node = await session.scalar(
+                select(Node).where(Node.id == job.node_id).with_for_update()
+            )
+            if node is not None:
+                labels = dict(node.labels or {})
+                labels["warm_workflow"] = job.workflow_key
+                labels["warm_workflow_at"] = datetime.now(UTC).isoformat()
+                node.labels = labels
+        await release_lease(session, job, attempt_status=JobStatus.SUCCEEDED)
         await session.commit()
         COMPLETED.labels(workflow.workflow_key).inc()
         await self.publish({"event": "job.succeeded", "job_id": job.id})
@@ -719,6 +911,15 @@ class Scheduler:
                 return
             job.error_code = code
             job.error_message = message[:1000]
+            if job.node_id and code == "COMFY_EXECUTION_ERROR":
+                node = await session.scalar(
+                    select(Node).where(Node.id == job.node_id).with_for_update()
+                )
+                if node is not None:
+                    labels = dict(node.labels or {})
+                    labels.pop("warm_workflow", None)
+                    labels.pop("warm_workflow_at", None)
+                    node.labels = labels
             if job.status not in {
                 JobStatus.FAILED.value,
                 JobStatus.CANCELLED.value,
@@ -732,13 +933,31 @@ class Scheduler:
                         "executor.retry_wait",
                         {"error_code": code},
                     )
-                    await release_lease(session, job)
+                    await release_lease(
+                        session,
+                        job,
+                        attempt_status=JobStatus.FAILED,
+                        attempt_error={"code": code, "message": message[:1000]},
+                    )
                     await transition_job(session, job, JobStatus.QUEUED, "executor.retry_queued")
+                    job.node_id = None
+                    job.prompt_id = None
+                    job.claimed_at = None
+                    job.started_at = None
+                    job.finished_at = None
+                    job.progress = 0
+                    job.cancel_requested = False
+                    job.not_before = None
                 else:
                     await transition_job(
                         session, job, JobStatus.FAILED, "executor.failed", {"error_code": code}
                     )
-                    await release_lease(session, job)
+                    await release_lease(
+                        session,
+                        job,
+                        attempt_status=JobStatus.FAILED,
+                        attempt_error={"code": code, "message": message[:1000]},
+                    )
             await session.commit()
         FAILED.labels(code).inc()
         await self.publish({"event": "job.failed", "job_id": job_id, "error_code": code})

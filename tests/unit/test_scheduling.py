@@ -43,6 +43,34 @@ def test_primary_3090_is_always_preferred(tmp_path: Path) -> None:
     assert chosen is not None and chosen.id.startswith("3090")
 
 
+def test_warm_cache_affinity_is_preferred_but_never_blocks_fallback(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    available = nodes(now)
+    available[0].last_assigned_at = now - timedelta(seconds=60)
+    available[1].last_assigned_at = now
+    chosen, _ = choose_node(
+        available,
+        QueueSnapshot(1, 0),
+        guard(tmp_path),
+        20,
+        now,
+        preferred_node_ids={"3090-b"},
+    )
+    assert chosen is not None and chosen.id == "3090-b"
+
+    available[1].current_jobs = 1
+    chosen, excluded = choose_node(
+        available,
+        QueueSnapshot(1, 0),
+        guard(tmp_path),
+        20,
+        now,
+        preferred_node_ids={"3090-b"},
+    )
+    assert chosen is not None and chosen.id == "3090-a"
+    assert excluded["3090-b"] == "no_slot"
+
+
 def test_4090_reserved_never_schedules(tmp_path: Path) -> None:
     now = datetime.now(UTC)
     available = nodes(now)

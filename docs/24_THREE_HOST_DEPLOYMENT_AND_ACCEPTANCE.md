@@ -1,5 +1,9 @@
 # 三台 GPU 主机完整部署、联调与验收手册
 
+> 本文保留通用三机验收流程和历史示例。2026-07-23 当前 ImageClip +
+> ModelViewCreator 双项目、`projects-0.2.2` 镜像和 3090 实际接入命令，必须以
+> `docs/33_3090_NODE_DEPLOYMENT_HANDOFF.md` 为准。
+
 版本：1.0.0  
 目标系统：Ubuntu 24.04 LTS x86_64  
 角色：1 台 RTX 4090 控制中心，2 台 RTX 3090 主计算节点  

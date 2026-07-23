@@ -5,7 +5,7 @@ role=""
 while (($#)); do case "$1" in --role) role="$2"; shift 2;; -h|--help) usage; exit 0;; *) usage >&2; exit 2;; esac; done
 [[ "${EUID}" -eq 0 && "${role}" =~ ^(control|node)$ ]] || { usage >&2; exit 2; }
 apt-get update
-apt-get install -y ca-certificates curl git jq rsync ufw gnupg lsb-release openssl \
+apt-get install -y ca-certificates curl git git-lfs jq rsync ufw gnupg lsb-release openssl \
   python3 python3-venv ubuntu-drivers-common
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
@@ -29,5 +29,9 @@ usermod -aG docker "${deploy_user}"
 # 应用运行目录归固定 UID 10001；仓库和模型目录归现场部署账号，确保其可以
 # 生成 .env、更新版本和使用 rsync 同步模型。容器仅以只读方式挂载模型目录。
 install -d -o gpucontrol -g gpucontrol /srv/gpu-control
-install -d -o "${deploy_user}" -g "${deploy_group}" /srv/comfyui/models /opt/gpu-control
+install -d -o "${deploy_user}" -g "${deploy_group}" \
+  /srv/comfyui/models /srv/comfyui/runtime /srv/comfyui/runtime/input \
+  /srv/comfyui/runtime/output /srv/comfyui/runtime/temp /srv/comfyui/runtime/user \
+  /opt/gpu-control /opt/imageclip /opt/modelviewcreator
+git lfs install --system
 echo "公共依赖安装完成；继续安装 NVIDIA 驱动与 Container Toolkit。"

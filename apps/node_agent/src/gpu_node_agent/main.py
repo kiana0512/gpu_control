@@ -1,12 +1,17 @@
 import asyncio
+import json
 import os
 import re
+import secrets
 import signal
+import socket
+import ssl
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+from urllib import request as urllib_request
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -25,6 +30,11 @@ class NodeAgentSettings(BaseSettings):
 
     environment: str = "development"
     node_agent_hmac_secret: str = "development-only-change-me"
+    node_id: str = ""
+    control_host: str = ""
+    node_advertise_ip: str = ""
+    node_heartbeat_interval_seconds: int = Field(10, ge=5, le=300)
+    node_control_ca_cert: Path = Path("/etc/gpu-control/lan-ca.crt")
 
     @model_validator(mode="after")
     def reject_weak_production_secret(self) -> "NodeAgentSettings":
@@ -53,6 +63,142 @@ COMMANDS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _default_interface() -> str:
+    for line in Path("/proc/net/route").read_text(encoding="utf-8").splitlines()[1:]:
+        fields = line.split()
+        if len(fields) >= 4 and fields[1] == "00000000" and int(fields[3], 16) & 2:
+            return fields[0]
+    raise RuntimeError("default network interface not found")
+
+
+def _current_ip(control_host: str, fallback: str = "") -> str:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect((control_host, 443))
+            return str(probe.getsockname()[0])
+    except OSError:
+        if fallback:
+            return fallback
+        raise
+
+
+def _mac_address() -> str:
+    interface = _default_interface()
+    return Path(f"/sys/class/net/{interface}/address").read_text(encoding="utf-8").strip().lower()
+
+
+async def _gpu_uuid() -> str:
+    process = await asyncio.create_subprocess_exec(
+        "/usr/bin/nvidia-smi",
+        "--query-gpu=uuid",
+        "--format=csv,noheader",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        raise RuntimeError(stderr.decode(errors="replace").strip() or "nvidia-smi failed")
+    value = stdout.decode().splitlines()[0].strip()
+    if not re.fullmatch(r"GPU-[0-9a-fA-F-]{36}", value):
+        raise RuntimeError("invalid GPU UUID")
+    return value
+
+
+async def _gpu_metrics() -> dict[str, int]:
+    process = await asyncio.create_subprocess_exec(
+        "/usr/bin/nvidia-smi",
+        "--query-gpu=utilization.gpu,memory.free,memory.total",
+        "--format=csv,noheader,nounits",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        raise RuntimeError(stderr.decode(errors="replace").strip() or "nvidia-smi failed")
+    lines = stdout.decode().splitlines()
+    fields = [field.strip() for field in lines[0].split(",")] if lines else []
+    if len(fields) != 3:
+        raise RuntimeError("invalid nvidia-smi metrics response")
+    try:
+        utilization, free_vram_mb, total_vram_mb = (int(float(field)) for field in fields)
+    except ValueError as exc:
+        raise RuntimeError("invalid nvidia-smi metrics value") from exc
+    return {
+        "gpu_util_percent": max(0, min(utilization, 100)),
+        "free_vram_mb": max(0, free_vram_mb),
+        "total_vram_mb": max(0, total_vram_mb),
+    }
+
+
+def _post_heartbeat(
+    cfg: NodeAgentSettings,
+    identity: dict[str, str],
+) -> dict[str, Any]:
+    path = "/api/v1/nodes/heartbeat"
+    body = json.dumps(identity, separators=(",", ":"), sort_keys=True).encode()
+    timestamp = str(int(time.time()))
+    nonce = secrets.token_hex(16)
+    signature = sign_agent_request(
+        "POST", path, body, timestamp, nonce, cfg.node_agent_hmac_secret
+    )
+    heartbeat_request = urllib_request.Request(  # noqa: S310
+        f"https://{cfg.control_host}{path}",
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-GPU-Timestamp": timestamp,
+            "X-GPU-Nonce": nonce,
+            "X-GPU-Signature": signature,
+        },
+    )
+    context = ssl.create_default_context(cafile=str(cfg.node_control_ca_cert))
+    with urllib_request.urlopen(heartbeat_request, timeout=5, context=context) as response:  # noqa: S310
+        result = json.loads(response.read())
+        if not isinstance(result, dict):
+            raise RuntimeError("invalid heartbeat response")
+        return cast(dict[str, Any], result)
+
+
+async def _heartbeat_loop(app: FastAPI, cfg: NodeAgentSettings) -> None:
+    gpu_uuid = await _gpu_uuid()
+    mac = _mac_address()
+    last_ip = ""
+    first_success = True
+    while True:
+        try:
+            current_ip = await asyncio.to_thread(
+                _current_ip, cfg.control_host, cfg.node_advertise_ip
+            )
+            identity = {
+                "node_id": cfg.node_id,
+                "ip": current_ip,
+                "mac": mac,
+                "gpu_uuid": gpu_uuid,
+                "hostname": socket.gethostname(),
+            }
+            result = await asyncio.to_thread(_post_heartbeat, cfg, identity)
+            app.state.node_identity = identity
+            if first_success or current_ip != last_ip:
+                logger().info(
+                    "node.heartbeat_accepted",
+                    node_id=cfg.node_id,
+                    source_ip=current_ip,
+                    base_url=result.get("base_url"),
+                )
+            first_success = False
+            last_ip = current_ip
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger().warning(
+                "node.heartbeat_failed",
+                node_id=cfg.node_id,
+                error_type=type(exc).__name__,
+            )
+        await asyncio.sleep(cfg.node_heartbeat_interval_seconds)
+
+
 def create_app(settings: Settings | NodeAgentSettings | None = None) -> FastAPI:
     cfg = settings or NodeAgentSettings()
 
@@ -61,7 +207,14 @@ def create_app(settings: Settings | NodeAgentSettings | None = None) -> FastAPI:
         configure_logging("node-agent", cfg.environment)
         app.state.nonces = {}
         app.state.operation_lock = asyncio.Lock()
+        app.state.node_identity = {}
+        heartbeat_task: asyncio.Task[None] | None = None
+        if isinstance(cfg, NodeAgentSettings) and cfg.node_id and cfg.control_host:
+            heartbeat_task = asyncio.create_task(_heartbeat_loop(app, cfg))
         yield
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
 
     app = FastAPI(title="GPU Node Agent", docs_url=None, redoc_url=None, lifespan=lifespan)
 
@@ -113,6 +266,17 @@ def create_app(settings: Settings | NodeAgentSettings | None = None) -> FastAPI:
             raise HTTPException(503, "gpu-node-ctl is not installed")
         return {"status": "ready", "control_script": str(control_script)}
 
+    @app.get("/v1/identity")
+    async def identity() -> dict[str, str]:
+        current = dict(app.state.node_identity)
+        if not current:
+            raise HTTPException(503, "node identity is not initialized")
+        return current
+
+    @app.get("/v1/gpu-metrics")
+    async def gpu_metrics() -> dict[str, int]:
+        return await _gpu_metrics()
+
     @app.post("/v1/operations")
     async def operation(body: Operation) -> dict[str, Any]:
         command = COMMANDS.get(body.action)
@@ -148,8 +312,7 @@ def create_app(settings: Settings | NodeAgentSettings | None = None) -> FastAPI:
             "stderr": redact.sub(r"\1=[REDACTED]", stderr.decode(errors="replace"))[-4_000:],
         }
         logger().info(
-            "node_operation",
-            event="node_agent.operation",
+            "node_agent.operation",
             action=body.action,
             exit_code=process.returncode,
         )

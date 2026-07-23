@@ -53,11 +53,20 @@ class ComfyClient:
     async def close(self) -> None:
         await self.http.aclose()
 
-    async def _json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    async def _json(
+        self, method: str, path: str, *, allow_empty: bool = False, **kwargs: Any
+    ) -> dict[str, Any]:
         try:
             response = await self.http.request(method, path, **kwargs)
             response.raise_for_status()
-            value = response.json()
+            if allow_empty and not response.content:
+                return {}
+            try:
+                value = response.json()
+            except ValueError as exc:
+                raise ComfyError(
+                    "COMFY_INVALID_RESPONSE", f"{path} did not return valid JSON"
+                ) from exc
             if not isinstance(value, dict):
                 raise ComfyError("COMFY_INVALID_RESPONSE", f"{path} did not return an object")
             return value
@@ -124,7 +133,12 @@ class ComfyClient:
         return await self._json("POST", "/interrupt")
 
     async def free(self) -> dict[str, Any]:
-        return await self._json("POST", "/free", json={"unload_models": True, "free_memory": True})
+        return await self._json(
+            "POST",
+            "/free",
+            allow_empty=True,
+            json={"unload_models": True, "free_memory": True},
+        )
 
     async def events(
         self, prompt_id: str, client_id: str, *, max_reconnects: int = 3
@@ -158,10 +172,14 @@ class ComfyClient:
                 await asyncio.sleep(min(2**attempt, 8))
 
     @staticmethod
-    def outputs(history: dict[str, Any], prompt_id: str) -> list[ComfyOutput]:
+    def outputs(
+        history: dict[str, Any], prompt_id: str, output_nodes: set[str] | None = None
+    ) -> list[ComfyOutput]:
         entry = history.get(prompt_id, {})
         result: list[ComfyOutput] = []
-        for node in entry.get("outputs", {}).values():
+        for node_id, node in entry.get("outputs", {}).items():
+            if output_nodes is not None and str(node_id) not in output_nodes:
+                continue
             for key in ("images", "gifs", "audio"):
                 for item in node.get(key, []):
                     result.append(

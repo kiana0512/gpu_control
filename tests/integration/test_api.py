@@ -1,5 +1,8 @@
 import asyncio
+import json
+import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -12,12 +15,13 @@ from packages.gpu_control_core.models import (
     ApiKey,
     Base,
     Job,
+    JobEvent,
     Node,
     Workflow,
     WorkflowNodeCompatibility,
     WorkflowVersion,
 )
-from packages.gpu_control_core.security import hash_api_secret, hash_password
+from packages.gpu_control_core.security import hash_api_secret, hash_password, sign_agent_request
 from packages.gpu_control_core.settings import Settings
 
 
@@ -30,6 +34,7 @@ async def prepared_app(tmp_path: Path):
         jwt_secret="test-jwt",
         api_key_pepper="test-pepper",
         node_agent_hmac_secret="test-agent",
+        alertmanager_webhook_token="development-only-change-me",
         system_max_queued=200,
         default_tenant_max_queued=200,
         allowed_callback_hosts="callback.example.com",
@@ -126,17 +131,24 @@ async def prepared_app(tmp_path: Path):
                     workflow_key="fake",
                     version="1",
                     template={
+                        "1": {"class_type": "LoadImage", "inputs": {"image": "placeholder.png"}},
                         "3": {"class_type": "KSampler", "inputs": {"steps": 20}},
                         "9": {"class_type": "SaveImage", "inputs": {}},
                     },
                     parameter_schema={
                         "type": "object",
-                        "properties": {"steps": {"type": "integer", "minimum": 1, "maximum": 100}},
+                        "properties": {
+                            "steps": {"type": "integer", "minimum": 1, "maximum": 100},
+                            "image_filename": {"type": "string"},
+                        },
                         "required": ["steps"],
                         "additionalProperties": False,
                     },
-                    bindings={"steps": "3.inputs.steps"},
-                    allowed_class_types=["KSampler", "SaveImage"],
+                    bindings={
+                        "steps": "3.inputs.steps",
+                        "image_filename": "1.inputs.image",
+                    },
+                    allowed_class_types=["LoadImage", "KSampler", "SaveImage"],
                     required_models=[],
                     required_custom_nodes=[],
                     min_vram_mb=0,
@@ -155,7 +167,8 @@ async def prepared_app(tmp_path: Path):
 
 async def test_api_key_rbac_validation_and_idempotency(tmp_path: Path) -> None:
     async for _, client in prepared_app(tmp_path):
-        assert (await client.get("/api/v1/workflows")).status_code == 401
+        # First-party LAN callers are intentionally auto-enrolled by source IP.
+        assert (await client.get("/api/v1/workflows")).status_code == 200
         headers = {"X-API-Key": "gpc_abcd1234_secret", "Idempotency-Key": "same"}
         files = {
             "workflow_key": (None, "fake"),
@@ -177,6 +190,44 @@ async def test_api_key_rbac_validation_and_idempotency(tmp_path: Path) -> None:
         ).status_code == 422
 
 
+async def test_uploaded_image_binding_uses_isolated_job_subfolder(tmp_path: Path) -> None:
+    async for app, client in prepared_app(tmp_path):
+        from PIL import Image
+
+        image_path = tmp_path / "source.png"
+        Image.new("RGB", (2, 2), "white").save(image_path)
+        headers = {"X-API-Key": "gpc_abcd1234_secret", "Idempotency-Key": "same-image"}
+        response = await client.post(
+            "/api/v1/jobs",
+            headers=headers,
+            files={
+                "workflow_key": (None, "fake"),
+                "workflow_version": (None, "1"),
+                "parameters": (None, '{"steps":20}'),
+                "input_image": ("source.png", image_path.read_bytes(), "image/png"),
+            },
+        )
+        assert response.status_code == 202, response.text
+        job_id = response.json()["job_id"]
+        repeated = await client.post(
+            "/api/v1/jobs",
+            headers=headers,
+            files={
+                "workflow_key": (None, "fake"),
+                "workflow_version": (None, "1"),
+                "parameters": (None, '{"steps":20}'),
+                "input_image": ("source.png", image_path.read_bytes(), "image/png"),
+            },
+        )
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json()["job_id"] == job_id
+        async with app.state.db.session() as session:
+            job = await session.get(Job, job_id)
+        rendered = Path(job.job_dir, "workflow", "rendered.api.json")
+        payload = json.loads(rendered.read_text(encoding="utf-8"))
+        assert payload["1"]["inputs"]["image"].startswith(f"{job_id}/image-source.png")
+
+
 async def test_admin_login_and_destructive_confirmation(tmp_path: Path) -> None:
     async for _, client in prepared_app(tmp_path):
         assert (
@@ -188,6 +239,18 @@ async def test_admin_login_and_destructive_confirmation(tmp_path: Path) -> None:
             "/admin/auth/login", json={"username": "admin", "password": "correct-password"}
         )
         assert login.status_code == 200
+        assert login.json()["refresh_token"]
+        refreshed = await client.post(
+            "/admin/auth/refresh",
+            json={"refresh_token": login.json()["refresh_token"]},
+        )
+        assert refreshed.status_code == 200
+        assert refreshed.json()["access_token"] != login.json()["refresh_token"]
+        refresh_cannot_authorize = await client.get(
+            "/admin/dashboard",
+            headers={"Authorization": f"Bearer {login.json()['refresh_token']}"},
+        )
+        assert refresh_cannot_authorize.status_code == 401
         auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
         dashboard = await client.get("/admin/dashboard", headers=auth)
         assert dashboard.status_code == 200
@@ -197,6 +260,94 @@ async def test_admin_login_and_destructive_confirmation(tmp_path: Path) -> None:
             json={"mode": "RESERVED", "reason": "test change", "confirm": False},
         )
         assert missing_confirmation.status_code == 409
+
+
+async def test_admin_retry_clears_previous_execution_and_keeps_error_audit(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        created = await client.post(
+            "/api/v1/jobs",
+            headers={"X-API-Key": "gpc_abcd1234_secret"},
+            files={
+                "workflow_key": (None, "fake"),
+                "workflow_version": (None, "1"),
+                "parameters": (None, '{"steps":20}'),
+            },
+        )
+        job_id = created.json()["job_id"]
+        now = datetime.now(UTC)
+        async with app.state.db.session() as db:
+            job = await db.get(Job, job_id)
+            assert job is not None
+            job.status = "FAILED"
+            job.node_id = "worker-3090-a"
+            job.prompt_id = "old-prompt"
+            job.progress = 73
+            job.attempt_count = 1
+            job.cancel_requested = True
+            job.error_code = "COMFY_EXECUTION_ERROR"
+            job.error_message = "CUDA out of memory"
+            job.claimed_at = now
+            job.started_at = now
+            job.finished_at = now
+            job.not_before = now
+            await db.commit()
+
+        login = await client.post(
+            "/admin/auth/login", json={"username": "admin", "password": "correct-password"}
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        retried = await client.post(
+            f"/admin/jobs/{job_id}/retry",
+            headers=auth,
+            json={"reason": "retry after memory cleanup", "confirm": True},
+        )
+        assert retried.status_code == 200, retried.text
+        payload = retried.json()
+        assert payload["status"] == "QUEUED"
+        assert payload["node_id"] is None
+        assert payload["prompt_id"] is None
+        assert payload["progress"] == 0
+        assert payload["started_at"] is None
+        assert payload["finished_at"] is None
+        assert payload["error"] is None
+
+        async with app.state.db.session() as db:
+            job = await db.get(Job, job_id)
+            assert job is not None
+            assert job.claimed_at is None and job.not_before is None
+            assert job.cancel_requested is False
+            event = await db.scalar(
+                select(JobEvent).where(
+                    JobEvent.job_id == job_id, JobEvent.event == "admin.retry"
+                )
+            )
+            assert event is not None
+            assert event.details["previous_error"] == {
+                "code": "COMFY_EXECUTION_ERROR",
+                "message": "CUDA out of memory",
+            }
+
+
+async def test_source_ip_auto_enrolls_without_api_key(tmp_path: Path) -> None:
+    async for app, client in prepared_app(tmp_path):
+        response = await client.get("/api/v1/workflows")
+        assert response.status_code == 200
+        async with app.state.db.session() as session:
+            clients = list((await session.scalars(select(ApiClient))).all())
+        discovered = next(row for row in clients if row.last_seen_ip == "127.0.0.1")
+        assert discovered.allowed_ips == ["127.0.0.1"]
+
+
+async def test_direct_image_service_reports_missing_workflow(tmp_path: Path) -> None:
+    async for _, client in prepared_app(tmp_path):
+        response = await client.post(
+            "/api/v1/services/imageclip-rgba",
+            files={"image": ("input.png", b"not-an-image", "image/png")},
+        )
+        assert response.status_code == 404
+        assert response.json()["detail"]["code"] == "WORKFLOW_NOT_FOUND"
 
 
 async def test_callback_url_allowlist_and_one_time_secret(tmp_path: Path) -> None:
@@ -427,3 +578,106 @@ async def test_runtime_overflow_settings_are_validated_and_persisted(tmp_path: P
         settings = await client.get("/admin/settings", headers=auth)
         assert settings.json()["overflow_4090_auto_enabled"] is True
         assert settings.json()["overflow_4090_allowed_windows"] == "09:00-18:00,21:00-23:00"
+
+
+async def test_admin_can_update_discovered_client_limits_and_access(tmp_path: Path) -> None:
+    async for app, client in prepared_app(tmp_path):
+        login = await client.post(
+            "/admin/auth/login", json={"username": "admin", "password": "correct-password"}
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        updated = await client.put(
+            "/admin/clients/tenant",
+            headers=auth,
+            json={
+                "name": "局部重绘客户端",
+                "enabled": False,
+                "max_queued": 12,
+                "max_running": 1,
+                "daily_quota": 240,
+                "weight": 2,
+                "allowed_ips": ["10.3.34.9"],
+                "callback_hosts": ["callback.example.com"],
+                "reason": "limit client traffic",
+                "confirm": True,
+            },
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["enabled"] is False
+        assert updated.json()["allowed_ips"] == ["10.3.34.9"]
+        async with app.state.db.session() as db:
+            stored = await db.get(ApiClient, "tenant")
+            assert stored is not None
+            assert stored.name == "局部重绘客户端"
+            assert stored.max_queued == 12
+            assert stored.daily_quota == 240
+            assert stored.enabled is False
+
+        conflict = await client.put(
+            "/admin/clients/tenant-b",
+            headers=auth,
+            json={
+                "name": "Tenant B",
+                "enabled": True,
+                "max_queued": 20,
+                "max_running": 1,
+                "daily_quota": 1000,
+                "weight": 1,
+                "allowed_ips": ["10.3.34.9"],
+                "callback_hosts": [],
+                "reason": "bind duplicate ip",
+                "confirm": True,
+            },
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["code"] == "CLIENT_IP_CONFLICT"
+
+
+async def test_signed_node_heartbeat_updates_address_and_dynamic_monitoring(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        payload = {
+            "gpu_uuid": "GPU-9f116ee8-a845-c3a3-b10d-fdd6a9f8cc6c",
+            "hostname": "gpu-worker-a",
+            "ip": "10.0.0.99",
+            "mac": "18:c0:4d:9f:13:13",
+            "node_id": "worker-3090-a",
+        }
+        body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+        timestamp = str(int(time.time()))
+        nonce = "heartbeat-once"
+        headers = {
+            "content-type": "application/json",
+            "x-gpu-timestamp": timestamp,
+            "x-gpu-nonce": nonce,
+            "x-gpu-signature": sign_agent_request(
+                "POST",
+                "/api/v1/nodes/heartbeat",
+                body,
+                timestamp,
+                nonce,
+                app.state.settings.node_agent_secret("worker-3090-a"),
+            ),
+            "x-real-ip": "10.0.0.99",
+        }
+        response = await client.post(
+            "/api/v1/nodes/heartbeat", content=body, headers=headers
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["base_url"] == "http://10.0.0.99:8188"
+        replay = await client.post(
+            "/api/v1/nodes/heartbeat", content=body, headers=headers
+        )
+        assert replay.status_code == 409
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-a")
+            assert node is not None
+            assert node.agent_url == "http://10.0.0.99:9201"
+            assert node.labels["mac"] == "18:c0:4d:9f:13:13"
+            assert node.labels["gpu_uuid"] == payload["gpu_uuid"]
+        targets = await client.get("/internal/prometheus/workers")
+        assert targets.status_code == 200
+        assert any(
+            group["targets"] == ["10.0.0.99:9400"] for group in targets.json()
+        )

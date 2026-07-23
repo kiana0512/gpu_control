@@ -179,13 +179,27 @@ async def claim_next_job(
     if chosen is None:
         return None
     token = secrets.token_hex(32)
-    lease = NodeLease(
-        id=str(uuid.uuid4()),
-        node_id=node.id,
-        job_id=chosen.id,
-        token=token,
-        expires_at=now + timedelta(seconds=lease_seconds),
+    lease = await session.scalar(
+        select(NodeLease).where(NodeLease.job_id == chosen.id).with_for_update()
     )
+    if lease is None:
+        lease = NodeLease(
+            id=str(uuid.uuid4()),
+            node_id=node.id,
+            job_id=chosen.id,
+            token=token,
+            expires_at=now + timedelta(seconds=lease_seconds),
+        )
+        session.add(lease)
+    else:
+        # A job owns one durable lease row.  Retries reactivate that row with a
+        # fresh token instead of violating node_leases.job_id's unique key.
+        lease.node_id = node.id
+        lease.token = token
+        lease.active = True
+        lease.acquired_at = now
+        lease.expires_at = now + timedelta(seconds=lease_seconds)
+        lease.released_at = None
     chosen.node_id = node.id
     chosen.claimed_at = now
     chosen.attempt_count += 1
@@ -196,7 +210,6 @@ async def claim_next_job(
     await transition_job(
         session, chosen, JobStatus.CLAIMED, "scheduler.claimed", {"node_id": node.id}
     )
-    session.add(lease)
     session.add(
         JobAttempt(
             job_id=chosen.id,
@@ -210,7 +223,13 @@ async def claim_next_job(
     return chosen, lease
 
 
-async def release_lease(session: AsyncSession, job: Job) -> None:
+async def release_lease(
+    session: AsyncSession,
+    job: Job,
+    *,
+    attempt_status: JobStatus | None = None,
+    attempt_error: dict[str, Any] | None = None,
+) -> None:
     if not job.node_id:
         return
     node = await session.scalar(select(Node).where(Node.id == job.node_id).with_for_update())
@@ -219,8 +238,20 @@ async def release_lease(session: AsyncSession, job: Job) -> None:
         .where(NodeLease.job_id == job.id, NodeLease.active.is_(True))
         .with_for_update()
     )
+    now = datetime.now(UTC)
     if lease is not None:
         lease.active = False
-        lease.released_at = datetime.now(UTC)
+        lease.released_at = now
+    attempt = await session.scalar(
+        select(JobAttempt)
+        .where(JobAttempt.job_id == job.id, JobAttempt.attempt == job.attempt_count)
+        .with_for_update()
+    )
+    if attempt is not None:
+        attempt.prompt_id = job.prompt_id
+        if attempt_status is not None:
+            attempt.status = attempt_status.value
+            attempt.finished_at = now
+            attempt.error = attempt_error or {}
     if node is not None:
         node.current_jobs = max(0, node.current_jobs - 1)

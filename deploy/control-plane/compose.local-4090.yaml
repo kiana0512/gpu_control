@@ -1,0 +1,4 @@
+services:
+  comfyui-4090:
+    ports:
+      - "${COMFY_BIND_IP:-0.0.0.0}:${COMFY_PORT:-8188}:8188"

@@ -61,7 +61,13 @@ async def apply(path: Path) -> None:
             node.mode = str(item["mode"])
             node.manual_reserved = node.mode == "RESERVED"
             node.max_concurrency = 1
-            node.labels = {"gpu": str(item.get("gpu", "unknown")), "host": host}
+            labels = dict(node.labels or {})
+            labels.update({"gpu": str(item.get("gpu", "unknown")), "host": host})
+            for identity_field in ("hostname", "mac", "gpu_uuid"):
+                if item.get(identity_field):
+                    value = str(item[identity_field])
+                    labels[identity_field] = value.lower() if identity_field == "mac" else value
+            node.labels = labels
             node.approved_at = node.approved_at or datetime.now(UTC)
         await session.commit()
     await db.close()

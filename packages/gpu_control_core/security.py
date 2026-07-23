@@ -50,12 +50,38 @@ def sign_callback_payload(body: bytes, timestamp: str, secret: str) -> str:
     return hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
 
 
-def create_access_token(subject: str, role: str, secret: str, ttl_seconds: int = 900) -> str:
+def _create_token(
+    subject: str,
+    role: str,
+    secret: str,
+    ttl_seconds: int,
+    token_type: str,
+) -> str:
     now = int(time.time())
     return jwt.encode(
-        {"sub": subject, "role": role, "iat": now, "exp": now + ttl_seconds},
+        {
+            "sub": subject,
+            "role": role,
+            "type": token_type,
+            "iat": now,
+            "exp": now + ttl_seconds,
+        },
         secret,
         algorithm="HS256",
+    )
+
+
+def create_access_token(subject: str, role: str, secret: str, ttl_seconds: int = 900) -> str:
+    return _create_token(subject, role, secret, ttl_seconds, "access")
+
+
+def create_refresh_token(subject: str, role: str, secret: str) -> str:
+    return _create_token(
+        subject,
+        role,
+        secret,
+        7 * 24 * 60 * 60,
+        "refresh",
     )
 
 

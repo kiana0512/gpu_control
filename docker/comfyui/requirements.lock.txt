@@ -26,6 +26,7 @@ av==16.0.1
 comfy-kitchen==0.2.20
 comfy-aimdo==0.4.10
 requests==2.32.4
+openai==1.109.1
 simpleeval==1.0.3
 blake3==1.0.5
 kornia==0.8.1
@@ -33,4 +34,4 @@ spandrel==0.4.1
 pydantic==2.11.7
 pydantic-settings==2.10.1
 PyOpenGL==3.1.9
-comfy-angle==0.0.2
+comfy-angle==0.1.0

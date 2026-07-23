@@ -2,7 +2,9 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
+import mimetypes
 import re
 import time
 import uuid
@@ -50,6 +52,7 @@ from packages.gpu_control_core.models import (
 from packages.gpu_control_core.repository import ACTIVE_STATUSES, transition_job
 from packages.gpu_control_core.security import (
     create_access_token,
+    create_refresh_token,
     derive_callback_secret,
     hash_api_secret,
     issue_api_key,
@@ -85,10 +88,35 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=8, max_length=1024)
 
 
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str = Field(min_length=20, max_length=4096)
+
+
 class NodeModeRequest(BaseModel):
     mode: NodeMode
     reason: str = Field(min_length=3, max_length=500)
     confirm: bool
+
+
+class NodeHeartbeatRequest(BaseModel):
+    node_id: str = Field(pattern=r"^worker-[a-z0-9-]+$", max_length=64)
+    ip: str
+    mac: str = Field(pattern=r"^(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
+    gpu_uuid: str = Field(pattern=r"^GPU-[0-9a-fA-F-]{36}$", max_length=64)
+    hostname: str = Field(min_length=1, max_length=128)
+
+    @field_validator("ip")
+    @classmethod
+    def validate_ip(cls, value: str) -> str:
+        address = ipaddress.ip_address(value)
+        if address.version != 4 or address.is_loopback or address.is_unspecified:
+            raise ValueError("node heartbeat requires a routable IPv4 address")
+        return str(address)
+
+    @field_validator("mac")
+    @classmethod
+    def normalize_mac(cls, value: str) -> str:
+        return value.lower()
 
 
 class RetryRequest(BaseModel):
@@ -124,7 +152,47 @@ class ClientCreateRequest(BaseModel):
     max_running: int = Field(1, ge=1, le=10)
     daily_quota: int = Field(1000, ge=1, le=1_000_000)
     weight: int = Field(1, ge=1, le=100)
+    allowed_ips: list[str] = Field(default_factory=list)
     callback_hosts: list[str] = []
+
+    @field_validator("allowed_ips")
+    @classmethod
+    def validate_allowed_ips(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            try:
+                normalized.append(str(ipaddress.ip_address(value.strip())))
+            except ValueError as exc:
+                raise ValueError(f"无效来源 IP: {value}") from exc
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("来源 IP 不能重复")
+        return normalized
+
+
+class ClientUpdateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    enabled: bool = True
+    max_queued: int = Field(20, ge=1, le=10_000)
+    max_running: int = Field(1, ge=1, le=10)
+    daily_quota: int = Field(1000, ge=1, le=1_000_000)
+    weight: int = Field(1, ge=1, le=100)
+    allowed_ips: list[str] = Field(default_factory=list)
+    callback_hosts: list[str] = Field(default_factory=list)
+    reason: str = Field(min_length=3, max_length=500)
+    confirm: bool
+
+    @field_validator("allowed_ips")
+    @classmethod
+    def validate_allowed_ips(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            try:
+                normalized.append(str(ipaddress.ip_address(value.strip())))
+            except ValueError as exc:
+                raise ValueError(f"无效来源 IP: {value}") from exc
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("来源 IP 不能重复")
+        return normalized
 
 
 class SettingUpdateRequest(BaseModel):
@@ -210,8 +278,7 @@ async def _notify(app: FastAPI, channel: str, payload: dict[str, Any]) -> None:
         await redis.publish(channel, json.dumps(payload))
     except Exception as exc:
         logger().warning(
-            "redis_notification_failed",
-            event="redis.publish_failed",
+            "redis.publish_failed",
             error_code="REDIS_UNAVAILABLE",
             error_type=type(exc).__name__,
         )
@@ -228,6 +295,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.storage = LocalJobStorage(cfg.job_root)
         app.state.redis = Redis.from_url(cfg.redis_url, decode_responses=True)
         app.state.tenant_locks = {}
+        app.state.node_heartbeat_nonces = {}
         try:
             await app.state.redis.ping()
         except Exception:
@@ -286,25 +354,79 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Annotated[AsyncSession, Depends(session)],
         x_api_key: Annotated[str | None, Header()] = None,
     ) -> Principal:
-        if not x_api_key or not x_api_key.startswith("gpc_"):
-            raise HTTPException(
-                401, detail={"code": "AUTH_FAILED", "message": "缺少或无效 API Key"}
+        key: ApiKey | None = None
+        client: ApiClient | None = None
+        source_ip = str(ipaddress.ip_address(request.client.host if request.client else "127.0.0.1"))
+        if x_api_key:
+            if not x_api_key.startswith("gpc_"):
+                raise HTTPException(
+                    401, detail={"code": "AUTH_FAILED", "message": "API Key 格式错误"}
+                )
+            parts = x_api_key.split("_", 2)
+            if len(parts) != 3:
+                raise HTTPException(
+                    401, detail={"code": "AUTH_FAILED", "message": "API Key 格式错误"}
+                )
+            key = await db.scalar(
+                select(ApiKey).where(ApiKey.prefix == parts[1], ApiKey.enabled.is_(True))
             )
-        parts = x_api_key.split("_", 2)
-        if len(parts) != 3:
-            raise HTTPException(401, detail={"code": "AUTH_FAILED", "message": "API Key 格式错误"})
-        key = await db.scalar(
-            select(ApiKey).where(ApiKey.prefix == parts[1], ApiKey.enabled.is_(True))
-        )
-        if (
-            key is None
-            or (key.expires_at and key.expires_at <= datetime.now(UTC))
-            or not verify_api_key(key.secret_hash, parts[2], cfg.api_key_pepper)
-        ):
-            raise HTTPException(401, detail={"code": "AUTH_FAILED", "message": "API Key 无效"})
-        client = await db.get(ApiClient, key.client_id)
+            if (
+                key is None
+                or (key.expires_at and key.expires_at <= datetime.now(UTC))
+                or not verify_api_key(key.secret_hash, parts[2], cfg.api_key_pepper)
+            ):
+                raise HTTPException(401, detail={"code": "AUTH_FAILED", "message": "API Key 无效"})
+            client = await db.get(ApiClient, key.client_id)
+        else:
+            clients = list(
+                (
+                    await db.scalars(
+                        select(ApiClient).where(ApiClient.role == "client")
+                    )
+                ).all()
+            )
+            matches = [row for row in clients if source_ip in (row.allowed_ips or [])]
+            if len(matches) > 1:
+                raise HTTPException(
+                    409,
+                    detail={
+                        "code": "CLIENT_IP_CONFLICT",
+                        "message": "来源 IP 被多个客户绑定，请联系管理员",
+                    },
+                )
+            if matches:
+                client = matches[0]
+            else:
+                auto_id = f"ip-{hashlib.sha256(source_ip.encode()).hexdigest()[:12]}"
+                client = await db.get(ApiClient, auto_id)
+                if client is None:
+                    client = ApiClient(
+                        id=auto_id,
+                        name=f"自动发现 {source_ip}",
+                        role="client",
+                        max_queued=cfg.default_tenant_max_queued,
+                        max_running=cfg.default_tenant_max_running,
+                        daily_quota=1000,
+                        weight=1,
+                        allowed_ips=[source_ip],
+                        last_seen_ip=source_ip,
+                        last_seen_at=datetime.now(UTC),
+                    )
+                    db.add(client)
+                    db.add(
+                        RateLimitPolicy(
+                            client_id=auto_id, requests_per_second=5, burst=10
+                        )
+                    )
+                    try:
+                        await db.flush()
+                    except IntegrityError:
+                        await db.rollback()
+                        client = await db.get(ApiClient, auto_id)
         if client is None or not client.enabled or client.role != "client":
             raise HTTPException(403, detail={"code": "AUTH_FAILED", "message": "客户已停用"})
+        client.last_seen_ip = source_ip
+        client.last_seen_at = datetime.now(UTC)
         policy = await db.scalar(
             select(RateLimitPolicy).where(RateLimitPolicy.client_id == client.id)
         )
@@ -333,11 +455,11 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 raise
             except Exception:
                 logger().warning(
-                    "redis_rate_limit_degraded",
-                    event="redis.rate_limit_failed",
+                    "redis.rate_limit_failed",
                     error_code="REDIS_UNAVAILABLE",
                 )
-        key.last_used_at = datetime.now(UTC)
+        if key is not None:
+            key.last_used_at = datetime.now(UTC)
         await db.commit()
         return Principal(id=client.id, role="client")
 
@@ -346,6 +468,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             raise HTTPException(401, detail={"code": "AUTH_FAILED", "message": "需要管理员令牌"})
         try:
             payload = jwt.decode(authorization[7:], cfg.jwt_secret, algorithms=["HS256"])
+            if payload.get("type", "access") != "access":
+                raise ValueError("refresh token cannot authorize admin requests")
             principal = Principal(id=str(payload["sub"]), role=str(payload["role"]))
         except (jwt.PyJWTError, KeyError, ValueError) as exc:
             raise HTTPException(
@@ -407,6 +531,121 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
     async def metrics() -> Response:
         return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
+    @app.post("/api/v1/nodes/heartbeat")
+    async def node_heartbeat(
+        body: NodeHeartbeatRequest,
+        request: Request,
+        db: Annotated[AsyncSession, Depends(session)],
+        x_gpu_timestamp: Annotated[str | None, Header()] = None,
+        x_gpu_nonce: Annotated[str | None, Header()] = None,
+        x_gpu_signature: Annotated[str | None, Header()] = None,
+        x_real_ip: Annotated[str | None, Header()] = None,
+    ) -> dict[str, Any]:
+        timestamp = x_gpu_timestamp or ""
+        nonce = x_gpu_nonce or ""
+        signature = x_gpu_signature or ""
+        try:
+            stamp = int(timestamp)
+        except ValueError as exc:
+            raise HTTPException(401, detail={"code": "NODE_TIMESTAMP_INVALID"}) from exc
+        now = int(time.time())
+        if abs(now - stamp) > 30 or not nonce or len(nonce) > 128:
+            raise HTTPException(401, detail={"code": "NODE_TIMESTAMP_EXPIRED"})
+        nonces: dict[str, int] = request.app.state.node_heartbeat_nonces
+        for key, seen in list(nonces.items()):
+            if now - seen > 60:
+                del nonces[key]
+        replay_key = f"{body.node_id}:{nonce}"
+        if replay_key in nonces:
+            raise HTTPException(409, detail={"code": "NODE_HEARTBEAT_REPLAY"})
+        raw_body = json.dumps(
+            body.model_dump(), separators=(",", ":"), sort_keys=True
+        ).encode()
+        expected = sign_agent_request(
+            request.method,
+            request.url.path,
+            raw_body,
+            timestamp,
+            nonce,
+            cfg.node_agent_secret(body.node_id),
+        )
+        if not signature:
+            raise HTTPException(401, detail={"code": "NODE_SIGNATURE_MISSING"})
+        if not hmac.compare_digest(signature, expected):
+            raise HTTPException(401, detail={"code": "NODE_SIGNATURE_INVALID"})
+        source_raw = x_real_ip or (request.client.host if request.client else "")
+        try:
+            source_ip = str(ipaddress.ip_address(source_raw))
+        except ValueError as exc:
+            raise HTTPException(400, detail={"code": "NODE_SOURCE_IP_INVALID"}) from exc
+        if source_ip != body.ip:
+            raise HTTPException(409, detail={"code": "NODE_SOURCE_IP_MISMATCH"})
+        node = await db.get(Node, body.node_id, with_for_update=True)
+        if node is None:
+            raise HTTPException(404, detail={"code": "NODE_NOT_APPROVED"})
+        labels = dict(node.labels or {})
+        for key, reported in (("mac", body.mac), ("gpu_uuid", body.gpu_uuid)):
+            registered = str(labels.get(key, ""))
+            if registered and registered.lower() != reported.lower():
+                raise HTTPException(409, detail={"code": "NODE_IDENTITY_MISMATCH", "field": key})
+        old_base_url = node.base_url
+        labels.update(
+            {
+                "host": body.ip,
+                "hostname": body.hostname,
+                "mac": body.mac,
+                "gpu_uuid": body.gpu_uuid,
+                "agent_last_seen_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        node.labels = labels
+        node.base_url = f"http://{body.ip}:8188"
+        node.agent_url = f"http://{body.ip}:9201"
+        nonces[replay_key] = now
+        await db.commit()
+        await _notify(request.app, "gpu-control:wakeup", {"event": "node.heartbeat", "node_id": node.id})
+        logger().info(
+            "node.heartbeat",
+            node_id=node.id,
+            source_ip=body.ip,
+            address_changed=old_base_url != node.base_url,
+        )
+        return {"status": "accepted", "node_id": node.id, "base_url": node.base_url}
+
+    @app.get("/internal/prometheus/workers")
+    async def prometheus_worker_targets(
+        db: Annotated[AsyncSession, Depends(session)],
+    ) -> list[dict[str, Any]]:
+        nodes = list(
+            (
+                await db.scalars(
+                    select(Node).where(
+                        Node.id.like("worker-%"), Node.mode != NodeMode.DISABLED.value
+                    )
+                )
+            ).all()
+        )
+        groups: list[dict[str, Any]] = []
+        for node in nodes:
+            host = str((node.labels or {}).get("host", ""))
+            try:
+                host = str(ipaddress.ip_address(host))
+            except ValueError:
+                continue
+            groups.extend(
+                [
+                    {
+                        "targets": [f"{host}:9100"],
+                        "labels": {"exporter": "node", "node_id": node.id},
+                    },
+                    {
+                        "targets": [f"{host}:9400"],
+                        "labels": {"exporter": "dcgm", "node_id": node.id},
+                    },
+                ]
+            )
+        return groups
+
     @app.post("/admin/auth/login")
     async def login(
         body: LoginRequest, db: Annotated[AsyncSession, Depends(session)]
@@ -423,8 +662,45 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             raise HTTPException(401, detail={"code": "AUTH_FAILED", "message": "用户名或密码错误"})
         return {
             "access_token": create_access_token(client.id, client.role, cfg.jwt_secret),
+            "refresh_token": create_refresh_token(client.id, client.role, cfg.jwt_secret),
             "token_type": "bearer",
             "expires_in": 900,
+            "refresh_expires_in": 7 * 24 * 60 * 60,
+            "role": client.role,
+        }
+
+    @app.post("/admin/auth/refresh")
+    async def refresh_admin_token(
+        body: RefreshTokenRequest,
+        db: Annotated[AsyncSession, Depends(session)],
+    ) -> dict[str, Any]:
+        try:
+            payload = jwt.decode(body.refresh_token, cfg.jwt_secret, algorithms=["HS256"])
+            if payload.get("type") != "refresh":
+                raise ValueError("not a refresh token")
+            client_id = str(payload["sub"])
+            role = str(payload["role"])
+        except (jwt.PyJWTError, KeyError, ValueError) as exc:
+            raise HTTPException(
+                401,
+                detail={"code": "REFRESH_TOKEN_INVALID", "message": "登录已过期，请重新登录"},
+            ) from exc
+        client = await db.get(ApiClient, client_id)
+        if client is None or not client.enabled or client.role != role or role not in {
+            "admin",
+            "operator",
+            "viewer",
+        }:
+            raise HTTPException(
+                401,
+                detail={"code": "REFRESH_TOKEN_INVALID", "message": "登录已失效，请重新登录"},
+            )
+        return {
+            "access_token": create_access_token(client.id, client.role, cfg.jwt_secret),
+            "refresh_token": create_refresh_token(client.id, client.role, cfg.jwt_secret),
+            "token_type": "bearer",
+            "expires_in": 900,
+            "refresh_expires_in": 7 * 24 * 60 * 60,
             "role": client.role,
         }
 
@@ -480,6 +756,10 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     "message": str(exc) or "parameters 必须是 JSON 对象",
                 },
             ) from exc
+        # The per-job ComfyUI upload path is added below and contains a fresh
+        # UUID.  It is an execution detail, not caller input, so it must never
+        # participate in the idempotency fingerprint.
+        request_parameters = dict(parameters)
         if priority == Priority.CRITICAL:
             raise HTTPException(
                 403,
@@ -566,7 +846,11 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 ) from exc
             file_hashes.append((field_name, digest))
             image_dimensions[field_name] = (width, height)
-            parameters[f"{field_name}_filename"] = destination.name
+            # Scheduler uploads every job into an isolated ComfyUI input
+            # subfolder named after the job.  LoadImage must receive that
+            # relative path, otherwise ComfyUI looks in the input root and
+            # cannot find the uploaded file.
+            parameters[f"{field_name}_filename"] = f"{job_id}/{destination.name}"
             storage.atomic_json(
                 root / "input" / f"{field_name}.metadata.json",
                 {
@@ -611,7 +895,9 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             raise HTTPException(
                 422, detail={"code": "WORKFLOW_RENDER_FAILED", "message": str(exc)}
             ) from exc
-        request_hash = _request_hash(workflow_key, workflow_version, parameters, file_hashes)
+        request_hash = _request_hash(
+            workflow_key, workflow_version, request_parameters, file_hashes
+        )
         if idempotency_key:
             existing = await db.scalar(
                 select(IdempotencyKey).where(
@@ -801,6 +1087,135 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 mask,
                 callback_url,
             )
+
+    async def run_image_service(
+        request: Request,
+        workflow_key: str,
+        principal: Principal,
+        db: AsyncSession,
+        image: UploadFile,
+        parameters: str,
+        idempotency_key: str | None,
+    ) -> FileResponse:
+        workflow = await db.scalar(
+            select(WorkflowVersion)
+            .where(
+                WorkflowVersion.workflow_key == workflow_key,
+                WorkflowVersion.enabled.is_(True),
+            )
+            .order_by(WorkflowVersion.created_at.desc())
+        )
+        if workflow is None:
+            raise HTTPException(
+                404,
+                detail={"code": "WORKFLOW_NOT_FOUND", "message": "服务工作流未启用"},
+            )
+        tenant_lock = request.app.state.tenant_locks.setdefault(
+            principal.id, asyncio.Lock()
+        )
+        async with tenant_lock:
+            queued = await _create_job(
+                request,
+                workflow.workflow_key,
+                workflow.version,
+                parameters,
+                Priority.NORMAL,
+                idempotency_key,
+                principal,
+                db,
+                image,
+                None,
+                None,
+            )
+        job_id = str(json.loads(bytes(queued.body))["job_id"])
+        deadline = asyncio.get_running_loop().time() + workflow.timeout_seconds + 60
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(1)
+            async with request.app.state.db.session() as poll_db:
+                job = await poll_db.get(Job, job_id)
+                if job is None:
+                    raise HTTPException(
+                        500,
+                        detail={"code": "JOB_NOT_FOUND", "message": "任务记录意外丢失"},
+                    )
+                if job.status == JobStatus.SUCCEEDED.value:
+                    artifact = await poll_db.scalar(
+                        select(JobArtifact)
+                        .where(JobArtifact.job_id == job_id, JobArtifact.kind == "output")
+                        .order_by(JobArtifact.created_at.desc())
+                    )
+                    if artifact is None:
+                        raise HTTPException(
+                            500,
+                            detail={"code": "OUTPUT_MISSING", "message": "任务成功但没有图片产物"},
+                        )
+                    path = Path(job.job_dir) / artifact.relative_path
+                    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+                    return FileResponse(
+                        path,
+                        media_type=media_type,
+                        filename=path.name,
+                        headers={
+                            "X-Job-ID": job_id,
+                            "X-Client-ID": principal.id,
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                if job.status in {status.value for status in TERMINAL_JOB_STATUSES}:
+                    raise HTTPException(
+                        500,
+                        detail={
+                            "code": job.error_code or "GENERATION_FAILED",
+                            "message": job.error_message or "图片生成失败",
+                            "job_id": job_id,
+                        },
+                    )
+        raise HTTPException(
+            504,
+            detail={"code": "SERVICE_TIMEOUT", "message": "图片生成等待超时", "job_id": job_id},
+        )
+
+    @app.post("/api/v1/services/imageclip-rgba", response_class=FileResponse)
+    async def imageclip_rgba_service(
+        request: Request,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+        image: Annotated[UploadFile, File()],
+        parameters: Annotated[str, Form()] = "{}",
+        idempotency_key: Annotated[
+            str | None, Header(alias="Idempotency-Key", max_length=128)
+        ] = None,
+    ) -> FileResponse:
+        return await run_image_service(
+            request,
+            "imageclip-rgba",
+            principal,
+            db,
+            image,
+            parameters,
+            idempotency_key,
+        )
+
+    @app.post("/api/v1/services/modelview-inpaint", response_class=FileResponse)
+    async def modelview_inpaint_service(
+        request: Request,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+        image: Annotated[UploadFile, File()],
+        parameters: Annotated[str, Form()] = "{}",
+        idempotency_key: Annotated[
+            str | None, Header(alias="Idempotency-Key", max_length=128)
+        ] = None,
+    ) -> FileResponse:
+        return await run_image_service(
+            request,
+            "modelview-inpaint",
+            principal,
+            db,
+            image,
+            parameters,
+            idempotency_key,
+        )
 
     async def owned_job(job_id: str, principal: Principal, db: AsyncSession) -> Job:
         job = await db.get(Job, job_id)
@@ -1376,9 +1791,30 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             or job.attempt_count >= job.max_attempts
         ):
             raise HTTPException(409, detail={"code": "JOB_NOT_RETRYABLE"})
-        before = {"status": job.status, "attempt": job.attempt_count}
-        await transition_job(db, job, JobStatus.RETRY_WAIT, "admin.retry", {"reason": body.reason})
+        previous_error = {"code": job.error_code, "message": job.error_message}
+        before = {
+            "status": job.status,
+            "attempt": job.attempt_count,
+            "node_id": job.node_id,
+            "prompt_id": job.prompt_id,
+            "error": previous_error,
+        }
+        await transition_job(
+            db,
+            job,
+            JobStatus.RETRY_WAIT,
+            "admin.retry",
+            {"reason": body.reason, "previous_error": previous_error},
+        )
         await transition_job(db, job, JobStatus.QUEUED, "admin.requeued")
+        job.node_id = None
+        job.prompt_id = None
+        job.claimed_at = None
+        job.started_at = None
+        job.finished_at = None
+        job.progress = 0
+        job.cancel_requested = False
+        job.not_before = None
         job.error_code = None
         job.error_message = None
         await audit(
@@ -1497,6 +1933,9 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "max_running": row.max_running,
                 "daily_quota": row.daily_quota,
                 "weight": row.weight,
+                "allowed_ips": row.allowed_ips,
+                "last_seen_ip": row.last_seen_ip,
+                "last_seen_at": row.last_seen_at,
                 "callback_hosts": row.callback_hosts,
             }
             for row in rows
@@ -1511,6 +1950,22 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
     ) -> dict[str, Any]:
         if await db.get(ApiClient, body.id):
             raise HTTPException(409, detail={"code": "CLIENT_EXISTS"})
+        if body.allowed_ips:
+            clients = list((await db.scalars(select(ApiClient))).all())
+            used_ips = {
+                str(value)
+                for row in clients
+                for value in (row.allowed_ips or [])
+            }
+            conflicts = sorted(set(body.allowed_ips) & used_ips)
+            if conflicts:
+                raise HTTPException(
+                    409,
+                    detail={
+                        "code": "CLIENT_IP_CONFLICT",
+                        "message": f"来源 IP 已绑定其他客户: {', '.join(conflicts)}",
+                    },
+                )
         for host in body.callback_hosts:
             if any(
                 char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-"
@@ -1527,6 +1982,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             max_running=body.max_running,
             daily_quota=body.daily_quota,
             weight=body.weight,
+            allowed_ips=body.allowed_ips,
             callback_hosts=body.callback_hosts,
         )
         db.add(client)
@@ -1536,6 +1992,76 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         )
         await db.commit()
         return {"id": client.id, "name": client.name}
+
+    @app.put("/admin/clients/{client_id}")
+    async def update_client(
+        client_id: str,
+        body: ClientUpdateRequest,
+        request: Request,
+        principal: Annotated[Principal, Depends(require_operator)],
+        db: Annotated[AsyncSession, Depends(session)],
+    ) -> dict[str, Any]:
+        if not body.confirm:
+            raise HTTPException(409, detail={"code": "CONFIRMATION_REQUIRED"})
+        client = await db.get(ApiClient, client_id, with_for_update=True)
+        if client is None or client.role != "client":
+            raise HTTPException(404, detail={"code": "CLIENT_NOT_FOUND"})
+        if body.allowed_ips:
+            clients = list((await db.scalars(select(ApiClient))).all())
+            used_ips = {
+                str(value)
+                for row in clients
+                if row.id != client_id
+                for value in (row.allowed_ips or [])
+            }
+            conflicts = sorted(set(body.allowed_ips) & used_ips)
+            if conflicts:
+                raise HTTPException(
+                    409,
+                    detail={
+                        "code": "CLIENT_IP_CONFLICT",
+                        "message": f"来源 IP 已绑定其他客户: {', '.join(conflicts)}",
+                    },
+                )
+        for host in body.callback_hosts:
+            if any(
+                char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-"
+                for char in host
+            ):
+                raise HTTPException(
+                    422, detail={"code": "INPUT_INVALID", "message": "回调域名格式错误"}
+                )
+        before = {
+            "name": client.name,
+            "enabled": client.enabled,
+            "max_queued": client.max_queued,
+            "max_running": client.max_running,
+            "daily_quota": client.daily_quota,
+            "weight": client.weight,
+            "allowed_ips": client.allowed_ips,
+            "callback_hosts": client.callback_hosts,
+        }
+        client.name = body.name
+        client.enabled = body.enabled
+        client.max_queued = body.max_queued
+        client.max_running = body.max_running
+        client.daily_quota = body.daily_quota
+        client.weight = body.weight
+        client.allowed_ips = body.allowed_ips
+        client.callback_hosts = body.callback_hosts
+        after = body.model_dump(exclude={"reason", "confirm"})
+        await audit(
+            db,
+            request,
+            principal,
+            "client.update",
+            "api_client",
+            client_id,
+            before,
+            {**after, "reason": body.reason},
+        )
+        await db.commit()
+        return {"id": client.id, **after}
 
     @app.get("/admin/workflows")
     async def admin_workflows(
@@ -1941,8 +2467,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 raise
             except Exception as exc:
                 logger().warning(
-                    "alert_delivery_degraded",
-                    event="alert.delivery_failed",
+                    "alert.delivery_failed",
                     error_type=type(exc).__name__,
                 )
                 await asyncio.sleep(2)

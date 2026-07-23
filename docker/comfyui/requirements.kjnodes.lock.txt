@@ -1,0 +1,6 @@
+color-matcher==0.6.0
+ddt==1.7.2
+docutils==0.23
+imageio==2.37.4
+mss==10.2.0
+packaging==26.2

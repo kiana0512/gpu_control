@@ -1,0 +1,307 @@
+{
+  "9": {
+    "inputs": {
+      "filename_prefix": "ComfyUI",
+      "images": [
+        "79",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "保存图像"
+    }
+  },
+  "48": {
+    "inputs": {
+      "clip_name1": "clip_l.safetensors",
+      "clip_name2": "t5xxl_fp16.safetensors",
+      "type": "flux",
+      "device": "default"
+    },
+    "class_type": "DualCLIPLoader",
+    "_meta": {
+      "title": "双CLIP加载器"
+    }
+  },
+  "49": {
+    "inputs": {
+      "guidance": 30,
+      "conditioning": [
+        "53",
+        0
+      ]
+    },
+    "class_type": "FluxGuidance",
+    "_meta": {
+      "title": "Flux引导"
+    }
+  },
+  "50": {
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "加载VAE"
+    }
+  },
+  "52": {
+    "inputs": {
+      "conditioning": [
+        "53",
+        0
+      ]
+    },
+    "class_type": "ConditioningZeroOut",
+    "_meta": {
+      "title": "条件零化"
+    }
+  },
+  "53": {
+    "inputs": {
+      "text": [
+        "108",
+        0
+      ],
+      "clip": [
+        "48",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Positive Prompt)"
+    }
+  },
+  "54": {
+    "inputs": {
+      "strength": 1,
+      "model": [
+        "107",
+        0
+      ]
+    },
+    "class_type": "DifferentialDiffusion",
+    "_meta": {
+      "title": "差异扩散DifferentialDiffusion"
+    }
+  },
+  "55": {
+    "inputs": {
+      "samples": [
+        "57",
+        0
+      ],
+      "vae": [
+        "50",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码"
+    }
+  },
+  "56": {
+    "inputs": {
+      "noise_mask": true,
+      "positive": [
+        "49",
+        0
+      ],
+      "negative": [
+        "52",
+        0
+      ],
+      "vae": [
+        "50",
+        0
+      ],
+      "pixels": [
+        "78",
+        1
+      ],
+      "mask": [
+        "97",
+        0
+      ]
+    },
+    "class_type": "InpaintModelConditioning",
+    "_meta": {
+      "title": "内补模型条件"
+    }
+  },
+  "57": {
+    "inputs": {
+      "seed": 287022851273156,
+      "steps": 10,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "denoise": 1,
+      "model": [
+        "54",
+        0
+      ],
+      "positive": [
+        "56",
+        0
+      ],
+      "negative": [
+        "56",
+        1
+      ],
+      "latent_image": [
+        "56",
+        2
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "K采样器"
+    }
+  },
+  "78": {
+    "inputs": {
+      "downscale_algorithm": "bilinear",
+      "upscale_algorithm": "bicubic",
+      "preresize": false,
+      "preresize_mode": "ensure minimum resolution",
+      "preresize_min_width": 1024,
+      "preresize_min_height": 1024,
+      "preresize_max_width": 16384,
+      "preresize_max_height": 16384,
+      "mask_fill_holes": true,
+      "mask_expand_pixels": 0,
+      "mask_invert": false,
+      "mask_blend_pixels": 32,
+      "mask_hipass_filter": 0.1,
+      "extend_for_outpainting": false,
+      "extend_up_factor": 1,
+      "extend_down_factor": 1,
+      "extend_left_factor": 1,
+      "extend_right_factor": 1,
+      "context_from_mask_extend_factor": 1.2,
+      "output_resize_to_target_size": true,
+      "output_target_width": 768,
+      "output_target_height": 768,
+      "output_padding": "32",
+      "device_mode": "gpu (much faster)",
+      "image": [
+        "96",
+        0
+      ],
+      "mask": [
+        "96",
+        1
+      ]
+    },
+    "class_type": "InpaintCropImproved",
+    "_meta": {
+      "title": "✂️ Inpaint Crop"
+    }
+  },
+  "79": {
+    "inputs": {
+      "stitcher": [
+        "78",
+        0
+      ],
+      "inpainted_image": [
+        "55",
+        0
+      ]
+    },
+    "class_type": "InpaintStitchImproved",
+    "_meta": {
+      "title": "✂️ Inpaint Stitch"
+    }
+  },
+  "95": {
+    "inputs": {
+      "text": "A sleek, modern minimalist concrete planter box with integrated horizontal shelf and side-mounted handle slot, placed on a dark grid background; clean industrial design, matte gray finish, soft diffused studio lighting from upper left casting subtle shadows, three-quarter front-right perspective composition, monochromatic neutral palette (light gray body, dark charcoal grid), precise geometric forms with smooth rounded edges—repair sharp unnatural棱边 by softening all corners and transitions, eliminating jagged artifacts and irregular bevels, ensuring seamless continuity between surfaces and recessed elements, high-resolution 4K render, photorealistic material detail, no visible seams or mesh artifacts.",
+      "anything": [
+        "108",
+        0
+      ]
+    },
+    "class_type": "easy showAnything",
+    "_meta": {
+      "title": "展示任何"
+    }
+  },
+  "96": {
+    "inputs": {
+      "image": "clipspace/clipspace-painted-masked-1783504215323.png [input]"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "加载图像"
+    }
+  },
+  "97": {
+    "inputs": {
+      "expand": 0,
+      "incremental_expandrate": 0,
+      "tapered_corners": true,
+      "flip_input": false,
+      "blur_radius": 6.8,
+      "lerp_alpha": 1,
+      "decay_factor": 1,
+      "fill_holes": true,
+      "mask": [
+        "78",
+        2
+      ]
+    },
+    "class_type": "GrowMaskWithBlur",
+    "_meta": {
+      "title": "Grow Mask With Blur"
+    }
+  },
+  "105": {
+    "inputs": {
+      "model_path": "Nunchaku-svdq-int4_r32-flux.1-fill-dev.safetensors",
+      "cache_threshold": 0,
+      "attention": "nunchaku-fp16",
+      "cpu_offload": "auto",
+      "device_id": 0,
+      "data_type": "bfloat16",
+      "i2f_mode": "enabled"
+    },
+    "class_type": "NunchakuFluxDiTLoader",
+    "_meta": {
+      "title": "Nunchaku FLUX DiT Loader"
+    }
+  },
+  "107": {
+    "inputs": {
+      "lora_name": "flux-turbo-alpha-8tp.safetensors",
+      "strength_model": 1,
+      "model": [
+        "105",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "LoRA加载器（仅模型）"
+    }
+  },
+  "108": {
+    "inputs": {
+      "prompt": "请分析图片并反推出文生图提示词，包含主体、场景、风格、光影、构图、色彩和细节，并修复该区域奇怪棱边与不自然边角。只输出提示词。",
+      "system_content": "You are a helpful AI assistant.",
+      "seed": 324724326694643,
+      "images": [
+        "96",
+        0
+      ]
+    },
+    "class_type": "Qwen3 VL Plus",
+    "_meta": {
+      "title": "Qwen3 VL Plus"
+    }
+  }
+}

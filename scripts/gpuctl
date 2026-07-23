@@ -54,7 +54,7 @@ case "${1:-}" in
       shell) run docker compose -f "$(compose_file)" exec "$(service_name)" /bin/bash ;;
       *) usage; exit 2;; esac ;;
   image) action="${2:-}"; shift 2 || true; [[ "${action}" == export ]] && run "${script_dir}/export_comfyui_image.sh" "$@" || { [[ "${action}" == import ]] && run "${script_dir}/import_comfyui_image.sh" "$@" || { usage; exit 2; }; } ;;
-  models) action="${2:-}"; shift 2 || true; [[ "${action}" == sync ]] && run "${script_dir}/sync_models.sh" "$@" || { [[ "${action}" == verify ]] && run "${script_dir}/verify_models.sh" "$@" || { usage; exit 2; }; } ;;
+  models) action="${2:-}"; shift 2 || true; [[ "${action}" == sync ]] && run "${script_dir}/sync_models.sh" "$@" || { [[ "${action}" == verify ]] && run "${script_dir}/verify_comfy_projects.sh" "$@" || { usage; exit 2; }; } ;;
   deploy) role="${2:-}"; [[ "${role}" == control ]] && run "${script_dir}/deploy_control.sh" || { [[ "${role}" == node ]] && run "${script_dir}/deploy_node.sh" || { usage; exit 2; }; } ;;
   diagnostics) shift; run "${script_dir}/collect_diagnostics.sh" "$@" ;;
   workflow) shift; run python3 -m packages.gpu_control_core.workflow_cli "$@" ;;

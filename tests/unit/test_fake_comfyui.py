@@ -1,5 +1,6 @@
 import httpx
 
+from packages.comfy_client.client import ComfyClient
 from tests.fake_comfyui.app import Behavior, State, create_app
 
 
@@ -42,3 +43,27 @@ async def test_fake_comfyui_failures_and_external_queue() -> None:
         queue = (await client.get("/queue")).json()
         assert (queue["queue_running"] + queue["queue_pending"])[0][1] == "external"
         assert (await client.post("/interrupt")).status_code == 500
+
+
+async def test_comfy_client_accepts_empty_free_response() -> None:
+    async def empty_free(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"")
+
+    client = ComfyClient("http://fake", transport=httpx.MockTransport(empty_free))
+    try:
+        assert await client.free() == {}
+    finally:
+        await client.close()
+
+
+def test_output_collection_is_limited_to_declared_nodes() -> None:
+    history = {
+        "prompt": {
+            "outputs": {
+                "8": {"images": [{"filename": "intermediate.png", "type": "output"}]},
+                "25": {"images": [{"filename": "final-rgba.png", "type": "output"}]},
+            }
+        }
+    }
+    outputs = ComfyClient.outputs(history, "prompt", {"25"})
+    assert [item.filename for item in outputs] == ["final-rgba.png"]

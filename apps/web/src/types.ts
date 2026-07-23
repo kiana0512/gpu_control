@@ -1,6 +1,7 @@
 export interface NodeInfo {
   id: string;
   display_name: string;
+  base_url: string;
   pool: "PRIMARY" | "OVERFLOW";
   mode: "DISABLED" | "RESERVED" | "OVERFLOW" | "ACTIVE" | "DRAINING";
   health: "ONLINE" | "OFFLINE" | "DEGRADED";
@@ -11,6 +12,7 @@ export interface NodeInfo {
   total_vram_mb: number;
   manual_reserved: boolean;
   foreign_queue_detected: boolean;
+  last_heartbeat_at?: string | null;
 }
 export interface JobInfo {
   job_id: string;
