@@ -16,13 +16,30 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.comfy_client import ComfyClient, ComfyError
+from packages.gpu_control_core.batches import (
+    ArchiveFrame,
+    BatchContractError,
+    build_result_archive,
+    materialize_batch_item,
+    transition_batch,
+)
 from packages.gpu_control_core.database import Database
-from packages.gpu_control_core.enums import TERMINAL_JOB_STATUSES, JobStatus, NodeHealth
+from packages.gpu_control_core.enums import (
+    TERMINAL_JOB_STATUSES,
+    BatchItemStatus,
+    BatchStatus,
+    JobStatus,
+    NodeHealth,
+)
 from packages.gpu_control_core.logging import bind_context, configure_logging, logger, reset_context
 from packages.gpu_control_core.models import (
+    ApiClient,
+    BatchArtifact,
     CallbackAttempt,
     Job,
     JobArtifact,
+    JobBatch,
+    JobBatchItem,
     JobCallback,
     Node,
     SystemSetting,
@@ -67,6 +84,7 @@ class Scheduler:
         self.stop_event = asyncio.Event()
         self.wakeup = asyncio.Event()
         self.executions: dict[str, asyncio.Task[None]] = {}
+        self.batch_assemblies: dict[str, asyncio.Task[None]] = {}
         self.health_task: asyncio.Task[None] | None = None
         self.redis_task: asyncio.Task[None] | None = None
         self.callback_task: asyncio.Task[None] | None = None
@@ -473,6 +491,464 @@ class Scheduler:
                     await transition_job(session, job, JobStatus.QUEUED, "scheduler.requeued")
             await session.commit()
 
+    async def reconcile_batches(self) -> None:
+        active_statuses = {
+            BatchStatus.QUEUED.value,
+            BatchStatus.RUNNING.value,
+            BatchStatus.CANCELLING.value,
+            BatchStatus.ASSEMBLING.value,
+        }
+        async with self.db.session() as session:
+            batch_ids = list(
+                (
+                    await session.scalars(
+                        select(JobBatch.id)
+                        .where(JobBatch.status.in_(active_statuses))
+                        .order_by(JobBatch.created_at)
+                    )
+                ).all()
+            )
+        for batch_id in batch_ids:
+            should_assemble = await self.sync_batch_state(batch_id)
+            if should_assemble and batch_id not in self.batch_assemblies:
+                self.batch_assemblies[batch_id] = asyncio.create_task(
+                    self.run_batch_assembly(batch_id)
+                )
+        await self.feed_batch_items()
+
+    async def run_batch_assembly(self, batch_id: str) -> None:
+        try:
+            await self.assemble_batch(batch_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger().exception(
+                "batch.assembly_internal_error",
+                batch_id=batch_id,
+                error_code="BATCH_ASSEMBLY_INTERNAL_ERROR",
+            )
+            async with self.db.session() as session:
+                batch = await session.get(JobBatch, batch_id, with_for_update=True)
+                if batch is not None and batch.status == BatchStatus.ASSEMBLING.value:
+                    batch.error_code = "BATCH_ASSEMBLY_INTERNAL_ERROR"
+                    batch.error_message = "结果归档发生内部错误"
+                    await transition_batch(
+                        session,
+                        batch,
+                        BatchStatus.FAILED,
+                        "batch.assembly_internal_error",
+                    )
+                    await session.commit()
+        finally:
+            self.batch_assemblies.pop(batch_id, None)
+            self.wakeup.set()
+
+    async def sync_batch_state(self, batch_id: str) -> bool:
+        async with self.db.session() as session:
+            batch = await session.scalar(
+                select(JobBatch).where(JobBatch.id == batch_id).with_for_update()
+            )
+            if batch is None:
+                return False
+            if batch.status == BatchStatus.ASSEMBLING.value:
+                return True
+            items = list(
+                (
+                    await session.scalars(
+                        select(JobBatchItem)
+                        .where(JobBatchItem.batch_id == batch.id)
+                        .order_by(JobBatchItem.ordinal)
+                        .with_for_update()
+                    )
+                ).all()
+            )
+            job_ids = [item.job_id for item in items if item.job_id]
+            jobs = list(
+                (
+                    await session.scalars(select(Job).where(Job.id.in_(job_ids)))
+                ).all()
+            ) if job_ids else []
+            jobs_by_id = {job.id: job for job in jobs}
+            failure_item: JobBatchItem | None = None
+            active_progress = 0.0
+            for item in items:
+                if not item.job_id:
+                    continue
+                job = jobs_by_id.get(item.job_id)
+                if job is None:
+                    item.status = BatchItemStatus.FAILED.value
+                    item.error_code = "CHILD_JOB_MISSING"
+                    item.error_message = "批次帧对应的内部任务不存在"
+                    failure_item = failure_item or item
+                    continue
+                item.node_id = job.node_id
+                item.attempts = job.attempt_count
+                item.updated_at = datetime.now(UTC)
+                if job.status == JobStatus.SUCCEEDED.value:
+                    artifact = await session.scalar(
+                        select(JobArtifact)
+                        .where(JobArtifact.job_id == job.id, JobArtifact.kind == "output")
+                        .order_by(JobArtifact.created_at.desc())
+                    )
+                    if artifact is None:
+                        item.status = BatchItemStatus.FAILED.value
+                        item.error_code = "OUTPUT_MISSING"
+                        item.error_message = "内部任务成功但没有输出图片"
+                        failure_item = failure_item or item
+                    else:
+                        item.status = BatchItemStatus.SUCCEEDED.value
+                        item.output_size_bytes = artifact.size_bytes
+                        item.output_sha256 = artifact.sha256
+                        item.error_code = None
+                        item.error_message = None
+                elif job.status in {JobStatus.FAILED.value, JobStatus.TIMED_OUT.value}:
+                    if (
+                        not batch.cancel_requested
+                        and job.attempt_count < job.max_attempts
+                        and batch.status
+                        not in {BatchStatus.CANCELLING.value, BatchStatus.ASSEMBLING.value}
+                    ):
+                        previous_error = {
+                            "code": job.error_code,
+                            "message": job.error_message,
+                        }
+                        await transition_job(
+                            session,
+                            job,
+                            JobStatus.RETRY_WAIT,
+                            "batch.item_retry_wait",
+                            {"previous_error": previous_error},
+                        )
+                        await transition_job(
+                            session, job, JobStatus.QUEUED, "batch.item_retry_queued"
+                        )
+                        job.node_id = None
+                        job.prompt_id = None
+                        job.progress = 0
+                        job.cancel_requested = False
+                        job.claimed_at = None
+                        job.started_at = None
+                        job.finished_at = None
+                        job.not_before = None
+                        job.error_code = None
+                        job.error_message = None
+                        item.status = BatchItemStatus.QUEUED.value
+                    else:
+                        item.status = BatchItemStatus.FAILED.value
+                        item.error_code = job.error_code or "CHILD_JOB_FAILED"
+                        item.error_message = job.error_message or "内部任务执行失败"
+                        failure_item = failure_item or item
+                elif job.status == JobStatus.CANCELLED.value:
+                    item.status = BatchItemStatus.CANCELLED.value
+                elif job.status == JobStatus.QUEUED.value:
+                    item.status = BatchItemStatus.QUEUED.value
+                else:
+                    item.status = BatchItemStatus.RUNNING.value
+                    active_progress += max(0.0, min(job.progress, 99.0)) / 100
+
+            if batch.cancel_requested or failure_item is not None:
+                if batch.status != BatchStatus.CANCELLING.value:
+                    if failure_item is not None:
+                        batch.error_code = failure_item.error_code
+                        batch.error_message = (
+                            f"帧 {failure_item.ordinal} {failure_item.input_relative_path}: "
+                            f"{failure_item.error_message}"
+                        )[:1000]
+                        await transition_batch(
+                            session,
+                            batch,
+                            BatchStatus.CANCELLING,
+                            "batch.failure_cancelling",
+                            {
+                                "ordinal": failure_item.ordinal,
+                                "error_code": failure_item.error_code,
+                            },
+                        )
+                    else:
+                        await transition_batch(
+                            session,
+                            batch,
+                            BatchStatus.CANCELLING,
+                            "batch.cancelling",
+                        )
+                for item in items:
+                    if not item.job_id and item.status == BatchItemStatus.PENDING.value:
+                        item.status = BatchItemStatus.CANCELLED.value
+                        continue
+                    job = jobs_by_id.get(item.job_id or "")
+                    if job is None or JobStatus(job.status) in TERMINAL_JOB_STATUSES:
+                        continue
+                    if job.status == JobStatus.QUEUED.value:
+                        await transition_job(
+                            session, job, JobStatus.CANCELLED, "batch.cancelled_before_claim"
+                        )
+                        item.status = BatchItemStatus.CANCELLED.value
+                    else:
+                        job.cancel_requested = True
+                        if job.status != JobStatus.CANCELLING.value:
+                            await transition_job(
+                                session, job, JobStatus.CANCELLING, "batch.cancel_requested"
+                            )
+
+            status_counts = {
+                status.value: sum(item.status == status.value for item in items)
+                for status in BatchItemStatus
+            }
+            batch.pending_items = status_counts[BatchItemStatus.PENDING.value]
+            batch.queued_items = status_counts[BatchItemStatus.QUEUED.value]
+            batch.running_items = status_counts[BatchItemStatus.RUNNING.value]
+            batch.succeeded_items = status_counts[BatchItemStatus.SUCCEEDED.value]
+            batch.failed_items = status_counts[BatchItemStatus.FAILED.value]
+            batch.cancelled_items = status_counts[BatchItemStatus.CANCELLED.value]
+            batch.progress = min(
+                100.0,
+                (
+                    batch.succeeded_items
+                    + batch.failed_items
+                    + batch.cancelled_items
+                    + active_progress
+                )
+                / max(batch.total_items, 1)
+                * 100,
+            )
+            terminal_count = (
+                batch.succeeded_items + batch.failed_items + batch.cancelled_items
+            )
+            if batch.status == BatchStatus.CANCELLING.value and terminal_count == batch.total_items:
+                if batch.error_code:
+                    await transition_batch(
+                        session, batch, BatchStatus.FAILED, "batch.failed"
+                    )
+                else:
+                    await transition_batch(
+                        session, batch, BatchStatus.CANCELLED, "batch.cancelled"
+                    )
+                await session.commit()
+                return False
+            if batch.succeeded_items == batch.total_items:
+                if batch.status == BatchStatus.QUEUED.value:
+                    await transition_batch(
+                        session, batch, BatchStatus.RUNNING, "batch.running"
+                    )
+                await transition_batch(
+                    session, batch, BatchStatus.ASSEMBLING, "batch.assembling"
+                )
+                await session.commit()
+                return True
+            if (
+                batch.status == BatchStatus.QUEUED.value
+                and (batch.queued_items or batch.running_items or batch.succeeded_items)
+            ):
+                await transition_batch(session, batch, BatchStatus.RUNNING, "batch.running")
+            await session.commit()
+            return False
+
+    async def feed_batch_items(self) -> None:
+        async with self.db.session() as session:
+            system_queued = int(
+                await session.scalar(
+                    select(func.count(Job.id)).where(Job.status == JobStatus.QUEUED.value)
+                )
+                or 0
+            )
+            if system_queued >= self.settings.system_max_queued:
+                return
+            batches = list(
+                (
+                    await session.scalars(
+                        select(JobBatch)
+                        .where(
+                            JobBatch.status.in_(
+                                [BatchStatus.QUEUED.value, BatchStatus.RUNNING.value]
+                            ),
+                            JobBatch.cancel_requested.is_(False),
+                            JobBatch.pending_items > 0,
+                        )
+                        .order_by(
+                            JobBatch.last_materialized_at.asc().nullsfirst(),
+                            JobBatch.created_at,
+                        )
+                        .with_for_update(skip_locked=True)
+                    )
+                ).all()
+            )
+            for batch in batches:
+                if system_queued >= self.settings.system_max_queued:
+                    break
+                client = await session.get(ApiClient, batch.tenant_id)
+                tenant_queued = int(
+                    await session.scalar(
+                        select(func.count(Job.id)).where(
+                            Job.tenant_id == batch.tenant_id,
+                            Job.status == JobStatus.QUEUED.value,
+                        )
+                    )
+                    or 0
+                )
+                tenant_queue_limit = (
+                    client.max_queued
+                    if client is not None
+                    else self.settings.default_tenant_max_queued
+                )
+                if tenant_queued >= tenant_queue_limit:
+                    continue
+                in_window = int(
+                    await session.scalar(
+                        select(func.count(JobBatchItem.id)).where(
+                            JobBatchItem.batch_id == batch.id,
+                            JobBatchItem.status.in_(
+                                [
+                                    BatchItemStatus.QUEUED.value,
+                                    BatchItemStatus.RUNNING.value,
+                                ]
+                            ),
+                        )
+                    )
+                    or 0
+                )
+                if in_window >= self.settings.batch_feed_window:
+                    continue
+                item = await session.scalar(
+                    select(JobBatchItem)
+                    .where(
+                        JobBatchItem.batch_id == batch.id,
+                        JobBatchItem.status == BatchItemStatus.PENDING.value,
+                    )
+                    .order_by(JobBatchItem.ordinal)
+                    .with_for_update(skip_locked=True)
+                    .limit(1)
+                )
+                workflow = await session.scalar(
+                    select(WorkflowVersion).where(
+                        WorkflowVersion.workflow_key == batch.workflow_key,
+                        WorkflowVersion.version == batch.workflow_version,
+                    )
+                )
+                if item is None or workflow is None:
+                    if workflow is None:
+                        batch.error_code = "WORKFLOW_NOT_FOUND"
+                        batch.error_message = "批次固定的工作流版本已停用或删除"
+                        await transition_batch(
+                            session, batch, BatchStatus.FAILED, "batch.workflow_missing"
+                        )
+                    continue
+                await materialize_batch_item(
+                    session, self.storage, self.settings, batch, item, workflow
+                )
+                batch.pending_items = max(0, batch.pending_items - 1)
+                batch.queued_items += 1
+                system_queued += 1
+            await session.commit()
+
+    async def assemble_batch(self, batch_id: str) -> None:
+        async with self.db.session() as session:
+            batch = await session.get(JobBatch, batch_id)
+            if batch is None or batch.status != BatchStatus.ASSEMBLING.value:
+                return
+            items = list(
+                (
+                    await session.scalars(
+                        select(JobBatchItem)
+                        .where(
+                            JobBatchItem.batch_id == batch.id,
+                            JobBatchItem.status == BatchItemStatus.SUCCEEDED.value,
+                        )
+                        .order_by(JobBatchItem.ordinal)
+                    )
+                ).all()
+            )
+            if len(items) != batch.total_items:
+                return
+            frames: list[ArchiveFrame] = []
+            for item in items:
+                if not item.job_id or not item.output_sha256:
+                    return
+                job = await session.get(Job, item.job_id)
+                artifact = await session.scalar(
+                    select(JobArtifact)
+                    .where(JobArtifact.job_id == item.job_id, JobArtifact.kind == "output")
+                    .order_by(JobArtifact.created_at.desc())
+                )
+                if job is None or artifact is None:
+                    return
+                frames.append(
+                    ArchiveFrame(
+                        ordinal=item.ordinal,
+                        input_relative_path=item.input_relative_path,
+                        output_relative_path=item.output_relative_path,
+                        input_sha256=item.input_sha256,
+                        output_path=Path(job.job_dir) / artifact.relative_path,
+                        expected_output_sha256=item.output_sha256,
+                        job_id=job.id,
+                        node_id=item.node_id,
+                        attempts=item.attempts,
+                    )
+                )
+            external_batch_id = batch.external_batch_id
+            batch_dir = Path(batch.batch_dir)
+        try:
+            built = await asyncio.to_thread(
+                build_result_archive,
+                batch_id,
+                external_batch_id,
+                batch_dir,
+                frames,
+            )
+        except BatchContractError as exc:
+            async with self.db.session() as session:
+                batch = await session.get(JobBatch, batch_id, with_for_update=True)
+                if batch is not None and batch.status == BatchStatus.ASSEMBLING.value:
+                    batch.error_code = exc.code
+                    batch.error_message = str(exc)[:1000]
+                    await transition_batch(
+                        session,
+                        batch,
+                        BatchStatus.FAILED,
+                        "batch.assembly_failed",
+                        {
+                            "ordinal": exc.ordinal,
+                            "relative_path": exc.relative_path,
+                            "error_code": exc.code,
+                        },
+                    )
+                    await session.commit()
+            return
+        async with self.db.session() as session:
+            batch = await session.get(JobBatch, batch_id, with_for_update=True)
+            if batch is None or batch.status != BatchStatus.ASSEMBLING.value:
+                return
+            existing = await session.scalar(
+                select(BatchArtifact).where(
+                    BatchArtifact.batch_id == batch.id,
+                    BatchArtifact.kind == "result_archive",
+                )
+            )
+            if existing is None:
+                session.add(
+                    BatchArtifact(
+                        id=str(uuid.uuid4()),
+                        batch_id=batch.id,
+                        kind="result_archive",
+                        relative_path=str(built.path.relative_to(Path(batch.batch_dir))).replace(
+                            "\\", "/"
+                        ),
+                        filename=f"{batch.id}-rgba.zip",
+                        content_type="application/zip",
+                        size_bytes=built.size_bytes,
+                        sha256=built.sha256,
+                    )
+                )
+            batch.progress = 100
+            await transition_batch(
+                session,
+                batch,
+                BatchStatus.SUCCEEDED,
+                "batch.succeeded",
+                {"result_sha256": built.sha256, "total": batch.total_items},
+            )
+            await session.commit()
+        await self.publish({"event": "batch.succeeded", "batch_id": batch_id})
+
     async def schedule_available(self) -> None:
         started = asyncio.get_running_loop().time()
         while not self.stop_event.is_set():
@@ -521,6 +997,7 @@ class Scheduler:
                         queue_snapshot=snapshot,
                         overflow_guard=guard,
                         heartbeat_timeout_seconds=self.settings.node_heartbeat_timeout_seconds,
+                        batch_max_running=self.settings.batch_max_running_per_tenant,
                     )
                 if assignment is None:
                     break
@@ -976,6 +1453,7 @@ class Scheduler:
             try:
                 while not self.stop_event.is_set():
                     expected += self.settings.scheduler_fallback_scan_ms / 1000
+                    await self.reconcile_batches()
                     await self.schedule_available()
                     LOOP_LAG.set(max(0, asyncio.get_running_loop().time() - expected))
                     self.wakeup.clear()
@@ -1001,6 +1479,12 @@ class Scheduler:
                 )
                 if self.executions:
                     await asyncio.gather(*self.executions.values(), return_exceptions=True)
+                if self.batch_assemblies:
+                    for task in self.batch_assemblies.values():
+                        task.cancel()
+                    await asyncio.gather(
+                        *self.batch_assemblies.values(), return_exceptions=True
+                    )
                 await self.db.release_scheduler_lock(lock_session)
         await self.redis.aclose()
         await self.db.close()

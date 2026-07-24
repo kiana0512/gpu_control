@@ -1,7 +1,10 @@
 # 动画管家 × GPU Control 批量抠图接口合同（评审稿 v0.1）
 
-状态：`DRAFT`。本文件用于双方在编码前逐项确认，确认后冻结为 `v1`。总体设计和内部调度
-原理见 `36_2026-07-24_ANIMATION_BATCH_MATTING_DESIGN.md`。
+状态：`SUPERSEDED / DO NOT IMPLEMENT`。本草案包含 callback、best_effort、追加后缀命名、
+失败帧重试等尚未落地的候选字段，不能再用于联调。2026-07-24 起唯一冻结合同是
+`38_GPU_CONTROL_MATTING_HANDOFF_V2.md`。本文件仅保留评审历史。
+
+总体设计和内部调度原理见 `36_2026-07-24_ANIMATION_BATCH_MATTING_DESIGN.md`。
 
 ## 1. 双方职责边界
 

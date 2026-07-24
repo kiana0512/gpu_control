@@ -15,6 +15,10 @@
 3090-B、动态热缓存、OOM/重试修复、GPU 指标与三卡 10 客户实测见
 `docs/35_2026-07-23_3090_B_AND_THREE_NODE_ACCEPTANCE.md`。
 
+动画管家批量序列帧抠图请只按 `docs/38_GPU_CONTROL_MATTING_HANDOFF_V2.md` 联调；1.2.0 生产
+变更、三卡真实批次和回滚证据见 `docs/39_2026-07-24_BATCH_MATTING_DEPLOYMENT_RECORD.md`。
+`docs/37_ANIMATION_MANAGER_BATCH_API_CONTRACT_DRAFT.md` 已废弃，不能继续作为接口合同。
+
 部署完成后看 `docs/IMPLEMENTATION_STATUS.md`，把“现场待测”项改成实际日期、主机和结果，不要覆盖本机验证记录。
 
 ## 2. 文档结构
@@ -28,6 +32,8 @@
 | 当前 3090 交接 | `33_3090_NODE_DEPLOYMENT_HANDOFF.md` | 将本机已验证的双项目环境复制到两台 3090 |
 | 3090-A 记录 | `34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md` | A 的实机身份、部署结果、断电恢复与真实任务证据 |
 | B 与三卡验收 | `35_2026-07-23_3090_B_AND_THREE_NODE_ACCEPTANCE.md` | B 的完整部署、性能优化、故障修复和 10 客户三卡实测 |
+| 动画管家 V2 | `38_GPU_CONTROL_MATTING_HANDOFF_V2.md` | 批量抠图唯一冻结接口、结果校验和联调清单 |
+| 批处理部署记录 | `39_2026-07-24_BATCH_MATTING_DEPLOYMENT_RECORD.md` | 1.2.0 生产变更、真实三卡证据和回滚点 |
 | 分角色安装 | `03`—`11` | 网络、准备、4090、3090、镜像、模型、工作流、首次部署 |
 | 使用手册 | `12_WEB_ADMIN_GUIDE.md`、`13_PUBLIC_API_GUIDE.md` | 管理后台和业务 API |
 | 运维 | `15`—`22` | 日志、告警、备份、升级、故障、容量和 FAQ |

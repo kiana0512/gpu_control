@@ -1308,6 +1308,15 @@ pre button {
   background: #111722;
   box-shadow: -28px 0 80px rgba(0, 0, 0, 0.5);
 }
+.task-drawer.batch-drawer {
+  width: min(980px, 100vw);
+}
+.batch-row-label {
+  display: block;
+  margin-top: 5px;
+  color: #8f9aad;
+  font-size: 11px;
+}
 .task-drawer > header {
   display: flex;
   align-items: flex-start;
@@ -1381,6 +1390,102 @@ pre button {
 .task-facts code {
   color: #cdb3f7;
   font-size: 12px;
+}
+.batch-facts {
+  flex: 0 0 auto;
+  max-height: 310px;
+}
+.batch-items-panel {
+  min-height: 240px;
+  flex: 1 1 360px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  margin: 16px 26px 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #171d2a;
+}
+.batch-items-heading,
+.batch-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 13px 16px;
+}
+.batch-items-heading {
+  border-bottom: 1px solid var(--line);
+}
+.batch-items-heading h3,
+.batch-artifacts h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.batch-items-heading p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.batch-items-heading > span,
+.batch-pagination > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.batch-items-scroll {
+  flex: 1;
+  overflow: auto;
+}
+.batch-items-scroll table {
+  min-width: 760px;
+}
+.batch-items-scroll th,
+.batch-items-scroll td {
+  height: 42px;
+  padding: 8px 12px;
+  text-align: left;
+}
+.batch-items-scroll td code {
+  display: block;
+  max-width: 430px;
+  overflow: hidden;
+  color: #d8c1ff;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.batch-items-scroll td small {
+  display: block;
+  margin-top: 5px;
+  color: #ff8996;
+}
+.batch-pagination {
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+}
+.batch-pagination button {
+  min-height: 32px;
+  padding: 0 12px;
+}
+.batch-artifacts {
+  margin: 16px 26px 0;
+  padding: 15px 17px;
+  border: 1px solid rgba(37, 212, 163, 0.3);
+  border-radius: 10px;
+  background: rgba(37, 212, 163, 0.06);
+}
+.batch-artifacts a {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 14px;
+  margin-top: 10px;
+  color: #60dfbc;
+  text-decoration: none;
+}
+.batch-artifacts a code {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+  color: #93a0b4;
+  font-size: 11px;
 }
 .task-error,
 .task-help {

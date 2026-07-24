@@ -3,6 +3,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -15,7 +16,15 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from .enums import JobStatus, NodeHealth, NodeMode, NodePool, Priority
+from .enums import (
+    BatchItemStatus,
+    BatchStatus,
+    JobStatus,
+    NodeHealth,
+    NodeMode,
+    NodePool,
+    Priority,
+)
 
 
 def utcnow() -> datetime:
@@ -32,6 +41,7 @@ class Job(Base):
         Index("ix_jobs_queue", "status", "priority", "pinned", "created_at"),
         Index("ix_jobs_tenant_status", "tenant_id", "status"),
         Index("ix_jobs_node_status", "node_id", "status"),
+        Index("ix_jobs_batch_status", "batch_id", "status"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -46,6 +56,12 @@ class Job(Base):
     request_id: Mapped[str] = mapped_column(String(64), index=True)
     trace_id: Mapped[str] = mapped_column(String(64), index=True)
     job_dir: Mapped[str] = mapped_column(Text)
+    batch_id: Mapped[str | None] = mapped_column(
+        ForeignKey("job_batches.id", ondelete="CASCADE"), nullable=True
+    )
+    batch_item_id: Mapped[str | None] = mapped_column(
+        ForeignKey("job_batch_items.id", ondelete="CASCADE"), nullable=True, unique=True
+    )
     node_id: Mapped[str | None] = mapped_column(ForeignKey("nodes.id"), nullable=True)
     prompt_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     progress: Mapped[float] = mapped_column(Float, default=0)
@@ -72,6 +88,142 @@ class Job(Base):
     artifacts: Mapped[list["JobArtifact"]] = relationship(
         back_populates="job", cascade="all, delete-orphan"
     )
+
+
+class JobBatch(Base):
+    __tablename__ = "job_batches"
+    __table_args__ = (
+        Index("ix_job_batches_tenant_status", "tenant_id", "status"),
+        Index("ix_job_batches_status_materialized", "status", "last_materialized_at"),
+        UniqueConstraint("tenant_id", "external_batch_id", name="uq_batch_external_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("api_clients.id", ondelete="CASCADE"), index=True
+    )
+    external_batch_id: Mapped[str] = mapped_column(String(128))
+    workflow_key: Mapped[str] = mapped_column(String(128))
+    workflow_version: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), default=BatchStatus.VALIDATING.value)
+    failure_policy: Mapped[str] = mapped_column(String(32), default="all_or_nothing")
+    output_naming: Mapped[str] = mapped_column(String(32), default="preserve_stem_png")
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    request_hash: Mapped[str] = mapped_column(String(64))
+    request_id: Mapped[str] = mapped_column(String(64), index=True)
+    trace_id: Mapped[str] = mapped_column(String(64), index=True)
+    batch_dir: Mapped[str] = mapped_column(Text)
+    manifest_sha256: Mapped[str] = mapped_column(String(64))
+    archive_sha256: Mapped[str] = mapped_column(String(64))
+    archive_size_bytes: Mapped[int] = mapped_column(BigInteger)
+    total_items: Mapped[int] = mapped_column(Integer)
+    pending_items: Mapped[int] = mapped_column(Integer, default=0)
+    queued_items: Mapped[int] = mapped_column(Integer, default=0)
+    running_items: Mapped[int] = mapped_column(Integer, default=0)
+    succeeded_items: Mapped[int] = mapped_column(Integer, default=0)
+    failed_items: Mapped[int] = mapped_column(Integer, default=0)
+    cancelled_items: Mapped[int] = mapped_column(Integer, default=0)
+    progress: Mapped[float] = mapped_column(Float, default=0)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_materialized_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class JobBatchItem(Base):
+    __tablename__ = "job_batch_items"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "ordinal", name="uq_batch_item_ordinal"),
+        UniqueConstraint("batch_id", "input_relative_path", name="uq_batch_item_input_path"),
+        UniqueConstraint("batch_id", "output_relative_path", name="uq_batch_item_output_path"),
+        Index("ix_batch_items_batch_status", "batch_id", "status", "ordinal"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("job_batches.id", ondelete="CASCADE"), index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer)
+    input_relative_path: Mapped[str] = mapped_column(Text)
+    output_relative_path: Mapped[str] = mapped_column(Text)
+    input_size_bytes: Mapped[int] = mapped_column(BigInteger)
+    input_sha256: Mapped[str] = mapped_column(String(64))
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    image_format: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(24), default=BatchItemStatus.PENDING.value)
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
+    output_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    output_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    node_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class BatchArtifact(Base):
+    __tablename__ = "batch_artifacts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("job_batches.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(32))
+    relative_path: Mapped[str] = mapped_column(Text)
+    filename: Mapped[str] = mapped_column(String(256))
+    content_type: Mapped[str] = mapped_column(String(128))
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class BatchEvent(Base):
+    __tablename__ = "batch_events"
+    __table_args__ = (UniqueConstraint("batch_id", "sequence", name="uq_batch_event_sequence"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("job_batches.id", ondelete="CASCADE"), index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer)
+    previous_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    status: Mapped[str] = mapped_column(String(24))
+    event: Mapped[str] = mapped_column(String(64))
+    details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class BatchIdempotencyKey(Base):
+    __tablename__ = "batch_idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("client_id", "key", name="uq_client_batch_idempotency"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("api_clients.id", ondelete="CASCADE"), index=True
+    )
+    key: Mapped[str] = mapped_column(String(128))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("job_batches.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class JobEvent(Base):

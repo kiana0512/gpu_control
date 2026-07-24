@@ -1,4 +1,10 @@
-import type { AuditLog, Dashboard, JobInfo, NodeInfo } from "./types";
+import type {
+  AuditLog,
+  BatchItemsPage,
+  Dashboard,
+  JobInfo,
+  NodeInfo,
+} from "./types";
 
 const TOKEN_KEY = "gpu-control-session";
 const REFRESH_TOKEN_KEY = "gpu-control-refresh";
@@ -108,6 +114,12 @@ export const api = {
     request<JobInfo[]>(
       `/admin/jobs${status ? `?status=${encodeURIComponent(status)}` : ""}`,
     ),
+  batch: (id: string) =>
+    request<JobInfo>(`/admin/batches/${encodeURIComponent(id)}`),
+  batchItems: (id: string, offset = 0, limit = 100) =>
+    request<BatchItemsPage>(
+      `/admin/batches/${encodeURIComponent(id)}/items?offset=${offset}&limit=${limit}`,
+    ),
   nodes: () => request<NodeInfo[]>("/admin/nodes"),
   audits: () => request<AuditLog[]>("/admin/audit-logs"),
   workflows: () => request<Record<string, unknown>[]>("/admin/workflows"),
@@ -214,6 +226,11 @@ export const api = {
     request<JobInfo>(`/admin/jobs/${id}/cancel`, {
       method: "POST",
       body: JSON.stringify({ reason: "管理员从控制台取消任务", confirm: true }),
+    }),
+  cancelBatch: (id: string) =>
+    request<JobInfo>(`/admin/batches/${encodeURIComponent(id)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ reason: "管理员从控制台取消批次", confirm: true }),
     }),
   diagnostics: (id: string) =>
     download(`/admin/jobs/${encodeURIComponent(id)}/diagnostics`),

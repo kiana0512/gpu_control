@@ -1,7 +1,10 @@
 import asyncio
+import hashlib
+import io
 import json
 import time
 import uuid
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,7 +17,9 @@ from packages.gpu_control_core.models import (
     ApiClient,
     ApiKey,
     Base,
+    BatchArtifact,
     Job,
+    JobBatch,
     JobEvent,
     Node,
     Workflow,
@@ -188,6 +193,223 @@ async def test_api_key_rbac_validation_and_idempotency(tmp_path: Path) -> None:
                 "/api/v1/jobs", headers={"X-API-Key": "gpc_abcd1234_secret"}, files=invalid_files
             )
         ).status_code == 422
+
+
+async def test_batch_api_idempotency_isolation_and_parent_only_admin_list(
+    tmp_path: Path,
+) -> None:
+    from PIL import Image
+
+    image = io.BytesIO()
+    Image.new("RGB", (3, 2), "white").save(image, format="PNG")
+    image_bytes = image.getvalue()
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("shot/0001.png", image_bytes)
+    manifest = {
+        "schema_version": "1.0",
+        "external_batch_id": "animation-batch-001",
+        "failure_policy": "all_or_nothing",
+        "output_naming": "preserve_stem_png",
+        "parameters": {},
+        "frames": [
+            {
+                "ordinal": 0,
+                "relative_path": "shot/0001.png",
+                "size_bytes": len(image_bytes),
+                "sha256": hashlib.sha256(image_bytes).hexdigest(),
+            }
+        ],
+    }
+    headers = {
+        "X-API-Key": "gpc_abcd1234_secret",
+        "Idempotency-Key": "animation-batch-001",
+    }
+    async for app, client in prepared_app(tmp_path):
+        async with app.state.db.session() as session:
+            session.add(
+                Workflow(
+                    key="imageclip-rgba",
+                    display_name="ImageClip RGBA",
+                    description="batch test",
+                )
+            )
+            session.add(
+                WorkflowVersion(
+                    workflow_key="imageclip-rgba",
+                    version="test-1",
+                    template={
+                        "1": {
+                            "class_type": "LoadImage",
+                            "inputs": {"image": "placeholder.png"},
+                        },
+                        "9": {"class_type": "SaveImage", "inputs": {}},
+                    },
+                    parameter_schema={
+                        "type": "object",
+                        "properties": {"image_filename": {"type": "string"}},
+                        "required": ["image_filename"],
+                        "additionalProperties": False,
+                    },
+                    bindings={"image_filename": "1.inputs.image"},
+                    allowed_class_types=["LoadImage", "SaveImage"],
+                    required_models=[],
+                    required_custom_nodes=[],
+                    min_vram_mb=0,
+                    timeout_seconds=60,
+                    node_labels={},
+                    output_nodes=["9"],
+                    enabled=True,
+                    template_sha256="batch-test",
+                )
+            )
+            await session.commit()
+        first = await client.post(
+            "/api/v1/batches/imageclip-rgba",
+            headers=headers,
+            files={
+                "archive": ("frames.zip", archive.getvalue(), "application/zip"),
+                "manifest": (None, json.dumps(manifest)),
+            },
+        )
+        assert first.status_code == 202, first.text
+        batch_id = first.json()["batch_id"]
+
+        repeated = await client.post(
+            "/api/v1/batches/imageclip-rgba",
+            headers=headers,
+            files={
+                "archive": ("frames.zip", archive.getvalue(), "application/zip"),
+                "manifest": (None, json.dumps(manifest)),
+            },
+        )
+        assert repeated.status_code == 200
+        assert repeated.json()["batch_id"] == batch_id
+
+        changed = json.loads(json.dumps(manifest))
+        changed["frames"][0]["sha256"] = "0" * 64
+        conflict = await client.post(
+            "/api/v1/batches/imageclip-rgba",
+            headers=headers,
+            files={
+                "archive": ("frames.zip", archive.getvalue(), "application/zip"),
+                "manifest": (None, json.dumps(changed)),
+            },
+        )
+        assert conflict.status_code == 409
+
+        own_status = await client.get(
+            f"/api/v1/batches/{batch_id}",
+            headers={"X-API-Key": "gpc_abcd1234_secret"},
+        )
+        assert own_status.status_code == 200
+        assert own_status.json()["counts"] == {
+            "total": 1,
+            "pending": 1,
+            "queued": 0,
+            "running": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "cancelled": 0,
+        }
+        foreign_status = await client.get(
+            f"/api/v1/batches/{batch_id}",
+            headers={"X-API-Key": "gpc_tenantb1_secret-b"},
+        )
+        assert foreign_status.status_code == 404
+
+        async with app.state.db.session() as session:
+            batch = await session.get(JobBatch, batch_id)
+            session.add(
+                Job(
+                    id=str(uuid.uuid4()),
+                    tenant_id="tenant",
+                    workflow_key="imageclip-rgba",
+                    workflow_version="test-1",
+                    status="QUEUED",
+                    priority="batch",
+                    parameters={},
+                    request_hash="child-hash",
+                    request_id="child-request",
+                    trace_id="child-trace",
+                    job_dir=str(tmp_path / "child"),
+                    batch_id=batch_id,
+                )
+            )
+            session.add(
+                Job(
+                    id=str(uuid.uuid4()),
+                    tenant_id="tenant",
+                    workflow_key="fake",
+                    workflow_version="1",
+                    status="SUCCEEDED",
+                    priority="normal",
+                    parameters={},
+                    request_hash="regular-hash",
+                    request_id="regular-request",
+                    trace_id="regular-trace",
+                    job_dir=str(tmp_path / "regular"),
+                )
+            )
+            artifact_id = str(uuid.uuid4())
+            result_path = Path(batch.batch_dir) / "output" / "result.zip"
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_bytes(b"result")
+            session.add(
+                BatchArtifact(
+                    id=artifact_id,
+                    batch_id=batch_id,
+                    kind="result_archive",
+                    relative_path="output/result.zip",
+                    filename="result.zip",
+                    content_type="application/zip",
+                    size_bytes=6,
+                    sha256=hashlib.sha256(b"result").hexdigest(),
+                )
+            )
+            batch.status = "SUCCEEDED"
+            batch.pending_items = 0
+            batch.succeeded_items = 1
+            batch.progress = 100
+            await session.commit()
+
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        admin_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        listed = await client.get("/admin/jobs", headers=admin_headers)
+        assert listed.status_code == 200
+        batch_rows = [row for row in listed.json() if row["kind"] == "batch"]
+        assert len(batch_rows) == 1
+        assert batch_rows[0]["job_id"] == batch_id
+        assert batch_rows[0]["external_batch_id"] == "animation-batch-001"
+        assert batch_rows[0]["artifacts"][0]["download_url"].startswith(
+            f"/admin/batches/{batch_id}/artifacts/"
+        )
+        admin_download = await client.get(
+            batch_rows[0]["artifacts"][0]["download_url"], headers=admin_headers
+        )
+        assert admin_download.status_code == 200
+        assert admin_download.content == b"result"
+        public_detail = await client.get(
+            f"/api/v1/batches/{batch_id}",
+            headers={"X-API-Key": "gpc_abcd1234_secret"},
+        )
+        public_url = public_detail.json()["artifacts"][0]["download_url"]
+        assert public_url.startswith(f"/api/v1/batches/{batch_id}/artifacts/")
+        assert (
+            await client.get(
+                public_url, headers={"X-API-Key": "gpc_abcd1234_secret"}
+            )
+        ).content == b"result"
+        assert (
+            await client.get(
+                public_url, headers={"X-API-Key": "gpc_tenantb1_secret-b"}
+            )
+        ).status_code == 404
+        async with app.state.db.session() as session:
+            assert await session.get(JobBatch, batch_id) is not None
 
 
 async def test_uploaded_image_binding_uses_isolated_job_subfolder(tmp_path: Path) -> None:

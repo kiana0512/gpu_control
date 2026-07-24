@@ -28,17 +28,36 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.comfy_client import ComfyClient, ComfyError
+from packages.gpu_control_core.batches import (
+    BatchContractError,
+    extract_batch_archive,
+    parse_batch_manifest,
+    transition_batch,
+    workflow_manifest_from_row,
+)
 from packages.gpu_control_core.database import Database
-from packages.gpu_control_core.enums import TERMINAL_JOB_STATUSES, JobStatus, NodeMode, Priority
+from packages.gpu_control_core.enums import (
+    TERMINAL_BATCH_STATUSES,
+    TERMINAL_JOB_STATUSES,
+    BatchStatus,
+    JobStatus,
+    NodeMode,
+    Priority,
+)
 from packages.gpu_control_core.logging import bind_context, configure_logging, logger, reset_context
 from packages.gpu_control_core.models import (
     Alert,
     ApiClient,
     ApiKey,
     AuditLog,
+    BatchArtifact,
+    BatchEvent,
+    BatchIdempotencyKey,
     IdempotencyKey,
     Job,
     JobArtifact,
+    JobBatch,
+    JobBatchItem,
     JobCallback,
     JobEvent,
     Node,
@@ -1217,6 +1236,493 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             idempotency_key,
         )
 
+    async def owned_batch(
+        batch_id: str, principal: Principal, db: AsyncSession
+    ) -> JobBatch:
+        batch = await db.get(JobBatch, batch_id)
+        if batch is None or batch.tenant_id != principal.id:
+            raise HTTPException(
+                404, detail={"code": "BATCH_NOT_FOUND", "message": "批次不存在"}
+            )
+        return batch
+
+    async def batch_payload(
+        batch: JobBatch, db: AsyncSession, *, admin: bool = False
+    ) -> dict[str, Any]:
+        distribution_rows = (
+            await db.execute(
+                select(JobBatchItem.node_id, func.count(JobBatchItem.id))
+                .where(JobBatchItem.batch_id == batch.id, JobBatchItem.node_id.is_not(None))
+                .group_by(JobBatchItem.node_id)
+            )
+        ).all()
+        artifacts: list[dict[str, Any]] = []
+        if batch.status == BatchStatus.SUCCEEDED.value:
+            artifact_rows = (
+                await db.scalars(
+                    select(BatchArtifact)
+                    .where(BatchArtifact.batch_id == batch.id)
+                    .order_by(BatchArtifact.created_at)
+                )
+            ).all()
+            artifacts = [
+                {
+                    "id": artifact.id,
+                    "kind": artifact.kind,
+                    "filename": artifact.filename,
+                    "content_type": artifact.content_type,
+                    "size_bytes": artifact.size_bytes,
+                    "sha256": artifact.sha256,
+                    "download_url": (
+                        f"/admin/batches/{batch.id}/artifacts/{artifact.id}"
+                        if admin
+                        else f"/api/v1/batches/{batch.id}/artifacts/{artifact.id}"
+                    ),
+                }
+                for artifact in artifact_rows
+            ]
+        return {
+            "batch_id": batch.id,
+            "external_batch_id": batch.external_batch_id,
+            "status": batch.status,
+            "workflow_key": batch.workflow_key,
+            "workflow_version": batch.workflow_version,
+            "progress": batch.progress,
+            "counts": {
+                "total": batch.total_items,
+                "pending": batch.pending_items,
+                "queued": batch.queued_items,
+                "running": batch.running_items,
+                "succeeded": batch.succeeded_items,
+                "failed": batch.failed_items,
+                "cancelled": batch.cancelled_items,
+            },
+            "node_distribution": {
+                str(node_id): int(count) for node_id, count in distribution_rows if node_id
+            },
+            "created_at": batch.created_at.isoformat(),
+            "started_at": batch.started_at.isoformat() if batch.started_at else None,
+            "finished_at": batch.finished_at.isoformat() if batch.finished_at else None,
+            "error": {"code": batch.error_code, "message": batch.error_message}
+            if batch.error_code
+            else None,
+            "artifacts": artifacts,
+        }
+
+    @app.post("/api/v1/batches/imageclip-rgba")
+    async def create_imageclip_batch(
+        request: Request,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+        archive: Annotated[UploadFile, File()],
+        manifest: Annotated[str, Form()],
+        idempotency_key: Annotated[
+            str, Header(alias="Idempotency-Key", min_length=1, max_length=128)
+        ],
+    ) -> JSONResponse:
+        if len(manifest.encode("utf-8")) > 4 * 1024 * 1024:
+            raise HTTPException(
+                413,
+                detail={
+                    "code": "BATCH_TOO_LARGE",
+                    "message": "manifest 不能超过 4 MiB",
+                },
+            )
+        try:
+            parsed_manifest, canonical_manifest, manifest_digest = parse_batch_manifest(
+                manifest, cfg
+            )
+            _validate_parameter_limits(parsed_manifest.parameters)
+        except BatchContractError as exc:
+            status_code = 413 if exc.code == "BATCH_TOO_LARGE" else 400
+            raise HTTPException(
+                status_code,
+                detail={
+                    "code": exc.code,
+                    "message": str(exc),
+                    "ordinal": exc.ordinal,
+                    "relative_path": exc.relative_path,
+                },
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                422,
+                detail={"code": "INPUT_INVALID", "message": str(exc)},
+            ) from exc
+        tenant_lock = request.app.state.tenant_locks.setdefault(
+            principal.id, asyncio.Lock()
+        )
+        async with tenant_lock:
+            await request.app.state.db.acquire_tenant_transaction_lock(db, principal.id)
+            workflow = await db.scalar(
+                select(WorkflowVersion)
+                .where(
+                    WorkflowVersion.workflow_key == "imageclip-rgba",
+                    WorkflowVersion.enabled.is_(True),
+                )
+                .order_by(WorkflowVersion.created_at.desc())
+            )
+            if workflow is None:
+                raise HTTPException(
+                    404,
+                    detail={
+                        "code": "WORKFLOW_NOT_FOUND",
+                        "message": "ImageClip RGBA 工作流未启用",
+                    },
+                )
+            request_hash = hashlib.sha256(
+                workflow.version.encode() + b"\x00" + canonical_manifest
+            ).hexdigest()
+            existing_key = await db.scalar(
+                select(BatchIdempotencyKey).where(
+                    BatchIdempotencyKey.client_id == principal.id,
+                    BatchIdempotencyKey.key == idempotency_key,
+                    BatchIdempotencyKey.expires_at > datetime.now(UTC),
+                )
+            )
+            if existing_key is not None:
+                if existing_key.request_hash != request_hash:
+                    raise HTTPException(
+                        409,
+                        detail={
+                            "code": "IDEMPOTENCY_CONFLICT",
+                            "message": "相同 Idempotency-Key 的批次内容不同",
+                        },
+                    )
+                existing_batch = await db.get(JobBatch, existing_key.batch_id)
+                if existing_batch is None:
+                    raise HTTPException(
+                        500,
+                        detail={
+                            "code": "BATCH_NOT_FOUND",
+                            "message": "幂等记录对应批次不存在",
+                        },
+                    )
+                payload = await batch_payload(existing_batch, db)
+                payload.update(
+                    {
+                        "status_url": f"/api/v1/batches/{existing_batch.id}",
+                        "events_url": f"/api/v1/batches/{existing_batch.id}/events",
+                        "manifest_url": f"/api/v1/batches/{existing_batch.id}/manifest",
+                    }
+                )
+                return JSONResponse(payload, 200)
+            same_external = await db.scalar(
+                select(JobBatch).where(
+                    JobBatch.tenant_id == principal.id,
+                    JobBatch.external_batch_id == parsed_manifest.external_batch_id,
+                )
+            )
+            if same_external is not None:
+                raise HTTPException(
+                    409,
+                    detail={
+                        "code": "EXTERNAL_BATCH_CONFLICT",
+                        "message": "external_batch_id 已被其他幂等请求使用",
+                    },
+                )
+            try:
+                render_parameters = dict(parsed_manifest.parameters)
+                render_parameters["image_filename"] = "batch-validation/input.png"
+                render_workflow(
+                    workflow_manifest_from_row(workflow), workflow.template, render_parameters
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    422,
+                    detail={
+                        "code": "WORKFLOW_RENDER_FAILED",
+                        "message": str(exc),
+                    },
+                ) from exc
+            batch_id = str(uuid.uuid4())
+            storage: LocalJobStorage = request.app.state.storage
+            staging = storage.create_batch_staging_layout(batch_id)
+            root: Path | None = None
+            try:
+                async def archive_chunks() -> AsyncIterator[bytes]:
+                    while chunk := await archive.read(1024 * 1024):
+                        yield chunk
+
+                try:
+                    archive_size, archive_digest = await storage.stream_to_file(
+                        archive_chunks(), staging / "archive.zip", cfg.batch_max_archive_bytes
+                    )
+                except StorageError as exc:
+                    raise BatchContractError("BATCH_TOO_LARGE", str(exc)) from exc
+                extracted = await asyncio.to_thread(
+                    extract_batch_archive,
+                    staging / "archive.zip",
+                    staging / "input",
+                    parsed_manifest,
+                    cfg,
+                )
+                storage.atomic_json(
+                    staging / "manifest.request.json",
+                    parsed_manifest.model_dump(mode="json"),
+                )
+                batch_now = datetime.now(UTC)
+                root = storage.promote_batch_staging(staging, batch_id, batch_now)
+            except BatchContractError as exc:
+                storage.remove_tree(staging)
+                status_code = 413 if exc.code == "BATCH_TOO_LARGE" else 422
+                raise HTTPException(
+                    status_code,
+                    detail={
+                        "code": exc.code,
+                        "message": str(exc),
+                        "ordinal": exc.ordinal,
+                        "relative_path": exc.relative_path,
+                    },
+                ) from exc
+            except Exception:
+                storage.remove_tree(staging)
+                raise
+            trace_id = uuid.uuid4().hex
+            batch = JobBatch(
+                id=batch_id,
+                tenant_id=principal.id,
+                external_batch_id=parsed_manifest.external_batch_id,
+                workflow_key=workflow.workflow_key,
+                workflow_version=workflow.version,
+                status=BatchStatus.VALIDATING.value,
+                failure_policy=parsed_manifest.failure_policy,
+                output_naming=parsed_manifest.output_naming,
+                parameters=parsed_manifest.parameters,
+                request_hash=request_hash,
+                request_id=str(request.state.request_id),
+                trace_id=trace_id,
+                batch_dir=str(root),
+                manifest_sha256=manifest_digest,
+                archive_sha256=archive_digest,
+                archive_size_bytes=archive_size,
+                total_items=len(extracted),
+                pending_items=len(extracted),
+                created_at=batch_now,
+                updated_at=batch_now,
+            )
+            db.add(batch)
+            await db.flush()
+            db.add_all(
+                [
+                    JobBatchItem(
+                        id=str(uuid.uuid4()),
+                        batch_id=batch.id,
+                        ordinal=frame.ordinal,
+                        input_relative_path=frame.input_relative_path,
+                        output_relative_path=frame.output_relative_path,
+                        input_size_bytes=frame.size_bytes,
+                        input_sha256=frame.sha256,
+                        width=frame.width,
+                        height=frame.height,
+                        image_format=frame.image_format,
+                    )
+                    for frame in extracted
+                ]
+            )
+            db.add(
+                BatchIdempotencyKey(
+                    client_id=principal.id,
+                    key=idempotency_key,
+                    request_hash=request_hash,
+                    batch_id=batch.id,
+                    expires_at=datetime.now(UTC) + timedelta(days=7),
+                )
+            )
+            await transition_batch(db, batch, BatchStatus.QUEUED, "batch.queued")
+            try:
+                await db.commit()
+            except IntegrityError as exc:
+                await db.rollback()
+                if root is not None:
+                    storage.remove_tree(root)
+                raise HTTPException(
+                    409,
+                    detail={
+                        "code": "BATCH_CONFLICT",
+                        "message": "批次幂等键或外部 ID 已存在",
+                    },
+                ) from exc
+            await _notify(
+                request.app,
+                "gpu-control:wakeup",
+                {"event": "batch.queued", "batch_id": batch.id},
+            )
+            return JSONResponse(
+                {
+                    "batch_id": batch.id,
+                    "external_batch_id": batch.external_batch_id,
+                    "status": batch.status,
+                    "total_items": batch.total_items,
+                    "accepted_bytes": batch.archive_size_bytes,
+                    "status_url": f"/api/v1/batches/{batch.id}",
+                    "events_url": f"/api/v1/batches/{batch.id}/events",
+                    "manifest_url": f"/api/v1/batches/{batch.id}/manifest",
+                },
+                202,
+            )
+
+    @app.get("/api/v1/batches/{batch_id}")
+    async def get_batch(
+        batch_id: str,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+    ) -> dict[str, Any]:
+        return await batch_payload(await owned_batch(batch_id, principal, db), db)
+
+    @app.get("/api/v1/batches/{batch_id}/manifest")
+    async def get_batch_manifest(
+        batch_id: str,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+        offset: int = 0,
+        limit: int = 200,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        batch = await owned_batch(batch_id, principal, db)
+        query = (
+            select(JobBatchItem)
+            .where(JobBatchItem.batch_id == batch.id)
+            .order_by(JobBatchItem.ordinal)
+            .offset(max(offset, 0))
+            .limit(min(max(limit, 1), 500))
+        )
+        if status:
+            query = query.where(JobBatchItem.status == status)
+        rows = (await db.scalars(query)).all()
+        return {
+            "batch_id": batch.id,
+            "external_batch_id": batch.external_batch_id,
+            "total": batch.total_items,
+            "offset": max(offset, 0),
+            "items": [
+                {
+                    "ordinal": item.ordinal,
+                    "input_relative_path": item.input_relative_path,
+                    "output_relative_path": item.output_relative_path,
+                    "input_sha256": item.input_sha256,
+                    "output_sha256": item.output_sha256,
+                    "status": item.status,
+                    "job_id": item.job_id,
+                    "node_id": item.node_id,
+                    "attempts": item.attempts,
+                    "error": {"code": item.error_code, "message": item.error_message}
+                    if item.error_code
+                    else None,
+                }
+                for item in rows
+            ],
+        }
+
+    @app.get("/api/v1/batches/{batch_id}/events")
+    async def batch_events(
+        batch_id: str,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+    ) -> StreamingResponse:
+        await owned_batch(batch_id, principal, db)
+
+        async def stream() -> AsyncIterator[str]:
+            sequence = 0
+            while True:
+                async with app.state.db.session() as event_db:
+                    events = (
+                        await event_db.scalars(
+                            select(BatchEvent)
+                            .where(
+                                BatchEvent.batch_id == batch_id,
+                                BatchEvent.sequence > sequence,
+                            )
+                            .order_by(BatchEvent.sequence)
+                        )
+                    ).all()
+                    terminal = False
+                    for item in events:
+                        sequence = item.sequence
+                        data = json.dumps(
+                            {
+                                "status": item.status,
+                                "event": item.event,
+                                "details": item.details,
+                            }
+                        )
+                        yield f"id: {sequence}\nevent: batch\ndata: {data}\n\n"
+                        terminal = BatchStatus(item.status) in TERMINAL_BATCH_STATUSES
+                    if terminal:
+                        return
+                yield ": keepalive\n\n"
+                await asyncio.sleep(1)
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    @app.get("/api/v1/batches/{batch_id}/artifacts/{artifact_id}")
+    async def batch_artifact_file(
+        batch_id: str,
+        artifact_id: str,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+    ) -> FileResponse:
+        batch = await owned_batch(batch_id, principal, db)
+        if batch.status != BatchStatus.SUCCEEDED.value:
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "BATCH_NOT_COMPLETE",
+                    "message": "批次完整成功前不提供结果包",
+                },
+            )
+        artifact = await db.scalar(
+            select(BatchArtifact).where(
+                BatchArtifact.id == artifact_id, BatchArtifact.batch_id == batch.id
+            )
+        )
+        if artifact is None:
+            raise HTTPException(404, detail={"code": "ARTIFACT_NOT_FOUND"})
+        path = (Path(batch.batch_dir) / artifact.relative_path).resolve()
+        if Path(batch.batch_dir).resolve() not in path.parents or not path.is_file():
+            raise HTTPException(404, detail={"code": "ARTIFACT_NOT_FOUND"})
+        return FileResponse(
+            path,
+            media_type=artifact.content_type,
+            filename=artifact.filename,
+            headers={"X-Artifact-SHA256": artifact.sha256, "Cache-Control": "no-store"},
+        )
+
+    @app.post("/api/v1/batches/{batch_id}/cancel")
+    async def cancel_batch(
+        batch_id: str,
+        request: Request,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+        idempotency_key: Annotated[
+            str, Header(alias="Idempotency-Key", min_length=1, max_length=128)
+        ],
+    ) -> dict[str, Any]:
+        batch = await owned_batch(batch_id, principal, db)
+        if BatchStatus(batch.status) in TERMINAL_BATCH_STATUSES:
+            return await batch_payload(batch, db)
+        expected_key = f"{batch.external_batch_id}:cancel"
+        if idempotency_key != expected_key:
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "IDEMPOTENCY_CONFLICT",
+                    "message": f"取消幂等键必须为 {expected_key}",
+                },
+            )
+        batch.cancel_requested = True
+        if batch.status != BatchStatus.CANCELLING.value:
+            await transition_batch(
+                db, batch, BatchStatus.CANCELLING, "batch.cancel_requested"
+            )
+        await db.commit()
+        await _notify(
+            request.app,
+            "gpu-control:wakeup",
+            {"event": "batch.cancel", "batch_id": batch.id},
+        )
+        return await batch_payload(batch, db)
+
     async def owned_job(job_id: str, principal: Principal, db: AsyncSession) -> Job:
         job = await db.get(Job, job_id)
         if job is None or job.tenant_id != principal.id:
@@ -1225,6 +1731,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
 
     def job_payload(job: Job) -> dict[str, Any]:
         return {
+            "kind": "job",
             "job_id": job.id,
             "status": job.status,
             "workflow_key": job.workflow_key,
@@ -1237,9 +1744,9 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             "error": {"code": job.error_code, "message": job.error_message}
             if job.error_code
             else None,
-            "created_at": job.created_at,
-            "started_at": job.started_at,
-            "finished_at": job.finished_at,
+            "created_at": job.created_at.isoformat(),
+            "started_at": job.started_at.isoformat() if job.started_at else None,
+            "finished_at": job.finished_at.isoformat() if job.finished_at else None,
         }
 
     @app.get("/api/v1/jobs/{job_id}")
@@ -1345,21 +1852,70 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
     ) -> dict[str, Any]:
         now = datetime.now(UTC)
         today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        rows = (await db.execute(select(Job.status, func.count(Job.id)).group_by(Job.status))).all()
+        rows = (
+            await db.execute(
+                select(Job.status, func.count(Job.id))
+                .where(Job.batch_id.is_(None))
+                .group_by(Job.status)
+            )
+        ).all()
         counts: dict[str, int] = {str(status): int(count) for status, count in rows}
+        batch_status_rows = (
+            await db.execute(
+                select(JobBatch.status, func.count(JobBatch.id)).group_by(JobBatch.status)
+            )
+        ).all()
+        batch_dashboard_status = {
+            BatchStatus.VALIDATING.value: JobStatus.QUEUED.value,
+            BatchStatus.QUEUED.value: JobStatus.QUEUED.value,
+            BatchStatus.RUNNING.value: JobStatus.RUNNING.value,
+            BatchStatus.ASSEMBLING.value: JobStatus.RUNNING.value,
+            BatchStatus.CANCELLING.value: JobStatus.CANCELLING.value,
+            BatchStatus.SUCCEEDED.value: JobStatus.SUCCEEDED.value,
+            BatchStatus.CANCELLED.value: JobStatus.CANCELLED.value,
+            BatchStatus.FAILED.value: JobStatus.FAILED.value,
+        }
+        for batch_status, count in batch_status_rows:
+            mapped = batch_dashboard_status[str(batch_status)]
+            counts[mapped] = counts.get(mapped, 0) + int(count)
         today_rows = (
             await db.execute(
                 select(Job.status, func.count(Job.id))
-                .where(Job.created_at >= today)
+                .where(Job.batch_id.is_(None), Job.created_at >= today)
                 .group_by(Job.status)
             )
         ).all()
         today_counts = {str(status): int(count) for status, count in today_rows}
+        today_batch_rows = (
+            await db.execute(
+                select(JobBatch.status, func.count(JobBatch.id))
+                .where(JobBatch.created_at >= today)
+                .group_by(JobBatch.status)
+            )
+        ).all()
+        for batch_status, count in today_batch_rows:
+            mapped = batch_dashboard_status[str(batch_status)]
+            today_counts[mapped] = today_counts.get(mapped, 0) + int(count)
         for terminal in (JobStatus.SUCCEEDED.value, JobStatus.FAILED.value):
             counts[terminal] = today_counts.get(terminal, 0)
         oldest = await db.scalar(
-            select(func.min(Job.created_at)).where(Job.status == JobStatus.QUEUED.value)
+            select(func.min(Job.created_at)).where(
+                Job.batch_id.is_(None), Job.status == JobStatus.QUEUED.value
+            )
         )
+        oldest_batch = await db.scalar(
+            select(func.min(JobBatch.created_at)).where(
+                JobBatch.status.in_(
+                    [BatchStatus.VALIDATING.value, BatchStatus.QUEUED.value]
+                )
+            )
+        )
+        if oldest_batch is not None and (
+            oldest is None or oldest_batch.replace(tzinfo=oldest_batch.tzinfo or UTC) < oldest.replace(
+                tzinfo=oldest.tzinfo or UTC
+            )
+        ):
+            oldest = oldest_batch
         if oldest is not None and oldest.tzinfo is None:
             oldest = oldest.replace(tzinfo=UTC)
         oldest_wait_seconds = max(0, int((now - oldest).total_seconds())) if oldest else 0
@@ -1369,6 +1925,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     select(Job)
                     .where(
                         Job.status == JobStatus.SUCCEEDED.value,
+                        Job.batch_id.is_(None),
                         Job.started_at.is_not(None),
                         Job.finished_at.is_not(None),
                     )
@@ -1382,6 +1939,25 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             for job in durations
             if job.finished_at is not None and job.started_at is not None
         ]
+        batch_durations = list(
+            (
+                await db.scalars(
+                    select(JobBatch)
+                    .where(
+                        JobBatch.status == BatchStatus.SUCCEEDED.value,
+                        JobBatch.started_at.is_not(None),
+                        JobBatch.finished_at.is_not(None),
+                    )
+                    .order_by(JobBatch.finished_at.desc())
+                    .limit(50)
+                )
+            ).all()
+        )
+        duration_values.extend(
+            max(0, (batch.finished_at - batch.started_at).total_seconds())
+            for batch in batch_durations
+            if batch.finished_at is not None and batch.started_at is not None
+        )
         nodes = (await db.scalars(select(Node).order_by(Node.pool, Node.id))).all()
         workers = sum(
             node.pool == "PRIMARY"
@@ -1397,7 +1973,20 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         )
         trend_start = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=6)
         created_times = list(
-            (await db.scalars(select(Job.created_at).where(Job.created_at >= trend_start))).all()
+            (
+                await db.scalars(
+                    select(Job.created_at).where(
+                        Job.batch_id.is_(None), Job.created_at >= trend_start
+                    )
+                )
+            ).all()
+        )
+        created_times.extend(
+            (
+                await db.scalars(
+                    select(JobBatch.created_at).where(JobBatch.created_at >= trend_start)
+                )
+            ).all()
         )
         buckets = []
         for offset in range(7):
@@ -1453,10 +2042,177 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         status: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        query = select(Job).order_by(Job.created_at.desc()).limit(min(max(limit, 1), 500))
+        bounded_limit = min(max(limit, 1), 500)
+        query = (
+            select(Job)
+            .where(Job.batch_id.is_(None))
+            .order_by(Job.created_at.desc())
+            .limit(bounded_limit)
+        )
         if status:
             query = query.where(Job.status == status)
-        return [job_payload(row) for row in (await db.scalars(query)).all()]
+        rows: list[dict[str, Any]] = [
+            job_payload(row) for row in (await db.scalars(query)).all()
+        ]
+        batch_query = (
+            select(JobBatch).order_by(JobBatch.created_at.desc()).limit(bounded_limit)
+        )
+        if status:
+            batch_query = batch_query.where(JobBatch.status == status)
+        for batch in (await db.scalars(batch_query)).all():
+            payload = await batch_payload(batch, db, admin=True)
+            payload.update(
+                {
+                    "kind": "batch",
+                    "job_id": batch.id,
+                    "priority": Priority.BATCH.value,
+                    "node_id": None,
+                    "prompt_id": None,
+                    "attempt": int(
+                        await db.scalar(
+                            select(func.coalesce(func.sum(JobBatchItem.attempts), 0)).where(
+                                JobBatchItem.batch_id == batch.id
+                            )
+                        )
+                        or 0
+                    ),
+                }
+            )
+            rows.append(payload)
+        rows.sort(key=lambda row: row["created_at"], reverse=True)
+        return rows[:bounded_limit]
+
+    @app.get("/admin/batches/{batch_id}")
+    async def admin_batch_detail(
+        batch_id: str,
+        _: Annotated[Principal, Depends(admin_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+    ) -> dict[str, Any]:
+        batch = await db.get(JobBatch, batch_id)
+        if batch is None:
+            raise HTTPException(404, detail={"code": "BATCH_NOT_FOUND"})
+        payload = await batch_payload(batch, db, admin=True)
+        payload.update({"kind": "batch", "job_id": batch.id, "tenant_id": batch.tenant_id})
+        return payload
+
+    @app.get("/admin/batches/{batch_id}/items")
+    async def admin_batch_items(
+        batch_id: str,
+        _: Annotated[Principal, Depends(admin_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+        offset: int = 0,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        batch = await db.get(JobBatch, batch_id)
+        if batch is None:
+            raise HTTPException(404, detail={"code": "BATCH_NOT_FOUND"})
+        bounded_offset = max(offset, 0)
+        bounded_limit = min(max(limit, 1), 500)
+        items = (
+            await db.scalars(
+                select(JobBatchItem)
+                .where(JobBatchItem.batch_id == batch.id)
+                .order_by(JobBatchItem.ordinal)
+                .offset(bounded_offset)
+                .limit(bounded_limit)
+            )
+        ).all()
+        return {
+            "batch_id": batch.id,
+            "total": batch.total_items,
+            "offset": bounded_offset,
+            "limit": bounded_limit,
+            "items": [
+                {
+                    "ordinal": item.ordinal,
+                    "input_relative_path": item.input_relative_path,
+                    "output_relative_path": item.output_relative_path,
+                    "status": item.status,
+                    "job_id": item.job_id,
+                    "node_id": item.node_id,
+                    "attempts": item.attempts,
+                    "input_sha256": item.input_sha256,
+                    "output_sha256": item.output_sha256,
+                    "error": {"code": item.error_code, "message": item.error_message}
+                    if item.error_code
+                    else None,
+                }
+                for item in items
+            ],
+        }
+
+    @app.get("/admin/batches/{batch_id}/artifacts/{artifact_id}")
+    async def admin_batch_artifact_file(
+        batch_id: str,
+        artifact_id: str,
+        _: Annotated[Principal, Depends(admin_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+    ) -> FileResponse:
+        batch = await db.get(JobBatch, batch_id)
+        if batch is None:
+            raise HTTPException(404, detail={"code": "BATCH_NOT_FOUND"})
+        if batch.status != BatchStatus.SUCCEEDED.value:
+            raise HTTPException(409, detail={"code": "BATCH_NOT_COMPLETE"})
+        artifact = await db.scalar(
+            select(BatchArtifact).where(
+                BatchArtifact.id == artifact_id,
+                BatchArtifact.batch_id == batch.id,
+            )
+        )
+        if artifact is None:
+            raise HTTPException(404, detail={"code": "ARTIFACT_NOT_FOUND"})
+        root = Path(batch.batch_dir).resolve()
+        path = (root / artifact.relative_path).resolve()
+        if root not in path.parents or not path.is_file():
+            raise HTTPException(404, detail={"code": "ARTIFACT_NOT_FOUND"})
+        return FileResponse(
+            path,
+            media_type=artifact.content_type,
+            filename=artifact.filename,
+            headers={"X-Artifact-SHA256": artifact.sha256, "Cache-Control": "no-store"},
+        )
+
+    @app.post("/admin/batches/{batch_id}/cancel")
+    async def admin_cancel_batch(
+        batch_id: str,
+        body: RetryRequest,
+        request: Request,
+        principal: Annotated[Principal, Depends(require_operator)],
+        db: Annotated[AsyncSession, Depends(session)],
+    ) -> dict[str, Any]:
+        if not body.confirm:
+            raise HTTPException(409, detail={"code": "CONFIRMATION_REQUIRED"})
+        batch = await db.get(JobBatch, batch_id, with_for_update=True)
+        if batch is None:
+            raise HTTPException(404, detail={"code": "BATCH_NOT_FOUND"})
+        if BatchStatus(batch.status) not in TERMINAL_BATCH_STATUSES:
+            before = {"status": batch.status, "cancel_requested": batch.cancel_requested}
+            batch.cancel_requested = True
+            if batch.status != BatchStatus.CANCELLING.value:
+                await transition_batch(
+                    db, batch, BatchStatus.CANCELLING, "admin.batch_cancel_requested"
+                )
+            await audit(
+                db,
+                request,
+                principal,
+                "batch.cancel",
+                "batch",
+                batch.id,
+                before,
+                {
+                    "status": batch.status,
+                    "cancel_requested": True,
+                    "reason": body.reason,
+                },
+            )
+            await db.commit()
+            await _notify(
+                request.app,
+                "gpu-control:wakeup",
+                {"event": "batch.cancel", "batch_id": batch.id},
+            )
+        return await batch_payload(batch, db, admin=True)
 
     @app.post("/admin/jobs/{job_id}/pin")
     async def pin_job(

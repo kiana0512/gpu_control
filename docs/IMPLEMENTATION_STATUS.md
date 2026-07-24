@@ -1,7 +1,18 @@
 # 实施状态
 
-最后更新：2026-07-22  
-版本：1.1.0 三机现场部署候选版
+最后更新：2026-07-24
+版本：1.2.0 三机生产版
+
+## 1.2.0 生产增量
+
+- 两台 3090 和一台 4090 均已接入、在线并完成真实三卡分配；节点以 node_id、MAC 和 GPU UUID
+  保持身份，心跳可更新 DHCP 地址。
+- ImageClip/ModelView 单图 API、Web、Scheduler、PostgreSQL、Redis、Nginx 和监控栈已在生产验证。
+- 动画管家 ImageClip RGBA 序列帧批次已完成：严格 ZIP/manifest、父子任务、有界投喂、三卡
+  调度、重试/取消/恢复、结果校验和原子 ZIP 发布。
+- Web 顶层只显示一个批次父任务，帧级路径、节点、重试和错误只在详情分页展示。
+- 对外冻结合同为 `38_GPU_CONTROL_MATTING_HANDOFF_V2.md`，部署证据为
+  `39_2026-07-24_BATCH_MATTING_DEPLOYMENT_RECORD.md`。
 
 ## 状态定义
 
@@ -27,15 +38,16 @@
 ## 当前验证结果
 
 - `python -m ruff check .`：通过。
-- `python -m mypy packages apps/api/src apps/scheduler/src apps/node_agent/src`：通过，22 个源文件。
-- `python -m pytest -q --basetemp=.pytest-tmp-final2`：51 passed（34.20 秒）。
+- `python -m mypy packages apps/api/src apps/scheduler/src apps/node_agent/src`：通过，23 个源文件。
+- `python -m pytest -q`：66 passed；批次列表混合排序修复后相关集成 17 passed。
 - 前端 `npm run lint`：通过。
 - 前端 `npm run format:check`：通过。
-- 前端 `npm test`：1 passed。
-- 前端 `npm run build`：通过，2038 modules transformed。
-- 浏览器：管理员真实登录本地演示 API；总览、节点、调度页面 DOM/视觉检查；控制台 0 warning/error；390×844 无横向溢出。
+- 前端 `npm test`：2 passed。
+- 前端 `npm run build`：通过；`npm audit` 为 0 vulnerabilities。
+- 浏览器：管理员真实登录生产 API；父批次只显示 1 行，3 帧详情、路径、三节点和 artifact SHA
+  可见，内部子任务未出现在顶层，控制台 0 error。
 - 部署配置：12 个 YAML 文件全部解析通过。
-- Alembic：空 SQLite 到 `20260722_0002 (head)` 通过。
+- Alembic：生产 PostgreSQL 已到 `20260724_0004 (head)`。
 
 ## 为当天落地完成的关键修复
 

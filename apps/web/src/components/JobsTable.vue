@@ -3,6 +3,16 @@ import type { JobInfo } from "../types";
 import StatusMark from "./StatusMark.vue";
 defineProps<{ jobs: JobInfo[] }>();
 const emit = defineEmits<{ select: [job: JobInfo] }>();
+function isBatch(job: JobInfo) {
+  return job.kind === "batch";
+}
+function nodeSummary(job: JobInfo) {
+  if (!isBatch(job)) return job.node_id ?? "—";
+  const entries = Object.entries(job.node_distribution ?? {});
+  return entries.length
+    ? entries.map(([node, count]) => `${node} · ${count}`).join(" / ")
+    : "尚未分配";
+}
 </script>
 <template>
   <section class="ruled-section blue-rail">
@@ -14,7 +24,7 @@ const emit = defineEmits<{ select: [job: JobInfo] }>();
       <table>
         <thead>
           <tr>
-            <th>任务 ID</th>
+            <th>任务 / 批次 ID</th>
             <th>工作流</th>
             <th>状态</th>
             <th>节点</th>
@@ -34,12 +44,20 @@ const emit = defineEmits<{ select: [job: JobInfo] }>();
           >
             <td>
               <button class="job-id-link" @click.stop="emit('select', job)">
-                {{ job.job_id.slice(0, 13) }}
+                {{ job.external_batch_id || job.job_id.slice(0, 13) }}
               </button>
+              <small v-if="isBatch(job)" class="batch-row-label"
+                >序列帧批次</small
+              >
             </td>
-            <td>{{ job.workflow_key }} v{{ job.workflow_version }}</td>
+            <td>
+              {{ job.workflow_key }} v{{ job.workflow_version }}
+              <small v-if="isBatch(job) && job.counts" class="batch-row-label"
+                >{{ job.counts.succeeded }} / {{ job.counts.total }} 帧</small
+              >
+            </td>
             <td><StatusMark :value="job.status" /></td>
-            <td>{{ job.node_id ?? "—" }}</td>
+            <td>{{ nodeSummary(job) }}</td>
             <td>
               <div class="progress">
                 <i :style="{ width: `${job.progress}%` }"></i>

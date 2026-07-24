@@ -15,7 +15,10 @@ export interface NodeInfo {
   last_heartbeat_at?: string | null;
 }
 export interface JobInfo {
+  kind?: "job" | "batch";
   job_id: string;
+  batch_id?: string;
+  external_batch_id?: string;
   status: string;
   workflow_key: string;
   workflow_version: string;
@@ -28,6 +31,46 @@ export interface JobInfo {
   started_at: string | null;
   finished_at: string | null;
   error: { code: string; message: string } | null;
+  counts?: BatchCounts;
+  node_distribution?: Record<string, number>;
+  artifacts?: BatchArtifact[];
+}
+export interface BatchCounts {
+  total: number;
+  pending: number;
+  queued: number;
+  running: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+}
+export interface BatchArtifact {
+  id: string;
+  kind: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  sha256: string;
+  download_url: string;
+}
+export interface BatchItem {
+  ordinal: number;
+  input_relative_path: string;
+  output_relative_path: string;
+  status: string;
+  job_id: string | null;
+  node_id: string | null;
+  attempts: number;
+  input_sha256: string;
+  output_sha256: string | null;
+  error: { code: string; message: string } | null;
+}
+export interface BatchItemsPage {
+  batch_id: string;
+  total: number;
+  offset: number;
+  limit: number;
+  items: BatchItem[];
 }
 export interface Dashboard {
   jobs: Record<string, number>;

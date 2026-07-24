@@ -66,6 +66,26 @@ print("job_id:", response.headers.get("X-Job-ID"))
 每次提交建议使用唯一 `Idempotency-Key`。同一 IP、同一 Key、同一内容会返回已有任务；
 同 Key 不同内容返回 `409`。
 
+### 动画序列帧批量 ImageClip RGBA
+
+大量序列帧不要逐张调用单图接口，也不要逐张生成顶层任务。使用：
+
+```text
+POST /api/v1/batches/imageclip-rgba
+GET  /api/v1/batches/{batch_id}
+GET  /api/v1/batches/{batch_id}/manifest
+GET  /api/v1/batches/{batch_id}/events
+GET  /api/v1/batches/{batch_id}/artifacts/{artifact_id}
+POST /api/v1/batches/{batch_id}/cancel
+```
+
+创建请求为严格 manifest 1.0 + `ZIP_STORED`；一个业务批次只显示一个父任务，GPU Control 在内部
+把帧动态分配给三台 GPU。只有每帧都成功且输出 PNG/Alpha/SHA 完整校验后才提供结果 ZIP。
+
+动画管家不得根据早期草案自行增加 callback、best_effort 或 retry-failed 字段。完整字段、幂等、
+路径、错误码、结果校验和真实联调清单以
+[`38_GPU_CONTROL_MATTING_HANDOFF_V2.md`](38_GPU_CONTROL_MATTING_HANDOFF_V2.md) 为准。
+
 ## 调度与基础防护
 
 - 每个来源 IP 默认 `10 requests/s`、突发 `20`，同时最多 `20` 个 API 连接，超限返回 `429`。
@@ -73,6 +93,8 @@ print("job_id:", response.headers.get("X-Job-ID"))
 - `max_queued` 控制同一 IP 客户最多排队任务，`max_running` 控制同时运行任务。
 - 多个来源 IP 之间由 Scheduler 公平轮转；系统总队列仍受全局上限保护。
 - Nginx 会覆盖客户端传入的转发头，只把真实连接 IP 传给仅在 Docker 后端网络开放的 API。
+- 单图入口仍受 `MAX_UPLOAD_BYTES=50 MiB`；批次入口由 API 单独限制为 5000 帧、单帧 64 MiB、
+  archive/解压总量 100 GiB，Nginx 使用 101 GiB multipart 上限并关闭请求缓冲。
 
 稳定错误码包括 `RATE_LIMITED`、`INPUT_INVALID`、`WORKFLOW_NOT_FOUND`、
 `IDEMPOTENCY_CONFLICT`、`SERVICE_TIMEOUT` 和 `GENERATION_FAILED`。同时记录响应中的

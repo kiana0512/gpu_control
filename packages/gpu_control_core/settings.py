@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     job_max_attempts: int = Field(3, ge=1, le=10)
     max_upload_bytes: int = Field(52_428_800, ge=1024, le=2_147_483_648)
     max_image_pixels: int = Field(40_000_000, ge=1, le=500_000_000)
+    batch_max_frames: int = Field(5_000, ge=1, le=100_000)
+    batch_max_archive_bytes: int = Field(107_374_182_400, ge=1024, le=1_099_511_627_776)
+    batch_max_uncompressed_bytes: int = Field(
+        107_374_182_400, ge=1024, le=1_099_511_627_776
+    )
+    batch_max_frame_bytes: int = Field(67_108_864, ge=1024, le=2_147_483_648)
+    batch_feed_window: int = Field(12, ge=1, le=10_000)
+    batch_max_running_per_tenant: int = Field(3, ge=1, le=10)
 
     @field_validator(
         "jwt_secret", "api_key_pepper", "node_agent_hmac_secret", "alertmanager_webhook_token"

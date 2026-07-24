@@ -108,6 +108,7 @@ async def claim_next_job(
     queue_snapshot: QueueSnapshot | None = None,
     overflow_guard: OverflowGuard | None = None,
     heartbeat_timeout_seconds: int = 20,
+    batch_max_running: int = 3,
 ) -> tuple[Job, NodeLease] | None:
     now = datetime.now(UTC)
     node = await session.scalar(select(Node).where(Node.id == node_id).with_for_update())
@@ -171,7 +172,12 @@ async def claim_next_job(
                 Job.tenant_id == client.id, Job.status.in_(ACTIVE_STATUSES)
             )
         )
-        if int(running or 0) < client.max_running:
+        running_limit = (
+            max(client.max_running, batch_max_running)
+            if chosen.batch_id is not None
+            else client.max_running
+        )
+        if int(running or 0) < running_limit:
             break
         remaining = [job for job in remaining if job.tenant_id != client.id]
         chosen = None

@@ -3,7 +3,7 @@ import { computed, ref } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "../api";
-import type { JobInfo } from "../types";
+import type { BatchItem, JobInfo } from "../types";
 import JobsTable from "../components/JobsTable.vue";
 import StatusMark from "../components/StatusMark.vue";
 import { useAutoRefresh } from "../composables/useAutoRefresh";
@@ -12,8 +12,14 @@ const route = useRoute();
 const loading = ref(false);
 const error = ref("");
 const selectedJob = ref<JobInfo | null>(null);
+const batchItems = ref<BatchItem[]>([]);
+const batchOffset = ref(0);
+const batchItemsTotal = ref(0);
+const batchLoading = ref(false);
+const batchPageSize = 100;
 const actionBusy = ref("");
 const terminalStatuses = ["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT"];
+const isBatch = computed(() => selectedJob.value?.kind === "batch");
 const canCancel = computed(
   () =>
     selectedJob.value && !terminalStatuses.includes(selectedJob.value.status),
@@ -21,8 +27,24 @@ const canCancel = computed(
 const canRetry = computed(
   () =>
     selectedJob.value &&
+    selectedJob.value.kind !== "batch" &&
     ["FAILED", "TIMED_OUT"].includes(selectedJob.value.status),
 );
+async function loadBatch(id: string, offset = batchOffset.value) {
+  batchLoading.value = true;
+  try {
+    const [detail, page] = await Promise.all([
+      api.batch(id),
+      api.batchItems(id, offset, batchPageSize),
+    ]);
+    selectedJob.value = detail;
+    batchItems.value = page.items;
+    batchItemsTotal.value = page.total;
+    batchOffset.value = page.offset;
+  } finally {
+    batchLoading.value = false;
+  }
+}
 async function load() {
   loading.value = true;
   error.value = "";
@@ -33,6 +55,13 @@ async function load() {
     if (requestedJob && !selectedJob.value)
       selectedJob.value =
         jobs.value.find((job) => job.job_id === requestedJob) ?? null;
+    if (selectedJob.value?.kind === "batch") {
+      await loadBatch(selectedJob.value.job_id);
+    } else if (selectedJob.value) {
+      selectedJob.value =
+        jobs.value.find((job) => job.job_id === selectedJob.value?.job_id) ??
+        selectedJob.value;
+    }
   } catch (e) {
     error.value = e instanceof Error ? e.message : "任务数据加载失败";
     throw e;
@@ -67,7 +96,8 @@ async function cancel(id: string) {
       { type: "warning" },
     );
     actionBusy.value = "cancel";
-    await api.cancel(id);
+    if (isBatch.value) await api.cancelBatch(id);
+    else await api.cancel(id);
     ElMessage.success("取消请求已提交");
     selectedJob.value = null;
     await load();
@@ -102,8 +132,25 @@ function formatTime(value: string | null) {
     ? new Date(value).toLocaleString("zh-CN", { hour12: false })
     : "—";
 }
-function selectJob(job: JobInfo) {
+async function selectJob(job: JobInfo) {
   selectedJob.value = job;
+  batchItems.value = [];
+  batchOffset.value = 0;
+  batchItemsTotal.value = 0;
+  if (job.kind === "batch") await loadBatch(job.job_id, 0);
+}
+async function changeBatchPage(offset: number) {
+  if (!selectedJob.value || selectedJob.value.kind !== "batch") return;
+  await loadBatch(
+    selectedJob.value.job_id,
+    Math.max(0, Math.min(offset, Math.max(0, batchItemsTotal.value - 1))),
+  );
+}
+function nodeDistribution(job: JobInfo) {
+  const entries = Object.entries(job.node_distribution ?? {});
+  return entries.length
+    ? entries.map(([node, count]) => `${node}：${count} 帧`).join("，")
+    : "尚未分配";
 }
 const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 </script>
@@ -140,14 +187,19 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
     >
       <aside
         class="task-drawer"
+        :class="{ 'batch-drawer': isBatch }"
         role="dialog"
         aria-modal="true"
         aria-label="任务详情"
       >
         <header>
           <div>
-            <span class="eyebrow">任务详情</span>
-            <h2>{{ selectedJob.job_id.slice(0, 13) }}</h2>
+            <span class="eyebrow">{{ isBatch ? "批次详情" : "任务详情" }}</span>
+            <h2>
+              {{
+                selectedJob.external_batch_id || selectedJob.job_id.slice(0, 13)
+              }}
+            </h2>
             <p>
               {{ selectedJob.workflow_key }} · v{{
                 selectedJob.workflow_version
@@ -165,33 +217,141 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
         <div class="task-result" :class="selectedJob.status.toLowerCase()">
           <StatusMark :value="selectedJob.status" /><strong>{{
             selectedJob.status === "SUCCEEDED"
-              ? "任务处理成功，图片已返回调用方"
+              ? isBatch
+                ? "全部序列帧已校验并生成完整结果包"
+                : "任务处理成功，图片已返回调用方"
               : selectedJob.status === "FAILED"
-                ? "任务执行失败，请查看下方错误信息"
-                : "任务状态已同步"
+                ? isBatch
+                  ? "批次失败，未向调用方暴露不完整结果"
+                  : "任务执行失败，请查看下方错误信息"
+                : isBatch
+                  ? "批次状态与逐帧进度已同步"
+                  : "任务状态已同步"
           }}</strong
           ><span>进度 {{ selectedJob.progress.toFixed(0) }}%</span>
         </div>
-        <dl class="task-facts">
-          <dt>完整任务 ID</dt>
+        <dl class="task-facts" :class="{ 'batch-facts': isBatch }">
+          <dt>{{ isBatch ? "完整批次 ID" : "完整任务 ID" }}</dt>
           <dd>
             <code>{{ selectedJob.job_id }}</code>
           </dd>
-          <dt>执行节点</dt>
-          <dd>{{ selectedJob.node_id || "尚未分配" }}</dd>
-          <dt>ComfyUI Prompt</dt>
-          <dd>
-            <code>{{ selectedJob.prompt_id || "—" }}</code>
-          </dd>
-          <dt>尝试次数</dt>
+          <template v-if="isBatch">
+            <dt>动画管家批次</dt>
+            <dd>
+              <code>{{ selectedJob.external_batch_id }}</code>
+            </dd>
+            <dt>序列帧进度</dt>
+            <dd>
+              {{ selectedJob.counts?.succeeded ?? 0 }} /
+              {{ selectedJob.counts?.total ?? 0 }} 成功，{{
+                selectedJob.counts?.running ?? 0
+              }}
+              运行， {{ selectedJob.counts?.failed ?? 0 }} 失败
+            </dd>
+            <dt>节点分配</dt>
+            <dd>{{ nodeDistribution(selectedJob) }}</dd>
+          </template>
+          <template v-else>
+            <dt>执行节点</dt>
+            <dd>{{ selectedJob.node_id || "尚未分配" }}</dd>
+            <dt>ComfyUI Prompt</dt>
+            <dd>
+              <code>{{ selectedJob.prompt_id || "—" }}</code>
+            </dd>
+          </template>
+          <dt>{{ isBatch ? "累计尝试" : "尝试次数" }}</dt>
           <dd>{{ selectedJob.attempt }}</dd>
           <dt>提交时间</dt>
           <dd>{{ formatTime(selectedJob.created_at) }}</dd>
           <dt>开始时间</dt>
           <dd>{{ formatTime(selectedJob.started_at) }}</dd>
           <dt>完成时间</dt>
-          <dd>{{ formatTime(selectedJob.finished_at) }}</dd>
+          <dd>
+            {{ formatTime(selectedJob.finished_at) }}
+          </dd>
         </dl>
+        <section v-if="isBatch" class="batch-items-panel">
+          <div class="batch-items-heading">
+            <div>
+              <h3>序列帧详情</h3>
+              <p>逐帧状态仅在此处展示，不进入任务列表。</p>
+            </div>
+            <span v-if="batchLoading">正在同步…</span>
+          </div>
+          <div class="batch-items-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>序号</th>
+                  <th>输入路径</th>
+                  <th>状态</th>
+                  <th>节点</th>
+                  <th>尝试</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="item in batchItems" :key="item.ordinal">
+                  <td>{{ item.ordinal }}</td>
+                  <td :title="item.input_relative_path">
+                    <code>{{ item.input_relative_path }}</code>
+                    <small v-if="item.error"
+                      >{{ item.error.code }} · {{ item.error.message }}</small
+                    >
+                  </td>
+                  <td><StatusMark :value="item.status" /></td>
+                  <td>{{ item.node_id || "—" }}</td>
+                  <td>{{ item.attempts }}</td>
+                </tr>
+                <tr v-if="!batchItems.length">
+                  <td colspan="5" class="empty">尚无已物化帧</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="batch-pagination">
+            <span>
+              {{ batchItemsTotal ? batchOffset + 1 : 0 }}–{{
+                Math.min(batchOffset + batchItems.length, batchItemsTotal)
+              }}
+              / {{ batchItemsTotal }}
+            </span>
+            <button
+              class="secondary"
+              :disabled="batchOffset === 0 || batchLoading"
+              @click="changeBatchPage(batchOffset - batchPageSize)"
+            >
+              上一页
+            </button>
+            <button
+              class="secondary"
+              :disabled="
+                batchOffset + batchPageSize >= batchItemsTotal || batchLoading
+              "
+              @click="changeBatchPage(batchOffset + batchPageSize)"
+            >
+              下一页
+            </button>
+          </div>
+        </section>
+        <section
+          v-if="isBatch && selectedJob.artifacts?.length"
+          class="batch-artifacts"
+        >
+          <h3>完整结果归档</h3>
+          <a
+            v-for="artifact in selectedJob.artifacts"
+            :key="artifact.id"
+            :href="artifact.download_url"
+            target="_blank"
+            rel="noopener"
+          >
+            <strong>{{ artifact.filename }}</strong>
+            <span
+              >{{ (artifact.size_bytes / 1024 / 1024).toFixed(1) }} MiB</span
+            >
+            <code>SHA-256 {{ artifact.sha256 }}</code>
+          </a>
+        </section>
         <section v-if="selectedJob.error" class="task-error">
           <h3>失败原因</h3>
           <strong>{{ selectedJob.error.code }}</strong>
@@ -204,13 +364,16 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           <p>
             {{
               selectedJob.status === "SUCCEEDED"
-                ? "同步图片 API 已把最终 PNG 直接作为 HTTP 响应返回给调用软件；管理端保留任务记录和诊断信息。"
+                ? isBatch
+                  ? "结果 ZIP 仅在全部帧、路径、顺序、SHA-256 和 Alpha 校验通过后发布给动画管家。"
+                  : "同步图片 API 已把最终 PNG 直接作为 HTTP 响应返回给调用软件；管理端保留任务记录和诊断信息。"
                 : "状态会每 10 秒自动刷新。运行中的任务可以取消，失败任务可以安全重试。"
             }}
           </p>
         </section>
         <footer>
           <button
+            v-if="!isBatch"
             class="secondary"
             :disabled="Boolean(actionBusy)"
             @click="diagnostics(selectedJob.job_id)"

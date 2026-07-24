@@ -54,6 +54,42 @@ class LocalJobStorage:
             (root / name).mkdir(parents=True, exist_ok=False)
         return root
 
+    def batch_dir(self, batch_id: str, now: datetime | None = None) -> Path:
+        if not batch_id or any(
+            ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+            for ch in batch_id
+        ):
+            raise StorageError("invalid batch id")
+        current = now or datetime.now(UTC)
+        path = (self.root / "batches" / current.strftime("%Y/%m/%d") / batch_id).resolve()
+        if self.root not in path.parents:
+            raise StorageError("batch path escapes storage root")
+        return path
+
+    def create_batch_staging_layout(self, batch_id: str) -> Path:
+        root = (self.root / ".batch-staging" / batch_id).resolve()
+        if self.root not in root.parents:
+            raise StorageError("batch staging path escapes storage root")
+        if root.exists():
+            raise StorageError("staging batch already exists")
+        for name in ("input", "output", "diagnostics"):
+            (root / name).mkdir(parents=True, exist_ok=False)
+        return root
+
+    def promote_batch_staging(
+        self, staging: Path, batch_id: str, now: datetime | None = None
+    ) -> Path:
+        source = staging.resolve()
+        staging_root = (self.root / ".batch-staging").resolve()
+        if staging_root not in source.parents:
+            raise StorageError("invalid batch staging path")
+        destination = self.batch_dir(batch_id, now)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            raise StorageError("batch directory already exists")
+        os.replace(source, destination)
+        return destination
+
     def promote_staging(self, staging: Path, job_id: str, now: datetime | None = None) -> Path:
         source = staging.resolve()
         staging_root = (self.root / ".staging").resolve()

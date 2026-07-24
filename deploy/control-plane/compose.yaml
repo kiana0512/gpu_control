@@ -27,7 +27,11 @@ services:
   api:
     <<: *app
     build: {context: ../.., dockerfile: apps/api/Dockerfile}
-    image: gpu-control-api:${APP_IMAGE_TAG:-1.1.0}
+    image: gpu-control-api:${APP_IMAGE_TAG:-1.2.0}
+    # Starlette spools large multipart uploads before the endpoint streams the
+    # archive into its batch layout. Keep that temporary file on the mounted
+    # job filesystem instead of the container overlay.
+    environment: {TMPDIR: /srv/gpu-control/jobs}
     volumes:
       - ${JOB_ROOT:-/srv/gpu-control/jobs}:/srv/gpu-control/jobs
       - ../../configs/nodes.yaml:/app/configs/nodes.yaml:ro
@@ -39,7 +43,7 @@ services:
   scheduler:
     <<: *app
     build: {context: ../.., dockerfile: apps/scheduler/Dockerfile}
-    image: gpu-control-scheduler:${APP_IMAGE_TAG:-1.1.0}
+    image: gpu-control-scheduler:${APP_IMAGE_TAG:-1.2.0}
     volumes:
       - ${JOB_ROOT:-/srv/gpu-control/jobs}:/srv/gpu-control/jobs
       - /run/gpu-control:/run/gpu-control:ro
@@ -49,7 +53,7 @@ services:
     healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9108/metrics',timeout=2)"], interval: 15s, timeout: 3s, retries: 5}
 
   web:
-    image: gpu-control-web:${APP_IMAGE_TAG:-1.1.0}
+    image: gpu-control-web:${APP_IMAGE_TAG:-1.2.0}
     build: {context: ../../apps/web}
     restart: unless-stopped
     healthcheck: {test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"], interval: 15s, timeout: 3s, retries: 5}

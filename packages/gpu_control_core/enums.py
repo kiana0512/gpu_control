@@ -49,9 +49,35 @@ class Priority(StrEnum):
     BATCH = "batch"
 
 
+class BatchStatus(StrEnum):
+    VALIDATING = "VALIDATING"
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    ASSEMBLING = "ASSEMBLING"
+    SUCCEEDED = "SUCCEEDED"
+    CANCELLING = "CANCELLING"
+    CANCELLED = "CANCELLED"
+    FAILED = "FAILED"
+
+
+class BatchItemStatus(StrEnum):
+    PENDING = "PENDING"
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    CANCELLED = "CANCELLED"
+    FAILED = "FAILED"
+
+
 TERMINAL_JOB_STATUSES = {
     JobStatus.SUCCEEDED,
     JobStatus.CANCELLED,
     JobStatus.TIMED_OUT,
     JobStatus.FAILED,
+}
+
+TERMINAL_BATCH_STATUSES = {
+    BatchStatus.SUCCEEDED,
+    BatchStatus.CANCELLED,
+    BatchStatus.FAILED,
 }
