@@ -1,6 +1,6 @@
 import secrets
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -73,6 +73,8 @@ def choose_fair_job(
     tenant_last_scheduled: dict[str, datetime | None],
     now: datetime,
     aging_seconds: int,
+    batch_last_scheduled: Mapping[str, datetime | None] | None = None,
+    batch_active_counts: Mapping[str, int] | None = None,
 ) -> Job | None:
     if not jobs:
         return None
@@ -97,7 +99,64 @@ def choose_fair_job(
             j.id,
         )
     )
-    return band[0]
+    anchor = band[0]
+    if anchor.batch_id is None:
+        return anchor
+
+    # Priority aging prevents old work from starving, but it must not allow
+    # one old video batch to occupy every GPU while sibling video batches from
+    # the same API client remain unassigned. Once the tenant and the explicit
+    # priority class have won, distribute slots across its batches first.
+    sibling_jobs = [
+        job
+        for job in jobs
+        if job.tenant_id == anchor.tenant_id
+        and job.batch_id is not None
+        and job.priority == anchor.priority
+        and job.pinned == anchor.pinned
+    ]
+    if not sibling_jobs:
+        return anchor
+
+    last_by_batch = batch_last_scheduled or {}
+    active_by_batch = batch_active_counts or {}
+    batch_ids = {str(job.batch_id) for job in sibling_jobs if job.batch_id is not None}
+
+    def oldest_batch_job(batch_id: str) -> datetime:
+        return min(
+            aware(job.created_at, minimum)
+            for job in sibling_jobs
+            if job.batch_id == batch_id
+        )
+
+    selected_batch = min(
+        batch_ids,
+        key=lambda batch_id: (
+            int(active_by_batch.get(batch_id, 0)),
+            aware(last_by_batch.get(batch_id), minimum),
+            oldest_batch_job(batch_id),
+            batch_id,
+        ),
+    )
+    selected_jobs = [job for job in sibling_jobs if job.batch_id == selected_batch]
+    selected_jobs.sort(
+        key=lambda job: (
+            -priority_rank(
+                job.priority,
+                max(
+                    0,
+                    (
+                        now
+                        - aware(job.created_at, minimum)
+                    ).total_seconds(),
+                ),
+                aging_seconds,
+            ),
+            aware(job.created_at, minimum),
+            job.id,
+        )
+    )
+    return selected_jobs[0]
 
 
 async def claim_next_job(
@@ -181,6 +240,39 @@ async def claim_next_job(
         (await session.scalars(select(ApiClient).where(ApiClient.id.in_(tenant_ids)))).all()
     )
     client_by_id = {candidate.id: candidate for candidate in clients}
+    candidate_batch_ids = {
+        str(job.batch_id) for job in jobs if job.batch_id is not None
+    }
+    batch_last_scheduled: dict[str, datetime | None] = {}
+    batch_active_counts: dict[str, int] = {}
+    if candidate_batch_ids:
+        last_rows = (
+            await session.execute(
+                select(Job.batch_id, func.max(Job.claimed_at))
+                .where(Job.batch_id.in_(candidate_batch_ids))
+                .group_by(Job.batch_id)
+            )
+        ).all()
+        batch_last_scheduled = {
+            str(batch_id): claimed_at
+            for batch_id, claimed_at in last_rows
+            if batch_id is not None
+        }
+        active_rows = (
+            await session.execute(
+                select(Job.batch_id, func.count(Job.id))
+                .where(
+                    Job.batch_id.in_(candidate_batch_ids),
+                    Job.status.in_(ACTIVE_STATUSES),
+                )
+                .group_by(Job.batch_id)
+            )
+        ).all()
+        batch_active_counts = {
+            str(batch_id): int(count or 0)
+            for batch_id, count in active_rows
+            if batch_id is not None
+        }
     remaining = jobs
     chosen: Job | None = None
     client: ApiClient | None = None
@@ -202,6 +294,8 @@ async def claim_next_job(
             {c.id: c.last_scheduled_at for c in clients},
             now,
             aging_seconds,
+            batch_last_scheduled,
+            batch_active_counts,
         )
         if chosen is None:
             return None
