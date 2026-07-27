@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 usage() { echo "用法: $0 [--tag IMAGE:TAG] [--no-cache]"; }
-tag="${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:projects-0.2.2}"
+tag="${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:projects-0.2.3}"
 cache=()
 while (($#)); do case "$1" in --tag) tag="$2"; shift 2;; --no-cache) cache=(--no-cache); shift;; -h|--help) usage; exit 0;; *) usage >&2; exit 2;; esac; done
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-image="${COMFY_IMAGE:-gpu-control/comfyui:projects-0.2.2}"
+image="${COMFY_IMAGE:-gpu-control/comfyui:projects-0.2.3}"
 container="${COMFY_CONTAINER:-comfyui-4090}"
 bind_ip="${COMFY_BIND_IP:-0.0.0.0}"
 port="${COMFY_PORT:-8188}"
@@ -17,7 +17,7 @@ usage() {
 用法: scripts/comfyui-server.sh start|stop|restart|status|logs|shell
 
 可选环境变量：
-  COMFY_IMAGE       镜像名，默认 gpu-control/comfyui:projects-0.2.2
+  COMFY_IMAGE       镜像名，默认 gpu-control/comfyui:projects-0.2.3
   COMFY_CONTAINER   容器名，默认 comfyui-4090
   COMFY_BIND_IP     监听地址，默认 0.0.0.0
   COMFY_PORT        宿主端口，默认 8188

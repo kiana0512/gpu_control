@@ -49,7 +49,14 @@ def random_secret(bytes_count: int = 32) -> str:
     return secrets.token_hex(bytes_count)
 
 
-def worker_values(node_id: str, node_ip: str, control_ip: str, agent_secret: str) -> dict[str, str]:
+def worker_values(
+    node_id: str,
+    node_ip: str,
+    control_ip: str,
+    agent_secret: str,
+    asset_secret: str,
+    asset_concurrency: int,
+) -> dict[str, str]:
     return {
         "ENVIRONMENT": "production",
         "GPU_CONTROL_ROLE": "node",
@@ -58,6 +65,8 @@ def worker_values(node_id: str, node_ip: str, control_ip: str, agent_secret: str
         "NODE_BIND_IP": "0.0.0.0",  # noqa: S104 - UFW restricts worker ports to control.
         "NODE_ADVERTISE_IP": node_ip,
         "NODE_AGENT_HMAC_SECRET": agent_secret,
+        "ASSET_WORKER_HMAC_SECRET": asset_secret,
+        "ASSET_WORKER_MAX_CONCURRENCY": str(asset_concurrency),
     }
 
 
@@ -71,6 +80,7 @@ def control(args: argparse.Namespace) -> None:
     agent_a = random_secret()
     agent_b = random_secret()
     agent_control = random_secret()
+    asset_worker_secret = random_secret()
     updates = {
         "ENVIRONMENT": "production",
         "CONTROL_HOST": args.control_ip,
@@ -89,6 +99,7 @@ def control(args: argparse.Namespace) -> None:
         "NODE_AGENT_HMAC_SECRET_WORKER_3090_B": agent_b,
         "NODE_AGENT_HMAC_SECRET_CONTROL_4090": agent_control,
         "ALERTMANAGER_WEBHOOK_TOKEN": random_secret(),
+        "ASSET_WORKER_HMAC_SECRET": asset_worker_secret,
         "GRAFANA_ADMIN_PASSWORD": random_secret(18),
         "PUBLIC_BASE_URL": f"https://{args.control_ip}",
         "GRAFANA_BASE_URL": f"https://{args.control_ip}/grafana",
@@ -100,7 +111,14 @@ def control(args: argparse.Namespace) -> None:
     write_env(
         ROOT / ".env.node.example",
         bundle / "worker-3090-a.env",
-        worker_values("worker-3090-a", args.worker_a_ip, args.control_ip, agent_a),
+        worker_values(
+            "worker-3090-a",
+            args.worker_a_ip,
+            args.control_ip,
+            agent_a,
+            asset_worker_secret,
+            3,
+        ),
         set(),
     )
     admin_password = bundle / "INITIAL_ADMIN_PASSWORD.txt"
@@ -112,13 +130,27 @@ def control(args: argparse.Namespace) -> None:
     write_env(
         ROOT / ".env.node.example",
         bundle / "worker-3090-b.env",
-        worker_values("worker-3090-b", args.worker_b_ip, args.control_ip, agent_b),
+        worker_values(
+            "worker-3090-b",
+            args.worker_b_ip,
+            args.control_ip,
+            agent_b,
+            asset_worker_secret,
+            8,
+        ),
         set(),
     )
     write_env(
         ROOT / ".env.node.example",
         bundle / "control-4090.env",
-        worker_values("control-4090", args.control_ip, args.control_ip, agent_control),
+        worker_values(
+            "control-4090",
+            args.control_ip,
+            args.control_ip,
+            agent_control,
+            asset_worker_secret,
+            2,
+        ),
         set(),
     )
     inventory = Path(args.inventory).resolve()
@@ -165,7 +197,14 @@ def node(args: argparse.Namespace) -> None:
     write_env(
         ROOT / ".env.node.example",
         Path(args.output).resolve(),
-        worker_values(args.node_id, args.node_ip, args.control_ip, args.agent_secret),
+        worker_values(
+            args.node_id,
+            args.node_ip,
+            args.control_ip,
+            args.agent_secret,
+            args.asset_worker_secret,
+            args.asset_worker_concurrency,
+        ),
         set(),
     )
     print(f"node env: {Path(args.output).resolve()}")
@@ -191,6 +230,8 @@ def main() -> None:
     node_parser.add_argument("--node-ip", required=True)
     node_parser.add_argument("--control-ip", required=True)
     node_parser.add_argument("--agent-secret", required=True)
+    node_parser.add_argument("--asset-worker-secret", required=True)
+    node_parser.add_argument("--asset-worker-concurrency", type=int, default=2)
     node_parser.add_argument("--output", default=str(ROOT / ".env"))
     node_parser.set_defaults(handler=node)
     args = parser.parse_args()

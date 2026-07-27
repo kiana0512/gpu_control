@@ -19,6 +19,7 @@ services:
       - ./nginx/certs:/etc/nginx/certs:ro
     depends_on:
       api: {condition: service_healthy}
+      asset-api: {condition: service_healthy}
       web: {condition: service_healthy}
     healthcheck: {test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health/live"], interval: 15s, timeout: 3s, retries: 5}
     logging: *default-logging
@@ -27,7 +28,7 @@ services:
   api:
     <<: *app
     build: {context: ../.., dockerfile: apps/api/Dockerfile}
-    image: gpu-control-api:${APP_IMAGE_TAG:-1.3.3}
+    image: gpu-control-api:${APP_IMAGE_TAG:-1.3.4}
     # Starlette spools large multipart uploads before the endpoint streams the
     # archive into its batch layout. Keep that temporary file on the mounted
     # job filesystem instead of the container overlay.
@@ -40,10 +41,43 @@ services:
       redis: {condition: service_healthy}
     healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live',timeout=2)"], interval: 15s, timeout: 3s, retries: 5}
 
+  asset-api:
+    <<: *app
+    build: {context: ../.., dockerfile: apps/asset_api/Dockerfile}
+    image: unified-scheduler-asset-api:${APP_IMAGE_TAG:-1.4.0}
+    environment: {TMPDIR: /srv/gpu-control/assets}
+    volumes:
+      - ${ASSET_ROOT:-/srv/gpu-control/assets}:/srv/gpu-control/assets
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health/live',timeout=2)"], interval: 15s, timeout: 3s, retries: 5}
+
+  asset-worker-control:
+    profiles: ["asset-plane"]
+    build:
+      context: ../..
+      dockerfile: apps/blender_worker/Dockerfile
+      args: {BLENDER_BASE_IMAGE: "${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}"}
+    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.0.0}
+    restart: unless-stopped
+    environment:
+      ASSET_API_URL: http://asset-api:8010
+      ASSET_WORKER_ID: asset-control-4090
+      ASSET_NODE_ID: control-4090
+      ASSET_WORKER_DISPLAY_NAME: 4090 CPU Worker
+      ASSET_WORKER_HMAC_SECRET: ${ASSET_WORKER_HMAC_SECRET}
+      ASSET_WORKER_MAX_CONCURRENCY: ${ASSET_WORKER_MAX_CONCURRENCY_CONTROL:-2}
+      BLENDER_VERSION: 5.1.2
+      BLENDER_SKILL_VERSION: ${BLENDER_SKILL_VERSION:-pbr-uv-v1.1}
+    depends_on:
+      asset-api: {condition: service_healthy}
+    logging: *default-logging
+    networks: [backend]
+
   scheduler:
     <<: *app
     build: {context: ../.., dockerfile: apps/scheduler/Dockerfile}
-    image: gpu-control-scheduler:${APP_IMAGE_TAG:-1.3.3}
+    image: gpu-control-scheduler:${APP_IMAGE_TAG:-1.3.4}
     volumes:
       - ${JOB_ROOT:-/srv/gpu-control/jobs}:/srv/gpu-control/jobs
       - /run/gpu-control:/run/gpu-control:ro
@@ -53,8 +87,11 @@ services:
     healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9108/metrics',timeout=2)"], interval: 15s, timeout: 3s, retries: 5}
 
   web:
-    image: gpu-control-web:${APP_IMAGE_TAG:-1.3.3}
-    build: {context: ../../apps/web}
+    image: gpu-control-web:${APP_IMAGE_TAG:-1.3.4}
+    build:
+      context: ../../apps/web
+      args:
+        VITE_MODELVIEW_PROMPT_ENABLED: ${VITE_MODELVIEW_PROMPT_ENABLED:-false}
     restart: unless-stopped
     healthcheck: {test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"], interval: 15s, timeout: 3s, retries: 5}
     logging: *default-logging
@@ -159,7 +196,7 @@ services:
     networks: [backend]
 
   comfyui-4090:
-    image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:projects-0.2.2}
+    image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:projects-0.2.3}
     profiles: ["4090-gpu"]
     restart: unless-stopped
     deploy: {resources: {reservations: {devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]}}}

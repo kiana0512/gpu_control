@@ -10,6 +10,8 @@ const origin = window.location.origin;
 const comfyUrl = `http://${window.location.hostname}:8188/#551d82b0-b1fb-483a-a5ea-564bdb813625`;
 const imageclipUrl = `${origin}/api/v1/services/imageclip-rgba`;
 const modelviewUrl = `${origin}/api/v1/services/modelview-inpaint`;
+const modelviewPromptEnabled =
+  import.meta.env.VITE_MODELVIEW_PROMPT_ENABLED === "true";
 const controlNode = computed(() =>
   dashboard.value?.nodes.find((node) => node.id === "control-4090"),
 );
@@ -136,7 +138,14 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
         <div>
           <span
             ><strong>ModelView 局部重绘</strong
-            ><small>POST · multipart 字段 image</small></span
+            ><small
+              >POST · image 必填 ·
+              {{
+                modelviewPromptEnabled
+                  ? "prompt 可选"
+                  : "prompt 候选协议待安全窗口启用"
+              }}</small
+            ></span
           ><code>{{ modelviewUrl }}</code>
         </div>
       </div>

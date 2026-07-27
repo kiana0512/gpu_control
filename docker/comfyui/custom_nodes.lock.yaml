@@ -36,3 +36,9 @@ custom_nodes:
     enabled: true
     requirements_lock: requirements.kjnodes.lock.txt
     security_notes: 官方公开仓库；固定 Comfy Registry 1.4.7 提交；用于 ModelViewCreator GrowMaskWithBlur。
+  - name: ComfyUI-SeedVR2_VideoUpscaler
+    repository: https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler.git
+    commit: 690cc39379c1481159ddd451368dbf2295930fc6
+    enabled: true
+    requirements_lock: requirements.seedvr2.lock.txt
+    security_notes: 官方公开仓库；固定 ModelViewCreator 工作流记录的提交；用于最终单图 SeedVR2 放大。

@@ -1,93 +1,216 @@
 {
-  "9": {
+  "105": {
+    "_meta": {
+      "title": "NunchakuFluxDiTLoader"
+    },
+    "class_type": "NunchakuFluxDiTLoader",
     "inputs": {
-      "filename_prefix": "ComfyUI",
-      "images": [
-        "79",
+      "attention": "nunchaku-fp16",
+      "cache_threshold": 0,
+      "cpu_offload": "auto",
+      "data_type": "bfloat16",
+      "device_id": 0,
+      "i2f_mode": "enabled",
+      "model_path": "Nunchaku-svdq-int4_r32-flux.1-fill-dev.safetensors"
+    }
+  },
+  "107": {
+    "_meta": {
+      "title": "LoraLoaderModelOnly"
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "flux-turbo-alpha-8tp.safetensors",
+      "model": [
+        "105",
         0
-      ]
-    },
-    "class_type": "SaveImage",
-    "_meta": {
-      "title": "保存图像"
+      ],
+      "strength_model": 1
     }
   },
-  "48": {
-    "inputs": {
-      "clip_name1": "clip_l.safetensors",
-      "clip_name2": "t5xxl_fp16.safetensors",
-      "type": "flux",
-      "device": "default"
-    },
-    "class_type": "DualCLIPLoader",
+  "108": {
     "_meta": {
-      "title": "双CLIP加载器"
+      "title": "SeedVR2LoadDiTModel"
+    },
+    "class_type": "SeedVR2LoadDiTModel",
+    "inputs": {
+      "attention_mode": "sdpa",
+      "blocks_to_swap": 36,
+      "cache_model": false,
+      "device": "cuda:0",
+      "model": "seedvr2_ema_7b_sharp-Q4_K_M.gguf",
+      "offload_device": "cpu",
+      "swap_io_components": false
     }
   },
-  "49": {
-    "inputs": {
-      "guidance": 30,
-      "conditioning": [
-        "53",
-        0
-      ]
-    },
-    "class_type": "FluxGuidance",
+  "109": {
     "_meta": {
-      "title": "Flux引导"
+      "title": "SeedVR2LoadVAEModel"
+    },
+    "class_type": "SeedVR2LoadVAEModel",
+    "inputs": {
+      "cache_model": false,
+      "decode_tile_overlap": 128,
+      "decode_tile_size": 1024,
+      "decode_tiled": true,
+      "device": "cuda:0",
+      "encode_tile_overlap": 128,
+      "encode_tile_size": 1024,
+      "encode_tiled": true,
+      "model": "ema_vae_fp16.safetensors",
+      "offload_device": "cpu",
+      "tile_debug": "false"
     }
   },
-  "50": {
-    "inputs": {
-      "vae_name": "ae.safetensors"
-    },
-    "class_type": "VAELoader",
+  "110": {
     "_meta": {
-      "title": "加载VAE"
-    }
-  },
-  "52": {
-    "inputs": {
-      "conditioning": [
-        "53",
-        0
-      ]
+      "title": "SeedVR2VideoUpscaler"
     },
-    "class_type": "ConditioningZeroOut",
-    "_meta": {
-      "title": "条件零化"
-    }
-  },
-  "53": {
+    "class_type": "SeedVR2VideoUpscaler",
     "inputs": {
-      "text": [
+      "batch_size": 1,
+      "color_correction": "lab",
+      "dit": [
         "108",
         0
       ],
+      "enable_debug": false,
+      "image": [
+        "79",
+        0
+      ],
+      "input_noise_scale": 0,
+      "latent_noise_scale": 0,
+      "max_resolution": 2048,
+      "new_resolution": 2048,
+      "offload_device": "cpu",
+      "prepend_frames": 0,
+      "seed": 42,
+      "temporal_overlap": 0,
+      "uniform_batch_size": false,
+      "vae": [
+        "109",
+        0
+      ]
+    }
+  },
+  "127": {
+    "_meta": {
+      "title": "LoadImage"
+    },
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "clipspace/clipspace-painted-masked-1784800823493.png [input]"
+    }
+  },
+  "129": {
+    "_meta": {
+      "title": "MaskToImage"
+    },
+    "class_type": "MaskToImage",
+    "inputs": {
+      "mask": [
+        "127",
+        1
+      ]
+    }
+  },
+  "131": {
+    "_meta": {
+      "title": "BatchImagesNode"
+    },
+    "class_type": "BatchImagesNode",
+    "inputs": {
+      "images.image0": [
+        "127",
+        0
+      ],
+      "images.image1": [
+        "129",
+        0
+      ]
+    }
+  },
+  "48": {
+    "_meta": {
+      "title": "DualCLIPLoader"
+    },
+    "class_type": "DualCLIPLoader",
+    "inputs": {
+      "clip_name1": "clip_l.safetensors",
+      "clip_name2": "t5xxl_fp16.safetensors",
+      "device": "default",
+      "type": "flux"
+    }
+  },
+  "49": {
+    "_meta": {
+      "title": "FluxGuidance"
+    },
+    "class_type": "FluxGuidance",
+    "inputs": {
+      "conditioning": [
+        "53",
+        0
+      ],
+      "guidance": 30
+    }
+  },
+  "50": {
+    "_meta": {
+      "title": "VAELoader"
+    },
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    }
+  },
+  "52": {
+    "_meta": {
+      "title": "ConditioningZeroOut"
+    },
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": [
+        "53",
+        0
+      ]
+    }
+  },
+  "53": {
+    "_meta": {
+      "title": "CLIP Text Encode (Positive Prompt)"
+    },
+    "class_type": "CLIPTextEncode",
+    "inputs": {
       "clip": [
         "48",
         0
+      ],
+      "text": [
+        "94",
+        0
       ]
-    },
-    "class_type": "CLIPTextEncode",
-    "_meta": {
-      "title": "CLIP Text Encode (Positive Prompt)"
     }
   },
   "54": {
+    "_meta": {
+      "title": "DifferentialDiffusion"
+    },
+    "class_type": "DifferentialDiffusion",
     "inputs": {
-      "strength": 1,
       "model": [
         "107",
         0
-      ]
-    },
-    "class_type": "DifferentialDiffusion",
-    "_meta": {
-      "title": "差异扩散DifferentialDiffusion"
+      ],
+      "strength": 1
     }
   },
   "55": {
+    "_meta": {
+      "title": "VAEDecode"
+    },
+    "class_type": "VAEDecode",
     "inputs": {
       "samples": [
         "57",
@@ -97,211 +220,169 @@
         "50",
         0
       ]
-    },
-    "class_type": "VAEDecode",
-    "_meta": {
-      "title": "VAE解码"
     }
   },
   "56": {
+    "_meta": {
+      "title": "InpaintModelConditioning"
+    },
+    "class_type": "InpaintModelConditioning",
     "inputs": {
-      "noise_mask": true,
-      "positive": [
-        "49",
+      "mask": [
+        "97",
         0
       ],
       "negative": [
         "52",
         0
       ],
-      "vae": [
-        "50",
-        0
-      ],
+      "noise_mask": true,
       "pixels": [
         "78",
         1
       ],
-      "mask": [
-        "97",
+      "positive": [
+        "49",
+        0
+      ],
+      "vae": [
+        "50",
         0
       ]
-    },
-    "class_type": "InpaintModelConditioning",
-    "_meta": {
-      "title": "内补模型条件"
     }
   },
   "57": {
+    "_meta": {
+      "title": "KSampler"
+    },
+    "class_type": "KSampler",
     "inputs": {
-      "seed": 287022851273156,
-      "steps": 10,
       "cfg": 1,
-      "sampler_name": "euler",
-      "scheduler": "normal",
       "denoise": 1,
+      "latent_image": [
+        "56",
+        2
+      ],
       "model": [
         "54",
-        0
-      ],
-      "positive": [
-        "56",
         0
       ],
       "negative": [
         "56",
         1
       ],
-      "latent_image": [
+      "positive": [
         "56",
-        2
-      ]
-    },
-    "class_type": "KSampler",
-    "_meta": {
-      "title": "K采样器"
+        0
+      ],
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "seed": 1034197869999478,
+      "steps": 10
     }
   },
   "78": {
+    "_meta": {
+      "title": "InpaintCropImproved"
+    },
+    "class_type": "InpaintCropImproved",
     "inputs": {
+      "context_from_mask_extend_factor": 1.2,
+      "device_mode": "gpu (much faster)",
       "downscale_algorithm": "bilinear",
-      "upscale_algorithm": "bicubic",
-      "preresize": false,
-      "preresize_mode": "ensure minimum resolution",
-      "preresize_min_width": 1024,
-      "preresize_min_height": 1024,
-      "preresize_max_width": 16384,
-      "preresize_max_height": 16384,
-      "mask_fill_holes": true,
-      "mask_expand_pixels": 0,
-      "mask_invert": false,
-      "mask_blend_pixels": 32,
-      "mask_hipass_filter": 0.1,
-      "extend_for_outpainting": false,
-      "extend_up_factor": 1,
       "extend_down_factor": 1,
+      "extend_for_outpainting": false,
       "extend_left_factor": 1,
       "extend_right_factor": 1,
-      "context_from_mask_extend_factor": 1.2,
-      "output_resize_to_target_size": true,
-      "output_target_width": 768,
-      "output_target_height": 768,
-      "output_padding": "32",
-      "device_mode": "gpu (much faster)",
+      "extend_up_factor": 1,
       "image": [
-        "96",
+        "127",
         0
       ],
       "mask": [
-        "96",
+        "127",
         1
-      ]
-    },
-    "class_type": "InpaintCropImproved",
-    "_meta": {
-      "title": "✂️ Inpaint Crop"
+      ],
+      "mask_blend_pixels": 32,
+      "mask_expand_pixels": 0,
+      "mask_fill_holes": true,
+      "mask_hipass_filter": 0.1,
+      "mask_invert": false,
+      "output_padding": "32",
+      "output_resize_to_target_size": true,
+      "output_target_height": 768,
+      "output_target_width": 768,
+      "preresize": false,
+      "preresize_max_height": 16384,
+      "preresize_max_width": 16384,
+      "preresize_min_height": 1024,
+      "preresize_min_width": 1024,
+      "preresize_mode": "ensure minimum resolution",
+      "upscale_algorithm": "bicubic"
     }
   },
   "79": {
+    "_meta": {
+      "title": "InpaintStitchImproved"
+    },
+    "class_type": "InpaintStitchImproved",
     "inputs": {
-      "stitcher": [
-        "78",
-        0
-      ],
       "inpainted_image": [
         "55",
         0
-      ]
-    },
-    "class_type": "InpaintStitchImproved",
-    "_meta": {
-      "title": "✂️ Inpaint Stitch"
-    }
-  },
-  "95": {
-    "inputs": {
-      "text": "A sleek, modern minimalist concrete planter box with integrated horizontal shelf and side-mounted handle slot, placed on a dark grid background; clean industrial design, matte gray finish, soft diffused studio lighting from upper left casting subtle shadows, three-quarter front-right perspective composition, monochromatic neutral palette (light gray body, dark charcoal grid), precise geometric forms with smooth rounded edges—repair sharp unnatural棱边 by softening all corners and transitions, eliminating jagged artifacts and irregular bevels, ensuring seamless continuity between surfaces and recessed elements, high-resolution 4K render, photorealistic material detail, no visible seams or mesh artifacts.",
-      "anything": [
-        "108",
+      ],
+      "stitcher": [
+        "78",
         0
       ]
-    },
-    "class_type": "easy showAnything",
-    "_meta": {
-      "title": "展示任何"
     }
   },
-  "96": {
-    "inputs": {
-      "image": "clipspace/clipspace-painted-masked-1783504215323.png [input]"
-    },
-    "class_type": "LoadImage",
+  "9": {
     "_meta": {
-      "title": "加载图像"
+      "title": "SaveImage"
+    },
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "ComfyUI",
+      "images": [
+        "110",
+        0
+      ]
+    }
+  },
+  "94": {
+    "_meta": {
+      "title": "Qwen3 VL Plus"
+    },
+    "class_type": "Qwen3 VL Plus",
+    "inputs": {
+      "images": [
+        "131",
+        0
+      ],
+      "prompt": "",
+      "seed": 736972101620544,
+      "system_content": "请结合输入图片与用户的修改要求，准确推断修改完成后的目标效果，并将其整理为一条完整、清晰、可直接用于文生图的英文提示词。若用户未提供文字修改要求，则直接根据图片反推提示词。\n提示词需完整描述主体、场景、材质、风格、光影、构图、视角、色彩和关键细节；保持主体身份、原始结构、比例、轮廓、透视及非修改区域不变。针对目标区域，修复异常棱边、锯齿接缝、破损表面、扭曲边界和不自然边角，使其轮廓合理、过渡平滑，并与周围材质、纹理、色彩、光照和细节自然融合。避免可见接缝、光晕、重复结构、纹理拉伸、投射溅射、摩尔纹、几何变形及无关内容变化。\n仅输出最终英文文生图提示词，不要输出分析过程、标题、说明、引号或其他格式。"
     }
   },
   "97": {
+    "_meta": {
+      "title": "GrowMaskWithBlur"
+    },
+    "class_type": "GrowMaskWithBlur",
     "inputs": {
-      "expand": 0,
-      "incremental_expandrate": 0,
-      "tapered_corners": true,
-      "flip_input": false,
       "blur_radius": 6.8,
-      "lerp_alpha": 1,
       "decay_factor": 1,
+      "expand": 0,
       "fill_holes": true,
+      "flip_input": false,
+      "incremental_expandrate": 0,
+      "lerp_alpha": 1,
       "mask": [
         "78",
         2
-      ]
-    },
-    "class_type": "GrowMaskWithBlur",
-    "_meta": {
-      "title": "Grow Mask With Blur"
-    }
-  },
-  "105": {
-    "inputs": {
-      "model_path": "Nunchaku-svdq-int4_r32-flux.1-fill-dev.safetensors",
-      "cache_threshold": 0,
-      "attention": "nunchaku-fp16",
-      "cpu_offload": "auto",
-      "device_id": 0,
-      "data_type": "bfloat16",
-      "i2f_mode": "enabled"
-    },
-    "class_type": "NunchakuFluxDiTLoader",
-    "_meta": {
-      "title": "Nunchaku FLUX DiT Loader"
-    }
-  },
-  "107": {
-    "inputs": {
-      "lora_name": "flux-turbo-alpha-8tp.safetensors",
-      "strength_model": 1,
-      "model": [
-        "105",
-        0
-      ]
-    },
-    "class_type": "LoraLoaderModelOnly",
-    "_meta": {
-      "title": "LoRA加载器（仅模型）"
-    }
-  },
-  "108": {
-    "inputs": {
-      "prompt": "请分析图片并反推出文生图提示词，包含主体、场景、风格、光影、构图、色彩和细节，并修复该区域奇怪棱边与不自然边角。只输出提示词。",
-      "system_content": "You are a helpful AI assistant.",
-      "seed": 324724326694643,
-      "images": [
-        "96",
-        0
-      ]
-    },
-    "class_type": "Qwen3 VL Plus",
-    "_meta": {
-      "title": "Qwen3 VL Plus"
+      ],
+      "tapered_corners": true
     }
   }
 }

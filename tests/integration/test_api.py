@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
-from gpu_control_api.main import create_app
+from gpu_control_api.main import _merge_service_parameter, create_app
 from sqlalchemy import func, select
 
 from packages.gpu_control_core.models import (
@@ -28,6 +28,23 @@ from packages.gpu_control_core.models import (
 )
 from packages.gpu_control_core.security import hash_api_secret, hash_password, sign_agent_request
 from packages.gpu_control_core.settings import Settings
+
+
+def test_modelview_prompt_form_field_merges_without_ambiguity() -> None:
+    assert json.loads(_merge_service_parameter("{}", "prompt", "修复左侧边缘")) == {
+        "prompt": "修复左侧边缘"
+    }
+    assert json.loads(
+        _merge_service_parameter(
+            '{"prompt":"修复左侧边缘"}', "prompt", "修复左侧边缘"
+        )
+    ) == {"prompt": "修复左侧边缘"}
+    try:
+        _merge_service_parameter('{"prompt":"A"}', "prompt", "B")
+    except ValueError as exc:
+        assert "不能冲突" in str(exc)
+    else:
+        raise AssertionError("conflicting prompt sources must fail closed")
 
 
 async def prepared_app(tmp_path: Path):
@@ -167,7 +184,10 @@ async def prepared_app(tmp_path: Path):
                     required_custom_nodes=[],
                     min_vram_mb=0,
                     timeout_seconds=60,
-                    node_labels={},
+                    node_labels={
+                        "imageclip_commit": "7" * 40,
+                        "imageclip_pipeline_sha256": "8" * 64,
+                    },
                     output_nodes=["9"],
                     enabled=True,
                     template_sha256="x",
@@ -266,7 +286,10 @@ async def test_batch_api_idempotency_isolation_and_parent_only_admin_list(
                     required_custom_nodes=[],
                     min_vram_mb=0,
                     timeout_seconds=60,
-                    node_labels={},
+                    node_labels={
+                        "imageclip_commit": "7" * 40,
+                        "imageclip_pipeline_sha256": "8" * 64,
+                    },
                     output_nodes=["9"],
                     enabled=True,
                     template_sha256="batch-test",
@@ -312,6 +335,8 @@ async def test_batch_api_idempotency_isolation_and_parent_only_admin_list(
             headers={"X-API-Key": "gpc_abcd1234_secret"},
         )
         assert own_status.status_code == 200
+        assert own_status.json()["pipeline_commit"] == "7" * 40
+        assert own_status.json()["pipeline_sha256"] == "8" * 64
         assert own_status.json()["counts"] == {
             "total": 1,
             "pending": 1,
@@ -326,6 +351,15 @@ async def test_batch_api_idempotency_isolation_and_parent_only_admin_list(
             headers={"X-API-Key": "gpc_tenantb1_secret-b"},
         )
         assert foreign_status.status_code == 404
+
+        capacity = await client.get(
+            "/api/v1/scheduler/capacity",
+            headers={"X-API-Key": "gpc_abcd1234_secret"},
+        )
+        assert capacity.status_code == 200
+        assert capacity.json()["schema_version"] == "1.0"
+        assert capacity.json()["advisory"] is True
+        assert capacity.json()["client"]["kind"] == "production"
 
         async with app.state.db.session() as session:
             batch = await session.get(JobBatch, batch_id)

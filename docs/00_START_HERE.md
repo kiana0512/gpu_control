@@ -1,4 +1,4 @@
-# GPU Control 文档总入口
+# 统一调度中心（GPU Control）文档总入口
 
 本页是仓库文档导航。今天部署时不要从 30 多份文档逐一翻找，按下面的“现场主线”执行即可；其余文档是遇到具体问题时的细节手册。
 
@@ -11,6 +11,11 @@
 5. `docs/33_3090_NODE_DEPLOYMENT_HANDOFF.md`：2026-07-23 当前双项目镜像、模型和 3090 接入的唯一最新交接步骤。
 6. `docs/40_GPU_CONTROL_MATTING_HANDOFF_V3.md`：动画管家批量抠图当前唯一接口合同。
 7. `docs/41_2026-07-27_GPU_CONTROL_1_3_2_STRESS_AND_PIPELINE_RECORD.md`：1.3.2/1.3.3 管线修复、三节点真实压力和生产优先级证据。
+8. `docs/42_2026-07-27_ASSETCLAW_V3_ALIGNMENT_RESPONSE.md`：动画管家 V3 固定格式对齐回执与安全启用门禁。
+9. `docs/43_BLENDER_PBR_UV_ASSET_API_CONTRACT_V1.md`：Blender CPU Worker、并发模型、外部 API 和验收合同。
+10. `docs/44_2026-07-27_UNIFIED_WEB_AND_BLENDER_WORKER_STAGING_RECORD.md`：统一 Web-only 上线、浏览器 QA 和两台 3090 Blender 镜像验收。
+11. `docs/45_MODELVIEW_OPTIONAL_PROMPT_AND_SEEDVR2_ROLLOUT.md`：局部重绘可选提示词、SeedVR2 固定依赖和三节点安全升级方案。
+12. `docs/46_2026-07-27_PRODUCTION_DRAIN_AND_ROLLOUT_RUNBOOK.md`：生产任务排空门禁、三节点局部重绘发布、Asset API 启用与回滚执行单。
 
 3090-A 的已完成部署、动态心跳、Web 修复和真实任务证据见
 `docs/34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md`。
@@ -62,6 +67,8 @@ V3 替代，不能继续作为当前接口合同。1.2.0 初版批处理记录�
 | `apps/api` | FastAPI 公共接口、后台接口、鉴权、幂等、审计、告警入口 |
 | `apps/scheduler` | asyncio 调度循环、数据库领取、ComfyUI 生命周期与恢复 |
 | `apps/node_agent` | HMAC 防重放的固定运维操作代理 |
+| `apps/asset_api` | 与 GPU Scheduler 隔离的 Asset API、CPU 作业队列、租约和最终产物发布 |
+| `apps/blender_worker` | 可并发的 Blender 5.1.2 CPU Worker |
 | `apps/web` | LiClick 风格 Vue 管理后台 |
 | `packages/gpu_control_core` | 数据模型、状态机、设置、日志和通用核心逻辑 |
 | `migrations` | PostgreSQL/SQLite Alembic 迁移 |

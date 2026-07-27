@@ -297,6 +297,24 @@ def _validate_parameter_limits(value: dict[str, Any]) -> None:
     visit(value, 0)
 
 
+def _merge_service_parameter(
+    parameters_raw: str, name: str, value: str | None
+) -> str:
+    """Merge a convenience multipart field into the canonical parameters JSON."""
+    if value is None:
+        return parameters_raw
+    try:
+        parameters = json.loads(parameters_raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("parameters 必须是 JSON 对象") from exc
+    if not isinstance(parameters, dict):
+        raise ValueError("parameters 必须是 JSON 对象")
+    if name in parameters and parameters[name] != value:
+        raise ValueError(f"{name} 与 parameters.{name} 不能冲突")
+    parameters[name] = value
+    return json.dumps(parameters, ensure_ascii=False, separators=(",", ":"))
+
+
 async def _notify(app: FastAPI, channel: str, payload: dict[str, Any]) -> None:
     redis: Redis | None = getattr(app.state, "redis", None)
     if redis is None:
@@ -1256,10 +1274,18 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         db: Annotated[AsyncSession, Depends(session)],
         image: Annotated[UploadFile, File()],
         parameters: Annotated[str, Form()] = "{}",
+        prompt: Annotated[str | None, Form(max_length=4096)] = None,
         idempotency_key: Annotated[
             str | None, Header(alias="Idempotency-Key", max_length=128)
         ] = None,
     ) -> FileResponse:
+        try:
+            parameters = _merge_service_parameter(parameters, "prompt", prompt)
+        except ValueError as exc:
+            raise HTTPException(
+                422,
+                detail={"code": "INPUT_INVALID", "message": str(exc)},
+            ) from exc
         return await run_image_service(
             request,
             "modelview-inpaint",
@@ -1283,6 +1309,13 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
     async def batch_payload(
         batch: JobBatch, db: AsyncSession, *, admin: bool = False
     ) -> dict[str, Any]:
+        workflow = await db.scalar(
+            select(WorkflowVersion).where(
+                WorkflowVersion.workflow_key == batch.workflow_key,
+                WorkflowVersion.version == batch.workflow_version,
+            )
+        )
+        workflow_labels = dict(workflow.node_labels or {}) if workflow is not None else {}
         distribution_rows = (
             await db.execute(
                 select(JobBatchItem.node_id, func.count(JobBatchItem.id))
@@ -1321,6 +1354,11 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             "status": batch.status,
             "workflow_key": batch.workflow_key,
             "workflow_version": batch.workflow_version,
+            # These values describe the immutable pipeline selected when the
+            # batch was created.  They are deliberately sourced from the
+            # pinned workflow version instead of the current node heartbeat.
+            "pipeline_commit": workflow_labels.get("imageclip_commit"),
+            "pipeline_sha256": workflow_labels.get("imageclip_pipeline_sha256"),
             "progress": batch.progress,
             "counts": {
                 "total": batch.total_items,
@@ -1341,6 +1379,83 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             if batch.error_code
             else None,
             "artifacts": artifacts,
+        }
+
+    @app.get("/api/v1/scheduler/capacity")
+    async def scheduler_capacity(
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+    ) -> dict[str, Any]:
+        """Return a read-only, tenant-safe scheduling snapshot.
+
+        This endpoint is advisory only: callers must still rely on the batch
+        state machine after submission.  No node address, hardware identity,
+        or other tenant's identifiers are exposed.
+        """
+        client = await db.get(ApiClient, principal.id)
+        nodes = list((await db.scalars(select(Node))).all())
+        eligible = [
+            node
+            for node in nodes
+            if node.health == "ONLINE"
+            and node.mode == NodeMode.ACTIVE.value
+            and not node.manual_reserved
+            and not node.external_busy
+            and not node.foreign_queue_detected
+        ]
+        total_slots = sum(max(0, int(node.max_concurrency)) for node in eligible)
+        used_slots = sum(max(0, int(node.current_jobs)) for node in eligible)
+        available_slots = max(0, total_slots - used_slots)
+        queued_jobs = int(
+            await db.scalar(
+                select(func.count(Job.id)).where(Job.status == JobStatus.QUEUED.value)
+            )
+            or 0
+        )
+        running_jobs = int(
+            await db.scalar(
+                select(func.count(Job.id)).where(Job.status.in_(list(ACTIVE_STATUSES)))
+            )
+            or 0
+        )
+        tenant_queued = int(
+            await db.scalar(
+                select(func.count(Job.id)).where(
+                    Job.tenant_id == principal.id,
+                    Job.status == JobStatus.QUEUED.value,
+                )
+            )
+            or 0
+        )
+        tenant_running = int(
+            await db.scalar(
+                select(func.count(Job.id)).where(
+                    Job.tenant_id == principal.id,
+                    Job.status.in_(list(ACTIVE_STATUSES)),
+                )
+            )
+            or 0
+        )
+        return {
+            "schema_version": "1.0",
+            "advisory": True,
+            "accepting": queued_jobs < cfg.system_max_queued,
+            "as_of": datetime.now(UTC).isoformat(),
+            "cluster": {
+                "eligible_nodes": len(eligible),
+                "total_slots": total_slots,
+                "used_slots": used_slots,
+                "available_slots": available_slots,
+                "queued_jobs": queued_jobs,
+                "running_jobs": running_jobs,
+            },
+            "client": {
+                "kind": client.client_kind if client is not None else "production",
+                "queued_jobs": tenant_queued,
+                "running_jobs": tenant_running,
+                "max_queued": client.max_queued if client is not None else cfg.default_tenant_max_queued,
+                "max_running": client.max_running if client is not None else cfg.default_tenant_max_running,
+            },
         }
 
     @app.post("/api/v1/batches/imageclip-rgba")

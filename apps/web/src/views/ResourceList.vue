@@ -20,6 +20,8 @@ const selectedService = ref<"imageclip-rgba" | "modelview-inpaint">(
 );
 const search = ref("");
 const clientScope = ref<"production" | "test">("production");
+const modelviewPromptEnabled =
+  import.meta.env.VITE_MODELVIEW_PROMPT_ENABLED === "true";
 
 const clientForm = reactive({
   id: "",
@@ -95,17 +97,28 @@ const outputName = computed(() =>
     ? "result-rgba.png"
     : "result-inpaint.png",
 );
-const curlExample = computed(() =>
-  [
+const curlExample = computed(() => {
+  const lines = [
     `curl -X POST '${serviceUrl.value}' \\`,
     "  -H 'Idempotency-Key: order-001-attempt-1' \\",
     "  -F 'image=@input.png' \\",
-    `  --output '${outputName.value}'`,
-  ].join("\n"),
-);
+  ];
+  if (
+    selectedService.value === "modelview-inpaint" &&
+    modelviewPromptEnabled
+  )
+    lines.push("  -F 'prompt=修复蒙版区域的破损边缘' \\");
+  lines.push(`  --output '${outputName.value}'`);
+  return lines.join("\n");
+});
 const pythonExample = computed(
   () =>
-    `import requests\n\nwith open("input.png", "rb") as source:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "order-001-attempt-1"},\n        files={"image": ("input.png", source, "image/png")},\n        timeout=1900,\n    )\nresponse.raise_for_status()\nwith open("${outputName.value}", "wb") as output:\n    output.write(response.content)\nprint("job:", response.headers.get("X-Job-ID"))`,
+    `import requests\n\nwith open("input.png", "rb") as source:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "order-001-attempt-1"},\n        files={"image": ("input.png", source, "image/png")},${
+          selectedService.value === "modelview-inpaint" &&
+          modelviewPromptEnabled
+            ? '\n        data={"prompt": "修复蒙版区域的破损边缘"},'
+            : ""
+        }\n        timeout=1900,\n    )\nresponse.raise_for_status()\nwith open("${outputName.value}", "wb") as output:\n    output.write(response.content)\nprint("job:", response.headers.get("X-Job-ID"))`,
 );
 
 function resetClientForm() {
@@ -737,6 +750,23 @@ function formatCell(value: unknown) {
               统一入口：<code>{{ serviceUrl }}</code>
             </li>
             <li>multipart 图片字段固定为 <code>image</code>。</li>
+            <li
+              v-if="
+                selectedService === 'modelview-inpaint' &&
+                modelviewPromptEnabled
+              "
+            >
+              可选文字要求字段为 <code>prompt</code>；省略或留空时自动根据图片反推提示词。
+            </li>
+            <li
+              v-else-if="
+                selectedService === 'modelview-inpaint' &&
+                !modelviewPromptEnabled
+              "
+            >
+              当前生产版本仅接收 <code>image</code>；可选 <code>prompt</code>
+              协议已完成候选实现，将在现有任务清空并完成三节点一致性校验后启用。
+            </li>
             <li>响应头 <code>X-Job-ID</code> 可用于日志和排障。</li>
           </ol>
           <div class="code-tabs">

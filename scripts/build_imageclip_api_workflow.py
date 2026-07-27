@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a final-output-only API prompt from the tracked ImageClip UI graph."""
+"""Build a final-output-only API prompt from a tracked ComfyUI UI graph."""
 
 import argparse
 import hashlib
@@ -48,6 +48,37 @@ def control_after_generate(definition_inputs: dict[str, Any], name: str) -> bool
     return False
 
 
+def serialized_control_after_generate(
+    definition_inputs: dict[str, Any], name: str, values: list[Any], index: int
+) -> bool:
+    """Detect a UI-only seed control even when object_info omits its flag."""
+    if control_after_generate(definition_inputs, name):
+        return True
+    return (
+        name in {"seed", "noise_seed"}
+        and index < len(values)
+        and values[index] in {"fixed", "increment", "decrement", "randomize"}
+    )
+
+
+def required_input_present(name: str, specification: Any, inputs: dict[str, Any]) -> bool:
+    if name in inputs:
+        return True
+    if not isinstance(specification, list) or len(specification) < 2:
+        return False
+    if specification[0] != "COMFY_AUTOGROW_V3" or not isinstance(specification[1], dict):
+        return False
+    template = specification[1].get("template", {})
+    if not isinstance(template, dict):
+        return False
+    prefix = template.get("prefix")
+    minimum = template.get("min", 0)
+    if not isinstance(prefix, str) or not isinstance(minimum, int):
+        return False
+    count = sum(key.startswith(f"{name}.{prefix}") for key in inputs)
+    return count >= minimum
+
+
 def build_prompt(
     workflow: dict[str, Any], definitions: dict[str, Any], final_output_node: int
 ) -> dict[str, Any]:
@@ -88,7 +119,16 @@ def build_prompt(
                 link = links.get(int(link_id))
                 if link is None or link["target_id"] != node_id:
                     raise ValueError(f"node {node_id} has an invalid input link")
-                pending.append(link["origin_id"])
+                origin = nodes.get(link["origin_id"])
+                if origin is None:
+                    raise ValueError(
+                        f"workflow link references missing node {link['origin_id']}"
+                    )
+                # PrimitiveNode is a UI-only widget proxy. ComfyUI's API export
+                # inlines its single value into the target input and omits the
+                # primitive node from the prompt graph.
+                if origin.get("type") != "PrimitiveNode":
+                    pending.append(link["origin_id"])
 
     prompt: dict[str, Any] = {}
     output_nodes: set[int] = set()
@@ -128,7 +168,9 @@ def build_prompt(
                     raise ValueError(f"node {node_id} is missing widget value for {name}")
                 widget_value = values[widget_index]
                 widget_index += 1
-                if control_after_generate(definition_inputs, name):
+                if serialized_control_after_generate(
+                    definition_inputs, name, values, widget_index
+                ):
                     if widget_index >= len(values):
                         raise ValueError(
                             f"node {node_id} is missing control-after-generate value for {name}"
@@ -136,14 +178,27 @@ def build_prompt(
                     widget_index += 1
             if link_id is not None:
                 link = links[int(link_id)]
-                inputs[name] = [str(link["origin_id"]), link["origin_slot"]]
+                origin = nodes[link["origin_id"]]
+                if origin.get("type") == "PrimitiveNode":
+                    primitive_values = list(origin.get("widgets_values") or [])
+                    if len(primitive_values) != 1:
+                        raise ValueError(
+                            f"primitive node {link['origin_id']} must contain exactly one value"
+                        )
+                    inputs[name] = primitive_values[0]
+                else:
+                    inputs[name] = [str(link["origin_id"]), link["origin_slot"]]
             elif has_widget and name in accepted_names:
                 inputs[name] = widget_value
 
         missing = []
         required = definition_inputs.get("required", {}) if isinstance(definition_inputs, dict) else {}
         if isinstance(required, dict):
-            missing = sorted(str(name) for name in required if name not in inputs)
+            missing = sorted(
+                str(name)
+                for name, specification in required.items()
+                if not required_input_present(str(name), specification, inputs)
+            )
         if missing:
             raise ValueError(f"node {node_id} is missing required inputs: {', '.join(missing)}")
         if widget_index != len(values):

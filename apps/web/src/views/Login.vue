@@ -25,8 +25,8 @@ async function submit() {
   <main class="login">
     <form @submit.prevent="submit">
       <div class="login-mark">▦</div>
-      <h1>GPU Control</h1>
-      <p>三节点 ComfyUI 运维控制台</p>
+      <h1>统一调度中心</h1>
+      <p>GPU 推理与 CPU 资产处理统一运维控制台</p>
       <label
         >管理员账号<input
           v-model="username"

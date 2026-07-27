@@ -226,6 +226,112 @@ class BatchIdempotencyKey(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class AssetWorker(Base):
+    """CPU-only Blender worker; intentionally separate from GPU nodes."""
+
+    __tablename__ = "asset_workers"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(128))
+    node_id: Mapped[str] = mapped_column(String(64), index=True)
+    hostname: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(16), default="OFFLINE", index=True)
+    blender_version: Mapped[str] = mapped_column(String(32))
+    skill_version: Mapped[str] = mapped_column(String(64))
+    max_concurrency: Mapped[int] = mapped_column(Integer, default=2)
+    current_jobs: Mapped[int] = mapped_column(Integer, default=0)
+    cpu_count: Mapped[int] = mapped_column(Integer, default=1)
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class AssetJob(Base):
+    """Durable Asset Processing job, never consumed by the GPU scheduler."""
+
+    __tablename__ = "asset_jobs"
+    __table_args__ = (
+        Index("ix_asset_jobs_queue", "status", "created_at"),
+        Index("ix_asset_jobs_client_status", "client_id", "status"),
+        UniqueConstraint("client_id", "external_asset_id", name="uq_asset_external_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("api_clients.id", ondelete="CASCADE"), index=True
+    )
+    external_asset_id: Mapped[str] = mapped_column(String(128))
+    job_type: Mapped[str] = mapped_column(String(32), default="UV_UNWRAP")
+    status: Mapped[str] = mapped_column(String(24), default="QUEUED")
+    source_filename: Mapped[str] = mapped_column(String(256))
+    input_path: Mapped[str] = mapped_column(Text)
+    input_sha256: Mapped[str] = mapped_column(String(64))
+    input_size_bytes: Mapped[int] = mapped_column(BigInteger)
+    options: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    request_hash: Mapped[str] = mapped_column(String(64))
+    request_id: Mapped[str] = mapped_column(String(64), index=True)
+    worker_id: Mapped[str | None] = mapped_column(
+        ForeignKey("asset_workers.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    lease_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    progress: Mapped[float] = mapped_column(Float, default=0)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class AssetArtifact(Base):
+    __tablename__ = "asset_artifacts"
+    __table_args__ = (
+        UniqueConstraint("job_id", "kind", name="uq_asset_artifact_kind"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("asset_jobs.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(32))
+    filename: Mapped[str] = mapped_column(String(256))
+    path: Mapped[str] = mapped_column(Text)
+    content_type: Mapped[str] = mapped_column(String(128))
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AssetIdempotencyKey(Base):
+    __tablename__ = "asset_idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("client_id", "key", name="uq_client_asset_idempotency"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("api_clients.id", ondelete="CASCADE"), index=True
+    )
+    key: Mapped[str] = mapped_column(String(128))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("asset_jobs.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class JobEvent(Base):
     __tablename__ = "job_events"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

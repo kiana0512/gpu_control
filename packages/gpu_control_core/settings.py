@@ -52,9 +52,21 @@ class Settings(BaseSettings):
     batch_max_frame_bytes: int = Field(67_108_864, ge=1024, le=2_147_483_648)
     batch_feed_window: int = Field(12, ge=1, le=10_000)
     batch_max_running_per_tenant: int = Field(3, ge=1, le=10)
+    asset_root: Path = Path("storage/assets")
+    asset_max_upload_bytes: int = Field(2_147_483_648, ge=1024, le=10_995_116_277_760)
+    asset_worker_hmac_secret: str = "development-only-change-me"
+    asset_worker_lease_seconds: int = Field(300, ge=30, le=3600)
+    asset_worker_heartbeat_timeout_seconds: int = Field(30, ge=5, le=600)
+    asset_worker_max_concurrency: int = Field(2, ge=1, le=32)
+    asset_worker_max_load_per_cpu: float = Field(0.85, ge=0.1, le=4.0)
+    asset_worker_min_available_memory_mb: int = Field(8192, ge=1024, le=1_048_576)
+    asset_job_max_attempts: int = Field(2, ge=1, le=10)
 
     @field_validator(
-        "jwt_secret", "api_key_pepper", "node_agent_hmac_secret", "alertmanager_webhook_token"
+        "jwt_secret",
+        "api_key_pepper",
+        "node_agent_hmac_secret",
+        "alertmanager_webhook_token",
     )
     @classmethod
     def production_secrets_must_change(cls, value: str) -> str:

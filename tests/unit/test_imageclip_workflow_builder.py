@@ -101,3 +101,192 @@ def test_builder_skips_ui_control_after_generate_value() -> None:
         "scheduler": "simple",
         "denoise": 1,
     }
+
+
+def test_builder_inlines_ui_primitive_without_emitting_a_fake_api_node() -> None:
+    workflow = {
+        "nodes": [
+            {"id": 1, "type": "Source", "mode": 0, "inputs": []},
+            {
+                "id": 2,
+                "type": "PrimitiveNode",
+                "mode": 0,
+                "inputs": [],
+                "widgets_values": ["用户指定的局部重绘提示词"],
+            },
+            {
+                "id": 3,
+                "type": "Processor",
+                "mode": 0,
+                "inputs": [
+                    {"name": "image", "link": 1},
+                    {"name": "prompt", "link": 2, "widget": {"name": "prompt"}},
+                ],
+                "widgets_values": ["UI fallback"],
+            },
+            {
+                "id": 4,
+                "type": "SaveImage",
+                "mode": 0,
+                "inputs": [
+                    {"name": "images", "link": 3},
+                    {
+                        "name": "filename_prefix",
+                        "link": None,
+                        "widget": {"name": "filename_prefix"},
+                    },
+                ],
+                "widgets_values": ["final"],
+            },
+        ],
+        "links": [
+            [1, 1, 0, 3, 0],
+            [2, 2, 0, 3, 1],
+            [3, 3, 0, 4, 0],
+        ],
+    }
+    definitions = {
+        "Source": {"input": {"required": {}}},
+        "Processor": {
+            "input": {
+                "required": {
+                    "image": ["IMAGE", {}],
+                    "prompt": ["STRING", {}],
+                }
+            }
+        },
+        "SaveImage": {
+            "input": {
+                "required": {
+                    "images": ["IMAGE", {}],
+                    "filename_prefix": ["STRING", {}],
+                }
+            },
+            "output_node": True,
+        },
+    }
+
+    prompt = build_prompt(workflow, definitions, 4)
+
+    assert "2" not in prompt
+    assert prompt["3"]["inputs"]["prompt"] == "用户指定的局部重绘提示词"
+
+
+def test_builder_skips_serialized_seed_control_when_object_info_omits_flag() -> None:
+    workflow = {
+        "nodes": [
+            {
+                "id": 1,
+                "type": "Processor",
+                "mode": 0,
+                "inputs": [
+                    {"name": "seed", "link": None, "widget": {"name": "seed"}},
+                ],
+                "widgets_values": [736972101620544, "randomize"],
+            },
+            {
+                "id": 9,
+                "type": "SaveImage",
+                "mode": 0,
+                "inputs": [
+                    {"name": "images", "link": 1},
+                    {
+                        "name": "filename_prefix",
+                        "link": None,
+                        "widget": {"name": "filename_prefix"},
+                    },
+                ],
+                "widgets_values": ["final"],
+            },
+        ],
+        "links": [[1, 1, 0, 9, 0]],
+    }
+    definitions = {
+        "Processor": {
+            "input": {
+                "required": {
+                    "seed": ["INT", {"default": 0, "min": 0, "max": 2**64 - 1}],
+                }
+            }
+        },
+        "SaveImage": {
+            "input": {
+                "required": {
+                    "images": ["IMAGE", {}],
+                    "filename_prefix": ["STRING", {"default": "ComfyUI"}],
+                }
+            },
+            "output_node": True,
+        },
+    }
+
+    prompt = build_prompt(workflow, definitions, 9)
+
+    assert prompt["1"]["inputs"]["seed"] == 736972101620544
+
+
+def test_builder_preserves_autogrow_nested_link_names() -> None:
+    workflow = {
+        "nodes": [
+            {"id": 1, "type": "Source", "mode": 0, "inputs": []},
+            {"id": 2, "type": "Source", "mode": 0, "inputs": []},
+            {
+                "id": 3,
+                "type": "BatchImagesNode",
+                "mode": 0,
+                "inputs": [
+                    {"name": "images.image0", "link": 1},
+                    {"name": "images.image1", "link": 2},
+                ],
+                "widgets_values": [],
+            },
+            {
+                "id": 9,
+                "type": "SaveImage",
+                "mode": 0,
+                "inputs": [
+                    {"name": "images", "link": 3},
+                    {
+                        "name": "filename_prefix",
+                        "link": None,
+                        "widget": {"name": "filename_prefix"},
+                    },
+                ],
+                "widgets_values": ["final"],
+            },
+        ],
+        "links": [
+            [1, 1, 0, 3, 0],
+            [2, 2, 0, 3, 1],
+            [3, 3, 0, 9, 0],
+        ],
+    }
+    definitions = {
+        "Source": {"input": {"required": {}}},
+        "BatchImagesNode": {
+            "input": {
+                "required": {
+                    "images": [
+                        "COMFY_AUTOGROW_V3",
+                        {"template": {"prefix": "image", "min": 1, "max": 50}},
+                    ]
+                }
+            }
+        },
+        "SaveImage": {
+            "input": {
+                "required": {
+                    "images": ["IMAGE", {}],
+                    "filename_prefix": ["STRING", {}],
+                }
+            },
+            "output_node": True,
+        },
+    }
+
+    prompt = build_prompt(workflow, definitions, 9)
+
+    assert prompt["3"]["inputs"] == {
+        "images.image0": ["1", 0],
+        "images.image1": ["2", 0],
+    }

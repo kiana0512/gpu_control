@@ -5,7 +5,7 @@ x-logging: &default-logging
 
 services:
   comfyui:
-    image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:projects-0.2.2}
+    image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:projects-0.2.3}
     restart: unless-stopped
     ports: ["${NODE_BIND_IP:-0.0.0.0}:8188:8188"]
     deploy: {resources: {reservations: {devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]}}}
@@ -46,6 +46,28 @@ services:
     command: ["run", "/etc/alloy/config.alloy", "--storage.path=/var/lib/alloy/data"]
     environment: {NODE_ID: "${NODE_ID}", CONTROL_HOST: "${CONTROL_HOST}"}
     volumes: ["./alloy/worker.alloy:/etc/alloy/config.alloy:ro", "/var/run/docker.sock:/var/run/docker.sock:ro", "/var/log/journal:/var/log/journal:ro", "/run/log/journal:/run/log/journal:ro", "/etc/machine-id:/etc/machine-id:ro", "alloy-data:/var/lib/alloy/data"]
+    logging: *default-logging
+
+  blender-worker:
+    profiles: ["asset-plane"]
+    build:
+      context: ../..
+      dockerfile: apps/blender_worker/Dockerfile
+      args: {BLENDER_BASE_IMAGE: "${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}"}
+    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.0.0}
+    restart: unless-stopped
+    environment:
+      ASSET_API_URL: https://${CONTROL_HOST}
+      ASSET_WORKER_ID: asset-${NODE_ID}
+      ASSET_NODE_ID: ${NODE_ID}
+      ASSET_WORKER_DISPLAY_NAME: ${NODE_ID} CPU Worker
+      ASSET_WORKER_HMAC_SECRET: ${ASSET_WORKER_HMAC_SECRET}
+      ASSET_WORKER_MAX_CONCURRENCY: ${ASSET_WORKER_MAX_CONCURRENCY:-2}
+      BLENDER_VERSION: 5.1.2
+      BLENDER_SKILL_VERSION: ${BLENDER_SKILL_VERSION:-pbr-uv-v1.1}
+      SSL_CERT_FILE: /run/certs/lan-ca.crt
+    volumes:
+      - ${LAN_CA_PATH:-/opt/gpu-control/deploy/control-plane/nginx/certs/lan-ca.crt}:/run/certs/lan-ca.crt:ro
     logging: *default-logging
 
 volumes:

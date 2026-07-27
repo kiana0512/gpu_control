@@ -1,5 +1,7 @@
 FROM node:22.17.1-alpine3.22 AS builder
 WORKDIR /app
+ARG VITE_MODELVIEW_PROMPT_ENABLED=false
+ENV VITE_MODELVIEW_PROMPT_ENABLED=${VITE_MODELVIEW_PROMPT_ENABLED}
 COPY package*.json ./
 RUN npm ci --ignore-scripts && npm cache clean --force
 COPY . .

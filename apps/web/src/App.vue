@@ -11,6 +11,7 @@ import {
   Key,
   List,
   Operation,
+  SetUp,
   Setting,
   SwitchButton,
 } from "@element-plus/icons-vue";
@@ -21,7 +22,8 @@ const router = useRouter();
 const menu = [
   ["/", "总览", Cpu],
   ["/jobs", "任务", List],
-  ["/nodes", "GPU 节点", Box],
+  ["/nodes", "计算节点", Box],
+  ["/asset-processing", "资产处理", SetUp],
   ["/workflows", "工作流", DataAnalysis],
   ["/clients", "API 客户", Key],
   ["/scheduling", "调度策略", Operation],
@@ -45,7 +47,7 @@ function logout() {
     <aside class="sidebar">
       <div class="brand">
         <span class="brand-mark"><i></i><b>GC</b></span>
-        <strong>GPU Control<small>OPS</small></strong>
+        <strong>统一调度中心<small>OPS</small></strong>
       </div>
       <nav aria-label="主导航">
         <router-link v-for="[path, label, icon] in menu" :key="path" :to="path"
@@ -55,13 +57,13 @@ function logout() {
       </nav>
       <div class="cluster-state">
         <i></i><span>控制平面在线</span
-        ><small>4090 主控 · GPU Control 1.3.3</small>
+        ><small>4090 主控 · Unified Scheduler 1.4.0-dev</small>
       </div>
     </aside>
     <section class="workspace">
       <header class="topbar">
         <div class="breadcrumb">
-          <span>GPU Control</span><b>/</b><strong>{{ currentSection }}</strong>
+          <span>统一调度中心</span><b>/</b><strong>{{ currentSection }}</strong>
         </div>
         <div>
           <button class="environment"><i></i>生产环境</button

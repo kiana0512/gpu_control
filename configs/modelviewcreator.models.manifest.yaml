@@ -15,3 +15,9 @@ models:
   - path: vae/ae.safetensors
     size_bytes: 335304388
     sha256: afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38
+  - path: SEEDVR2/seedvr2_ema_7b_sharp-Q4_K_M.gguf
+    size_bytes: 4758306592
+    sha256: 7aed800ac4eb8e0d18569a954c0ff35f5a1caa3ed5d920e66cc31405f75b6e69
+  - path: SEEDVR2/ema_vae_fp16.safetensors
+    size_bytes: 501324814
+    sha256: 20678548f420d98d26f11442d3528f8b8c94e57ee046ef93dbb7633da8612ca1

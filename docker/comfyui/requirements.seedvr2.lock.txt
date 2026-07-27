@@ -1,0 +1,7 @@
+# The base image already pins torch/torchvision/numpy/diffusers/peft/opencv/gguf.
+# These are the only packages missing when resolving SeedVR2 commit 690cc393
+# against projects-0.2.2. Keep them separate so the plugin cannot upgrade the
+# production CUDA/PyTorch stack implicitly.
+antlr4-python3-runtime==4.9.3
+omegaconf==2.3.1
+rotary-embedding-torch==0.9.1

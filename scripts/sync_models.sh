@@ -60,6 +60,17 @@ if [[ "${project}" == "all" || "${project}" == "modelview" ]]; then
     echo "ModelViewCreator manifest 由 GPU Control 仓库管理；跳过模型文件。"
   else
     sync_tree "ModelViewCreator" "${modelview_root}/model" "/opt/modelviewcreator/model"
+    if ((${#dry[@]} == 0)); then
+      ssh "${user}@${host}" '
+        set -eu
+        mkdir -p /opt/imageclip/models
+        if [ -e /opt/imageclip/models/SEEDVR2 ] && [ ! -L /opt/imageclip/models/SEEDVR2 ]; then
+          echo "错误：远程 /opt/imageclip/models/SEEDVR2 存在且不是软链接" >&2
+          exit 1
+        fi
+        ln -sfn /opt/modelviewcreator/model/SEEDVR2 /opt/imageclip/models/SEEDVR2
+      '
+    fi
   fi
 fi
 
