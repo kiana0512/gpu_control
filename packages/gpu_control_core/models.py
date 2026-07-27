@@ -384,9 +384,12 @@ class WorkflowNodeCompatibility(Base):
 
 class ApiClient(Base):
     __tablename__ = "api_clients"
+    __table_args__ = (Index("ix_api_clients_role_kind", "role", "client_kind"),)
+
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(128))
     role: Mapped[str] = mapped_column(String(32), default="client")
+    client_kind: Mapped[str] = mapped_column(String(16), default="production")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     max_queued: Mapped[int] = mapped_column(Integer, default=20)
     max_running: Mapped[int] = mapped_column(Integer, default=1)

@@ -1,8 +1,9 @@
 import time
+from pathlib import Path
 
 import gpu_node_agent.main as node_agent
 import httpx
-from gpu_node_agent.main import NodeAgentSettings, create_app
+from gpu_node_agent.main import NodeAgentSettings, _imageclip_pipeline_state, create_app
 
 from packages.gpu_control_core.security import sign_agent_request
 from packages.gpu_control_core.settings import Settings
@@ -15,6 +16,31 @@ def test_worker_agent_does_not_require_control_plane_secrets() -> None:
     )
     assert settings.environment == "production"
     assert settings.node_agent_hmac_secret.endswith("32-characters")
+
+
+def test_imageclip_pipeline_state_is_deterministic_and_tracks_content(tmp_path: Path) -> None:
+    repository = tmp_path / "imageclip"
+    (repository / ".git" / "refs" / "heads").mkdir(parents=True)
+    (repository / "Cherry_lizi" / "nested").mkdir(parents=True)
+    commit = "7" * 40
+    (repository / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (repository / ".git" / "refs" / "heads" / "main").write_text(
+        f"{commit}\n", encoding="utf-8"
+    )
+    (repository / "ImageClip.json").write_text('{"workflow":"latest"}\n', encoding="utf-8")
+    custom_node = repository / "Cherry_lizi" / "nested" / "node.py"
+    custom_node.write_text("VALUE = 1\n", encoding="utf-8")
+    cache = repository / "Cherry_lizi" / "__pycache__"
+    cache.mkdir()
+    (cache / "node.pyc").write_bytes(b"ignored")
+
+    first = _imageclip_pipeline_state(repository)
+    second = _imageclip_pipeline_state(repository)
+    assert first == second
+    assert first[0] == commit
+
+    custom_node.write_text("VALUE = 2\n", encoding="utf-8")
+    assert _imageclip_pipeline_state(repository)[1] != first[1]
 
 
 async def test_node_agent_requires_signature_and_rejects_replay() -> None:

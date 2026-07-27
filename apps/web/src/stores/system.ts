@@ -10,15 +10,18 @@ export const useSystemStore = defineStore("system", {
     loading: false,
     error: "",
     connected: false,
+    clientKind: "production" as "production" | "test" | "all",
   }),
   actions: {
-    async refresh() {
+    async refresh(clientKind?: "production" | "test" | "all") {
+      const scope = clientKind ?? this.clientKind;
+      this.clientKind = scope;
       this.loading = true;
       this.error = "";
       try {
         const [dashboard, jobs, nodes] = await Promise.all([
-          api.dashboard(),
-          api.jobs(),
+          api.dashboard(scope),
+          api.jobs(undefined, scope),
           api.nodes(),
         ]);
         this.dashboard = dashboard;

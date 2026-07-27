@@ -2,22 +2,24 @@
 
 本页是仓库文档导航。今天部署时不要从 30 多份文档逐一翻找，按下面的“现场主线”执行即可；其余文档是遇到具体问题时的细节手册。
 
-## 1. 今天上线只看这五项
+## 1. 今天上线只看这七项
 
 1. 根目录 `GPU_CONTROL_成品部署联调与核心逻辑手册.pdf`：产品结构、核心算法、三机命令、联调、日志、压测和故障定位的单文件版本。
 2. `docs/USER_INPUT_REQUIRED.md`：先补齐真实 IP、SSH 用户、模型、API 工作流和业务限制。
 3. `docs/28_TODAY_DEPLOYMENT_MANUAL.md`：从三台空 Ubuntu 主机开始的完整命令正文。
 4. `docs/30_TODAY_ONSITE_CHECKLIST.md`：现场操作者逐项打勾并记录结果。
 5. `docs/33_3090_NODE_DEPLOYMENT_HANDOFF.md`：2026-07-23 当前双项目镜像、模型和 3090 接入的唯一最新交接步骤。
+6. `docs/40_GPU_CONTROL_MATTING_HANDOFF_V3.md`：动画管家批量抠图当前唯一接口合同。
+7. `docs/41_2026-07-27_GPU_CONTROL_1_3_2_STRESS_AND_PIPELINE_RECORD.md`：1.3.2/1.3.3 管线修复、三节点真实压力和生产优先级证据。
 
 3090-A 的已完成部署、动态心跳、Web 修复和真实任务证据见
 `docs/34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md`。
 3090-B、动态热缓存、OOM/重试修复、GPU 指标与三卡 10 客户实测见
 `docs/35_2026-07-23_3090_B_AND_THREE_NODE_ACCEPTANCE.md`。
 
-动画管家批量序列帧抠图请只按 `docs/38_GPU_CONTROL_MATTING_HANDOFF_V2.md` 联调；1.2.0 生产
-变更、三卡真实批次和回滚证据见 `docs/39_2026-07-24_BATCH_MATTING_DEPLOYMENT_RECORD.md`。
-`docs/37_ANIMATION_MANAGER_BATCH_API_CONTRACT_DRAFT.md` 已废弃，不能继续作为接口合同。
+动画管家批量序列帧抠图请只按 `docs/40_GPU_CONTROL_MATTING_HANDOFF_V3.md` 联调；V2 和草案已被
+V3 替代，不能继续作为当前接口合同。1.2.0 初版批处理记录仍保留在
+`docs/39_2026-07-24_BATCH_MATTING_DEPLOYMENT_RECORD.md`，1.3.3 的当前事实以 41 号记录为准。
 
 部署完成后看 `docs/IMPLEMENTATION_STATUS.md`，把“现场待测”项改成实际日期、主机和结果，不要覆盖本机验证记录。
 
@@ -32,8 +34,9 @@
 | 当前 3090 交接 | `33_3090_NODE_DEPLOYMENT_HANDOFF.md` | 将本机已验证的双项目环境复制到两台 3090 |
 | 3090-A 记录 | `34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md` | A 的实机身份、部署结果、断电恢复与真实任务证据 |
 | B 与三卡验收 | `35_2026-07-23_3090_B_AND_THREE_NODE_ACCEPTANCE.md` | B 的完整部署、性能优化、故障修复和 10 客户三卡实测 |
-| 动画管家 V2 | `38_GPU_CONTROL_MATTING_HANDOFF_V2.md` | 批量抠图唯一冻结接口、结果校验和联调清单 |
+| 动画管家 V3 | `40_GPU_CONTROL_MATTING_HANDOFF_V3.md` | 批量抠图当前接口、结果校验、管线门禁和联调清单 |
 | 批处理部署记录 | `39_2026-07-24_BATCH_MATTING_DEPLOYMENT_RECORD.md` | 1.2.0 生产变更、真实三卡证据和回滚点 |
+| 1.3.2/1.3.3 压测记录 | `41_2026-07-27_GPU_CONTROL_1_3_2_STRESS_AND_PIPELINE_RECORD.md` | 最新管线修复、真实 7:3 压力和生产优先级证据 |
 | 分角色安装 | `03`—`11` | 网络、准备、4090、3090、镜像、模型、工作流、首次部署 |
 | 使用手册 | `12_WEB_ADMIN_GUIDE.md`、`13_PUBLIC_API_GUIDE.md` | 管理后台和业务 API |
 | 运维 | `15`—`22` | 日志、告警、备份、升级、故障、容量和 FAQ |
@@ -44,11 +47,13 @@
 
 | 主机 | 默认职责 | GPU 状态 | 关键服务 |
 |---|---|---|---|
-| RTX 4090 主控 | 控制面、数据、监控、日志，也保留一个 ComfyUI | `RESERVED` | Nginx、Web、API、Scheduler、PostgreSQL、Redis、Loki、Grafana、Alloy、Prometheus、Alertmanager、ComfyUI |
+| RTX 4090 主控 | 控制面、数据、监控、日志，也作为第三个受控 ComfyUI 槽位 | `ACTIVE`（池为 `OVERFLOW`） | Nginx、Web、API、Scheduler、PostgreSQL、Redis、Loki、Grafana、Alloy、Prometheus、Alertmanager、ComfyUI |
 | RTX 3090-A | 主推理节点 | `ACTIVE` | ComfyUI、Alloy、GPU exporter、Node Agent |
 | RTX 3090-B | 主推理节点 | `ACTIVE` | ComfyUI、Alloy、GPU exporter、Node Agent |
 
-正常任务只进入两台 3090。管理员把 4090 设为 `ACTIVE` 时三机都可用；设为 `OVERFLOW` 时还必须同时满足排队阈值、等待时间、哨兵文件、GPU 利用率、剩余显存和允许时段条件。
+当前三节点压力与批量抠图模式中三卡均可接单；4090 位于 `OVERFLOW` 池，是否参与由运行时策略、
+队列阈值、等待时间、哨兵文件、GPU 利用率、剩余显存和允许时段共同决定。需要纯两卡生产时可把
+4090 设为保留，但文档和 Web 必须展示实际运行模式，不能沿用旧“单机模式”文案。
 
 ## 4. 代码结构
 

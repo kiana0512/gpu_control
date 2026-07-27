@@ -14,6 +14,29 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # The initial migration intentionally creates Base.metadata so a fresh
+    # installation always receives the complete current schema.  When a new
+    # database runs the whole Alembic chain, the current batch tables and job
+    # columns therefore already exist.  Existing pre-1.2 databases do not have
+    # them and continue through the additive operations below.
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    tables = set(inspector.get_table_names())
+    batch_tables = {
+        "job_batches",
+        "job_batch_items",
+        "batch_artifacts",
+        "batch_events",
+        "batch_idempotency_keys",
+    }
+    job_columns = (
+        {column["name"] for column in inspector.get_columns("jobs")}
+        if "jobs" in tables
+        else set()
+    )
+    if batch_tables <= tables and {"batch_id", "batch_item_id"} <= job_columns:
+        return
+
     op.create_table(
         "job_batches",
         sa.Column("id", sa.String(length=36), primary_key=True),

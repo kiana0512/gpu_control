@@ -32,6 +32,9 @@ install -d -o gpucontrol -g gpucontrol /srv/gpu-control
 install -d -o "${deploy_user}" -g "${deploy_group}" \
   /srv/comfyui/models /srv/comfyui/runtime /srv/comfyui/runtime/input \
   /srv/comfyui/runtime/output /srv/comfyui/runtime/temp /srv/comfyui/runtime/user \
-  /opt/gpu-control /opt/imageclip /opt/modelviewcreator
+  /opt/gpu-control /opt/imageclip /opt/imageclip/models \
+  /opt/imageclip/models/pulid /opt/imageclip/models/insightface \
+  /opt/imageclip/models/facexlib /opt/imageclip/models/ipadapter \
+  /opt/imageclip/models/clip /opt/modelviewcreator
 git lfs install --system
 echo "公共依赖安装完成；继续安装 NVIDIA 驱动与 Container Toolkit。"

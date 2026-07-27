@@ -49,6 +49,9 @@ function nodeSummary(job: JobInfo) {
               <small v-if="isBatch(job)" class="batch-row-label"
                 >序列帧批次</small
               >
+              <small v-if="job.client_kind === 'test'" class="test-row-label"
+                >压力测试</small
+              >
             </td>
             <td>
               {{ job.workflow_key }} v{{ job.workflow_version }}

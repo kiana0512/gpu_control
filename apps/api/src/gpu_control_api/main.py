@@ -118,11 +118,17 @@ class NodeModeRequest(BaseModel):
 
 
 class NodeHeartbeatRequest(BaseModel):
-    node_id: str = Field(pattern=r"^worker-[a-z0-9-]+$", max_length=64)
+    node_id: str = Field(pattern=r"^(?:worker|control)-[a-z0-9-]+$", max_length=64)
     ip: str
     mac: str = Field(pattern=r"^(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
     gpu_uuid: str = Field(pattern=r"^GPU-[0-9a-fA-F-]{36}$", max_length=64)
     hostname: str = Field(min_length=1, max_length=128)
+    imageclip_commit: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{40}$", max_length=40
+    )
+    imageclip_pipeline_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$", max_length=64
+    )
 
     @field_validator("ip")
     @classmethod
@@ -167,6 +173,7 @@ class WorkflowImportRequest(BaseModel):
 class ClientCreateRequest(BaseModel):
     id: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
     name: str = Field(min_length=1, max_length=128)
+    client_kind: Literal["production", "test"] = "production"
     max_queued: int = Field(20, ge=1, le=10_000)
     max_running: int = Field(1, ge=1, le=10)
     daily_quota: int = Field(1000, ge=1, le=1_000_000)
@@ -190,6 +197,7 @@ class ClientCreateRequest(BaseModel):
 
 class ClientUpdateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
+    client_kind: Literal["production", "test"] = "production"
     enabled: bool = True
     max_queued: int = Field(20, ge=1, le=10_000)
     max_running: int = Field(1, ge=1, le=10)
@@ -423,6 +431,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         id=auto_id,
                         name=f"自动发现 {source_ip}",
                         role="client",
+                        client_kind="production",
                         max_queued=cfg.default_tenant_max_queued,
                         max_running=cfg.default_tenant_max_running,
                         daily_quota=1000,
@@ -608,6 +617,11 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             if registered and registered.lower() != reported.lower():
                 raise HTTPException(409, detail={"code": "NODE_IDENTITY_MISMATCH", "field": key})
         old_base_url = node.base_url
+        pipeline_changed = (
+            labels.get("imageclip_commit") != (body.imageclip_commit or "")
+            or labels.get("imageclip_pipeline_sha256")
+            != (body.imageclip_pipeline_sha256 or "")
+        )
         labels.update(
             {
                 "host": body.ip,
@@ -615,11 +629,31 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "mac": body.mac,
                 "gpu_uuid": body.gpu_uuid,
                 "agent_last_seen_at": datetime.now(UTC).isoformat(),
+                "imageclip_commit": body.imageclip_commit or "",
+                "imageclip_pipeline_sha256": body.imageclip_pipeline_sha256 or "",
             }
         )
         node.labels = labels
+        node.custom_nodes_version = (
+            f"imageclip:{body.imageclip_commit[:12]}:{body.imageclip_pipeline_sha256[:12]}"
+            if body.imageclip_commit and body.imageclip_pipeline_sha256
+            else None
+        )
         node.base_url = f"http://{body.ip}:8188"
         node.agent_url = f"http://{body.ip}:9201"
+        if pipeline_changed:
+            versions = list(
+                (
+                    await db.scalars(
+                        select(WorkflowVersion).where(
+                            WorkflowVersion.workflow_key == "imageclip-rgba",
+                            WorkflowVersion.enabled.is_(True),
+                        )
+                    )
+                ).all()
+            )
+            for version in versions:
+                await refresh_workflow_compatibility(db, version)
         nonces[replay_key] = now
         await db.commit()
         await _notify(request.app, "gpu-control:wakeup", {"event": "node.heartbeat", "node_id": node.id})
@@ -1849,20 +1883,31 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
     async def dashboard(
         _: Annotated[Principal, Depends(admin_principal)],
         db: Annotated[AsyncSession, Depends(session)],
+        client_kind: Literal["production", "test", "all"] = "production",
     ) -> dict[str, Any]:
         now = datetime.now(UTC)
         today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        scoped_client_ids = select(ApiClient.id).where(ApiClient.role == "client")
+        if client_kind != "all":
+            scoped_client_ids = scoped_client_ids.where(
+                ApiClient.client_kind == client_kind
+            )
         rows = (
             await db.execute(
                 select(Job.status, func.count(Job.id))
-                .where(Job.batch_id.is_(None))
+                .where(
+                    Job.batch_id.is_(None),
+                    Job.tenant_id.in_(scoped_client_ids),
+                )
                 .group_by(Job.status)
             )
         ).all()
         counts: dict[str, int] = {str(status): int(count) for status, count in rows}
         batch_status_rows = (
             await db.execute(
-                select(JobBatch.status, func.count(JobBatch.id)).group_by(JobBatch.status)
+                select(JobBatch.status, func.count(JobBatch.id))
+                .where(JobBatch.tenant_id.in_(scoped_client_ids))
+                .group_by(JobBatch.status)
             )
         ).all()
         batch_dashboard_status = {
@@ -1881,7 +1926,11 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         today_rows = (
             await db.execute(
                 select(Job.status, func.count(Job.id))
-                .where(Job.batch_id.is_(None), Job.created_at >= today)
+                .where(
+                    Job.batch_id.is_(None),
+                    Job.created_at >= today,
+                    Job.tenant_id.in_(scoped_client_ids),
+                )
                 .group_by(Job.status)
             )
         ).all()
@@ -1889,7 +1938,10 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         today_batch_rows = (
             await db.execute(
                 select(JobBatch.status, func.count(JobBatch.id))
-                .where(JobBatch.created_at >= today)
+                .where(
+                    JobBatch.created_at >= today,
+                    JobBatch.tenant_id.in_(scoped_client_ids),
+                )
                 .group_by(JobBatch.status)
             )
         ).all()
@@ -1900,15 +1952,18 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             counts[terminal] = today_counts.get(terminal, 0)
         oldest = await db.scalar(
             select(func.min(Job.created_at)).where(
-                Job.batch_id.is_(None), Job.status == JobStatus.QUEUED.value
+                Job.batch_id.is_(None),
+                Job.status == JobStatus.QUEUED.value,
+                Job.tenant_id.in_(scoped_client_ids),
             )
         )
         oldest_batch = await db.scalar(
-            select(func.min(JobBatch.created_at)).where(
-                JobBatch.status.in_(
-                    [BatchStatus.VALIDATING.value, BatchStatus.QUEUED.value]
+                select(func.min(JobBatch.created_at)).where(
+                    JobBatch.status.in_(
+                        [BatchStatus.VALIDATING.value, BatchStatus.QUEUED.value]
+                    ),
+                    JobBatch.tenant_id.in_(scoped_client_ids),
                 )
-            )
         )
         if oldest_batch is not None and (
             oldest is None or oldest_batch.replace(tzinfo=oldest_batch.tzinfo or UTC) < oldest.replace(
@@ -1926,6 +1981,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     .where(
                         Job.status == JobStatus.SUCCEEDED.value,
                         Job.batch_id.is_(None),
+                        Job.tenant_id.in_(scoped_client_ids),
                         Job.started_at.is_not(None),
                         Job.finished_at.is_not(None),
                     )
@@ -1945,6 +2001,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     select(JobBatch)
                     .where(
                         JobBatch.status == BatchStatus.SUCCEEDED.value,
+                        JobBatch.tenant_id.in_(scoped_client_ids),
                         JobBatch.started_at.is_not(None),
                         JobBatch.finished_at.is_not(None),
                     )
@@ -1960,8 +2017,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         )
         nodes = (await db.scalars(select(Node).order_by(Node.pool, Node.id))).all()
         workers = sum(
-            node.pool == "PRIMARY"
-            and node.mode == NodeMode.ACTIVE.value
+            node.mode == NodeMode.ACTIVE.value
             and node.health == "ONLINE"
             for node in nodes
         )
@@ -1976,7 +2032,9 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             (
                 await db.scalars(
                     select(Job.created_at).where(
-                        Job.batch_id.is_(None), Job.created_at >= trend_start
+                        Job.batch_id.is_(None),
+                        Job.created_at >= trend_start,
+                        Job.tenant_id.in_(scoped_client_ids),
                     )
                 )
             ).all()
@@ -1984,7 +2042,10 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         created_times.extend(
             (
                 await db.scalars(
-                    select(JobBatch.created_at).where(JobBatch.created_at >= trend_start)
+                    select(JobBatch.created_at).where(
+                        JobBatch.created_at >= trend_start,
+                        JobBatch.tenant_id.in_(scoped_client_ids),
+                    )
                 )
             ).all()
         )
@@ -2008,6 +2069,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             ).all()
         )
         return {
+            "client_kind": client_kind,
             "jobs": counts,
             "oldest_wait_seconds": oldest_wait_seconds,
             "estimated_clear_seconds": estimated_clear_seconds,
@@ -2041,30 +2103,66 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         db: Annotated[AsyncSession, Depends(session)],
         status: str | None = None,
         limit: int = 100,
+        client_kind: Literal["production", "test", "all"] = "production",
     ) -> list[dict[str, Any]]:
         bounded_limit = min(max(limit, 1), 500)
+        scoped_client_ids = select(ApiClient.id).where(ApiClient.role == "client")
+        if client_kind != "all":
+            scoped_client_ids = scoped_client_ids.where(
+                ApiClient.client_kind == client_kind
+            )
         query = (
             select(Job)
-            .where(Job.batch_id.is_(None))
+            .where(
+                Job.batch_id.is_(None),
+                Job.tenant_id.in_(scoped_client_ids),
+            )
             .order_by(Job.created_at.desc())
             .limit(bounded_limit)
         )
         if status:
             query = query.where(Job.status == status)
-        rows: list[dict[str, Any]] = [
-            job_payload(row) for row in (await db.scalars(query)).all()
-        ]
+        job_rows = list((await db.scalars(query)).all())
         batch_query = (
-            select(JobBatch).order_by(JobBatch.created_at.desc()).limit(bounded_limit)
+            select(JobBatch)
+            .where(JobBatch.tenant_id.in_(scoped_client_ids))
+            .order_by(JobBatch.created_at.desc())
+            .limit(bounded_limit)
         )
         if status:
             batch_query = batch_query.where(JobBatch.status == status)
-        for batch in (await db.scalars(batch_query)).all():
+        batch_rows = list((await db.scalars(batch_query)).all())
+        tenant_ids = {row.tenant_id for row in job_rows} | {
+            row.tenant_id for row in batch_rows
+        }
+        clients = list(
+            (
+                await db.scalars(
+                    select(ApiClient).where(ApiClient.id.in_(tenant_ids))
+                )
+            ).all()
+        ) if tenant_ids else []
+        client_by_id = {row.id: row for row in clients}
+        rows: list[dict[str, Any]] = []
+        for job in job_rows:
+            payload = job_payload(job)
+            owner = client_by_id.get(job.tenant_id)
+            payload.update(
+                {
+                    "tenant_id": job.tenant_id,
+                    "client_kind": owner.client_kind if owner else "production",
+                }
+            )
+            rows.append(payload)
+        for batch in batch_rows:
             payload = await batch_payload(batch, db, admin=True)
+            owner = client_by_id.get(batch.tenant_id)
             payload.update(
                 {
                     "kind": "batch",
                     "job_id": batch.id,
+                    "tenant_id": batch.tenant_id,
+                    "client_kind": owner.client_kind if owner else "production",
                     "priority": Priority.BATCH.value,
                     "node_id": None,
                     "prompt_id": None,
@@ -2092,7 +2190,15 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         if batch is None:
             raise HTTPException(404, detail={"code": "BATCH_NOT_FOUND"})
         payload = await batch_payload(batch, db, admin=True)
-        payload.update({"kind": "batch", "job_id": batch.id, "tenant_id": batch.tenant_id})
+        owner = await db.get(ApiClient, batch.tenant_id)
+        payload.update(
+            {
+                "kind": "batch",
+                "job_id": batch.id,
+                "tenant_id": batch.tenant_id,
+                "client_kind": owner.client_kind if owner else "production",
+            }
+        )
         return payload
 
     @app.get("/admin/batches/{batch_id}/items")
@@ -2684,6 +2790,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "id": row.id,
                 "name": row.name,
                 "role": row.role,
+                "client_kind": row.client_kind,
                 "enabled": row.enabled,
                 "max_queued": row.max_queued,
                 "max_running": row.max_running,
@@ -2734,6 +2841,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             id=body.id,
             name=body.name,
             role="client",
+            client_kind=body.client_kind,
             max_queued=body.max_queued,
             max_running=body.max_running,
             daily_quota=body.daily_quota,
@@ -2789,6 +2897,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 )
         before = {
             "name": client.name,
+            "client_kind": client.client_kind,
             "enabled": client.enabled,
             "max_queued": client.max_queued,
             "max_running": client.max_running,
@@ -2798,6 +2907,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             "callback_hosts": client.callback_hosts,
         }
         client.name = body.name
+        client.client_kind = body.client_kind
         client.enabled = body.enabled
         client.max_queued = body.max_queued
         client.max_running = body.max_running
@@ -2851,15 +2961,16 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
     ) -> list[dict[str, Any]]:
         nodes = list((await db.scalars(select(Node).order_by(Node.id))).all())
         results: list[dict[str, Any]] = []
+        from packages.gpu_control_core.workflow import node_compatibility_reasons
+
         for node in nodes:
-            reasons: list[str] = []
-            if node.total_vram_mb < version.min_vram_mb:
-                reasons.append(
-                    f"vram {node.total_vram_mb}MB < required {version.min_vram_mb}MB"
-                )
-            for key, value in version.node_labels.items():
-                if str(node.labels.get(key)) != str(value):
-                    reasons.append(f"label {key} must equal {value}")
+            reasons = node_compatibility_reasons(
+                min_vram_mb=version.min_vram_mb,
+                required_labels=version.node_labels,
+                allowed_class_types=version.allowed_class_types,
+                total_vram_mb=node.total_vram_mb,
+                reported_labels=node.labels,
+            )
             compatibility = await db.scalar(
                 select(WorkflowNodeCompatibility).where(
                     WorkflowNodeCompatibility.workflow_version_id == version.id,

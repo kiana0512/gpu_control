@@ -55,7 +55,7 @@ function logout() {
       </nav>
       <div class="cluster-state">
         <i></i><span>控制平面在线</span
-        ><small>4090 主控 · GPU Control 1.2</small>
+        ><small>4090 主控 · GPU Control 1.3.3</small>
       </div>
     </aside>
     <section class="workspace">

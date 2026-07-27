@@ -109,11 +109,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ username, password }),
     }),
-  dashboard: () => request<Dashboard>("/admin/dashboard"),
-  jobs: (status?: string) =>
-    request<JobInfo[]>(
-      `/admin/jobs${status ? `?status=${encodeURIComponent(status)}` : ""}`,
+  dashboard: (clientKind: "production" | "test" | "all" = "production") =>
+    request<Dashboard>(
+      `/admin/dashboard?client_kind=${encodeURIComponent(clientKind)}`,
     ),
+  jobs: (
+    status?: string,
+    clientKind: "production" | "test" | "all" = "production",
+  ) => {
+    const query = new URLSearchParams({ client_kind: clientKind });
+    if (status) query.set("status", status);
+    return request<JobInfo[]>(`/admin/jobs?${query.toString()}`);
+  },
   batch: (id: string) =>
     request<JobInfo>(`/admin/batches/${encodeURIComponent(id)}`),
   batchItems: (id: string, offset = 0, limit = 100) =>

@@ -19,10 +19,12 @@ const selectedService = ref<"imageclip-rgba" | "modelview-inpaint">(
   "imageclip-rgba",
 );
 const search = ref("");
+const clientScope = ref<"production" | "test">("production");
 
 const clientForm = reactive({
   id: "",
   name: "",
+  client_kind: "production" as "production" | "test",
   max_queued: 20,
   max_running: 1,
   daily_quota: 100,
@@ -72,7 +74,10 @@ watch(
 const visibleRows = computed(() => {
   const source =
     props.kind === "clients"
-      ? rows.value.filter((row) => row.role === "client")
+      ? rows.value.filter(
+          (row) =>
+            row.role === "client" && row.client_kind === clientScope.value,
+        )
       : rows.value;
   const keyword = search.value.trim().toLowerCase();
   if (!keyword) return source;
@@ -107,6 +112,7 @@ function resetClientForm() {
   Object.assign(clientForm, {
     id: "",
     name: "",
+    client_kind: "production",
     max_queued: 20,
     max_running: 1,
     daily_quota: 100,
@@ -173,6 +179,8 @@ function editClient(row: Row) {
   Object.assign(clientForm, {
     id: String(row.id ?? ""),
     name: String(row.name ?? ""),
+    client_kind:
+      row.client_kind === "test" ? ("test" as const) : ("production" as const),
     max_queued: Number(row.max_queued ?? 20),
     max_running: Number(row.max_running ?? 1),
     daily_quota: Number(row.daily_quota ?? 1000),
@@ -381,6 +389,20 @@ function formatCell(value: unknown) {
             "
           />
         </div>
+        <div v-if="kind === 'clients'" class="scope-tabs">
+          <button
+            :class="{ active: clientScope === 'production' }"
+            @click="clientScope = 'production'"
+          >
+            真实客户
+          </button>
+          <button
+            :class="{ active: clientScope === 'test' }"
+            @click="clientScope = 'test'"
+          >
+            测试客户
+          </button>
+        </div>
         <span class="record-count">{{ visibleRows.length }} 条记录</span>
       </div>
 
@@ -444,6 +466,7 @@ function formatCell(value: unknown) {
             <thead>
               <tr>
                 <th>客户 / 来源 IP</th>
+                <th>类型</th>
                 <th>状态</th>
                 <th>最多排队</th>
                 <th>最大并发</th>
@@ -461,6 +484,15 @@ function formatCell(value: unknown) {
                     (row.allowed_ips as string[]).join(", ") ||
                     "等待首次访问"
                   }}</small>
+                </td>
+                <td>
+                  <span
+                    class="client-kind-pill"
+                    :class="{ test: row.client_kind === 'test' }"
+                    >{{
+                      row.client_kind === "test" ? "压力测试" : "真实业务"
+                    }}</span
+                  >
                 </td>
                 <td>
                   <span class="state-pill" :class="{ enabled: row.enabled }">{{
@@ -566,10 +598,10 @@ function formatCell(value: unknown) {
           </button>
         </header>
         <div class="capacity-note">
-          <strong>当前建议：1 台可用 GPU</strong
+          <strong>当前集群：3 台可用 GPU</strong
           ><span
-            >最大并发填 1、最多排队填 20。以后扩到 3
-            台时不需要更换调用地址。</span
+            >真实客户按业务 SLA 配额；测试客户建议单客户并发
+            1，通过多个测试客户验证公平调度。</span
           >
         </div>
         <div class="form-grid">
@@ -580,6 +612,15 @@ function formatCell(value: unknown) {
               :disabled="Boolean(editingClient)"
               placeholder="例如 inpaint_01"
             /><small>内部唯一标识；创建后不可修改。</small></label
+          ><label
+            ><span>客户类型 *</span
+            ><select v-model="clientForm.client_kind">
+              <option value="production">真实业务</option>
+              <option value="test">压力测试</option>
+            </select>
+            <small
+              >测试客户只使用真实业务空闲槽，且不会进入真实统计。</small
+            ></label
           ><label
             ><span>显示名称 *</span
             ><input

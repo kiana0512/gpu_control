@@ -43,6 +43,7 @@ from packages.gpu_control_core.models import (
     JobCallback,
     Node,
     SystemSetting,
+    WorkflowNodeCompatibility,
     WorkflowVersion,
 )
 from packages.gpu_control_core.repository import claim_next_job, release_lease, transition_job
@@ -54,6 +55,7 @@ from packages.gpu_control_core.security import (
 )
 from packages.gpu_control_core.settings import Settings, get_settings
 from packages.gpu_control_core.storage import LocalJobStorage
+from packages.gpu_control_core.workflow import node_compatibility_reasons
 
 DECISION = Histogram(
     "gpu_control_scheduler_decision_duration_seconds", "Scheduler decision latency"
@@ -75,6 +77,27 @@ CALLBACK_FAILURES = Counter(
 )
 
 
+def monotonic_job_progress(current: float, value: float, maximum: float) -> float:
+    """Convert a ComfyUI node progress event without moving a job backwards."""
+    denominator = max(maximum, 1.0)
+    reported = min(99.0, max(0.0, value / denominator * 100.0))
+    return max(current, reported)
+
+
+def monotonic_batch_progress(
+    current: float,
+    total_items: int,
+    terminal_items: int,
+    active_progress: float,
+) -> float:
+    """Aggregate child progress while preserving the public monotonic contract."""
+    computed = min(
+        100.0,
+        (terminal_items + max(0.0, active_progress)) / max(total_items, 1) * 100.0,
+    )
+    return max(current, computed)
+
+
 class Scheduler:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -88,6 +111,7 @@ class Scheduler:
         self.health_task: asyncio.Task[None] | None = None
         self.redis_task: asyncio.Task[None] | None = None
         self.callback_task: asyncio.Task[None] | None = None
+        self.object_info_checked_at: dict[str, float] = {}
 
     async def guard(self, session: AsyncSession) -> OverflowGuard:
         keys = {
@@ -363,17 +387,44 @@ class Scheduler:
         while not self.stop_event.is_set():
             async with self.db.session() as session:
                 nodes = list((await session.scalars(select(Node))).all())
+                workflow_versions = list(
+                    (await session.scalars(select(WorkflowVersion))).all()
+                )
+                required_classes = {
+                    class_type
+                    for version in workflow_versions
+                    for class_type in version.allowed_class_types
+                }
                 for node in nodes:
                     try:
-                        async with ComfyClient(
-                            node.base_url, connect_timeout=2, read_timeout=3
-                        ) as client:
-                            stats, queue, _, gpu_metrics = await asyncio.gather(
-                                client.system_stats(),
-                                client.queue(),
-                                self.node_agent_identity(node),
-                                self.node_agent_gpu_metrics(node),
+                        now_monotonic = asyncio.get_running_loop().time()
+                        refresh_inventory = (
+                            now_monotonic
+                            - self.object_info_checked_at.get(node.id, 0)
+                            >= 60
+                            or not isinstance(
+                                (node.labels or {}).get("comfy_class_types"), list
                             )
+                        )
+                        async with ComfyClient(
+                            node.base_url, connect_timeout=2, read_timeout=5
+                        ) as client:
+                            if refresh_inventory:
+                                stats, queue, _, gpu_metrics, inventory = await asyncio.gather(
+                                    client.system_stats(),
+                                    client.queue(),
+                                    self.node_agent_identity(node),
+                                    self.node_agent_gpu_metrics(node),
+                                    client.object_info(),
+                                )
+                            else:
+                                stats, queue, _, gpu_metrics = await asyncio.gather(
+                                    client.system_stats(),
+                                    client.queue(),
+                                    self.node_agent_identity(node),
+                                    self.node_agent_gpu_metrics(node),
+                                )
+                                inventory = None
                         foreign = False
                         for section in ("queue_running", "queue_pending"):
                             for item in queue.get(section, []):
@@ -401,6 +452,44 @@ class Scheduler:
                             device = devices[0]
                             node.free_vram_mb = int(device.get("vram_free", 0)) // (1024 * 1024)
                             node.total_vram_mb = int(device.get("vram_total", 0)) // (1024 * 1024)
+                        if isinstance(inventory, dict):
+                            labels = dict(node.labels or {})
+                            labels["comfy_class_types"] = sorted(
+                                required_classes.intersection(inventory)
+                            )
+                            labels["comfy_class_inventory_checked_at"] = datetime.now(
+                                UTC
+                            ).isoformat()
+                            node.labels = labels
+                            self.object_info_checked_at[node.id] = now_monotonic
+                            for version in workflow_versions:
+                                reasons = node_compatibility_reasons(
+                                    min_vram_mb=version.min_vram_mb,
+                                    required_labels=version.node_labels,
+                                    allowed_class_types=version.allowed_class_types,
+                                    total_vram_mb=node.total_vram_mb,
+                                    reported_labels=labels,
+                                )
+                                compatibility = await session.scalar(
+                                    select(WorkflowNodeCompatibility).where(
+                                        WorkflowNodeCompatibility.workflow_version_id
+                                        == version.id,
+                                        WorkflowNodeCompatibility.node_id == node.id,
+                                    )
+                                )
+                                if compatibility is None:
+                                    session.add(
+                                        WorkflowNodeCompatibility(
+                                            workflow_version_id=version.id,
+                                            node_id=node.id,
+                                            compatible=not reasons,
+                                            reasons=reasons,
+                                        )
+                                    )
+                                else:
+                                    compatibility.compatible = not reasons
+                                    compatibility.reasons = reasons
+                                    compatibility.checked_at = datetime.now(UTC)
                         NODE_HEALTH.labels(node.id).set(
                             1 if node.health == NodeHealth.ONLINE.value else 0
                         )
@@ -700,16 +789,11 @@ class Scheduler:
             batch.succeeded_items = status_counts[BatchItemStatus.SUCCEEDED.value]
             batch.failed_items = status_counts[BatchItemStatus.FAILED.value]
             batch.cancelled_items = status_counts[BatchItemStatus.CANCELLED.value]
-            batch.progress = min(
-                100.0,
-                (
-                    batch.succeeded_items
-                    + batch.failed_items
-                    + batch.cancelled_items
-                    + active_progress
-                )
-                / max(batch.total_items, 1)
-                * 100,
+            batch.progress = monotonic_batch_progress(
+                batch.progress,
+                batch.total_items,
+                batch.succeeded_items + batch.failed_items + batch.cancelled_items,
+                active_progress,
             )
             terminal_count = (
                 batch.succeeded_items + batch.failed_items + batch.cancelled_items
@@ -1182,9 +1266,10 @@ class Scheduler:
                             ):
                                 if event.get("type") == "progress":
                                     data = event.get("data", {})
-                                    maximum = max(float(data.get("max", 1)), 1)
-                                    job.progress = min(
-                                        99, float(data.get("value", 0)) / maximum * 100
+                                    job.progress = monotonic_job_progress(
+                                        job.progress,
+                                        float(data.get("value", 0)),
+                                        float(data.get("max", 1)),
                                     )
                                     await session.commit()
                                     await self.publish(

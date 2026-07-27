@@ -3,6 +3,7 @@ import pytest
 from packages.gpu_control_core.workflow import (
     WorkflowError,
     WorkflowManifest,
+    node_compatibility_reasons,
     render_workflow,
     validate_api_workflow,
 )
@@ -59,3 +60,32 @@ def test_rejects_binding_path_traversal(manifest: WorkflowManifest) -> None:
         render_workflow(
             unsafe, {"3": {"class_type": "KSampler", "inputs": {"steps": 1}}}, {"steps": 2}
         )
+
+
+def test_node_compatibility_fails_closed_without_class_inventory() -> None:
+    reasons = node_compatibility_reasons(
+        min_vram_mb=22000,
+        required_labels={"pipeline": "expected"},
+        allowed_class_types={"LoadImage", "SaveImage"},
+        total_vram_mb=24576,
+        reported_labels={"pipeline": "expected"},
+    )
+    assert reasons == ["ComfyUI class inventory unavailable"]
+
+
+def test_node_compatibility_reports_missing_classes_and_labels() -> None:
+    reasons = node_compatibility_reasons(
+        min_vram_mb=22000,
+        required_labels={"pipeline": "expected"},
+        allowed_class_types={"LoadImage", "SaveImage"},
+        total_vram_mb=20000,
+        reported_labels={
+            "pipeline": "old",
+            "comfy_class_types": ["LoadImage"],
+        },
+    )
+    assert reasons == [
+        "vram 20000MB < required 22000MB",
+        "label pipeline must equal expected",
+        "missing ComfyUI classes: SaveImage",
+    ]

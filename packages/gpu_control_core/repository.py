@@ -150,6 +150,32 @@ async def claim_next_job(
     )
     if not jobs:
         return None
+    workflow_rows = list(
+        (
+            await session.scalars(
+                select(WorkflowVersion).where(
+                    WorkflowVersion.workflow_key.in_({job.workflow_key for job in jobs}),
+                    WorkflowVersion.version.in_({job.workflow_version for job in jobs}),
+                )
+            )
+        ).all()
+    )
+    workflows = {
+        (row.workflow_key, row.version): row for row in workflow_rows
+    }
+    node_labels = node.labels or {}
+    jobs = [
+        job
+        for job in jobs
+        if all(
+            str(node_labels.get(key, "")) == str(value)
+            for key, value in workflows[
+                (job.workflow_key, job.workflow_version)
+            ].node_labels.items()
+        )
+    ]
+    if not jobs:
+        return None
     tenant_ids = {job.tenant_id for job in jobs}
     clients = list(
         (await session.scalars(select(ApiClient).where(ApiClient.id.in_(tenant_ids)))).all()
@@ -159,8 +185,23 @@ async def claim_next_job(
     chosen: Job | None = None
     client: ApiClient | None = None
     while remaining:
+        # Test tenants only consume capacity that no eligible production
+        # tenant can use. This lets us run realistic sustained load without a
+        # fleet of synthetic users starving a real API caller. A production
+        # tenant at its own concurrency limit is removed below, so otherwise
+        # idle GPUs may still execute test work.
+        production = [
+            job
+            for job in remaining
+            if (client_by_id.get(job.tenant_id) is None)
+            or client_by_id[job.tenant_id].client_kind != "test"
+        ]
+        selection_pool = production or remaining
         chosen = choose_fair_job(
-            remaining, {c.id: c.last_scheduled_at for c in clients}, now, aging_seconds
+            selection_pool,
+            {c.id: c.last_scheduled_at for c in clients},
+            now,
+            aging_seconds,
         )
         if chosen is None:
             return None

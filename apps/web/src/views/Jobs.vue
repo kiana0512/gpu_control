@@ -18,6 +18,9 @@ const batchItemsTotal = ref(0);
 const batchLoading = ref(false);
 const batchPageSize = 100;
 const actionBusy = ref("");
+const clientKind = ref<"production" | "test">(
+  route.query.kind === "test" ? "test" : "production",
+);
 const terminalStatuses = ["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT"];
 const isBatch = computed(() => selectedJob.value?.kind === "batch");
 const canCancel = computed(
@@ -49,7 +52,7 @@ async function load() {
   loading.value = true;
   error.value = "";
   try {
-    jobs.value = await api.jobs();
+    jobs.value = await api.jobs(undefined, clientKind.value);
     const requestedJob =
       typeof route.query.job === "string" ? route.query.job : "";
     if (requestedJob && !selectedJob.value)
@@ -139,6 +142,12 @@ async function selectJob(job: JobInfo) {
   batchItemsTotal.value = 0;
   if (job.kind === "batch") await loadBatch(job.job_id, 0);
 }
+async function changeClientKind(kind: "production" | "test") {
+  if (clientKind.value === kind) return;
+  clientKind.value = kind;
+  selectedJob.value = null;
+  await run();
+}
 async function changeBatchPage(offset: number) {
   if (!selectedJob.value || selectedJob.value.kind !== "batch") return;
   await loadBatch(
@@ -162,6 +171,20 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
         <p>查询状态、进度、节点、重试与诊断信息</p>
       </div>
       <div class="heading-actions">
+        <div class="scope-tabs" aria-label="任务数据范围">
+          <button
+            :class="{ active: clientKind === 'production' }"
+            @click="changeClientKind('production')"
+          >
+            真实任务
+          </button>
+          <button
+            :class="{ active: clientKind === 'test' }"
+            @click="changeClientKind('test')"
+          >
+            测试任务
+          </button>
+        </div>
         <span class="refresh-state"
           ><i :class="{ spinning: refreshing }"></i>自动刷新 · 10 秒<br /><small
             >最后更新
@@ -173,6 +196,13 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
         >
         <button class="secondary" @click="run">立即刷新</button>
       </div>
+    </div>
+    <div class="scope-notice" :class="{ test: clientKind === 'test' }">
+      {{
+        clientKind === "test"
+          ? "仅显示压力测试任务，不会与真实任务混在一起。"
+          : "仅显示真实业务任务；压力测试任务已隐藏。"
+      }}
     </div>
     <div v-if="error" class="error-banner persistent-error">
       <strong>任务同步失败</strong><span>{{ error }}</span

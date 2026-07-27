@@ -2,14 +2,21 @@ import argparse
 import asyncio
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .database import Database
-from .models import Workflow, WorkflowVersion
+from .models import Node, Workflow, WorkflowNodeCompatibility, WorkflowVersion
 from .settings import get_settings
-from .workflow import WorkflowManifest, template_digest, validate_api_workflow
+from .workflow import (
+    WorkflowManifest,
+    node_compatibility_reasons,
+    template_digest,
+    validate_api_workflow,
+)
 
 
 def load_bundle(manifest_path: Path) -> tuple[WorkflowManifest, dict[str, object]]:
@@ -20,6 +27,44 @@ def load_bundle(manifest_path: Path) -> tuple[WorkflowManifest, dict[str, object
     template = json.loads(template_path.read_text(encoding="utf-8"))
     validate_api_workflow(template, manifest.allowed_class_types)
     return manifest, template
+
+
+async def refresh_compatibility(
+    session: AsyncSession, version: WorkflowVersion
+) -> list[dict[str, object]]:
+    """Refresh the same label/VRAM gate used by the admin API."""
+    nodes = list((await session.scalars(select(Node).order_by(Node.id))).all())
+    results: list[dict[str, object]] = []
+    for node in nodes:
+        reasons = node_compatibility_reasons(
+            min_vram_mb=version.min_vram_mb,
+            required_labels=version.node_labels,
+            allowed_class_types=version.allowed_class_types,
+            total_vram_mb=node.total_vram_mb,
+            reported_labels=node.labels,
+        )
+        compatibility = await session.scalar(
+            select(WorkflowNodeCompatibility).where(
+                WorkflowNodeCompatibility.workflow_version_id == version.id,
+                WorkflowNodeCompatibility.node_id == node.id,
+            )
+        )
+        if compatibility is None:
+            compatibility = WorkflowNodeCompatibility(
+                workflow_version_id=version.id,
+                node_id=node.id,
+                compatible=not reasons,
+                reasons=reasons,
+            )
+            session.add(compatibility)
+        else:
+            compatibility.compatible = not reasons
+            compatibility.reasons = reasons
+            compatibility.checked_at = datetime.now(UTC)
+        results.append(
+            {"node_id": node.id, "compatible": compatibility.compatible, "reasons": reasons}
+        )
+    return results
 
 
 async def command_import(path: Path) -> None:
@@ -41,27 +86,31 @@ async def command_import(path: Path) -> None:
         )
         if existing:
             raise ValueError("workflow version already exists; use a new immutable version")
-        session.add(
-            WorkflowVersion(
-                workflow_key=manifest.workflow_key,
-                version=manifest.version,
-                template=template,
-                parameter_schema=manifest.parameter_schema,
-                bindings=manifest.bindings,
-                allowed_class_types=sorted(manifest.allowed_class_types),
-                required_models=list(manifest.required_models),
-                required_custom_nodes=list(manifest.required_custom_nodes),
-                min_vram_mb=manifest.min_vram_mb,
-                timeout_seconds=manifest.timeout_seconds,
-                node_labels=manifest.node_labels,
-                output_nodes=list(manifest.output_nodes),
-                enabled=False,
-                template_sha256=template_digest(template),
-            )
+        version = WorkflowVersion(
+            workflow_key=manifest.workflow_key,
+            version=manifest.version,
+            template=template,
+            parameter_schema=manifest.parameter_schema,
+            bindings=manifest.bindings,
+            allowed_class_types=sorted(manifest.allowed_class_types),
+            required_models=list(manifest.required_models),
+            required_custom_nodes=list(manifest.required_custom_nodes),
+            min_vram_mb=manifest.min_vram_mb,
+            timeout_seconds=manifest.timeout_seconds,
+            node_labels=manifest.node_labels,
+            output_nodes=list(manifest.output_nodes),
+            enabled=False,
+            template_sha256=template_digest(template),
         )
+        session.add(version)
+        await session.flush()
+        compatibility = await refresh_compatibility(session, version)
         await session.commit()
     await db.close()
-    print(f"Imported {manifest.workflow_key}:{manifest.version} as disabled")
+    print(
+        f"Imported {manifest.workflow_key}:{manifest.version} as disabled; "
+        f"compatible_nodes={sum(bool(item['compatible']) for item in compatibility)}"
+    )
 
 
 async def set_enabled(key: str, version: str, enabled: bool) -> None:
@@ -74,6 +123,9 @@ async def set_enabled(key: str, version: str, enabled: bool) -> None:
         )
         if item is None:
             raise ValueError("workflow version not found")
+        compatibility = await refresh_compatibility(session, item)
+        if enabled and not any(bool(row["compatible"]) for row in compatibility):
+            raise ValueError("workflow has no compatible node")
         item.enabled = enabled
         await session.commit()
     await db.close()

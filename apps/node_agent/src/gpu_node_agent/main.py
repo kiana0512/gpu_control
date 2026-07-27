@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -35,6 +36,7 @@ class NodeAgentSettings(BaseSettings):
     node_advertise_ip: str = ""
     node_heartbeat_interval_seconds: int = Field(10, ge=5, le=300)
     node_control_ca_cert: Path = Path("/etc/gpu-control/lan-ca.crt")
+    imageclip_root: Path = Path("/opt/imageclip")
 
     @model_validator(mode="after")
     def reject_weak_production_secret(self) -> "NodeAgentSettings":
@@ -130,6 +132,43 @@ async def _gpu_metrics() -> dict[str, int]:
     }
 
 
+def _git_head(repository: Path) -> str:
+    head = (repository / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+    if head.startswith("ref: "):
+        reference = head.removeprefix("ref: ").strip()
+        loose = repository / ".git" / reference
+        if loose.is_file():
+            head = loose.read_text(encoding="utf-8").strip()
+        else:
+            packed = (repository / ".git" / "packed-refs").read_text(
+                encoding="utf-8"
+            )
+            head = next(
+                line.split(" ", 1)[0]
+                for line in packed.splitlines()
+                if line.endswith(f" {reference}")
+            )
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise RuntimeError("invalid ImageClip git HEAD")
+    return head
+
+
+def _imageclip_pipeline_state(repository: Path) -> tuple[str, str]:
+    paths = [repository / "ImageClip.json"]
+    paths.extend(
+        path
+        for path in (repository / "Cherry_lizi").rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    )
+    paths.sort(key=lambda path: path.relative_to(repository).as_posix())
+    combined = hashlib.sha256()
+    for path in paths:
+        relative = path.relative_to(repository).as_posix()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        combined.update(f"{digest}  {relative}\n".encode())
+    return _git_head(repository), combined.hexdigest()
+
+
 def _post_heartbeat(
     cfg: NodeAgentSettings,
     identity: dict[str, str],
@@ -167,6 +206,9 @@ async def _heartbeat_loop(app: FastAPI, cfg: NodeAgentSettings) -> None:
     first_success = True
     while True:
         try:
+            imageclip_commit, imageclip_pipeline_sha256 = await asyncio.to_thread(
+                _imageclip_pipeline_state, cfg.imageclip_root
+            )
             current_ip = await asyncio.to_thread(
                 _current_ip, cfg.control_host, cfg.node_advertise_ip
             )
@@ -176,6 +218,8 @@ async def _heartbeat_loop(app: FastAPI, cfg: NodeAgentSettings) -> None:
                 "mac": mac,
                 "gpu_uuid": gpu_uuid,
                 "hostname": socket.gethostname(),
+                "imageclip_commit": imageclip_commit,
+                "imageclip_pipeline_sha256": imageclip_pipeline_sha256,
             }
             result = await asyncio.to_thread(_post_heartbeat, cfg, identity)
             app.state.node_identity = identity

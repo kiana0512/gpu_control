@@ -1,5 +1,5 @@
 workflow_key: imageclip-rgba
-version: 2026.07.23-bb243808
+version: 2026.07.27-721f7d6-r1
 template_file: template.api.json
 parameter_schema:
   type: object
@@ -17,15 +17,19 @@ allowed_class_types:
   - 122_ColorMatchToSource
   - 122_FootRegionCrop
   - 122_FootRegionPaste
+  - 122_ShadowBranchDecide
   - CLIPLoader
   - CLIPTextEncode
   - CherryAlphaDenoise
   - CherryHoldoutSimple
   - CherrySelfComposite
+  - CodexExistingBlackShadowJudgeV43
+  - CodexFootPasteGuardV42
+  - CodexLazyShadowBypassV43
+  - CodexShoePixelProtectV41
   - ConditioningZeroOut
   - EmptyFlux2LatentImage
   - GetImageSize
-  - JoinImageWithAlpha
   - KSampler
   - LoadImage
   - LoraLoaderModelOnly
@@ -36,19 +40,20 @@ allowed_class_types:
   - VAEDecodeTiled
   - VAEEncode
   - VAELoader
-  - easy float
 required_models:
   - loras/Koutu_Flux2klein_v2_000007250.safetensors
   - text_encoders/qwen_3_8b_fp8mixed.safetensors
   - unet/flux-2-klein-9b-Q6_K.gguf
   - vae/flux2-vae.safetensors
 required_custom_nodes:
-  - Cherry_lizi@bb243808
+  - Cherry_lizi@721f7d6
   - ComfyUI-GGUF
   - ComfyUI-Easy-Use
 min_vram_mb: 22000
 timeout_seconds: 1800
-node_labels: {}
+node_labels:
+  imageclip_commit: 721f7d68635ee36d45f545ce2c82037046147442
+  imageclip_pipeline_sha256: 00e7104762f0a1fdf3a4c20e043bec2b9f088132452d5a5ce4302ba268edac0b
 output_nodes:
   - "25"
 enabled: false

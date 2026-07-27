@@ -132,6 +132,83 @@ async def test_incompatible_workflow_is_not_claimed(tmp_path: Path) -> None:
     await database.close()
 
 
+async def test_workflow_pipeline_labels_are_rechecked_at_claim_time(tmp_path: Path) -> None:
+    database = await make_database(tmp_path / "pipeline-label-gate.db")
+    await seed(database)
+    async with database.session() as session:
+        node = await session.get(Node, "3090-a")
+        version = await session.scalar(select(WorkflowVersion))
+        assert node is not None and version is not None
+        node.labels = {
+            "imageclip_commit": "current",
+            "imageclip_pipeline_sha256": "current-hash",
+        }
+        version.node_labels = {
+            "imageclip_commit": "required",
+            "imageclip_pipeline_sha256": "required-hash",
+        }
+        await session.commit()
+
+    async with database.session() as session:
+        async with session.begin():
+            assert await claim_next_job(session, "3090-a", 300) is None
+
+    async with database.session() as session:
+        node = await session.get(Node, "3090-a")
+        assert node is not None
+        node.labels = {
+            "imageclip_commit": "required",
+            "imageclip_pipeline_sha256": "required-hash",
+        }
+        await session.commit()
+    async with database.session() as session:
+        async with session.begin():
+            claimed = await claim_next_job(session, "3090-a", 300)
+        assert claimed is not None
+    await database.close()
+
+
+async def test_production_jobs_precede_test_jobs_and_tests_use_idle_capacity(
+    tmp_path: Path,
+) -> None:
+    database = await make_database(tmp_path / "client-kind-priority.db")
+    await seed(database)
+    async with database.session() as session:
+        test_client = await session.get(ApiClient, "tenant-b")
+        assert test_client is not None
+        test_client.client_kind = "test"
+        production_jobs = list(
+            (await session.scalars(select(Job).where(Job.tenant_id == "tenant-a"))).all()
+        )
+        test_job = await session.scalar(
+            select(Job).where(Job.tenant_id == "tenant-b")
+        )
+        assert test_job is not None
+        # Make the test job much older; production isolation must still win.
+        test_job.created_at = datetime(2020, 1, 1, tzinfo=UTC)
+        for extra in production_jobs[1:]:
+            extra.status = JobStatus.CANCELLED.value
+        await session.commit()
+
+    async with database.session() as session:
+        async with session.begin():
+            first = await claim_next_job(session, "3090-a", 300)
+        assert first is not None and first[0].tenant_id == "tenant-a"
+
+    async with database.session() as session:
+        production = await session.get(Job, first[0].id, with_for_update=True)
+        assert production is not None
+        await release_lease(session, production)
+        production.status = JobStatus.CANCELLED.value
+        await session.commit()
+
+    async with database.session() as session:
+        async with session.begin():
+            second = await claim_next_job(session, "3090-a", 300)
+        assert second is not None and second[0].tenant_id == "tenant-b"
+    await database.close()
+
+
 async def test_retry_reuses_durable_lease_with_fresh_token(tmp_path: Path) -> None:
     database = await make_database(tmp_path / "retry-claim.db")
     await seed(database)

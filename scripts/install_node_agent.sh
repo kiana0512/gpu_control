@@ -52,6 +52,11 @@ python3 -m venv "${root}/.venv"
   "${root}"
 
 install -d -m 0755 /etc/gpu-control
+if [[ "${role}" == control ]]; then
+  install -m 0644 \
+    "${root}/deploy/control-plane/nginx/certs/lan-ca.crt" \
+    /etc/gpu-control/lan-ca.crt
+fi
 install -m 0755 "${root}/scripts/gpu-node-ctl" /usr/local/sbin/gpu-node-ctl
 install -m 0644 "${root}/apps/node_agent/systemd/gpu-node-agent.service" /etc/systemd/system/gpu-node-agent.service
 if command -v nvidia-smi >/dev/null; then
@@ -80,5 +85,6 @@ systemctl daemon-reload
 if command -v nvidia-smi >/dev/null; then
   systemctl enable --now gpu-control-nvidia-persistence.service
 fi
-systemctl enable --now gpu-node-agent
+systemctl enable gpu-node-agent
+systemctl restart gpu-node-agent
 systemctl --no-pager --full status gpu-node-agent

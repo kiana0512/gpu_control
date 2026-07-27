@@ -102,7 +102,10 @@ async def prepared_app(tmp_path: Path):
                         health="ONLINE",
                         total_vram_mb=24576,
                         free_vram_mb=23000,
-                        labels={"gpu_family": "3090"},
+                        labels={
+                            "gpu_family": "3090",
+                            "comfy_class_types": ["KSampler", "LoadImage", "SaveImage"],
+                        },
                     ),
                     Node(
                         id="worker-3090-b",
@@ -114,7 +117,10 @@ async def prepared_app(tmp_path: Path):
                         health="ONLINE",
                         total_vram_mb=24576,
                         free_vram_mb=23000,
-                        labels={"gpu_family": "3090"},
+                        labels={
+                            "gpu_family": "3090",
+                            "comfy_class_types": ["KSampler", "LoadImage", "SaveImage"],
+                        },
                     ),
                     Node(
                         id="control-4090",
@@ -126,7 +132,10 @@ async def prepared_app(tmp_path: Path):
                         health="ONLINE",
                         total_vram_mb=24576,
                         free_vram_mb=22000,
-                        labels={"gpu_family": "4090"},
+                        labels={
+                            "gpu_family": "4090",
+                            "comfy_class_types": ["KSampler", "LoadImage", "SaveImage"],
+                        },
                     ),
                     Workflow(key="fake", display_name="Fake", description="test"),
                 ]
@@ -484,6 +493,92 @@ async def test_admin_login_and_destructive_confirmation(tmp_path: Path) -> None:
         assert missing_confirmation.status_code == 409
 
 
+async def test_admin_views_separate_production_and_test_traffic(tmp_path: Path) -> None:
+    async for app, client in prepared_app(tmp_path):
+        login = await client.post(
+            "/admin/auth/login", json={"username": "admin", "password": "correct-password"}
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        now = datetime.now(UTC)
+        async with app.state.db.session() as db:
+            test_client = ApiClient(
+                id="load-test-tenant",
+                name="Load Test Tenant",
+                role="client",
+                client_kind="test",
+                max_queued=200,
+                max_running=1,
+                daily_quota=1000,
+            )
+            db.add(test_client)
+            db.add_all(
+                [
+                    Job(
+                        id="production-job",
+                        tenant_id="tenant",
+                        workflow_key="fake",
+                        workflow_version="1",
+                        status="SUCCEEDED",
+                        priority="normal",
+                        parameters={},
+                        request_hash="production",
+                        request_id="production-request",
+                        trace_id="production-trace",
+                        job_dir=str(tmp_path / "production-job"),
+                        progress=100,
+                        created_at=now,
+                        started_at=now,
+                        finished_at=now,
+                    ),
+                    Job(
+                        id="test-job",
+                        tenant_id="load-test-tenant",
+                        workflow_key="fake",
+                        workflow_version="1",
+                        status="SUCCEEDED",
+                        priority="normal",
+                        parameters={},
+                        request_hash="test",
+                        request_id="test-request",
+                        trace_id="test-trace",
+                        job_dir=str(tmp_path / "test-job"),
+                        progress=100,
+                        created_at=now,
+                        started_at=now,
+                        finished_at=now,
+                    ),
+                ]
+            )
+            await db.commit()
+
+        production_jobs = await client.get("/admin/jobs", headers=auth)
+        assert production_jobs.status_code == 200
+        assert [row["job_id"] for row in production_jobs.json()] == ["production-job"]
+        assert production_jobs.json()[0]["client_kind"] == "production"
+
+        test_jobs = await client.get(
+            "/admin/jobs?client_kind=test", headers=auth
+        )
+        assert test_jobs.status_code == 200
+        assert [row["job_id"] for row in test_jobs.json()] == ["test-job"]
+        assert test_jobs.json()[0]["client_kind"] == "test"
+
+        all_jobs = await client.get("/admin/jobs?client_kind=all", headers=auth)
+        assert {row["job_id"] for row in all_jobs.json()} == {
+            "production-job",
+            "test-job",
+        }
+
+        production_dashboard = await client.get("/admin/dashboard", headers=auth)
+        test_dashboard = await client.get(
+            "/admin/dashboard?client_kind=test", headers=auth
+        )
+        assert production_dashboard.json()["client_kind"] == "production"
+        assert test_dashboard.json()["client_kind"] == "test"
+        assert production_dashboard.json()["jobs"]["SUCCEEDED"] == 1
+        assert test_dashboard.json()["jobs"]["SUCCEEDED"] == 1
+
+
 async def test_admin_retry_clears_previous_execution_and_keeps_error_audit(
     tmp_path: Path,
 ) -> None:
@@ -813,6 +908,7 @@ async def test_admin_can_update_discovered_client_limits_and_access(tmp_path: Pa
             headers=auth,
             json={
                 "name": "局部重绘客户端",
+                "client_kind": "test",
                 "enabled": False,
                 "max_queued": 12,
                 "max_running": 1,
@@ -831,6 +927,7 @@ async def test_admin_can_update_discovered_client_limits_and_access(tmp_path: Pa
             stored = await db.get(ApiClient, "tenant")
             assert stored is not None
             assert stored.name == "局部重绘客户端"
+            assert stored.client_kind == "test"
             assert stored.max_queued == 12
             assert stored.daily_quota == 240
             assert stored.enabled is False
@@ -840,6 +937,7 @@ async def test_admin_can_update_discovered_client_limits_and_access(tmp_path: Pa
             headers=auth,
             json={
                 "name": "Tenant B",
+                "client_kind": "production",
                 "enabled": True,
                 "max_queued": 20,
                 "max_running": 1,
@@ -862,6 +960,8 @@ async def test_signed_node_heartbeat_updates_address_and_dynamic_monitoring(
         payload = {
             "gpu_uuid": "GPU-9f116ee8-a845-c3a3-b10d-fdd6a9f8cc6c",
             "hostname": "gpu-worker-a",
+            "imageclip_commit": "7" * 40,
+            "imageclip_pipeline_sha256": "8" * 64,
             "ip": "10.0.0.99",
             "mac": "18:c0:4d:9f:13:13",
             "node_id": "worker-3090-a",
@@ -898,6 +998,9 @@ async def test_signed_node_heartbeat_updates_address_and_dynamic_monitoring(
             assert node.agent_url == "http://10.0.0.99:9201"
             assert node.labels["mac"] == "18:c0:4d:9f:13:13"
             assert node.labels["gpu_uuid"] == payload["gpu_uuid"]
+            assert node.labels["imageclip_commit"] == "7" * 40
+            assert node.labels["imageclip_pipeline_sha256"] == "8" * 64
+            assert node.custom_nodes_version == "imageclip:777777777777:888888888888"
         targets = await client.get("/internal/prometheus/workers")
         assert targets.status_code == 200
         assert any(

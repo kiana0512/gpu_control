@@ -84,14 +84,23 @@ function renderChart() {
 }
 
 async function refresh() {
-  await store.refresh();
+  await store.refresh(store.clientKind);
   renderChart();
   if (store.error) throw new Error(store.error);
 }
 
+async function changeClientKind(kind: "production" | "test") {
+  if (store.clientKind === kind) return;
+  await store.refresh(kind);
+  renderChart();
+}
+
 const { run, refreshing, lastUpdatedAt } = useAutoRefresh(refresh);
 function openJob(job: JobInfo) {
-  void router.push({ path: "/jobs", query: { job: job.job_id } });
+  void router.push({
+    path: "/jobs",
+    query: { job: job.job_id, kind: store.clientKind },
+  });
 }
 
 onMounted(() => {
@@ -111,6 +120,20 @@ onBeforeUnmount(() => {
         <p>已接入计算节点与任务队列的实时运行状态</p>
       </div>
       <div class="heading-actions">
+        <div class="scope-tabs" aria-label="任务数据范围">
+          <button
+            :class="{ active: store.clientKind === 'production' }"
+            @click="changeClientKind('production')"
+          >
+            真实业务
+          </button>
+          <button
+            :class="{ active: store.clientKind === 'test' }"
+            @click="changeClientKind('test')"
+          >
+            压力测试
+          </button>
+        </div>
         <span class="refresh-state"
           ><i :class="{ spinning: refreshing }"></i>自动刷新 · 10 秒<br /><small
             >最后更新
@@ -125,8 +148,15 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </div>
+    <div class="scope-notice" :class="{ test: store.clientKind === 'test' }">
+      {{
+        store.clientKind === "test"
+          ? "当前仅展示测试客户与测试任务；这些数据不会计入真实业务总览。"
+          : "当前仅展示真实客户与真实任务；压力测试流量已隔离且只使用真实业务空闲槽。"
+      }}
+    </div>
     <div v-if="store.error" class="error-banner">
-      {{ store.error }} <button @click="store.refresh">重试</button>
+      {{ store.error }} <button @click="refresh">重试</button>
     </div>
     <section class="metric-band blue-rail">
       <div v-for="metric in metrics" :key="metric.label">

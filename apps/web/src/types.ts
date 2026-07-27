@@ -23,6 +23,8 @@ export interface JobInfo {
   workflow_key: string;
   workflow_version: string;
   priority: string;
+  tenant_id?: string;
+  client_kind?: "production" | "test";
   node_id: string | null;
   prompt_id: string | null;
   progress: number;
@@ -73,6 +75,7 @@ export interface BatchItemsPage {
   items: BatchItem[];
 }
 export interface Dashboard {
+  client_kind: "production" | "test" | "all";
   jobs: Record<string, number>;
   nodes: NodeInfo[];
   oldest_wait_seconds: number;

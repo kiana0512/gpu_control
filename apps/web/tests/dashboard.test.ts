@@ -53,4 +53,32 @@ describe("JobsTable", () => {
     expect(wrapper.text()).toContain("2 / 5 帧");
     expect(wrapper.text()).toContain("worker-3090-a · 2");
   });
+
+  it("marks synthetic load jobs without changing the production row shape", () => {
+    const job: JobInfo = {
+      kind: "job",
+      job_id: "load-test-job",
+      client_kind: "test",
+      tenant_id: "load-test-01",
+      status: "QUEUED",
+      workflow_key: "modelview-inpaint",
+      workflow_version: "1",
+      priority: "normal",
+      node_id: null,
+      prompt_id: null,
+      progress: 0,
+      attempt: 0,
+      created_at: "2026-07-27T00:00:00Z",
+      started_at: null,
+      finished_at: null,
+      error: null,
+    };
+    const wrapper = mount(JobsTable, {
+      props: { jobs: [job] },
+      global: { stubs: { RouterLink: { template: "<a><slot /></a>" } } },
+    });
+    expect(wrapper.findAll("tbody tr")).toHaveLength(1);
+    expect(wrapper.text()).toContain("压力测试");
+    expect(wrapper.text()).toContain("modelview-inpaint");
+  });
 });

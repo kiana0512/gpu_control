@@ -47,6 +47,13 @@ sync_tree() {
 
 if [[ "${project}" == "all" || "${project}" == "imageclip" ]]; then
   sync_tree "ImageClip" "${imageclip_root}/models" "/opt/imageclip/models"
+  if ((${#dry[@]} == 0)); then
+    # ComfyUI-nunchaku registers these optional model categories during import.
+    # The shared model root is mounted read-only in ComfyUI, so the directories
+    # must exist on the host before the container starts.
+    ssh "${user}@${host}" \
+      "mkdir -p /opt/imageclip/models/pulid /opt/imageclip/models/insightface /opt/imageclip/models/facexlib /opt/imageclip/models/ipadapter /opt/imageclip/models/clip"
+  fi
 fi
 if [[ "${project}" == "all" || "${project}" == "modelview" ]]; then
   if [[ "${manifest_only}" == true ]]; then

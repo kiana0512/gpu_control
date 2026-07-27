@@ -2,16 +2,18 @@
 set -Eeuo pipefail
 
 usage() {
-  echo "用法: $0 --host HOST [--user USER] [--dry-run]"
+  echo "用法: $0 --host HOST [--user USER] [--host-key-alias ALIAS] [--dry-run]"
 }
 
 host=""
 user="${USER}"
 dry=()
+ssh_options=()
 while (($#)); do
   case "$1" in
     --host) host="$2"; shift 2 ;;
     --user) user="$2"; shift 2 ;;
+    --host-key-alias) ssh_options=(-o "HostKeyAlias=$2"); shift 2 ;;
     --dry-run) dry=(--dry-run); shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
@@ -24,8 +26,9 @@ target="${user}@${host}:/opt/gpu-control/"
 
 echo "同步 GPU Control 当前工作树到 ${target}"
 echo "不会传输 .env、密钥、证书、构建缓存、数据库、任务或模型。"
-ssh "${user}@${host}" "mkdir -p /opt/gpu-control"
+ssh "${ssh_options[@]}" "${user}@${host}" "mkdir -p /opt/gpu-control"
 rsync -a --human-readable --progress "${dry[@]}" \
+  -e "ssh ${ssh_options[*]}" \
   --exclude='/.git/' \
   --exclude='/.env' \
   --exclude='/.agents/' \
@@ -54,7 +57,7 @@ if ((${#dry[@]})); then
   exit 0
 fi
 
-ssh "${user}@${host}" \
+ssh "${ssh_options[@]}" "${user}@${host}" \
   'chmod +x /opt/gpu-control/scripts/*.sh /opt/gpu-control/scripts/gpuctl /opt/gpu-control/scripts/gpu-node-ctl /opt/gpu-control/docker/comfyui/entrypoint.sh'
 
 files=(
@@ -64,7 +67,7 @@ files=(
   docker/comfyui/custom_nodes.lock.yaml
 )
 local_digest="$(cd "${root}" && sha256sum "${files[@]}" | sha256sum | awk '{print $1}')"
-remote_digest="$(ssh "${user}@${host}" "cd /opt/gpu-control && sha256sum ${files[*]} | sha256sum | awk '{print \$1}'")"
+remote_digest="$(ssh "${ssh_options[@]}" "${user}@${host}" "cd /opt/gpu-control && sha256sum ${files[*]} | sha256sum | awk '{print \$1}'")"
 [[ "${local_digest}" == "${remote_digest}" ]] || {
   echo "错误：远端源码关键文件指纹不一致。" >&2
   echo "本机: ${local_digest}" >&2

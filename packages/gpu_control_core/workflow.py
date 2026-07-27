@@ -109,3 +109,29 @@ def render_workflow(
 def template_digest(template: dict[str, Any]) -> str:
     raw = json.dumps(template, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(raw).hexdigest()
+
+
+def node_compatibility_reasons(
+    *,
+    min_vram_mb: int,
+    required_labels: dict[str, Any],
+    allowed_class_types: list[str] | set[str] | frozenset[str],
+    total_vram_mb: int,
+    reported_labels: dict[str, Any],
+) -> list[str]:
+    """Return fail-closed workflow compatibility reasons for one node."""
+    reasons: list[str] = []
+    if total_vram_mb < min_vram_mb:
+        reasons.append(f"vram {total_vram_mb}MB < required {min_vram_mb}MB")
+    for key, value in required_labels.items():
+        if str(reported_labels.get(key)) != str(value):
+            reasons.append(f"label {key} must equal {value}")
+    raw_classes = reported_labels.get("comfy_class_types")
+    if not isinstance(raw_classes, list):
+        reasons.append("ComfyUI class inventory unavailable")
+    else:
+        available = {str(value) for value in raw_classes}
+        missing = sorted(set(allowed_class_types) - available)
+        if missing:
+            reasons.append("missing ComfyUI classes: " + ", ".join(missing))
+    return reasons
