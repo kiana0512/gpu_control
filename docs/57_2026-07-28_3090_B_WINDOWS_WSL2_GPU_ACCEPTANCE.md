@@ -53,6 +53,18 @@ Windows 侧已验证：
 - ComfyUI 与 Blender Worker 都使用 `restart: unless-stopped`；
 - 节点心跳持续更新，数据库显示 `ONLINE / ACTIVE / current_jobs=0`。
 
+上述连续握手是 WSL2 Keepalive/端口转发修复时的验收结果。收尾回归中，`2222` 仍可建立
+TCP/SSH 握手，但 4090 当前 `/home/lilithgames/.ssh/id_ed25519` 和 root 默认身份均被 B 返回
+`Permission denied (publickey)`。这不影响 Node Agent 心跳、ComfyUI 调度或已完成的真实 GPU
+任务，但会阻止主控直接进入 WSL2 运维。下一维护窗口应在 B 上重新授权主控公钥，随后再做
+连续登录回归：
+
+```bash
+ssh-copy-id -i /home/lilithgames/.ssh/id_ed25519.pub \
+  -p 2222 lilithgames@10.3.34.14
+ssh -p 2222 -o BatchMode=yes lilithgames@10.3.34.14 true
+```
+
 ## 4. GPU 运行时一致性
 
 ### 4.1 固定镜像
@@ -144,7 +156,8 @@ worker-3090-b  ONLINE  ACTIVE  PRIMARY   current_jobs=0
 2. 完成“用户端人工复核”决定回传的公开客户接口与权限合同；调度后台只保留只读状态、诊断和制品下载；
 3. 接入 Windows 原生 Substance/烘焙 Worker，并保持与 WSL2 能力同属 `worker-3090-b` 物理身份；
 4. 做 Windows 重启、WSL2 地址变化、Watchdog 恢复和主控重新握手的完整断电回归；
-5. 资产任务验收通过后再决定 B 的 Asset 并发槽是否从 4 调整，不能凭 CPU 核数盲目拉高。
+5. 重新写入并验证 4090 主控 SSH 公钥，恢复无需人工介入的 WSL2 运维登录；
+6. 资产任务验收通过后再决定 B 的 Asset 并发槽是否从 4 调整，不能凭 CPU 核数盲目拉高。
 
 ## 9. 源码与离线镜像保存
 
