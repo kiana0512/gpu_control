@@ -146,7 +146,19 @@ worker-3090-b  ONLINE  ACTIVE  PRIMARY   current_jobs=0
 4. 做 Windows 重启、WSL2 地址变化、Watchdog 恢复和主控重新握手的完整断电回归；
 5. 资产任务验收通过后再决定 B 的 Asset 并发槽是否从 4 调整，不能凭 CPU 核数盲目拉高。
 
-## 9. 回滚
+## 9. 源码与离线镜像保存
+
+- 已审计源码基线：`e492779`；
+- 候选镜像标签：控制面 `1.5.0-r1`、Blender Worker `1.1.0-r1`；
+- 服务器归档：`/srv/gpu-control/images/unified-scheduler-1.5.0-r1-images.tar.gz`；
+- 大小：`826519963` bytes；
+- SHA-256：`0c68057f66f2c143f203f54b98533e1fb419a8df0f70ad7704646836b1521ccb`；
+- Git LFS：`artifacts/control-plane/1.5.0-r1/`。
+
+归档包含 API、Scheduler、Web、Asset API 和 Blender Worker，不包含 `.env`、密钥、证书私钥、
+数据库、任务、模型或 ComfyUI 大镜像。构建和归档没有替换在线 API/Scheduler/ComfyUI。
+
+## 10. 回滚
 
 - GPU 异常：先把 `worker-3090-b` 置为 `DRAINING`，等待 `current_jobs=0`，再停止 B 的 ComfyUI；A/4090 继续服务。
 - Asset 异常：只停止 B 的 Blender Worker，不影响 GPU ComfyUI 和 GPU Scheduler。
