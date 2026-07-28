@@ -227,6 +227,6 @@ onBeforeUnmount(() => {
         </div>
       </aside>
     </div>
-    <JobsTable :jobs="store.jobs" @select="openJob" />
+    <JobsTable :jobs="store.jobs.slice(0, 10)" @select="openJob" />
   </div>
 </template>

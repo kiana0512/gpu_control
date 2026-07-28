@@ -2242,6 +2242,47 @@ pre button {
   cursor: pointer;
   transition: background 0.16s ease;
 }
+.jobs-table table {
+  min-width: 1260px;
+  table-layout: fixed;
+}
+.jobs-table .job-col-id {
+  width: 300px;
+}
+.jobs-table .job-col-workflow {
+  width: 330px;
+}
+.jobs-table .job-col-status {
+  width: 100px;
+}
+.jobs-table .job-col-node {
+  width: 300px;
+}
+.jobs-table .job-col-progress {
+  width: 130px;
+}
+.jobs-table .job-col-time {
+  width: 105px;
+}
+.jobs-table .job-col-action {
+  width: 80px;
+}
+.jobs-table .status-mark,
+.jobs-table .row-action {
+  white-space: nowrap;
+  writing-mode: horizontal-tb;
+}
+.jobs-table .status-mark {
+  min-width: max-content;
+  font-size: 12px;
+}
+.jobs-table .row-action {
+  min-width: 58px;
+}
+.jobs-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .job-row:hover,
 .job-row:focus {
   outline: 0;

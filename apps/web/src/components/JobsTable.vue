@@ -15,13 +15,22 @@ function nodeSummary(job: JobInfo) {
 }
 </script>
 <template>
-  <section class="ruled-section blue-rail">
+  <section class="ruled-section blue-rail jobs-table">
     <div class="section-title">
       <h2>最近任务</h2>
       <router-link to="/jobs">查看全部 →</router-link>
     </div>
     <div class="table-wrap">
       <table>
+        <colgroup>
+          <col class="job-col-id" />
+          <col class="job-col-workflow" />
+          <col class="job-col-status" />
+          <col class="job-col-node" />
+          <col class="job-col-progress" />
+          <col class="job-col-time" />
+          <col class="job-col-action" />
+        </colgroup>
         <thead>
           <tr>
             <th>任务 / 批次 ID</th>
