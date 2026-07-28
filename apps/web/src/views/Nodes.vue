@@ -102,8 +102,8 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
   <div class="page nodes-page">
     <div class="page-heading">
       <div>
-        <h1>计算节点</h1>
-        <p>{{ onlineCount }} 台 GPU 节点在线 · 当前每张 GPU 同时执行 1 个任务</p>
+        <h1>GPU 推理节点</h1>
+        <p>{{ onlineCount }} 台 GPU 节点在线 · 仅展示 ComfyUI 推理槽；CPU Asset Worker 在资产页独立管理</p>
       </div>
       <div class="heading-actions">
         <span class="refresh-state"

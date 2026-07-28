@@ -54,7 +54,7 @@ services:
       context: ../..
       dockerfile: apps/blender_worker/Dockerfile
       args: {BLENDER_BASE_IMAGE: "${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}"}
-    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.0.0}
+    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.1.0}
     restart: unless-stopped
     environment:
       ASSET_API_URL: https://${CONTROL_HOST}
@@ -64,10 +64,17 @@ services:
       ASSET_WORKER_HMAC_SECRET: ${ASSET_WORKER_HMAC_SECRET}
       ASSET_WORKER_MAX_CONCURRENCY: ${ASSET_WORKER_MAX_CONCURRENCY:-2}
       BLENDER_VERSION: 5.1.2
-      BLENDER_SKILL_VERSION: ${BLENDER_SKILL_VERSION:-pbr-uv-v1.1}
+      BLENDER_SKILL_VERSION: ${BLENDER_SKILL_VERSION:-asset-skills-2026.07.28}
+      UV_SKILL_ROOT: /opt/codex/skills/blender-pbr-uv
+      RETOPOLOGY_SKILL_ROOT: /opt/codex/skills/blender-retopology-compare-iterate
+      CODEX_BINARY: /usr/local/bin/codex
+      CODEX_AUTH_SOURCE: /run/secrets/codex-auth.json
       SSL_CERT_FILE: /run/certs/lan-ca.crt
     volumes:
       - ${LAN_CA_PATH:-/opt/gpu-control/deploy/control-plane/nginx/certs/lan-ca.crt}:/run/certs/lan-ca.crt:ro
+      - ${CODEX_SKILL_ROOT:-/opt/gpu-control/runtime/asset-skills}:/opt/codex/skills:ro
+      - ${CODEX_BINARY_PATH:-/opt/gpu-control/runtime/codex/codex}:/usr/local/bin/codex:ro
+      - ${CODEX_ASSET_AUTH_PATH:-/home/lilithgames/.codex/auth.json}:/run/secrets/codex-auth.json:ro
     logging: *default-logging
 
 volumes:

@@ -16,6 +16,9 @@ from packages.gpu_control_core.models import (
     Alert,
     ApiClient,
     ApiKey,
+    AssetArtifact,
+    AssetJob,
+    AssetWorker,
     Base,
     BatchArtifact,
     Job,
@@ -525,6 +528,81 @@ async def test_admin_login_and_destructive_confirmation(tmp_path: Path) -> None:
             json={"mode": "RESERVED", "reason": "test change", "confirm": False},
         )
         assert missing_confirmation.status_code == 409
+
+
+async def test_admin_asset_processing_reports_real_workers_jobs_and_artifacts(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        now = datetime.now(UTC)
+        job_id = str(uuid.uuid4())
+        async with app.state.db.session() as db:
+            db.add(
+                AssetWorker(
+                    id="asset-worker-3090-a",
+                    display_name="3090-A Asset Worker",
+                    node_id="worker-3090-a",
+                    hostname="lilithgames1",
+                    status="ONLINE",
+                    blender_version="5.1.2",
+                    skill_version="asset-skills-2026.07.28",
+                    max_concurrency=4,
+                    current_jobs=1,
+                    cpu_count=32,
+                    last_heartbeat_at=now,
+                )
+            )
+            db.add(
+                AssetJob(
+                    id=job_id,
+                    client_id="tenant",
+                    external_asset_id="asset:chair:uv:v2",
+                    job_type="UV_PROCESS_V2",
+                    status="SUCCEEDED",
+                    source_filename="chair.fbx",
+                    input_path="/tmp/chair.fbx",
+                    input_sha256="a" * 64,
+                    input_size_bytes=123,
+                    options={"resolution": 2048},
+                    request_hash="b" * 64,
+                    request_id="asset-admin-test",
+                    worker_id="asset-worker-3090-a",
+                    progress=100,
+                    attempt_count=1,
+                    started_at=now,
+                    finished_at=now,
+                    created_at=now,
+                )
+            )
+            db.add(
+                AssetArtifact(
+                    id=str(uuid.uuid4()),
+                    job_id=job_id,
+                    kind="fbx",
+                    filename="chair_PBR_UV.fbx",
+                    path="/tmp/chair_PBR_UV.fbx",
+                    content_type="application/octet-stream",
+                    size_bytes=456,
+                    sha256="c" * 64,
+                )
+            )
+            await db.commit()
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        response = await client.get("/admin/asset-processing", headers=auth)
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["schema_version"] == "asset-admin.v3"
+        assert payload["summary"]["online_workers"] == 1
+        assert payload["summary"]["total_slots"] == 4
+        assert payload["summary"]["used_slots"] == 1
+        assert payload["workers"][0]["skill_version"] == "asset-skills-2026.07.28"
+        assert payload["jobs"][0]["job_type"] == "UV_PROCESS_V2"
+        assert payload["jobs"][0]["artifacts"][0]["filename"] == "chair_PBR_UV.fbx"
+        assert payload["contracts"]["uv"]["artifact_count"] == 5
 
 
 async def test_admin_views_separate_production_and_test_traffic(tmp_path: Path) -> None:

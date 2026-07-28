@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import time
 import uuid
@@ -112,6 +113,9 @@ async def test_uv_asset_job_contract_worker_concurrency_and_atomic_artifacts(
         assert created.status_code == 202, created.text
         assert created.headers["X-Request-ID"] == "asset-chair-create-1"
         job_id = created.json()["job_id"]
+        assert created.json()["status_url"] == f"/api/v1/assets/jobs/{job_id}"
+        assert created.json()["events_url"] == f"/api/v1/assets/jobs/{job_id}/events"
+        assert created.json()["cancel_url"] == f"/api/v1/assets/jobs/{job_id}/cancel"
         repeated = await client.post(
             "/api/v1/assets/uv/unwrap",
             headers=client_headers,
@@ -173,7 +177,12 @@ async def test_uv_asset_job_contract_worker_concurrency_and_atomic_artifacts(
         progress = await client.post(
             f"/internal/v1/assets/jobs/{job_id}/progress",
             headers=lease_headers,
-            json={"progress": 50},
+            json={
+                "progress": 50,
+                "stage": "UV_UNWRAPPING",
+                "message": "正在展开 UV",
+                "estimated_remaining_seconds": 90,
+            },
         )
         assert progress.json() == {"cancel_requested": False}
 
@@ -199,6 +208,8 @@ async def test_uv_asset_job_contract_worker_concurrency_and_atomic_artifacts(
         assert status.status_code == 200
         assert status.json()["status"] == "SUCCEEDED"
         assert status.json()["progress"] == 100
+        assert status.json()["stage"] == "SUCCEEDED"
+        assert status.json()["timing"]["estimated_remaining_seconds"] == 0
         assert {artifact["kind"] for artifact in status.json()["artifacts"]} == {
             "blend",
             "fbx",
@@ -214,6 +225,15 @@ async def test_uv_asset_job_contract_worker_concurrency_and_atomic_artifacts(
         )
         assert result.status_code == 200
         assert result.headers["X-Artifact-SHA256"] == hashlib.sha256(qa).hexdigest()
+
+        events = await client.get(
+            f"/api/v1/assets/jobs/{job_id}/events",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert events.status_code == 200
+        assert "event: asset-progress" in events.text
+        assert '"stage": "UV_UNWRAPPING"' in events.text
+        assert '"stage": "SUCCEEDED"' in events.text
 
 
 async def test_uv_asset_rejects_unsafe_filename_and_unknown_options(tmp_path: Path) -> None:
@@ -238,3 +258,384 @@ async def test_uv_asset_rejects_unsafe_filename_and_unknown_options(tmp_path: Pa
             },
         )
         assert response.status_code == 422
+
+
+async def register_asset_worker(
+    client: httpx.AsyncClient, settings: Settings
+) -> None:
+    response = await signed_post(
+        client,
+        settings,
+        "/internal/v1/assets/workers/heartbeat",
+        {
+            "worker_id": "asset-worker-3090-a",
+            "node_id": "worker-3090-a",
+            "display_name": "3090-A Asset Worker",
+            "hostname": "lilithgames1",
+            "blender_version": "5.1.2",
+            "skill_version": "asset-skills-2026.07.28",
+            "cpu_count": 32,
+            "max_concurrency": 4,
+            "current_jobs": 0,
+            "load_1m": 1.0,
+            "available_memory_mb": 100000,
+        },
+    )
+    assert response.status_code == 200, response.text
+
+
+async def claim_asset_job(
+    client: httpx.AsyncClient, settings: Settings
+) -> dict[str, object]:
+    response = await signed_post(
+        client,
+        settings,
+        "/internal/v1/assets/jobs/claim",
+        {
+            "worker_id": "asset-worker-3090-a",
+            "load_1m": 1.0,
+            "available_memory_mb": 100000,
+        },
+    )
+    assert response.status_code == 200, response.text
+    job = response.json()["job"]
+    assert job is not None
+    return job
+
+
+async def test_uv_process_v2_preserves_stem_and_publishes_five_verified_artifacts(
+    tmp_path: Path,
+) -> None:
+    metadata = {
+        "external_asset_id": "asset:chair:uv:v2",
+        "options": {
+            "resolution": 2048,
+            "padding_px": 10,
+            "hard_edge_angle_degrees": 75,
+            "hidden_axis": "y+",
+            "texel_density_mode": "uniform",
+            "qa_profile": "pbr-v1",
+        },
+    }
+    async for settings, client in prepared_asset_app(tmp_path):
+        created = await client.post(
+            "/api/v1/assets/uv/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "asset:chair:uv:v2",
+            },
+            files={
+                "asset": ("chair.source.fbx", b"fbx-v2", "application/octet-stream"),
+                "metadata": (None, json.dumps(metadata)),
+            },
+        )
+        assert created.status_code == 202, created.text
+        job_id = created.json()["job_id"]
+        assert created.json()["events_url"] == f"/api/v1/assets/jobs/{job_id}/events"
+        await register_asset_worker(client, settings)
+        job = await claim_asset_job(client, settings)
+        assert job["job_id"] == job_id
+        assert job["job_type"] == "UV_PROCESS_V2"
+        lease_headers = {"X-Asset-Lease": str(job["lease_token"])}
+        qa_payload = json.dumps(
+            {"schema_version": "2", "passed": True, "hard_failures": []}
+        ).encode()
+        completed = await client.post(
+            f"/internal/v1/assets/jobs/{job_id}/uv-v2-complete",
+            headers=lease_headers,
+            files={
+                "blend": (
+                    "chair.source_PBR_UV.blend",
+                    b"blend-v2",
+                    "application/octet-stream",
+                ),
+                "fbx": (
+                    "chair.source_PBR_UV.fbx",
+                    b"fbx-result-v2",
+                    "application/octet-stream",
+                ),
+                "report": (
+                    "chair.source_PBR_UV_report.json",
+                    json.dumps({"input": "chair.source.fbx"}).encode(),
+                    "application/json",
+                ),
+                "qa": (
+                    "chair.source_PBR_UV_QA.json",
+                    qa_payload,
+                    "application/json",
+                ),
+                "fbx_qa": (
+                    "chair.source_PBR_UV_FBX_QA.json",
+                    qa_payload,
+                    "application/json",
+                ),
+            },
+        )
+        assert completed.status_code == 200, completed.text
+        status = await client.get(
+            f"/api/v1/assets/jobs/{job_id}",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert status.status_code == 200
+        body = status.json()
+        assert body["status"] == "SUCCEEDED"
+        assert body["progress"] == 100
+        assert {item["filename"] for item in body["artifacts"]} == {
+            "chair.source_PBR_UV.blend",
+            "chair.source_PBR_UV.fbx",
+            "chair.source_PBR_UV_report.json",
+            "chair.source_PBR_UV_QA.json",
+            "chair.source_PBR_UV_FBX_QA.json",
+        }
+
+
+async def test_retopology_audit_stops_at_review_gate_and_exposes_audit_artifacts(
+    tmp_path: Path,
+) -> None:
+    metadata = {
+        "external_asset_id": "asset:crate:retopo:audit:v1",
+        "options": {
+            "high_object": "crate_high",
+            "reference_object": "crate_reference_low",
+            "low_object": "crate_current_low",
+            "require_closed": True,
+        },
+    }
+    input_bytes = b"synthetic blend project"
+    async for settings, client in prepared_asset_app(tmp_path):
+        created = await client.post(
+            "/api/v1/assets/retopology/audit",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "asset:crate:retopo:audit:v1",
+            },
+            files={
+                "project": ("crate.blend", input_bytes, "application/octet-stream"),
+                "metadata": (None, json.dumps(metadata)),
+            },
+        )
+        assert created.status_code == 202, created.text
+        job_id = created.json()["job_id"]
+        await register_asset_worker(client, settings)
+        job = await claim_asset_job(client, settings)
+        assert job["job_id"] == job_id
+        assert job["job_type"] == "RETOPOLOGY_AUDIT"
+        assert job["options"] == metadata["options"]
+        lease_headers = {"X-Asset-Lease": str(job["lease_token"])}
+        audit = {
+            "schema_version": 2,
+            "audit_passed": True,
+            "objects": {
+                "high": {"object": "crate_high"},
+                "reference": {"object": "crate_reference_low"},
+                "low": {"object": "crate_current_low"},
+            },
+            "failures": [],
+            "visual_review_required": ["front", "side", "top", "perspective"],
+        }
+        manifest = {
+            "schema_version": "retopology_manifest.v1",
+            "job_id": job_id,
+            "job_type": "RETOPOLOGY_AUDIT",
+            "input_sha256": hashlib.sha256(input_bytes).hexdigest(),
+            "visual_review_required": True,
+        }
+        completed = await client.post(
+            f"/internal/v1/assets/jobs/{job_id}/retopology-complete",
+            headers=lease_headers,
+            files={
+                "audit": (
+                    "retopology_audit.json",
+                    json.dumps(audit).encode(),
+                    "application/json",
+                ),
+                "manifest": (
+                    "retopology_manifest.json",
+                    json.dumps(manifest).encode(),
+                    "application/json",
+                ),
+            },
+        )
+        assert completed.status_code == 200, completed.text
+        assert completed.json() == {
+            "accepted": True,
+            "status": "WAITING_REVIEW",
+            "review_required": True,
+        }
+        status = await client.get(
+            f"/api/v1/assets/jobs/{job_id}",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert status.status_code == 200
+        assert status.json()["status"] == "WAITING_REVIEW"
+        assert status.json()["progress"] == 95
+        assert {item["kind"] for item in status.json()["artifacts"]} == {
+            "audit",
+            "manifest",
+        }
+        audit_artifact = next(
+            item for item in status.json()["artifacts"] if item["kind"] == "audit"
+        )
+        downloaded = await client.get(
+            audit_artifact["download_url"],
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert downloaded.status_code == 200
+        assert downloaded.json()["audit_passed"] is True
+
+
+async def test_retopology_audit_rejects_non_blend_input(tmp_path: Path) -> None:
+    async for _, client in prepared_asset_app(tmp_path):
+        response = await client.post(
+            "/api/v1/assets/retopology/audit",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "asset:bad:retopo",
+            },
+            files={
+                "project": ("crate.fbx", b"fbx", "application/octet-stream"),
+                "metadata": (
+                    None,
+                    json.dumps(
+                        {
+                            "external_asset_id": "asset:bad:retopo",
+                            "options": {
+                                "high_object": "high",
+                                "reference_object": "reference",
+                                "low_object": "low",
+                            },
+                        }
+                    ),
+                ),
+            },
+        )
+        assert response.status_code == 422
+
+
+async def test_retopology_process_accepts_reference_views_and_publishes_review_set(
+    tmp_path: Path,
+) -> None:
+    from PIL import Image
+
+    image = io.BytesIO()
+    Image.new("RGB", (32, 24), "purple").save(image, format="PNG")
+    png = image.getvalue()
+    metadata = {
+        "external_asset_id": "asset:crate:retopo:process:v1",
+        "options": {
+            "high_object": "crate_high",
+            "reference_object": "crate_reference_low",
+            "low_object": "crate_current_low",
+            "generated_low_object": "crate_generated_v001",
+            "algorithm": "agent",
+            "target_faces": 2400,
+            "preserve_sharp": True,
+            "preserve_boundary": True,
+            "render_resolution": 256,
+            "max_repair_rounds": 1,
+            "require_closed": False,
+        },
+        "reference_views": [
+            {"filename": "front.png", "view": "front", "label": "概念图正面"}
+        ],
+        "user_request": "保持箱体轮廓，扣件单独保留。",
+    }
+    async for settings, client in prepared_asset_app(tmp_path):
+        created = await client.post(
+            "/api/v1/assets/retopology/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "asset:crate:retopo:process:v1",
+            },
+            files=[
+                ("project", ("crate.blend", b"real-blend-placeholder", "application/octet-stream")),
+                ("metadata", (None, json.dumps(metadata), "application/json")),
+                ("reference_images", ("front.png", png, "image/png")),
+            ],
+        )
+        assert created.status_code == 202, created.text
+        job_id = created.json()["job_id"]
+        assert created.json()["timing"]["queue_position"] == 1
+        await register_asset_worker(client, settings)
+        job = await claim_asset_job(client, settings)
+        assert job["job_id"] == job_id
+        lease_headers = {"X-Asset-Lease": str(job["lease_token"])}
+        objects = {
+            "high": "crate_high",
+            "reference": "crate_reference_low",
+            "current": "crate_current_low",
+            "generated": "crate_generated_v001",
+        }
+        audit = {
+            "schema_version": 2,
+            "audit_passed": True,
+            "failures": [],
+            "preservation": {"high": True, "reference": True},
+        }
+        agent_plan = {
+            "recommended_algorithm": "quadriflow",
+            "target_faces": 2400,
+        }
+        manifest = {
+            "schema_version": "retopology_process_manifest.v1",
+            "job_id": job_id,
+            "job_type": "RETOPOLOGY_PROCESS_V1",
+            "input_sha256": job["input_sha256"],
+            "objects": objects,
+            "source_preserved": True,
+            "automatic_final_promotion_allowed": False,
+            "visual_review": {
+                "required": True,
+                "views": ["front", "side", "top", "perspective"],
+                "roles": ["high", "reference", "generated"],
+            },
+            "agent_plan": {
+                "required": True,
+                "recommended_algorithm": "quadriflow",
+                "recommended_target_faces": 2400,
+            },
+        }
+        files: dict[str, tuple[str, bytes, str]] = {
+            "candidate_blend": ("retopology_candidate.blend", b"blend", "application/octet-stream"),
+            "candidate_fbx": ("retopology_candidate.fbx", b"fbx", "application/octet-stream"),
+            "process_report": (
+                "retopology_process_report.json",
+                json.dumps(
+                    {
+                        "schema_version": "retopology_process_report.v1",
+                        "source_preserved": True,
+                    }
+                ).encode(),
+                "application/json",
+            ),
+            "baseline_audit": ("retopology_baseline_audit.json", json.dumps(audit).encode(), "application/json"),
+            "audit": ("retopology_final_audit.json", json.dumps(audit).encode(), "application/json"),
+            "manifest": ("retopology_manifest.json", json.dumps(manifest).encode(), "application/json"),
+            "comparison": ("retopology_comparison.png", png, "image/png"),
+            "reference_images": ("reference_images.png", png, "image/png"),
+            "agent_plan": ("retopology_agent_plan.json", json.dumps(agent_plan).encode(), "application/json"),
+            "agent_prompt": ("retopology_agent_prompt.txt", b"planning prompt", "text/plain"),
+            "agent_events": ("retopology_agent_events.jsonl", b"{}\n", "application/x-ndjson"),
+        }
+        for role in ("high", "reference", "generated"):
+            for view in ("front", "side", "top", "perspective"):
+                files[f"view_{role}_{view}"] = (
+                    f"{role}_{view}.png",
+                    png,
+                    "image/png",
+                )
+        completed = await client.post(
+            f"/internal/v1/assets/jobs/{job_id}/retopology-process-complete",
+            headers=lease_headers,
+            files=files,
+        )
+        assert completed.status_code == 200, completed.text
+        body = completed.json()
+        assert body["status"] == "WAITING_REVIEW"
+        assert body["audit_passed"] is True
+        status = await client.get(
+            f"/api/v1/assets/jobs/{job_id}",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert status.json()["stage"] == "WAITING_REVIEW"
+        assert len(status.json()["artifacts"]) == 23

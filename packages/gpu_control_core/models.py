@@ -283,6 +283,16 @@ class AssetJob(Base):
     )
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     progress: Mapped[float] = mapped_column(Float, default=0)
+    stage: Mapped[str] = mapped_column(String(32), default="QUEUED")
+    stage_message: Mapped[str] = mapped_column(
+        String(500), default="任务已进入资产处理队列"
+    )
+    estimated_remaining_seconds: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    last_progress_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -310,6 +320,30 @@ class AssetArtifact(Base):
     content_type: Mapped[str] = mapped_column(String(128))
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AssetJobEvent(Base):
+    """Durable client-visible progress event for an Asset Processing job."""
+
+    __tablename__ = "asset_job_events"
+    __table_args__ = (
+        UniqueConstraint("job_id", "sequence", name="uq_asset_job_event_sequence"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("asset_jobs.id", ondelete="CASCADE"), index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(24))
+    stage: Mapped[str] = mapped_column(String(32))
+    progress: Mapped[float] = mapped_column(Float)
+    message: Mapped[str] = mapped_column(String(500))
+    estimated_remaining_seconds: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

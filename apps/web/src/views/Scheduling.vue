@@ -2,7 +2,7 @@
 import { computed, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "../api";
-import type { NodeInfo } from "../types";
+import type { AssetProcessingOverview, NodeInfo } from "../types";
 import { useAutoRefresh } from "../composables/useAutoRefresh";
 
 type SchedulingForm = {
@@ -33,6 +33,7 @@ const form = reactive<SchedulingForm>({
 const saved = ref<SchedulingForm>({ ...form });
 const nodes = ref<NodeInfo[]>([]);
 const workflows = ref<WorkflowRow[]>([]);
+const assetOverview = ref<AssetProcessingOverview | null>(null);
 const error = ref("");
 const saving = ref(false);
 
@@ -65,8 +66,16 @@ const enabledWorkflows = computed(() =>
 const clusterMode = computed(() => {
   if (!nodes.value.length) return "等待节点状态";
   if (activeNodes.value.length === nodes.value.length)
-    return `三节点并行（${activeSlots.value} 个执行槽位）`;
+    return `${nodes.value.length} 节点并行（${activeSlots.value} 个 GPU 槽位）`;
   return `降级运行（${activeNodes.value.length}/${nodes.value.length} 节点可接单）`;
+});
+const assetWorkers = computed(() => assetOverview.value?.workers ?? []);
+const onlineAssetWorkers = computed(() =>
+  assetWorkers.value.filter((worker) => worker.status === "ONLINE"),
+);
+const assetActiveJobs = computed(() => {
+  const counts = assetOverview.value?.summary.counts ?? {};
+  return (counts.QUEUED ?? 0) + (counts.CLAIMED ?? 0) + (counts.RUNNING ?? 0);
 });
 const freeVramGb = computed({
   get: () => Number((form.overflow_4090_min_free_vram_mb / 1024).toFixed(1)),
@@ -78,15 +87,17 @@ const freeVramGb = computed({
 async function load() {
   error.value = "";
   try {
-    const [settings, nodeRows, workflowRows] = await Promise.all([
+    const [settings, nodeRows, workflowRows, assetRows] = await Promise.all([
       api.settings(),
       api.nodes(),
       api.workflows(),
+      api.assetProcessing(),
     ]);
     Object.assign(form, settings);
     saved.value = { ...form };
     nodes.value = nodeRows;
     workflows.value = workflowRows as unknown as WorkflowRow[];
+    assetOverview.value = assetRows;
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : "调度策略加载失败";
     throw cause;
@@ -144,7 +155,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
     <div class="page-heading">
       <div>
         <h1>调度策略</h1>
-        <p>三节点任务分配、真实业务优先级与 4090 安全回退</p>
+        <p>GPU 推理与 CPU Asset 双平面调度、生产优先级和故障恢复</p>
       </div>
       <div class="heading-actions">
         <span class="refresh-state"
@@ -169,7 +180,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
       <div>
         <span>当前集群模式</span><strong>{{ clusterMode }}</strong>
         <p>
-          4090、3090-A、3090-B 独立握手并共同接单；每张 GPU 同时执行 1 个任务。
+          当前由 {{ nodes.length }} 个已登记 GPU 节点独立握手；离线节点不计入可用槽位，页面不再假定 3090-B 在线。
         </p>
       </div>
       <div class="mode-node">
@@ -222,6 +233,43 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
         </div>
       </section>
 
+      <section class="policy-section cluster-section">
+        <header>
+          <div>
+            <h2>CPU Asset Worker</h2>
+            <p>UV 与重拓扑使用独立领取、租约和并发槽，不参与 GPU 工作流选择。</p>
+          </div>
+          <span
+            class="cluster-health"
+            :class="{ degraded: onlineAssetWorkers.length !== assetWorkers.length }"
+          >
+            {{ onlineAssetWorkers.length }} / {{ assetWorkers.length }} 在线 ·
+            {{ assetActiveJobs }} 个任务处理中
+          </span>
+        </header>
+        <div class="scheduler-node-grid">
+          <article
+            v-for="worker in assetWorkers"
+            :key="worker.id"
+            class="scheduler-node"
+          >
+            <div>
+              <i :class="worker.status === 'ONLINE' ? 'online' : 'offline'"></i>
+              <strong>{{ worker.display_name }}</strong>
+              <span>{{ worker.node_id }}</span>
+            </div>
+            <dl>
+              <div><dt>状态</dt><dd>{{ worker.status === "ONLINE" ? "可接资产任务" : "心跳离线" }}</dd></div>
+              <div><dt>CPU 槽位</dt><dd>{{ worker.current_jobs }} / {{ worker.max_concurrency }}</dd></div>
+              <div><dt>运行时</dt><dd>Blender {{ worker.blender_version }}</dd></div>
+            </dl>
+          </article>
+          <div v-if="!assetWorkers.length" class="asset-empty">
+            尚无 Asset Worker 心跳；不会用硬编码节点填充。
+          </div>
+        </div>
+      </section>
+
       <section class="policy-section scheduler-rules-section">
         <header>
           <div>
@@ -264,7 +312,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <div>
               <strong>并发领取与防重复</strong
               ><span
-                >三个节点并行领取兼容任务，数据库行锁与租约保证一个任务只会被一个节点执行。</span
+                >当前在线节点并行领取兼容任务，数据库行锁与租约保证一个任务只会被一个节点执行。</span
               >
             </div>
           </li>
@@ -288,6 +336,10 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             </div>
           </li>
         </ol>
+        <div class="asset-scheduler-note">
+          <strong>资产任务独立规则</strong>
+          <span>UV / 重拓扑按 Asset Worker CPU、内存与空闲槽领取；支持轮询、SSE、ETA、取消和原子制品，不消耗 GPU 推理槽。</span>
+        </div>
         <div class="workflow-strip">
           <span>已启用工作流</span>
           <strong

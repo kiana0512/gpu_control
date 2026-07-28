@@ -21,9 +21,9 @@ const route = useRoute();
 const router = useRouter();
 const menu = [
   ["/", "总览", Cpu],
-  ["/jobs", "任务", List],
-  ["/nodes", "计算节点", Box],
-  ["/asset-processing", "资产处理", SetUp],
+  ["/jobs", "任务中心", List],
+  ["/nodes", "GPU 推理节点", Box],
+  ["/asset-processing", "UV / 重拓扑", SetUp],
   ["/workflows", "工作流", DataAnalysis],
   ["/clients", "API 客户", Key],
   ["/scheduling", "调度策略", Operation],
@@ -57,7 +57,7 @@ function logout() {
       </nav>
       <div class="cluster-state">
         <i></i><span>控制平面在线</span
-        ><small>4090 主控 · Unified Scheduler 1.4.0-dev</small>
+        ><small>4090 主控 · Unified Scheduler 1.5.0</small>
       </div>
     </aside>
     <section class="workspace">

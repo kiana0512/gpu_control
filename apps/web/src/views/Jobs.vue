@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "../api";
@@ -21,6 +21,18 @@ const actionBusy = ref("");
 const clientKind = ref<"production" | "test">(
   route.query.kind === "test" ? "test" : "production",
 );
+const currentPage = ref(1);
+const pageSize = ref(20);
+const pageCount = computed(() =>
+  Math.max(1, Math.ceil(jobs.value.length / pageSize.value)),
+);
+const pagedJobs = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value;
+  return jobs.value.slice(start, start + pageSize.value);
+});
+watch(pageCount, (count) => {
+  if (currentPage.value > count) currentPage.value = count;
+});
 const terminalStatuses = ["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT"];
 const isBatch = computed(() => selectedJob.value?.kind === "batch");
 const canCancel = computed(
@@ -145,6 +157,7 @@ async function selectJob(job: JobInfo) {
 async function changeClientKind(kind: "production" | "test") {
   if (clientKind.value === kind) return;
   clientKind.value = kind;
+  currentPage.value = 1;
   selectedJob.value = null;
   await run();
 }
@@ -168,7 +181,11 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
     <div class="page-heading">
       <div>
         <h1>任务中心</h1>
-        <p>查询状态、进度、节点、重试与诊断信息</p>
+        <p>GPU 推理与 CPU 资产任务分平面运行、统一入口管理</p>
+        <div class="task-plane-switch" aria-label="任务平面">
+          <router-link class="active" to="/jobs">GPU 推理任务</router-link>
+          <router-link to="/asset-processing">CPU 资产任务</router-link>
+        </div>
       </div>
       <div class="heading-actions">
         <div class="scope-tabs" aria-label="任务数据范围">
@@ -208,7 +225,20 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
       <strong>任务同步失败</strong><span>{{ error }}</span
       ><button @click="run">重试</button>
     </div>
-    <JobsTable :jobs="jobs" @select="selectJob" />
+    <JobsTable :jobs="pagedJobs" @select="selectJob" />
+    <nav class="table-pagination" aria-label="GPU 任务分页">
+      <span>共 {{ jobs.length }} 条 · 第 {{ currentPage }} / {{ pageCount }} 页</span>
+      <label>
+        每页
+        <select v-model.number="pageSize" @change="currentPage = 1">
+          <option :value="20">20</option>
+          <option :value="50">50</option>
+          <option :value="100">100</option>
+        </select>
+      </label>
+      <button class="secondary" :disabled="currentPage <= 1" @click="currentPage--">上一页</button>
+      <button class="secondary" :disabled="currentPage >= pageCount" @click="currentPage++">下一页</button>
+    </nav>
 
     <div
       v-if="selectedJob"

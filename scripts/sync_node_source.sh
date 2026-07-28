@@ -38,11 +38,13 @@ rsync -a --human-readable --progress "${dry[@]}" \
   --exclude='/.vscode/' \
   --exclude='/gpu_control/' \
   --exclude='/output/' \
+  --exclude='/runtime/' \
   --exclude='/build/' \
   --exclude='/artifacts/' \
   --exclude='/.venv/' \
   --exclude='**/node_modules/' \
   --exclude='**/dist/' \
+  --exclude='**/*.tsbuildinfo' \
   --exclude='**/__pycache__/' \
   --exclude='**/.pytest_cache/' \
   --exclude='**/.ruff_cache/' \

@@ -3,10 +3,11 @@ import { LineChart } from "echarts/charts";
 import { GridComponent } from "echarts/components";
 import { init, use, type ECharts } from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
-import { computed, onBeforeUnmount, onMounted } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import type { JobInfo } from "../types";
+import type { AssetProcessingOverview, JobInfo } from "../types";
 
+import { api } from "../api";
 import JobsTable from "../components/JobsTable.vue";
 import NodeTable from "../components/NodeTable.vue";
 import { useSystemStore } from "../stores/system";
@@ -14,6 +15,8 @@ import { useAutoRefresh } from "../composables/useAutoRefresh";
 
 const store = useSystemStore();
 const router = useRouter();
+const assetOverview = ref<AssetProcessingOverview | null>(null);
+const assetError = ref("");
 use([LineChart, GridComponent, CanvasRenderer]);
 
 let chart: ECharts | undefined;
@@ -46,6 +49,10 @@ const connectedNodes = computed(() =>
     (node) => node.last_heartbeat_at || node.health !== "OFFLINE",
   ),
 );
+const assetActive = computed(() => {
+  const counts = assetOverview.value?.summary.counts ?? {};
+  return (counts.QUEUED ?? 0) + (counts.CLAIMED ?? 0) + (counts.RUNNING ?? 0);
+});
 
 function resizeChart() {
   chart?.resize();
@@ -84,7 +91,19 @@ function renderChart() {
 }
 
 async function refresh() {
-  await store.refresh(store.clientKind);
+  const [, assetResult] = await Promise.allSettled([
+    store.refresh(store.clientKind),
+    api.assetProcessing(),
+  ]);
+  if (assetResult.status === "fulfilled") {
+    assetOverview.value = assetResult.value;
+    assetError.value = "";
+  } else {
+    assetError.value =
+      assetResult.reason instanceof Error
+        ? assetResult.reason.message
+        : "CPU 资产平面状态加载失败";
+  }
   renderChart();
   if (store.error) throw new Error(store.error);
 }
@@ -117,7 +136,7 @@ onBeforeUnmount(() => {
     <div class="page-heading">
       <div>
         <h1>系统总览</h1>
-        <p>已接入计算节点与任务队列的实时运行状态</p>
+        <p>GPU 推理与 CPU 资产处理两个独立平面的实时运行状态</p>
       </div>
       <div class="heading-actions">
         <div class="scope-tabs" aria-label="任务数据范围">
@@ -162,6 +181,25 @@ onBeforeUnmount(() => {
       <div v-for="metric in metrics" :key="metric.label">
         <span>{{ metric.label }}<i :class="metric.tone"></i></span
         ><strong>{{ metric.value }}</strong>
+      </div>
+    </section>
+    <section class="dashboard-plane-summary">
+      <div>
+        <span>GPU 推理平面</span>
+        <strong>{{ connectedNodes.length }} 个节点 · {{ store.jobs.length }} 个最近任务</strong>
+        <small>ImageClip 抠图、ModelView 局部重绘、序列帧批次</small>
+        <router-link to="/jobs">查看 GPU 任务 →</router-link>
+      </div>
+      <div :class="{ degraded: assetError }">
+        <span>CPU 资产平面</span>
+        <strong
+          >{{ assetOverview?.summary.online_workers ?? 0 }} 个 Worker ·
+          {{ assetActive }} 个处理中</strong
+        >
+        <small v-if="!assetError"
+          >PBR UV、AI 重拓扑、阶段进度、四视图审核</small
+        ><small v-else>{{ assetError }}</small>
+        <router-link to="/asset-processing">查看资产任务 →</router-link>
       </div>
     </section>
     <NodeTable :nodes="connectedNodes" />

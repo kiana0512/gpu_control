@@ -97,3 +97,98 @@ export interface AuditLog {
   result: string;
   created_at: string;
 }
+
+export interface AssetArtifactInfo {
+  id: string;
+  kind: string;
+  filename: string;
+  size_bytes: number;
+  sha256: string;
+  content_type: string;
+  download_url: string;
+}
+
+export interface AssetWorkerInfo {
+  id: string;
+  display_name: string;
+  node_id: string;
+  hostname: string;
+  status: "ONLINE" | "OFFLINE";
+  reported_status: string;
+  blender_version: string;
+  skill_version: string;
+  cpu_count: number;
+  current_jobs: number;
+  max_concurrency: number;
+  last_heartbeat_at: string | null;
+}
+
+export interface AssetJobInfo {
+  job_id: string;
+  external_asset_id: string;
+  client_id: string;
+  job_type:
+    | "UV_UNWRAP"
+    | "UV_PROCESS_V2"
+    | "RETOPOLOGY_AUDIT"
+    | "RETOPOLOGY_PROCESS_V1"
+    | string;
+  status: string;
+  source_filename: string;
+  input_sha256: string;
+  options: Record<string, unknown>;
+  worker_id: string | null;
+  progress: number;
+  stage: string;
+  stage_message: string;
+  timing: {
+    elapsed_seconds: number;
+    estimated_remaining_seconds: number | null;
+    last_progress_at: string | null;
+  };
+  attempt_count: number;
+  error: { code: string; message: string | null } | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  artifacts: AssetArtifactInfo[];
+}
+
+export interface AssetProcessingOverview {
+  schema_version: "asset-admin.v3";
+  as_of: string;
+  summary: {
+    counts: Record<string, number>;
+    online_workers: number;
+    total_slots: number;
+    used_slots: number;
+    waiting_review: number;
+  };
+  workers: AssetWorkerInfo[];
+  jobs: AssetJobInfo[];
+  contracts: {
+    uv: {
+      submit: string;
+      formats: string[];
+      artifact_count: number;
+      status: string;
+      events: string;
+    };
+    retopology_audit: {
+      submit: string;
+      format: string;
+      terminal_review_status: string;
+    };
+    retopology_process: {
+      submit: string;
+      format: string;
+      review_status: string;
+      views: string[];
+      roles: string[];
+      reference_views_optional: boolean;
+      maximum_reference_views: number;
+      status: string;
+      events: string;
+    };
+  };
+}

@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { api } from "../api";
-import type { Dashboard } from "../types";
+import type { AssetProcessingOverview, Dashboard } from "../types";
 import { useAutoRefresh } from "../composables/useAutoRefresh";
 
 const dashboard = ref<Dashboard | null>(null);
+const assets = ref<AssetProcessingOverview | null>(null);
 const error = ref("");
 const origin = window.location.origin;
 const comfyUrl = `http://${window.location.hostname}:8188/#551d82b0-b1fb-483a-a5ea-564bdb813625`;
 const imageclipUrl = `${origin}/api/v1/services/imageclip-rgba`;
 const modelviewUrl = `${origin}/api/v1/services/modelview-inpaint`;
+const uvUrl = `${origin}/api/v1/assets/uv/process`;
+const retopologyUrl = `${origin}/api/v1/assets/retopology/process`;
 const modelviewPromptEnabled =
   import.meta.env.VITE_MODELVIEW_PROMPT_ENABLED === "true";
 const controlNode = computed(() =>
@@ -19,7 +22,12 @@ const controlNode = computed(() =>
 async function load() {
   error.value = "";
   try {
-    dashboard.value = await api.dashboard();
+    const [gpuDashboard, assetOverview] = await Promise.all([
+      api.dashboard(),
+      api.assetProcessing(),
+    ]);
+    dashboard.value = gpuDashboard;
+    assets.value = assetOverview;
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : "系统信息加载失败";
     throw cause;
@@ -39,6 +47,19 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
       <div>
         <h1>系统信息</h1>
         <p>只读展示当前真实服务地址与运行状态</p>
+      </div>
+      <div>
+        <span
+          class="health-dot"
+          :class="(assets?.summary.online_workers ?? 0) > 0 ? 'online' : 'offline'"
+        ></span
+        ><span
+          ><strong>CPU Asset 平面</strong
+          ><small
+            >{{ assets?.summary.online_workers ?? 0 }} 个 Worker ·
+            {{ assets?.summary.total_slots ?? 0 }} 个并发槽</small
+          ></span
+        >
       </div>
       <div class="heading-actions">
         <span class="refresh-state"
@@ -151,6 +172,36 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
       </div>
       <router-link class="inline-link" to="/clients"
         >查看完整调用方法 →</router-link
+      >
+    </section>
+
+    <section class="system-section">
+      <header>
+        <h2>3D 资产处理 API</h2>
+        <p>异步提交后通过 Job URL 或 SSE 获取阶段、进度和 ETA；与 GPU 推理队列完全隔离。</p>
+      </header>
+      <div class="endpoint-list">
+        <div>
+          <span
+            ><strong>Blender PBR UV</strong
+            ><small>POST · asset + metadata · 成功原子发布 5 项</small></span
+          ><code>{{ uvUrl }}</code>
+        </div>
+        <div>
+          <span
+            ><strong>AI 重拓扑</strong
+            ><small>POST · project + metadata + 可选多视角参考图</small></span
+          ><code>{{ retopologyUrl }}</code>
+        </div>
+        <div>
+          <span
+            ><strong>任务进度 / SSE</strong
+            ><small>GET · 状态为事实，SSE 支持 Last-Event-ID 续传</small></span
+          ><code>{{ origin }}/api/v1/assets/jobs/&lt;job_id&gt;</code>
+        </div>
+      </div>
+      <router-link class="inline-link" to="/asset-processing"
+        >查看 Asset Worker、任务和交付物 →</router-link
       >
     </section>
   </div>

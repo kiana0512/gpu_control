@@ -4,6 +4,7 @@ import type {
   Dashboard,
   JobInfo,
   NodeInfo,
+  AssetProcessingOverview,
 } from "./types";
 
 const TOKEN_KEY = "gpu-control-session";
@@ -116,8 +117,10 @@ export const api = {
   jobs: (
     status?: string,
     clientKind: "production" | "test" | "all" = "production",
+    limit = 500,
   ) => {
     const query = new URLSearchParams({ client_kind: clientKind });
+    query.set("limit", String(limit));
     if (status) query.set("status", status);
     return request<JobInfo[]>(`/admin/jobs?${query.toString()}`);
   },
@@ -128,6 +131,50 @@ export const api = {
       `/admin/batches/${encodeURIComponent(id)}/items?offset=${offset}&limit=${limit}`,
     ),
   nodes: () => request<NodeInfo[]>("/admin/nodes"),
+  assetProcessing: (limit = 500) =>
+    request<AssetProcessingOverview>(
+      `/admin/asset-processing?limit=${encodeURIComponent(limit)}`,
+    ),
+  cancelAssetJob: (id: string) =>
+    request<{ job_id: string; status: string; cancel_requested: boolean }>(
+      `/admin/asset-jobs/${encodeURIComponent(id)}/cancel`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          reason: "管理员从统一资产处理界面取消任务",
+          confirm: true,
+        }),
+      },
+    ),
+  reviewAssetJob: (
+    id: string,
+    decision: "APPROVE" | "REJECT",
+    comment: string,
+  ) =>
+    request<{
+      job_id: string;
+      status: string;
+      decision: string;
+      reviewed_at: string;
+    }>(`/admin/asset-jobs/${encodeURIComponent(id)}/review`, {
+      method: "POST",
+      body: JSON.stringify({ decision, comment, confirm: true }),
+    }),
+  iterateAssetJob: (id: string, feedback: string) =>
+    request<{
+      job_id: string;
+      parent_job_id: string;
+      external_asset_id: string;
+      status: string;
+      generated_low_object: string;
+    }>(`/admin/asset-jobs/${encodeURIComponent(id)}/iterate`, {
+      method: "POST",
+      body: JSON.stringify({ feedback, confirm: true }),
+    }),
+  assetArtifact: (jobId: string, artifactId: string) =>
+    download(
+      `/admin/asset-jobs/${encodeURIComponent(jobId)}/artifacts/${encodeURIComponent(artifactId)}`,
+    ),
   audits: () => request<AuditLog[]>("/admin/audit-logs"),
   workflows: () => request<Record<string, unknown>[]>("/admin/workflows"),
   importWorkflow: (body: Record<string, unknown>) =>

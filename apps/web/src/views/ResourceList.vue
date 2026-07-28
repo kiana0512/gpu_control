@@ -15,7 +15,12 @@ const editingClient = ref<Row | null>(null);
 const accessPanelOpen = ref(false);
 const accessClient = ref<Row | null>(null);
 const codeTab = ref<"curl" | "python">("curl");
-const selectedService = ref<"imageclip-rgba" | "modelview-inpaint">(
+type PublicService =
+  | "imageclip-rgba"
+  | "modelview-inpaint"
+  | "asset-uv"
+  | "asset-retopology";
+const selectedService = ref<PublicService>(
   "imageclip-rgba",
 );
 const search = ref("");
@@ -89,15 +94,34 @@ const visibleRows = computed(() => {
 });
 
 const publicBase = computed(() => window.location.origin);
-const serviceUrl = computed(
-  () => `${publicBase.value}/api/v1/services/${selectedService.value}`,
-);
+const serviceUrl = computed(() => {
+  if (selectedService.value === "asset-uv")
+    return `${publicBase.value}/api/v1/assets/uv/process`;
+  if (selectedService.value === "asset-retopology")
+    return `${publicBase.value}/api/v1/assets/retopology/process`;
+  return `${publicBase.value}/api/v1/services/${selectedService.value}`;
+});
 const outputName = computed(() =>
   selectedService.value === "imageclip-rgba"
     ? "result-rgba.png"
     : "result-inpaint.png",
 );
 const curlExample = computed(() => {
+  if (selectedService.value === "asset-uv")
+    return [
+      `curl -X POST '${serviceUrl.value}' \\`,
+      "  -H 'Idempotency-Key: asset-chair-uv-001' \\",
+      "  -F 'asset=@chair.fbx' \\",
+      "  -F 'metadata={\"external_asset_id\":\"asset:chair:uv:001\",\"options\":{\"hidden_axis\":\"y+\",\"hard_edge_angle_degrees\":75,\"resolution\":2048,\"padding_px\":10}};type=application/json'",
+    ].join("\n");
+  if (selectedService.value === "asset-retopology")
+    return [
+      `curl -X POST '${serviceUrl.value}' \\`,
+      "  -H 'Idempotency-Key: asset-crate-retopo-001' \\",
+      "  -F 'project=@crate.blend' \\",
+      "  -F 'reference_images=@crate_front.png' \\",
+      "  -F 'metadata={\"external_asset_id\":\"asset:crate:retopo:001\",\"options\":{\"high_object\":\"crate_high\",\"reference_object\":\"crate_reference_low\",\"low_object\":\"crate_current_low\",\"generated_low_object\":\"crate_generated_v001\",\"target_faces\":3000}};type=application/json'",
+    ].join("\n");
   const lines = [
     `curl -X POST '${serviceUrl.value}' \\`,
     "  -H 'Idempotency-Key: order-001-attempt-1' \\",
@@ -111,15 +135,18 @@ const curlExample = computed(() => {
   lines.push(`  --output '${outputName.value}'`);
   return lines.join("\n");
 });
-const pythonExample = computed(
-  () =>
-    `import requests\n\nwith open("input.png", "rb") as source:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "order-001-attempt-1"},\n        files={"image": ("input.png", source, "image/png")},${
+const pythonExample = computed(() => {
+  if (selectedService.value === "asset-uv")
+    return `import json, requests\n\nwith open("chair.fbx", "rb") as model:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "asset-chair-uv-001"},\n        files={"asset": ("chair.fbx", model, "application/octet-stream")},\n        data={"metadata": json.dumps({"external_asset_id": "asset:chair:uv:001", "options": {"resolution": 2048, "padding_px": 10}})},\n        timeout=60,\n    )\nresponse.raise_for_status()\nprint(response.json())`;
+  if (selectedService.value === "asset-retopology")
+    return `import json, requests\n\nmetadata = {"external_asset_id": "asset:crate:retopo:001", "options": {"high_object": "crate_high", "reference_object": "crate_reference_low", "low_object": "crate_current_low", "generated_low_object": "crate_generated_v001", "target_faces": 3000}}\nwith open("crate.blend", "rb") as project, open("crate_front.png", "rb") as front:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "asset-crate-retopo-001"},\n        files=[("project", ("crate.blend", project)), ("reference_images", ("crate_front.png", front, "image/png"))],\n        data={"metadata": json.dumps(metadata)},\n        timeout=60,\n    )\nresponse.raise_for_status()\nprint(response.json())`;
+  return `import requests\n\nwith open("input.png", "rb") as source:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "order-001-attempt-1"},\n        files={"image": ("input.png", source, "image/png")},${
           selectedService.value === "modelview-inpaint" &&
           modelviewPromptEnabled
             ? '\n        data={"prompt": "修复蒙版区域的破损边缘"},'
             : ""
-        }\n        timeout=1900,\n    )\nresponse.raise_for_status()\nwith open("${outputName.value}", "wb") as output:\n    output.write(response.content)\nprint("job:", response.headers.get("X-Job-ID"))`,
-);
+        }\n        timeout=1900,\n    )\nresponse.raise_for_status()\nwith open("${outputName.value}", "wb") as output:\n    output.write(response.content)\nprint("job:", response.headers.get("X-Job-ID"))`;
+});
 
 function resetClientForm() {
   Object.assign(clientForm, {
@@ -319,7 +346,7 @@ function formatCell(value: unknown) {
         >
         <template v-if="kind === 'clients'">
           <button class="secondary" @click="showPublicAccess">
-            查看图片 API
+            查看统一 API
           </button>
           <button
             class="primary"
@@ -655,7 +682,7 @@ function formatCell(value: unknown) {
               type="number"
               min="1"
               max="10"
-            /><small>当前只有 1 台 GPU，请填 1。</small></label
+            /><small>按客户公平性设置；总吞吐由在线 GPU 推理槽动态决定。</small></label
           ><label
             ><span>每日配额</span
             ><input
@@ -713,7 +740,7 @@ function formatCell(value: unknown) {
       <aside class="key-panel">
         <header>
           <div>
-            <h2>图片服务调用方式</h2>
+            <h2>统一服务调用方式</h2>
             <p>
               {{ accessClient?.name }} ·
               {{ accessClient?.last_seen_ip || "预配置客户" }}
@@ -724,10 +751,9 @@ function formatCell(value: unknown) {
           </button>
         </header>
         <div class="access-notice">
-          <strong>无需 API Key</strong
+          <strong>API Key 或来源 IP</strong
           ><span
-            >系统根据真实来源 IP 自动识别客户。上传的是图片，HTTP
-            成功响应体也是最终图片。</span
+            >图片服务同步返回最终图片；UV/重拓扑异步返回 Job，并通过状态 API 或 SSE 获取进度。</span
           >
         </div>
         <section class="usage-guide">
@@ -743,13 +769,29 @@ function formatCell(value: unknown) {
               @click="selectedService = 'modelview-inpaint'"
             >
               ModelView 局部重绘
+            </button><button
+              :class="{ active: selectedService === 'asset-uv' }"
+              @click="selectedService = 'asset-uv'"
+            >
+              Blender PBR UV
+            </button><button
+              :class="{ active: selectedService === 'asset-retopology' }"
+              @click="selectedService = 'asset-retopology'"
+            >
+              AI 重拓扑
             </button>
           </div>
           <ol>
             <li>
               统一入口：<code>{{ serviceUrl }}</code>
             </li>
-            <li>multipart 图片字段固定为 <code>image</code>。</li>
+            <li v-if="selectedService === 'asset-uv'">
+              multipart 字段为 <code>asset + metadata</code>；成功后原子发布 5 项。
+            </li>
+            <li v-else-if="selectedService === 'asset-retopology'">
+              multipart 字段为 <code>project + metadata + reference_images[]</code>；支持多视角和人工审核。
+            </li>
+            <li v-else>multipart 图片字段固定为 <code>image</code>。</li>
             <li
               v-if="
                 selectedService === 'modelview-inpaint' &&
@@ -767,7 +809,10 @@ function formatCell(value: unknown) {
               当前生产版本仅接收 <code>image</code>；可选 <code>prompt</code>
               协议已完成候选实现，将在现有任务清空并完成三节点一致性校验后启用。
             </li>
-            <li>响应头 <code>X-Job-ID</code> 可用于日志和排障。</li>
+            <li v-if="selectedService.startsWith('asset-')">
+              HTTP 202 响应提供 <code>job_id/status_url/events_url/cancel_url</code>。
+            </li>
+            <li v-else>响应头 <code>X-Job-ID</code> 可用于日志和排障。</li>
           </ol>
           <div class="code-tabs">
             <button
@@ -785,7 +830,7 @@ function formatCell(value: unknown) {
           <pre><code>{{ codeTab === 'curl' ? curlExample : pythonExample }}</code><button @click="copy(codeTab === 'curl' ? curlExample : pythonExample, '调用示例')">复制示例</button></pre>
         </section>
         <footer>
-          <span>客户端超时建议设置为 1900 秒</span
+          <span>{{ selectedService.startsWith("asset-") ? "提交超时建议 60 秒；长任务使用状态 API/SSE" : "图片客户端超时建议设置为 1900 秒" }}</span
           ><button class="primary" @click="accessPanelOpen = false">
             关闭
           </button>

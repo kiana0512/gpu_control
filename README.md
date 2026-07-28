@@ -5,7 +5,7 @@
 面向两台 RTX 3090 工作节点和一台 RTX 4090 控制中心的统一任务调度、运维与可观测平台；GPU
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
-当前版本：`1.3.4`。三机调度、同步图片 API 与分布式序列帧批量抠图协议已落地；真实业务与压力测试在调度、统计和管理台中严格分层，测试任务只能使用真实客户暂时用不到的空闲 GPU。ImageClip 任务还会在领取前校验节点签名上报的 Git 提交、完整管线哈希和实时 ComfyUI 节点类型清单，防止旧管线、缺失插件或中间结果进入生产返回；批量父任务与子帧进度保持单调，不会因 ComfyUI 切换内部节点而倒退。
+当前版本：`1.5.0`。GPU 推理平面继续提供三机图片 API 与分布式序列帧调度；独立 CPU Asset 平面新增 Blender PBR UV 和 AI 重拓扑 API，支持并发 Worker、轮询与可续传 SSE 进度、动态 ETA、多视角参考、三模型四视图复核、人工发布门禁和逐产物 SHA-256 校验。两个平面使用独立队列与租约，资产任务不会占用或阻塞 GPU 推理槽。
 
 ```mermaid
 flowchart LR
@@ -91,3 +91,4 @@ make verify
 - [验收清单](docs/23_ACCEPTANCE_CHECKLIST.md) · [仍需提供的材料](docs/USER_INPUT_REQUIRED.md) · [实施状态](docs/IMPLEMENTATION_STATUS.md)
 - [4090 与双项目部署实录](docs/31_2026-07-22_4090_DEPLOYMENT_RECORD.md) · [图片 API、真实任务与 Web 管理台实录](docs/32_2026-07-23_PUBLIC_IMAGE_API_AND_UI_RECORD.md) · [3090 当前接入交接](docs/33_3090_NODE_DEPLOYMENT_HANDOFF.md) · [3090-B 与三卡 10 客户验收](docs/35_2026-07-23_3090_B_AND_THREE_NODE_ACCEPTANCE.md)
 - [批量抠图 1.2.0 生产部署记录](docs/39_2026-07-24_BATCH_MATTING_DEPLOYMENT_RECORD.md)
+- [Asset V3：UV / 重拓扑 API 与真实两机验收](docs/55_ASSET_UV_RETOPOLOGY_V3_API_AND_LIVE_ACCEPTANCE.md)

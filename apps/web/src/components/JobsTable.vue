@@ -35,7 +35,7 @@ function nodeSummary(job: JobInfo) {
         </thead>
         <tbody>
           <tr
-            v-for="job in jobs.slice(0, 100)"
+            v-for="job in jobs"
             :key="job.job_id"
             class="job-row"
             tabindex="0"

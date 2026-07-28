@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import ipaddress
@@ -8,23 +9,33 @@ import secrets
 import shutil
 import time
 import uuid
-from collections.abc import AsyncIterator
+import zipfile
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from packages.gpu_control_core.assets import (
     AssetCreateMetadata,
+    RetopologyAuditMetadata,
+    RetopologyProcessMetadata,
     asset_request_hash,
     lease_token_hash,
+    retopology_audit_request_hash,
+    retopology_process_request_hash,
+    uv_process_request_hash,
     validate_asset_filename,
+    validate_reference_image_filename,
 )
 from packages.gpu_control_core.database import Database
 from packages.gpu_control_core.models import (
@@ -33,24 +44,68 @@ from packages.gpu_control_core.models import (
     AssetArtifact,
     AssetIdempotencyKey,
     AssetJob,
+    AssetJobEvent,
     AssetWorker,
 )
 from packages.gpu_control_core.security import sign_agent_request, verify_api_key
 from packages.gpu_control_core.settings import Settings, get_settings
 
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
-TERMINAL_ASSET_STATUSES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED"})
-REQUIRED_ARTIFACTS = {
+TERMINAL_ASSET_STATUSES = frozenset(
+    {"SUCCEEDED", "WAITING_REVIEW", "REVIEW_REJECTED", "FAILED", "CANCELLED"}
+)
+DOWNLOADABLE_ASSET_STATUSES = frozenset({"SUCCEEDED", "WAITING_REVIEW"})
+UV_REQUIRED_ARTIFACTS = {
     "blend": ("model_PBR_UV.blend", "application/octet-stream"),
     "fbx": ("model_PBR_UV.fbx", "application/octet-stream"),
     "report": ("model_report.json", "application/json"),
     "qa": ("model_QA.json", "application/json"),
+}
+RETOPOLOGY_AUDIT_ARTIFACTS = {
+    "audit": ("retopology_audit.json", "application/json"),
+    "manifest": ("retopology_manifest.json", "application/json"),
+}
+RETOPOLOGY_PROCESS_REQUIRED_FILENAMES = {
+    "retopology_candidate.blend": ("candidate_blend", "application/octet-stream"),
+    "retopology_candidate.fbx": ("candidate_fbx", "application/octet-stream"),
+    "retopology_process_report.json": ("process_report", "application/json"),
+    "retopology_baseline_audit.json": ("baseline_audit", "application/json"),
+    "retopology_final_audit.json": ("audit", "application/json"),
+    "retopology_manifest.json": ("manifest", "application/json"),
+    "retopology_comparison.png": ("comparison", "image/png"),
+    "retopology_agent_plan.json": ("agent_plan", "application/json"),
+    "retopology_agent_prompt.txt": ("agent_prompt", "text/plain; charset=utf-8"),
+    "retopology_agent_events.jsonl": ("agent_events", "application/x-ndjson"),
+    **{
+        f"{role}_{view}.png": (f"view_{role}_{view}", "image/png")
+        for role in ("high", "reference", "generated")
+        for view in ("front", "side", "top", "perspective")
+    },
+}
+RETOPOLOGY_PROCESS_OPTIONAL_FILENAMES = {
+    "reference_images.png": ("reference_images", "image/png"),
+}
+RETOPOLOGY_PROCESS_REQUIRED_ARTIFACTS = {
+    kind: (filename, content_type)
+    for filename, (kind, content_type) in RETOPOLOGY_PROCESS_REQUIRED_FILENAMES.items()
+}
+RETOPOLOGY_PROCESS_OPTIONAL_ARTIFACTS = {
+    kind: (filename, content_type)
+    for filename, (kind, content_type) in RETOPOLOGY_PROCESS_OPTIONAL_FILENAMES.items()
 }
 
 
 def as_utc(value: datetime) -> datetime:
     """Normalize SQLite's timezone-naive test values and PostgreSQL values."""
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class Principal(BaseModel):
@@ -82,6 +137,9 @@ class WorkerClaim(BaseModel):
 class WorkerProgress(BaseModel):
     model_config = ConfigDict(extra="forbid")
     progress: float = Field(ge=0, le=99.9)
+    stage: str = Field(pattern=r"^[A-Z][A-Z0-9_]{2,31}$")
+    message: str = Field(min_length=1, max_length=500)
+    estimated_remaining_seconds: int | None = Field(default=None, ge=0, le=604800)
 
 
 class WorkerFailure(BaseModel):
@@ -196,9 +254,89 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "download_url": f"/api/v1/assets/jobs/{artifact.job_id}/artifacts/{artifact.id}",
         }
 
+    async def append_asset_event(
+        db: AsyncSession,
+        job: AssetJob,
+        *,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        sequence = int(
+            await db.scalar(
+                select(func.coalesce(func.max(AssetJobEvent.sequence), 0)).where(
+                    AssetJobEvent.job_id == job.id
+                )
+            )
+            or 0
+        ) + 1
+        db.add(
+            AssetJobEvent(
+                job_id=job.id,
+                sequence=sequence,
+                status=job.status,
+                stage=job.stage,
+                progress=job.progress,
+                message=job.stage_message,
+                estimated_remaining_seconds=job.estimated_remaining_seconds,
+                details=details or {},
+            )
+        )
+
+    async def queue_timing(job: AssetJob, db: AsyncSession) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        elapsed = (
+            max(0, int((now - as_utc(job.started_at)).total_seconds()))
+            if job.started_at
+            else 0
+        )
+        queue_position: int | None = None
+        estimated_start_seconds: int | None = None
+        if job.status == "QUEUED":
+            queue_position = int(
+                await db.scalar(
+                    select(func.count(AssetJob.id)).where(
+                        AssetJob.status == "QUEUED",
+                        AssetJob.created_at <= job.created_at,
+                    )
+                )
+                or 1
+            )
+            slots = int(
+                await db.scalar(
+                    select(
+                        func.coalesce(
+                            func.sum(
+                                AssetWorker.max_concurrency - AssetWorker.current_jobs
+                            ),
+                            0,
+                        )
+                    ).where(AssetWorker.status == "ONLINE")
+                )
+                or 0
+            )
+            typical_seconds = {
+                "UV_UNWRAP": 180,
+                "UV_PROCESS_V2": 240,
+                "RETOPOLOGY_AUDIT": 120,
+                "RETOPOLOGY_PROCESS_V1": 900,
+            }.get(job.job_type, 300)
+            estimated_start_seconds = (
+                0
+                if slots > 0 and queue_position <= slots
+                else ((queue_position - 1) // max(slots, 1)) * typical_seconds
+            )
+        return {
+            "queue_position": queue_position,
+            "estimated_start_seconds": estimated_start_seconds,
+            "elapsed_seconds": elapsed,
+            "estimated_remaining_seconds": job.estimated_remaining_seconds,
+            "last_progress_at": job.last_progress_at.isoformat()
+            if job.last_progress_at
+            else None,
+        }
+
     async def job_payload(job: AssetJob, db: AsyncSession) -> dict[str, Any]:
         artifacts: list[dict[str, Any]] = []
-        if job.status == "SUCCEEDED":
+        if job.status in DOWNLOADABLE_ASSET_STATUSES:
             rows = list(
                 (
                     await db.scalars(
@@ -211,10 +349,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             artifacts = [artifact_payload(item) for item in rows]
         return {
             "job_id": job.id,
+            "status_url": f"/api/v1/assets/jobs/{job.id}",
+            "events_url": f"/api/v1/assets/jobs/{job.id}/events",
+            "cancel_url": f"/api/v1/assets/jobs/{job.id}/cancel",
             "external_asset_id": job.external_asset_id,
             "job_type": job.job_type,
             "status": job.status,
             "progress": job.progress,
+            "stage": job.stage,
+            "stage_message": job.stage_message,
+            "timing": await queue_timing(job, db),
             "source_filename": job.source_filename,
             "input_sha256": job.input_sha256,
             "options": job.options,
@@ -234,6 +378,128 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if job is None or job.client_id != principal.id:
             raise HTTPException(404, detail={"code": "ASSET_JOB_NOT_FOUND"})
         return job
+
+    async def persist_upload(
+        upload: UploadFile,
+        destination: Path,
+        *,
+        bytes_already_received: int = 0,
+    ) -> tuple[str, int]:
+        """Stream one upload to disk and return its immutable digest and size."""
+        digest = hashlib.sha256()
+        size = 0
+        with destination.open("xb") as handle:
+            while chunk := await upload.read(1024 * 1024):
+                size += len(chunk)
+                if bytes_already_received + size > cfg.asset_max_upload_bytes:
+                    raise HTTPException(413, detail={"code": "ASSET_TOO_LARGE"})
+                digest.update(chunk)
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if size == 0:
+            raise HTTPException(422, detail={"code": "ASSET_EMPTY"})
+        return digest.hexdigest(), size
+
+    async def create_uploaded_job(
+        *,
+        request: Request,
+        principal: Principal,
+        db: AsyncSession,
+        upload: UploadFile,
+        filename: str,
+        external_asset_id: str,
+        options: dict[str, Any],
+        job_type: str,
+        idempotency_key: str,
+        request_hash_builder: Callable[[str], str],
+    ) -> JSONResponse:
+        staging = cfg.asset_root / f".staging-{uuid.uuid4().hex}"
+        staging.mkdir(parents=True, exist_ok=False)
+        source = staging / filename
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with source.open("xb") as destination:
+                while chunk := await upload.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > cfg.asset_max_upload_bytes:
+                        raise HTTPException(413, detail={"code": "ASSET_TOO_LARGE"})
+                    digest.update(chunk)
+                    destination.write(chunk)
+                destination.flush()
+                os.fsync(destination.fileno())
+            if size == 0:
+                raise HTTPException(422, detail={"code": "ASSET_EMPTY"})
+            input_sha = digest.hexdigest()
+            request_hash = request_hash_builder(input_sha)
+            existing = await db.scalar(
+                select(AssetIdempotencyKey).where(
+                    AssetIdempotencyKey.client_id == principal.id,
+                    AssetIdempotencyKey.key == idempotency_key,
+                    AssetIdempotencyKey.expires_at > datetime.now(UTC),
+                )
+            )
+            if existing is not None:
+                shutil.rmtree(staging)
+                if existing.request_hash != request_hash:
+                    raise HTTPException(409, detail={"code": "IDEMPOTENCY_CONFLICT"})
+                old_job = await db.get(AssetJob, existing.job_id)
+                if old_job is None:
+                    raise HTTPException(500, detail={"code": "ASSET_JOB_NOT_FOUND"})
+                return JSONResponse(await job_payload(old_job, db), 200)
+            duplicate_external = await db.scalar(
+                select(AssetJob).where(
+                    AssetJob.client_id == principal.id,
+                    AssetJob.external_asset_id == external_asset_id,
+                )
+            )
+            if duplicate_external is not None:
+                raise HTTPException(409, detail={"code": "EXTERNAL_ASSET_CONFLICT"})
+            job_id = str(uuid.uuid4())
+            job_root = cfg.asset_root / job_id
+            staging.rename(job_root)
+            job = AssetJob(
+                id=job_id,
+                client_id=principal.id,
+                external_asset_id=external_asset_id,
+                job_type=job_type,
+                status="QUEUED",
+                source_filename=filename,
+                input_path=str(job_root / filename),
+                input_sha256=input_sha,
+                input_size_bytes=size,
+                options=options,
+                request_hash=request_hash,
+                request_id=str(request.state.request_id),
+            )
+            db.add(job)
+            # AssetIdempotencyKey references AssetJob, but the ORM models do not
+            # declare a relationship that SQLAlchemy can use to order these two
+            # inserts.  PostgreSQL therefore needs the parent row flushed before
+            # the idempotency row is staged (SQLite does not expose this ordering
+            # bug while foreign-key enforcement is disabled in tests).
+            await db.flush()
+            await append_asset_event(
+                db, job, details={"event": "asset.queued", "request_id": job.request_id}
+            )
+            db.add(
+                AssetIdempotencyKey(
+                    client_id=principal.id,
+                    key=idempotency_key,
+                    request_hash=request_hash,
+                    job_id=job_id,
+                    expires_at=datetime.now(UTC) + timedelta(days=7),
+                )
+            )
+            await db.commit()
+            return JSONResponse(await job_payload(job, db), 202)
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(409, detail={"code": "ASSET_CONFLICT"}) from exc
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
 
     @app.get("/health/live")
     async def live() -> dict[str, str]:
@@ -260,25 +526,129 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             filename = validate_asset_filename(asset.filename or "")
         except ValueError as exc:
             raise HTTPException(422, detail={"code": "ASSET_INPUT_INVALID", "message": str(exc)}) from exc
-        staging = cfg.asset_root / f".staging-{uuid.uuid4().hex}"
-        staging.mkdir(parents=True, exist_ok=False)
-        source = staging / filename
-        digest = hashlib.sha256()
-        size = 0
+        return await create_uploaded_job(
+            request=request,
+            principal=principal,
+            db=db,
+            upload=asset,
+            filename=filename,
+            external_asset_id=parsed.external_asset_id,
+            options=parsed.options.model_dump(mode="json"),
+            job_type="UV_UNWRAP",
+            idempotency_key=idempotency_key,
+            request_hash_builder=lambda input_sha: asset_request_hash(parsed, input_sha),
+        )
+
+    @app.post("/api/v1/assets/retopology/audit")
+    async def create_retopology_audit_job(
+        request: Request,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+        project: Annotated[UploadFile, File()],
+        metadata: Annotated[str, Form()],
+        idempotency_key: Annotated[
+            str, Header(alias="Idempotency-Key", min_length=1, max_length=128)
+        ],
+    ) -> JSONResponse:
         try:
-            with source.open("xb") as destination:
-                while chunk := await asset.read(1024 * 1024):
-                    size += len(chunk)
-                    if size > cfg.asset_max_upload_bytes:
-                        raise HTTPException(413, detail={"code": "ASSET_TOO_LARGE"})
-                    digest.update(chunk)
-                    destination.write(chunk)
-                destination.flush()
-                os.fsync(destination.fileno())
-            if size == 0:
-                raise HTTPException(422, detail={"code": "ASSET_EMPTY"})
-            input_sha = digest.hexdigest()
-            request_hash = asset_request_hash(parsed, input_sha)
+            parsed = RetopologyAuditMetadata.model_validate_json(metadata)
+            filename = validate_asset_filename(project.filename or "")
+            if not filename.lower().endswith(".blend"):
+                raise ValueError("retopology audit requires one BLEND project")
+        except ValueError as exc:
+            raise HTTPException(
+                422, detail={"code": "ASSET_INPUT_INVALID", "message": str(exc)}
+            ) from exc
+        return await create_uploaded_job(
+            request=request,
+            principal=principal,
+            db=db,
+            upload=project,
+            filename=filename,
+            external_asset_id=parsed.external_asset_id,
+            options=parsed.options.model_dump(mode="json"),
+            job_type="RETOPOLOGY_AUDIT",
+            idempotency_key=idempotency_key,
+            request_hash_builder=lambda input_sha: retopology_audit_request_hash(
+                parsed, input_sha
+            ),
+        )
+
+    @app.post("/api/v1/assets/retopology/process")
+    async def create_retopology_process_job(
+        request: Request,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+        project: Annotated[UploadFile, File()],
+        metadata: Annotated[str, Form()],
+        idempotency_key: Annotated[
+            str, Header(alias="Idempotency-Key", min_length=1, max_length=128)
+        ],
+        reference_images: Annotated[list[UploadFile] | None, File()] = None,
+    ) -> JSONResponse:
+        """Create a source-preserving retopology candidate and four-view review job."""
+        try:
+            parsed = RetopologyProcessMetadata.model_validate_json(metadata)
+            project_filename = validate_asset_filename(project.filename or "")
+            if not project_filename.lower().endswith(".blend"):
+                raise ValueError("retopology process requires one BLEND project")
+            uploads = reference_images or []
+            upload_names = [
+                validate_reference_image_filename(item.filename or "") for item in uploads
+            ]
+            declared_names = [item.filename for item in parsed.reference_views]
+            if len(upload_names) != len(set(upload_names)):
+                raise ValueError("reference image upload filenames must be unique")
+            if sorted(upload_names) != sorted(declared_names):
+                raise ValueError(
+                    "reference_images uploads must exactly match metadata.reference_views"
+                )
+        except ValueError as exc:
+            raise HTTPException(
+                422, detail={"code": "ASSET_INPUT_INVALID", "message": str(exc)}
+            ) from exc
+
+        staging = cfg.asset_root / f".staging-{uuid.uuid4().hex}"
+        bundle_root = staging / "bundle"
+        references_root = bundle_root / "references"
+        references_root.mkdir(parents=True, exist_ok=False)
+        try:
+            project_path = bundle_root / project_filename
+            project_sha, project_size = await persist_upload(project, project_path)
+            received = project_size
+            reference_sha: dict[str, str] = {}
+            reference_sizes: dict[str, int] = {}
+            for upload, filename in zip(uploads, upload_names, strict=True):
+                destination = references_root / filename
+                digest, size = await persist_upload(
+                    upload, destination, bytes_already_received=received
+                )
+                received += size
+                try:
+                    with Image.open(destination) as image:
+                        if image.width * image.height > cfg.max_image_pixels:
+                            raise HTTPException(
+                                413,
+                                detail={
+                                    "code": "REFERENCE_IMAGE_TOO_LARGE",
+                                    "filename": filename,
+                                },
+                            )
+                        image.verify()
+                except (OSError, UnidentifiedImageError) as exc:
+                    raise HTTPException(
+                        422,
+                        detail={
+                            "code": "REFERENCE_IMAGE_INVALID",
+                            "filename": filename,
+                        },
+                    ) from exc
+                reference_sha[filename] = digest
+                reference_sizes[filename] = size
+
+            request_hash = retopology_process_request_hash(
+                parsed, project_sha, reference_sha
+            )
             existing = await db.scalar(
                 select(AssetIdempotencyKey).where(
                     AssetIdempotencyKey.client_id == principal.id,
@@ -287,7 +657,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             )
             if existing is not None:
-                shutil.rmtree(staging)
                 if existing.request_hash != request_hash:
                     raise HTTPException(409, detail={"code": "IDEMPOTENCY_CONFLICT"})
                 old_job = await db.get(AssetJob, existing.job_id)
@@ -302,23 +671,73 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             if duplicate_external is not None:
                 raise HTTPException(409, detail={"code": "EXTERNAL_ASSET_CONFLICT"})
+
+            reference_by_name = {
+                item.filename: item.model_dump(mode="json")
+                for item in parsed.reference_views
+            }
+            input_manifest = {
+                "schema_version": "retopology_input.v1",
+                "project": {
+                    "filename": project_filename,
+                    "sha256": project_sha,
+                    "size_bytes": project_size,
+                },
+                "reference_views": [
+                    {
+                        **reference_by_name[filename],
+                        "sha256": reference_sha[filename],
+                        "size_bytes": reference_sizes[filename],
+                    }
+                    for filename in sorted(reference_sha)
+                ],
+                "user_request": parsed.user_request,
+            }
+            manifest_path = bundle_root / "input_manifest.json"
+            manifest_path.write_text(
+                json.dumps(input_manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            bundle_path = staging / "retopology_input.zip"
+            with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_STORED) as archive:
+                archive.write(project_path, project_filename)
+                archive.write(manifest_path, "input_manifest.json")
+                for filename in sorted(reference_sha):
+                    archive.write(references_root / filename, f"references/{filename}")
+            bundle_sha = sha256_path(bundle_path)
+            bundle_size = bundle_path.stat().st_size
+            shutil.rmtree(bundle_root)
+
             job_id = str(uuid.uuid4())
             job_root = cfg.asset_root / job_id
             staging.rename(job_root)
+            options = parsed.options.model_dump(mode="json")
+            options.update(
+                {
+                    "project_filename": project_filename,
+                    "project_sha256": project_sha,
+                    "reference_views": input_manifest["reference_views"],
+                    "user_request": parsed.user_request,
+                }
+            )
             job = AssetJob(
                 id=job_id,
                 client_id=principal.id,
                 external_asset_id=parsed.external_asset_id,
+                job_type="RETOPOLOGY_PROCESS_V1",
                 status="QUEUED",
-                source_filename=filename,
-                input_path=str(job_root / filename),
-                input_sha256=input_sha,
-                input_size_bytes=size,
-                options=parsed.options.model_dump(mode="json"),
+                source_filename="retopology_input.zip",
+                input_path=str(job_root / "retopology_input.zip"),
+                input_sha256=bundle_sha,
+                input_size_bytes=bundle_size,
+                options=options,
                 request_hash=request_hash,
                 request_id=str(request.state.request_id),
             )
             db.add(job)
+            await db.flush()
+            await append_asset_event(
+                db, job, details={"event": "asset.queued", "request_id": job.request_id}
+            )
             db.add(
                 AssetIdempotencyKey(
                     client_id=principal.id,
@@ -329,15 +748,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             )
             await db.commit()
-            payload = await job_payload(job, db)
-            payload["status_url"] = f"/api/v1/assets/jobs/{job.id}"
-            return JSONResponse(payload, 202)
+            return JSONResponse(await job_payload(job, db), 202)
         except IntegrityError as exc:
             await db.rollback()
             raise HTTPException(409, detail={"code": "ASSET_CONFLICT"}) from exc
         finally:
             if staging.exists():
                 shutil.rmtree(staging)
+
+    @app.post("/api/v1/assets/uv/process")
+    async def create_uv_process_job(
+        request: Request,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+        asset: Annotated[UploadFile, File()],
+        metadata: Annotated[str, Form()],
+        idempotency_key: Annotated[
+            str, Header(alias="Idempotency-Key", min_length=1, max_length=128)
+        ],
+    ) -> JSONResponse:
+        try:
+            parsed = AssetCreateMetadata.model_validate_json(metadata)
+            filename = validate_asset_filename(asset.filename or "")
+        except ValueError as exc:
+            raise HTTPException(
+                422, detail={"code": "ASSET_INPUT_INVALID", "message": str(exc)}
+            ) from exc
+        return await create_uploaded_job(
+            request=request,
+            principal=principal,
+            db=db,
+            upload=asset,
+            filename=filename,
+            external_asset_id=parsed.external_asset_id,
+            options=parsed.options.model_dump(mode="json"),
+            job_type="UV_PROCESS_V2",
+            idempotency_key=idempotency_key,
+            request_hash_builder=lambda input_sha: uv_process_request_hash(
+                parsed, input_sha
+            ),
+        )
 
     @app.get("/api/v1/assets/jobs/{job_id}")
     async def get_job(
@@ -346,6 +796,64 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Annotated[AsyncSession, Depends(session)],
     ) -> dict[str, Any]:
         return await job_payload(await owned_job(job_id, principal, db), db)
+
+    @app.get("/api/v1/assets/jobs/{job_id}/events")
+    async def asset_job_events(
+        job_id: str,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+        last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+    ) -> StreamingResponse:
+        await owned_job(job_id, principal, db)
+        try:
+            initial_sequence = max(0, int(last_event_id or "0"))
+        except ValueError as exc:
+            raise HTTPException(400, detail={"code": "LAST_EVENT_ID_INVALID"}) from exc
+
+        async def stream() -> AsyncIterator[str]:
+            sequence = initial_sequence
+            while True:
+                async with app.state.db.session() as event_db:
+                    rows = list(
+                        (
+                            await event_db.scalars(
+                                select(AssetJobEvent)
+                                .where(
+                                    AssetJobEvent.job_id == job_id,
+                                    AssetJobEvent.sequence > sequence,
+                                )
+                                .order_by(AssetJobEvent.sequence)
+                            )
+                        ).all()
+                    )
+                    terminal = False
+                    for item in rows:
+                        sequence = item.sequence
+                        data = json.dumps(
+                            {
+                                "job_id": job_id,
+                                "status": item.status,
+                                "stage": item.stage,
+                                "progress": item.progress,
+                                "message": item.message,
+                                "estimated_remaining_seconds": item.estimated_remaining_seconds,
+                                "details": item.details,
+                                "created_at": item.created_at.isoformat(),
+                            },
+                            ensure_ascii=False,
+                        )
+                        yield f"id: {sequence}\nevent: asset-progress\ndata: {data}\n\n"
+                        terminal = item.status in TERMINAL_ASSET_STATUSES
+                    if terminal:
+                        return
+                yield ": keepalive\n\n"
+                await asyncio.sleep(1)
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.post("/api/v1/assets/jobs/{job_id}/cancel")
     async def cancel_job(
@@ -359,9 +867,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job.cancel_requested = True
         if job.status == "QUEUED":
             job.status = "CANCELLED"
+            job.stage = "CANCELLED"
+            job.stage_message = "任务已在执行前取消"
+            job.estimated_remaining_seconds = 0
             job.finished_at = datetime.now(UTC)
         else:
             job.status = "CANCELLING"
+            job.stage = "CANCELLING"
+            job.stage_message = "取消请求已送达，等待当前安全点停止"
+        job.last_progress_at = datetime.now(UTC)
+        await append_asset_event(db, job, details={"event": "asset.cancel_requested"})
         await db.commit()
         return await job_payload(job, db)
 
@@ -373,7 +888,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Annotated[AsyncSession, Depends(session)],
     ) -> FileResponse:
         job = await owned_job(job_id, principal, db)
-        if job.status != "SUCCEEDED":
+        if job.status not in DOWNLOADABLE_ASSET_STATUSES:
             raise HTTPException(409, detail={"code": "ASSET_NOT_COMPLETE"})
         artifact = await db.get(AssetArtifact, artifact_id)
         if artifact is None or artifact.job_id != job.id:
@@ -474,19 +989,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 previous_worker.current_jobs = max(0, previous_worker.current_jobs - 1)
             if stale.cancel_requested:
                 stale.status = "CANCELLED"
+                stale.stage = "CANCELLED"
+                stale.stage_message = "Worker 租约失效后确认取消"
+                stale.estimated_remaining_seconds = 0
                 stale.finished_at = datetime.now(UTC)
             elif stale.attempt_count < cfg.asset_job_max_attempts:
                 stale.status = "QUEUED"
+                stale.stage = "RETRY_QUEUED"
+                stale.stage_message = "Worker 租约失效，任务已安全返回队列"
+                stale.estimated_remaining_seconds = None
                 stale.worker_id = None
                 stale.error_code = "ASSET_LEASE_EXPIRED"
                 stale.error_message = "worker lease expired; job returned to the asset queue"
             else:
                 stale.status = "FAILED"
+                stale.stage = "FAILED"
+                stale.stage_message = "Worker 多次失联，任务已终止"
+                stale.estimated_remaining_seconds = 0
                 stale.error_code = "ASSET_LEASE_EXPIRED"
                 stale.error_message = "worker lease expired after maximum attempts"
                 stale.finished_at = datetime.now(UTC)
             stale.lease_token_hash = None
             stale.lease_expires_at = None
+            stale.last_progress_at = datetime.now(UTC)
+            await append_asset_event(
+                db, stale, details={"event": "asset.lease_expired"}
+            )
         worker = await db.get(AssetWorker, body.worker_id, with_for_update=True)
         cutoff = datetime.now(UTC) - timedelta(seconds=cfg.asset_worker_heartbeat_timeout_seconds)
         if (
@@ -516,7 +1044,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job.attempt_count += 1
         job.started_at = job.started_at or now
         job.progress = max(job.progress, 1)
+        job.stage = "CLAIMED"
+        job.stage_message = f"任务已分配给 {worker.display_name}"
+        job.estimated_remaining_seconds = {
+            "UV_UNWRAP": 180,
+            "UV_PROCESS_V2": 240,
+            "RETOPOLOGY_AUDIT": 120,
+            "RETOPOLOGY_PROCESS_V1": 900,
+        }.get(job.job_type, 300)
+        job.last_progress_at = now
         worker.current_jobs += 1
+        await append_asset_event(
+            db,
+            job,
+            details={"event": "asset.claimed", "worker_id": worker.id},
+        )
         await db.commit()
         return JSONResponse(
             {
@@ -566,7 +1108,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"cancel_requested": True}
         job.status = "RUNNING"
         job.progress = max(job.progress, body.progress)
+        job.stage = body.stage
+        job.stage_message = body.message
+        job.estimated_remaining_seconds = body.estimated_remaining_seconds
+        job.last_progress_at = datetime.now(UTC)
         job.lease_expires_at = datetime.now(UTC) + timedelta(seconds=cfg.asset_worker_lease_seconds)
+        await append_asset_event(
+            db,
+            job,
+            details={"event": "asset.progress", "worker_id": job.worker_id},
+        )
         await db.commit()
         return {"cancel_requested": False}
 
@@ -588,7 +1139,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         created: list[AssetArtifact] = []
         try:
             for kind, upload in uploads.items():
-                filename, content_type = REQUIRED_ARTIFACTS[kind]
+                filename, content_type = UV_REQUIRED_ARTIFACTS[kind]
                 path = staging / filename
                 digest = hashlib.sha256()
                 size = 0
@@ -624,14 +1175,481 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.add_all(created)
             job.status = "SUCCEEDED"
             job.progress = 100
+            job.stage = "SUCCEEDED"
+            job.stage_message = "UV 结果与 QA 制品已校验并发布"
+            job.estimated_remaining_seconds = 0
+            job.last_progress_at = datetime.now(UTC)
             job.finished_at = datetime.now(UTC)
             job.lease_expires_at = None
             job.lease_token_hash = None
             worker = await db.get(AssetWorker, job.worker_id) if job.worker_id else None
             if worker is not None:
                 worker.current_jobs = max(0, worker.current_jobs - 1)
+            await append_asset_event(db, job, details={"event": "asset.succeeded"})
             await db.commit()
             return {"accepted": True}
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+
+    @app.post("/internal/v1/assets/jobs/{job_id}/retopology-complete")
+    async def worker_complete_retopology_audit(
+        job_id: str,
+        db: Annotated[AsyncSession, Depends(session)],
+        lease: Annotated[str, Header(alias="X-Asset-Lease")],
+        audit: Annotated[UploadFile, File()],
+        manifest: Annotated[UploadFile, File()],
+    ) -> dict[str, Any]:
+        job = await leased_job(job_id, lease, db)
+        if job.job_type != "RETOPOLOGY_AUDIT":
+            raise HTTPException(409, detail={"code": "ASSET_JOB_TYPE_MISMATCH"})
+        uploads = {"audit": audit, "manifest": manifest}
+        staging = cfg.asset_root / job.id / f".outputs-{uuid.uuid4().hex}"
+        final = cfg.asset_root / job.id / "output"
+        staging.mkdir(parents=True, exist_ok=False)
+        created: list[AssetArtifact] = []
+        try:
+            for kind, upload in uploads.items():
+                filename, content_type = RETOPOLOGY_AUDIT_ARTIFACTS[kind]
+                path = staging / filename
+                digest = hashlib.sha256()
+                size = 0
+                with path.open("xb") as destination:
+                    while chunk := await upload.read(1024 * 1024):
+                        size += len(chunk)
+                        digest.update(chunk)
+                        destination.write(chunk)
+                if size == 0:
+                    raise HTTPException(
+                        422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind}
+                    )
+                created.append(
+                    AssetArtifact(
+                        id=str(uuid.uuid4()),
+                        job_id=job.id,
+                        kind=kind,
+                        filename=filename,
+                        path=str(final / filename),
+                        content_type=content_type,
+                        size_bytes=size,
+                        sha256=digest.hexdigest(),
+                    )
+                )
+            try:
+                audit_payload = json.loads(
+                    (staging / "retopology_audit.json").read_text("utf-8")
+                )
+                manifest_payload = json.loads(
+                    (staging / "retopology_manifest.json").read_text("utf-8")
+                )
+            except (OSError, ValueError) as exc:
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_AUDIT_INVALID"}
+                ) from exc
+            if audit_payload.get("schema_version") != 2:
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_AUDIT_SCHEMA_INVALID"}
+                )
+            objects = audit_payload.get("objects")
+            if not isinstance(objects, dict) or not {"high", "reference", "low"}.issubset(
+                objects
+            ):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_AUDIT_OBJECTS_MISSING"}
+                )
+            visual_review = audit_payload.get("visual_review_required")
+            if not isinstance(visual_review, list) or not {
+                "front",
+                "side",
+                "top",
+                "perspective",
+            }.issubset(set(visual_review)):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_VISUAL_REVIEW_MISSING"}
+                )
+            if (
+                manifest_payload.get("job_id") != job.id
+                or manifest_payload.get("input_sha256") != job.input_sha256
+                or manifest_payload.get("job_type") != job.job_type
+            ):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_MANIFEST_MISMATCH"}
+                )
+            if final.exists():
+                raise HTTPException(409, detail={"code": "ASSET_OUTPUT_ALREADY_EXISTS"})
+            staging.rename(final)
+            db.add_all(created)
+            # The bundled Skill explicitly requires matched four-view visual review.
+            # A numeric audit alone is never promoted to a final retopology result.
+            job.status = "WAITING_REVIEW"
+            job.progress = 95
+            job.stage = "WAITING_REVIEW"
+            job.stage_message = "拓扑审计完成，等待人工四视图复核"
+            job.estimated_remaining_seconds = None
+            job.last_progress_at = datetime.now(UTC)
+            job.error_code = (
+                None if bool(audit_payload.get("audit_passed")) else "RETOPOLOGY_AUDIT_FAILED"
+            )
+            failures = audit_payload.get("failures")
+            job.error_message = (
+                None
+                if job.error_code is None
+                else json.dumps(failures if isinstance(failures, list) else [], ensure_ascii=False)
+            )
+            job.lease_expires_at = None
+            job.lease_token_hash = None
+            worker = await db.get(AssetWorker, job.worker_id) if job.worker_id else None
+            if worker is not None:
+                worker.current_jobs = max(0, worker.current_jobs - 1)
+            await append_asset_event(
+                db, job, details={"event": "asset.waiting_review"}
+            )
+            await db.commit()
+            return {"accepted": True, "status": job.status, "review_required": True}
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+
+    @app.post("/internal/v1/assets/jobs/{job_id}/retopology-process-complete")
+    async def worker_complete_retopology_process(
+        job_id: str,
+        request: Request,
+        db: Annotated[AsyncSession, Depends(session)],
+        lease: Annotated[str, Header(alias="X-Asset-Lease")],
+    ) -> dict[str, Any]:
+        job = await leased_job(job_id, lease, db)
+        if job.job_type != "RETOPOLOGY_PROCESS_V1":
+            raise HTTPException(409, detail={"code": "ASSET_JOB_TYPE_MISMATCH"})
+        form = await request.form()
+        expected = dict(RETOPOLOGY_PROCESS_REQUIRED_ARTIFACTS)
+        if job.options.get("reference_views"):
+            expected.update(RETOPOLOGY_PROCESS_OPTIONAL_ARTIFACTS)
+        uploads: dict[str, StarletteUploadFile] = {}
+        for kind in expected:
+            upload = form.get(kind)
+            if not isinstance(upload, StarletteUploadFile):
+                raise HTTPException(
+                    422,
+                    detail={"code": "ASSET_ARTIFACT_MISSING", "kind": kind},
+                )
+            uploads[kind] = upload
+        unknown = set(form.keys()) - set(expected)
+        if unknown:
+            raise HTTPException(
+                422,
+                detail={"code": "ASSET_ARTIFACT_UNEXPECTED", "kinds": sorted(unknown)},
+            )
+
+        staging = cfg.asset_root / job.id / f".outputs-{uuid.uuid4().hex}"
+        final = cfg.asset_root / job.id / "output"
+        staging.mkdir(parents=True, exist_ok=False)
+        created: list[AssetArtifact] = []
+        try:
+            for kind, upload in uploads.items():
+                filename, content_type = expected[kind]
+                if upload.filename != filename:
+                    raise HTTPException(
+                        422,
+                        detail={
+                            "code": "ASSET_ARTIFACT_FILENAME_MISMATCH",
+                            "kind": kind,
+                        },
+                    )
+                path = staging / filename
+                digest = hashlib.sha256()
+                size = 0
+                with path.open("xb") as destination:
+                    while chunk := await upload.read(1024 * 1024):
+                        size += len(chunk)
+                        digest.update(chunk)
+                        destination.write(chunk)
+                if size == 0:
+                    raise HTTPException(
+                        422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind}
+                    )
+                created.append(
+                    AssetArtifact(
+                        id=str(uuid.uuid4()),
+                        job_id=job.id,
+                        kind=kind,
+                        filename=filename,
+                        path=str(final / filename),
+                        content_type=content_type,
+                        size_bytes=size,
+                        sha256=digest.hexdigest(),
+                    )
+                )
+            try:
+                report_payload = json.loads(
+                    (staging / "retopology_process_report.json").read_text("utf-8")
+                )
+                baseline_payload = json.loads(
+                    (staging / "retopology_baseline_audit.json").read_text("utf-8")
+                )
+                audit_payload = json.loads(
+                    (staging / "retopology_final_audit.json").read_text("utf-8")
+                )
+                manifest_payload = json.loads(
+                    (staging / "retopology_manifest.json").read_text("utf-8")
+                )
+                agent_plan_payload = json.loads(
+                    (staging / "retopology_agent_plan.json").read_text("utf-8")
+                )
+            except (OSError, ValueError) as exc:
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_PROCESS_JSON_INVALID"}
+                ) from exc
+            if baseline_payload.get("schema_version") != 2 or audit_payload.get(
+                "schema_version"
+            ) != 2:
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_AUDIT_SCHEMA_INVALID"}
+                )
+            if report_payload.get("schema_version") != "retopology_process_report.v1":
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_PROCESS_REPORT_INVALID"}
+                )
+            if (
+                agent_plan_payload.get("recommended_algorithm")
+                not in {"quadriflow", "cleanup_existing"}
+                or not isinstance(agent_plan_payload.get("target_faces"), int)
+            ):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_AGENT_PLAN_INVALID"}
+                )
+            if (
+                manifest_payload.get("schema_version")
+                != "retopology_process_manifest.v1"
+                or manifest_payload.get("job_id") != job.id
+                or manifest_payload.get("job_type") != job.job_type
+                or manifest_payload.get("input_sha256") != job.input_sha256
+            ):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_MANIFEST_MISMATCH"}
+                )
+            expected_objects = {
+                "high": job.options["high_object"],
+                "reference": job.options["reference_object"],
+                "current": job.options["low_object"],
+                "generated": job.options["generated_low_object"],
+            }
+            if manifest_payload.get("objects") != expected_objects:
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_MANIFEST_OBJECTS_MISMATCH"}
+                )
+            visual_review = manifest_payload.get("visual_review")
+            if (
+                not isinstance(visual_review, dict)
+                or visual_review.get("required") is not True
+                or set(visual_review.get("views", []))
+                != {"front", "side", "top", "perspective"}
+                or set(visual_review.get("roles", []))
+                != {"high", "reference", "generated"}
+            ):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_VISUAL_REVIEW_MISSING"}
+                )
+            agent_plan = manifest_payload.get("agent_plan")
+            if (
+                not isinstance(agent_plan, dict)
+                or agent_plan.get("required") is not True
+                or agent_plan.get("recommended_algorithm")
+                != agent_plan_payload.get("recommended_algorithm")
+                or agent_plan.get("recommended_target_faces")
+                != agent_plan_payload.get("target_faces")
+            ):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_AGENT_MANIFEST_MISMATCH"}
+                )
+            if (
+                manifest_payload.get("source_preserved") is not True
+                or report_payload.get("source_preserved") is not True
+                or manifest_payload.get("automatic_final_promotion_allowed") is not False
+            ):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_SOURCE_PROTECTION_FAILED"}
+                )
+            for filename, (_, content_type) in {
+                **RETOPOLOGY_PROCESS_REQUIRED_FILENAMES,
+                **(
+                    RETOPOLOGY_PROCESS_OPTIONAL_FILENAMES
+                    if job.options.get("reference_views")
+                    else {}
+                ),
+            }.items():
+                if content_type != "image/png":
+                    continue
+                try:
+                    with Image.open(staging / filename) as image:
+                        if image.width * image.height > cfg.max_image_pixels:
+                            raise HTTPException(
+                                413,
+                                detail={
+                                    "code": "RETOPOLOGY_REVIEW_IMAGE_TOO_LARGE",
+                                    "filename": filename,
+                                },
+                            )
+                        image.verify()
+                except (OSError, UnidentifiedImageError) as exc:
+                    raise HTTPException(
+                        422,
+                        detail={"code": "RETOPOLOGY_REVIEW_IMAGE_INVALID", "filename": filename},
+                    ) from exc
+            if final.exists():
+                raise HTTPException(409, detail={"code": "ASSET_OUTPUT_ALREADY_EXISTS"})
+            staging.rename(final)
+            db.add_all(created)
+            job.status = "WAITING_REVIEW"
+            job.progress = 95
+            job.stage = "WAITING_REVIEW"
+            job.stage_message = "候选、严格审计和三组四视图已就绪，等待人工复核"
+            job.estimated_remaining_seconds = None
+            job.last_progress_at = datetime.now(UTC)
+            job.error_code = (
+                None
+                if bool(audit_payload.get("audit_passed"))
+                else "RETOPOLOGY_AUDIT_FAILED"
+            )
+            failures = audit_payload.get("failures")
+            job.error_message = (
+                None
+                if job.error_code is None
+                else json.dumps(
+                    failures if isinstance(failures, list) else [], ensure_ascii=False
+                )
+            )
+            job.lease_expires_at = None
+            job.lease_token_hash = None
+            worker = await db.get(AssetWorker, job.worker_id) if job.worker_id else None
+            if worker is not None:
+                worker.current_jobs = max(0, worker.current_jobs - 1)
+            await append_asset_event(
+                db,
+                job,
+                details={
+                    "event": "asset.waiting_review",
+                    "audit_passed": bool(audit_payload.get("audit_passed")),
+                },
+            )
+            await db.commit()
+            return {
+                "accepted": True,
+                "status": job.status,
+                "review_required": True,
+                "audit_passed": bool(audit_payload.get("audit_passed")),
+            }
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+
+    @app.post("/internal/v1/assets/jobs/{job_id}/uv-v2-complete")
+    async def worker_complete_uv_v2(
+        job_id: str,
+        db: Annotated[AsyncSession, Depends(session)],
+        lease: Annotated[str, Header(alias="X-Asset-Lease")],
+        blend: Annotated[UploadFile, File()],
+        fbx: Annotated[UploadFile, File()],
+        report: Annotated[UploadFile, File()],
+        qa: Annotated[UploadFile, File()],
+        fbx_qa: Annotated[UploadFile, File()],
+    ) -> dict[str, Any]:
+        job = await leased_job(job_id, lease, db)
+        if job.job_type != "UV_PROCESS_V2":
+            raise HTTPException(409, detail={"code": "ASSET_JOB_TYPE_MISMATCH"})
+        stem = Path(job.source_filename).stem
+        contract = {
+            "blend": (f"{stem}_PBR_UV.blend", "application/octet-stream"),
+            "fbx": (f"{stem}_PBR_UV.fbx", "application/octet-stream"),
+            "report": (f"{stem}_PBR_UV_report.json", "application/json"),
+            "qa": (f"{stem}_PBR_UV_QA.json", "application/json"),
+            "fbx_qa": (f"{stem}_PBR_UV_FBX_QA.json", "application/json"),
+        }
+        uploads = {
+            "blend": blend,
+            "fbx": fbx,
+            "report": report,
+            "qa": qa,
+            "fbx_qa": fbx_qa,
+        }
+        staging = cfg.asset_root / job.id / f".outputs-{uuid.uuid4().hex}"
+        final = cfg.asset_root / job.id / "output"
+        staging.mkdir(parents=True, exist_ok=False)
+        created: list[AssetArtifact] = []
+        try:
+            for kind, upload in uploads.items():
+                filename, content_type = contract[kind]
+                path = staging / filename
+                digest = hashlib.sha256()
+                size = 0
+                with path.open("xb") as destination:
+                    while chunk := await upload.read(1024 * 1024):
+                        size += len(chunk)
+                        digest.update(chunk)
+                        destination.write(chunk)
+                if size == 0:
+                    raise HTTPException(
+                        422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind}
+                    )
+                created.append(
+                    AssetArtifact(
+                        id=str(uuid.uuid4()),
+                        job_id=job.id,
+                        kind=kind,
+                        filename=filename,
+                        path=str(final / filename),
+                        content_type=content_type,
+                        size_bytes=size,
+                        sha256=digest.hexdigest(),
+                    )
+                )
+            try:
+                report_payload = json.loads(
+                    (staging / contract["report"][0]).read_text("utf-8")
+                )
+                blend_qa_payload = json.loads(
+                    (staging / contract["qa"][0]).read_text("utf-8")
+                )
+                fbx_qa_payload = json.loads(
+                    (staging / contract["fbx_qa"][0]).read_text("utf-8")
+                )
+            except (OSError, ValueError) as exc:
+                raise HTTPException(422, detail={"code": "ASSET_QA_INVALID"}) from exc
+            if report_payload.get("input") not in {None, job.source_filename} and Path(
+                str(report_payload.get("input"))
+            ).name != job.source_filename:
+                raise HTTPException(422, detail={"code": "ASSET_REPORT_INPUT_MISMATCH"})
+            for label, payload in (
+                ("blend", blend_qa_payload),
+                ("fbx_readback", fbx_qa_payload),
+            ):
+                hard_failures = payload.get("hard_failures")
+                if not isinstance(hard_failures, list):
+                    raise HTTPException(
+                        422, detail={"code": "ASSET_QA_INVALID", "qa": label}
+                    )
+                if hard_failures or payload.get("passed") is not True:
+                    raise HTTPException(
+                        422, detail={"code": "ASSET_QA_FAILED", "qa": label}
+                    )
+            if final.exists():
+                raise HTTPException(409, detail={"code": "ASSET_OUTPUT_ALREADY_EXISTS"})
+            staging.rename(final)
+            db.add_all(created)
+            job.status = "SUCCEEDED"
+            job.progress = 100
+            job.stage = "SUCCEEDED"
+            job.stage_message = "PBR UV、FBX 回读与双重 QA 已通过并发布"
+            job.estimated_remaining_seconds = 0
+            job.last_progress_at = datetime.now(UTC)
+            job.finished_at = datetime.now(UTC)
+            job.lease_expires_at = None
+            job.lease_token_hash = None
+            worker = await db.get(AssetWorker, job.worker_id) if job.worker_id else None
+            if worker is not None:
+                worker.current_jobs = max(0, worker.current_jobs - 1)
+            await append_asset_event(db, job, details={"event": "asset.succeeded"})
+            await db.commit()
+            return {"accepted": True, "status": job.status}
         finally:
             if staging.exists():
                 shutil.rmtree(staging)
@@ -649,16 +1667,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             worker.current_jobs = max(0, worker.current_jobs - 1)
         if job.cancel_requested:
             job.status = "CANCELLED"
+            job.stage = "CANCELLED"
+            job.stage_message = "任务已在 Worker 安全点取消"
+            job.estimated_remaining_seconds = 0
         elif body.retryable and job.attempt_count < cfg.asset_job_max_attempts:
             job.status = "QUEUED"
+            job.stage = "RETRY_QUEUED"
+            job.stage_message = "执行失败，任务已按策略返回队列重试"
+            job.estimated_remaining_seconds = None
             job.worker_id = None
         else:
             job.status = "FAILED"
+            job.stage = "FAILED"
+            job.stage_message = "任务执行失败且不会再次自动重试"
+            job.estimated_remaining_seconds = 0
             job.finished_at = datetime.now(UTC)
         job.error_code = body.code
         job.error_message = body.message
         job.lease_token_hash = None
         job.lease_expires_at = None
+        job.last_progress_at = datetime.now(UTC)
+        await append_asset_event(
+            db,
+            job,
+            details={
+                "event": "asset.failed" if job.status == "FAILED" else "asset.retry_queued",
+                "error_code": body.code,
+                "retryable": body.retryable,
+            },
+        )
         await db.commit()
         return {"accepted": True, "status": job.status}
 
