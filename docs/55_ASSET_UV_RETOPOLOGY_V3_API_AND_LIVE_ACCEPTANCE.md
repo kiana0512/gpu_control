@@ -374,11 +374,11 @@ ImageClip/ModelViewCreator 工作流未修改。
   `5db6aaa3528c642aa94c26109cc5b91eb0f4ad19dad3622a188ebcb7be54b057`；
 - `gpu-control-api:1.5.0`：`sha256:0e8cad452ebae3313a7c2f344d2b96541ff2709898b8e8018842d88c27f87ccd`；
 - `gpu-control-scheduler:1.5.0`：`sha256:49acd3433943ccbc691f81c88e36dd591f2c26d4bd26cd062155012477734dac`；
-- `gpu-control-web:1.5.0`：`sha256:7d5bdc034f951787efc34930805b1c7da11ddd3fda01c5b8080779d1a1f9d2b5`；
+- `gpu-control-web:1.5.0`：`sha256:71e2daf214a9ca679f149350f2530289b43b0c2156c3475fd5244277c075b2de`；
 - `unified-scheduler-asset-api:1.5.0`：`sha256:f0b447ab699e499bf8d31acafc817d666ea64426f7d224f3a6f06955dba03184`；
 - `li3d/blender-worker:1.1.0`：`sha256:c43941fb6dd4bbb68eec89eacd92c42e73d86677daa505d9980e7e4a1c0065a6`；
 - 离线归档：`/srv/gpu-control/images/unified-scheduler-1.5.0-images.tar.gz`，SHA-256
-  `74db3316f27e5bcff94a827ae6f3c5cc2488a745f2ae05ab61c6691690c69ce7`；
+  `598f25a0a9100b9ebd1e87d084eb3be31e2168ac1b624768260619abc3fbfac8`；
 - 4090 Worker：ONLINE，2 槽；3090-A Worker：ONLINE，3 槽；均为 0 个在途资产任务；
 - 生产 API、Asset API、Scheduler、Web、Nginx、PostgreSQL、Redis 均健康；ComfyUI 保持 healthy。
 
