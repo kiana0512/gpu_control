@@ -2,24 +2,29 @@
 set -Eeuo pipefail
 
 usage() {
-  echo "用法: $0 --host HOST [--user USER] [--host-key-alias ALIAS] [--dry-run]"
+  echo "用法: $0 --host HOST [--user USER] [--port PORT] [--known-hosts-file PATH] [--host-key-alias ALIAS] [--dry-run]"
 }
 
 host=""
 user="${USER}"
 dry=()
 ssh_options=()
+port="22"
 while (($#)); do
   case "$1" in
     --host) host="$2"; shift 2 ;;
     --user) user="$2"; shift 2 ;;
-    --host-key-alias) ssh_options=(-o "HostKeyAlias=$2"); shift 2 ;;
+    --port) port="$2"; shift 2 ;;
+    --known-hosts-file) ssh_options+=(-o "UserKnownHostsFile=$2" -o StrictHostKeyChecking=yes); shift 2 ;;
+    --host-key-alias) ssh_options+=(-o "HostKeyAlias=$2"); shift 2 ;;
     --dry-run) dry=(--dry-run); shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
 done
 [[ -n "${host}" ]] || { usage >&2; exit 2; }
+[[ "${port}" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535)) || { usage >&2; exit 2; }
+ssh_options=(-p "${port}" "${ssh_options[@]}")
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 target="${user}@${host}:/opt/gpu-control/"

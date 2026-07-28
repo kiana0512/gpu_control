@@ -511,12 +511,12 @@
   font-size: 12px;
   text-align: center;
 }
-.asset-detail {
-  width: min(620px, 100vw);
+.maintenance-drawer.asset-detail {
+  width: min(760px, 100vw);
 }
 .asset-detail-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 .asset-detail-grid > div {
@@ -534,7 +534,18 @@
 .asset-detail-grid strong {
   overflow-wrap: anywhere;
   color: #edf0f8;
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.asset-detail > header > div {
+  min-width: 0;
+}
+.asset-detail > header h2,
+.asset-detail > header p {
+  overflow-wrap: anywhere;
+}
+.asset-detail .drawer-content {
+  scrollbar-gutter: stable;
 }
 .asset-hash,
 .asset-artifacts code {
@@ -563,39 +574,6 @@
 .asset-artifacts small {
   color: #7f879a;
   font-size: 10px;
-}
-
-.asset-review-images {
-  display: grid;
-  gap: 16px;
-}
-
-.asset-review-images figure {
-  margin: 0;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: #080a12;
-}
-
-.asset-review-images img {
-  display: block;
-  width: 100%;
-  max-height: 620px;
-  object-fit: contain;
-}
-
-.asset-review-images figcaption {
-  padding: 10px 12px;
-  border-top: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.asset-review-actions {
-  display: flex;
-  gap: 12px;
-  margin-top: 14px;
 }
 
 .asset-artifact-download {

@@ -146,31 +146,6 @@ export const api = {
         }),
       },
     ),
-  reviewAssetJob: (
-    id: string,
-    decision: "APPROVE" | "REJECT",
-    comment: string,
-  ) =>
-    request<{
-      job_id: string;
-      status: string;
-      decision: string;
-      reviewed_at: string;
-    }>(`/admin/asset-jobs/${encodeURIComponent(id)}/review`, {
-      method: "POST",
-      body: JSON.stringify({ decision, comment, confirm: true }),
-    }),
-  iterateAssetJob: (id: string, feedback: string) =>
-    request<{
-      job_id: string;
-      parent_job_id: string;
-      external_asset_id: string;
-      status: string;
-      generated_low_object: string;
-    }>(`/admin/asset-jobs/${encodeURIComponent(id)}/iterate`, {
-      method: "POST",
-      body: JSON.stringify({ feedback, confirm: true }),
-    }),
   assetArtifact: (jobId: string, artifactId: string) =>
     download(
       `/admin/asset-jobs/${encodeURIComponent(jobId)}/artifacts/${encodeURIComponent(artifactId)}`,

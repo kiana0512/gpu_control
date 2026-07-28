@@ -1,7 +1,38 @@
 # 实施状态
 
-最后更新：2026-07-24
-版本：1.2.0 三机生产版
+最后更新：2026-07-28
+版本：统一调度中心 1.5.0 + 3090-B Windows/WSL2 GPU 生产验收；V4 批量抠图永久修复候选等待安全滚动发布
+
+## 2026-07-28 3090-B Windows / WSL2 GPU 上线
+
+- `worker-3090-b` 已按物理 MAC `3c:7c:3f:a5:b0:4f`、GPU UUID
+  `GPU-092a5184-5857-d196-5df2-efa9503368aa` 和固定 Windows IP `10.3.34.14` 登记；WSL NAT
+  地址不作为节点身份。
+- 节点当前为 `ONLINE / ACTIVE / PRIMARY`，ComfyUI healthy；Node Agent、SSH、Docker、
+  containerd、node_exporter 均 active。
+- 真实生产 HTTPS API 已在 B 完成 ImageClip RGBA 与 ModelView 局部重绘，均 `SUCCEEDED`，最终
+  PNG 可解码并完成 SHA-256 核对；三节点同时 ACTIVE 的正常调度又把 ModelView 分配到 B。
+- B 的 `/srv/comfyui/runtime` 已与容器 uid/gid 10001 对齐，修复首次上传 500；没有修改或重启
+  ImageClip/ModelViewCreator 工作流。
+- B 的 Blender Worker 已 `ONLINE`，Blender 5.1.2、Skill `asset-skills-2026.07.28-v3`、4 个独立
+  CPU 槽；真实 UV/重拓扑 canary 留待下一维护窗口，不能提前写成业务验收通过。
+- Web 已修复资产终态持续计时和窄抽屉显示；管理员人工复核按钮已从调度后台移除，复核应在用户端
+  完成。客户侧复核决定回传接口仍待安全发布。
+- 详细证据见 `57_2026-07-28_3090_B_WINDOWS_WSL2_GPU_ACCEPTANCE.md`。
+
+## 2026-07-28 V4 批量抠图修复
+
+- 已确认动画管家未取消 `assetclaw:VID_9D9EB9ACE6A1:matting:g1`；旧 Web 的“取消中”来自服务端
+  将单帧失败错误映射为取消状态。
+- 已定位 ordinal 34 的主控源 PNG 有效，而 3090-A 的 ComfyUI 输入文件为 0 字节；根因是旧上传
+  重试使用 `overwrite=false` 且未回读验证远端最终字节。
+- 新实现强制 `overwrite=true`，每次上传后回读并校验 size/SHA-256，完全一致后才提交 prompt；
+  零字节遗留覆盖修复单元测试通过。
+- 新父任务语义隔离失败帧并继续其他帧；只有明确取消请求才能进入 `CANCELLING`，失败批次最终
+  `FAILED` 且不发布部分结果。
+- 原父任务按原 batch ID、原 child job ID 和原 ordinal 恢复；4090 与 3090-A 已同时继续执行。
+- 当前活动生产队列未排空，因此永久修复尚未滚动替换生产 API/Scheduler；不得提前写成已上线。
+- 当前完整接口与联合验收合同见 `56_GPU_CONTROL_MATTING_HANDOFF_V4.md`。
 
 ## 1.2.0 生产增量
 
@@ -36,6 +67,11 @@
 | 文档/PDF | 是 | Markdown/PDF 生成和渲染检查 | 操作者按 PDF 完成现场签字 |
 
 ## 当前验证结果
+
+- 2026-07-28 本轮针对性回归：Comfy 上传完整性、Node Agent 混合节点身份、Asset API 来源 IP
+  自动客户共 `17 passed in 9.65s`（一次性容器、测试凭据、仓库只读挂载）。
+- 本轮 Python 源码编译、5 个部署 Shell 脚本 `bash -n` 与 `git diff --check` 通过。
+- 当前 Web production build 通过并已只替换 Web 容器；API、Scheduler 与三台 ComfyUI 未因此重启。
 
 - `python -m ruff check .`：通过。
 - `python -m mypy packages apps/api/src apps/scheduler/src apps/node_agent/src`：通过，23 个源文件。

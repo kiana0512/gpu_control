@@ -34,6 +34,7 @@ class NodeAgentSettings(BaseSettings):
     node_id: str = ""
     control_host: str = ""
     node_advertise_ip: str = ""
+    node_mac_address: str = ""
     node_heartbeat_interval_seconds: int = Field(10, ge=5, le=300)
     node_control_ca_cert: Path = Path("/etc/gpu-control/lan-ca.crt")
     imageclip_root: Path = Path("/opt/imageclip")
@@ -74,24 +75,39 @@ def _default_interface() -> str:
 
 
 def _current_ip(control_host: str, fallback: str = "") -> str:
+    # Hybrid Windows/WSL nodes must advertise the stable physical host address,
+    # never the ephemeral WSL NAT address.  Bare-metal nodes also benefit from
+    # an explicit address because it makes DHCP reservations auditable.
+    if fallback:
+        return fallback
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
             probe.connect((control_host, 443))
             return str(probe.getsockname()[0])
     except OSError:
-        if fallback:
-            return fallback
         raise
 
 
-def _mac_address() -> str:
+def _mac_address(override: str = "") -> str:
+    if override:
+        normalized = override.strip().lower().replace("-", ":")
+        if not re.fullmatch(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", normalized):
+            raise RuntimeError("invalid configured physical MAC address")
+        return normalized
     interface = _default_interface()
     return Path(f"/sys/class/net/{interface}/address").read_text(encoding="utf-8").strip().lower()
 
 
+def _nvidia_smi_path() -> str:
+    for candidate in (Path("/usr/bin/nvidia-smi"), Path("/usr/lib/wsl/lib/nvidia-smi")):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    raise RuntimeError("nvidia-smi executable not found")
+
+
 async def _gpu_uuid() -> str:
     process = await asyncio.create_subprocess_exec(
-        "/usr/bin/nvidia-smi",
+        _nvidia_smi_path(),
         "--query-gpu=uuid",
         "--format=csv,noheader",
         stdout=asyncio.subprocess.PIPE,
@@ -108,7 +124,7 @@ async def _gpu_uuid() -> str:
 
 async def _gpu_metrics() -> dict[str, int]:
     process = await asyncio.create_subprocess_exec(
-        "/usr/bin/nvidia-smi",
+        _nvidia_smi_path(),
         "--query-gpu=utilization.gpu,memory.free,memory.total",
         "--format=csv,noheader,nounits",
         stdout=asyncio.subprocess.PIPE,
@@ -200,12 +216,19 @@ def _post_heartbeat(
 
 
 async def _heartbeat_loop(app: FastAPI, cfg: NodeAgentSettings) -> None:
-    gpu_uuid = await _gpu_uuid()
-    mac = _mac_address()
+    # WSL may expose /usr/lib/wsl/lib/nvidia-smi a fraction later than systemd
+    # starts this service. Keep identity discovery inside the retry loop so one
+    # transient startup race cannot permanently stop node heartbeats.
+    gpu_uuid: str | None = None
+    mac: str | None = None
     last_ip = ""
     first_success = True
     while True:
         try:
+            if gpu_uuid is None:
+                gpu_uuid = await _gpu_uuid()
+            if mac is None:
+                mac = _mac_address(cfg.node_mac_address)
             imageclip_commit, imageclip_pipeline_sha256 = await asyncio.to_thread(
                 _imageclip_pipeline_state, cfg.imageclip_root
             )

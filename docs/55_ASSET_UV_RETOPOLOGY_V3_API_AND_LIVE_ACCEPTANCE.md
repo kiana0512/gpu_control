@@ -13,7 +13,8 @@
 - UV 和重拓扑使用独立 Asset API、Asset Job、Asset Worker 与 CPU 并发槽，不占用 GPU
   Scheduler/ComfyUI 的任务槽。
 - 4090 与 3090-A 已使用同一份固定代码、Blender `5.1.2`、Codex CLI 与两套 Skill 做真实
-  隔离执行；3090-B 尚未部署，后续可按本文第 12 节快速迁移。
+  隔离执行；3090-B 的同版本 Asset Worker 已上线并持续心跳，但 B 的真实 UV/重拓扑 canary
+  尚待下一维护窗口，不能把“Worker 在线”写成“业务验收通过”。
 - UV 接受 FBX、OBJ、GLB/GLTF、BLEND，成功时一次性发布固定五件套。
 - 重拓扑接受包含高模、参考低模、当前低模的 BLEND，并可同时上传 0～32 张多视角参考图；
   Worker 会生成版本化候选低模、FBX、前/侧/顶/透视图、基线/最终审计和 Agent 证据。
@@ -32,7 +33,7 @@
        └─ Asset API ─ PostgreSQL(asset_jobs/events/artifacts/workers)
             ├─ 4090 Asset Worker（CPU 并发槽）
             ├─ 3090-A Asset Worker（CPU 并发槽）
-            └─ 3090-B Asset Worker（待迁移）
+            └─ 3090-B Asset Worker（ONLINE，待真实资产 canary）
 
 GPU 图片 API
   └─ GPU API / Scheduler / ComfyUI / GPU Job 槽
@@ -170,12 +171,12 @@ curl --fail-with-body --silent --show-error \
 - `retopology_comparison.png` 三行四列总览；
 - `reference_images.png` 用户参考图汇总。
 
-源对象不被覆盖。候选必须使用新对象名和新版本；如果需要下一轮，管理员驳回后通过迭代 API 创建
-新 Job，旧候选、旧审计和旧图片全部保留。
+源对象不被覆盖。候选必须使用新对象名和新版本；如果需要下一轮，应由提交方在用户端完成复核并
+按冻结后的客户接口创建新 Job，旧候选、旧审计和旧图片全部保留。
 
 ### 5.3 审核门禁
 
-执行完成状态为 `WAITING_REVIEW`，进度 95%。管理员在 WebUI 中检查：
+执行完成状态为 `WAITING_REVIEW`，进度 95%。提交方用户端应展示并检查：
 
 1. 高模形状与轮廓；
 2. 参考低模布线风格和面数；
@@ -184,14 +185,9 @@ curl --fail-with-body --silent --show-error \
 5. 候选 BLEND/FBX 和 manifest；
 6. 源输入 SHA 与 Agent 证据。
 
-批准后才发布；驳回则进入 `REVIEW_REJECTED`。管理接口：
-
-```text
-POST /admin/asset-jobs/{job_id}/review
-POST /admin/asset-jobs/{job_id}/iterate
-```
-
-外部客户不应绕过人工门禁调用管理接口。
+批准后才发布；驳回则进入 `REVIEW_REJECTED`。统一调度后台只显示状态、诊断、制品清单和 SHA，
+不提供人工批准/驳回按钮。当前客户侧“复核决定回传”公开接口仍待双方冻结并安全发布；在该接口
+完成前，调用方只能读取 `WAITING_REVIEW` 证据，不能调用管理接口或把候选冒充最终交付。
 
 ## 6. 查询、双向进度和 ETA
 
@@ -244,7 +240,7 @@ curl --no-buffer --fail-with-body \
 | `QUEUED` | 已持久化，等待 Asset Worker；不是“尚未分配丢失” |
 | `CLAIMED` | Worker 已获得租约 |
 | `RUNNING` | Blender/Codex/QA 正执行，查看 stage 与 ETA |
-| `WAITING_REVIEW` | 重拓扑执行完成，等待人工批准 |
+| `WAITING_REVIEW` | 重拓扑执行完成，等待提交方用户端人工复核 |
 | `REVIEW_REJECTED` | 候选被驳回，可创建下一版本 |
 | `SUCCEEDED` | UV 或人工批准后的最终交付可下载 |
 | `FAILED` | 失败关闭；读取 error 并按幂等键决定重试 |
@@ -274,7 +270,8 @@ sha256sum result.bin
 - Worker 只在 CPU/内存和当前槽位允许时领取；心跳丢失不会让 Job 无迹可寻，租约超时后按状态机恢复。
 - UV 与重拓扑可无序混合进入同一 Asset 队列；Job 仍按自身 API 类型、阶段和 Artifact 合同执行。
 - Asset Worker 使用 `CUDA_VISIBLE_DEVICES` 空值，避免它与 ComfyUI 争抢 GPU。
-- 4090、3090-A 可同时领取不同 Job；WebUI 只展示真实心跳，不硬编码 3090-B。
+- 4090、3090-A、3090-B 可同时领取不同 Job；WebUI 只展示真实心跳。B 在完成真实资产 canary
+  前虽可保持 Worker ONLINE，但验收记录必须明确区分“已注册”和“真实任务通过”。
 
 ## 9. WebUI 管理
 
@@ -286,7 +283,8 @@ sha256sum result.bin
 - 支持任务 ID、external ID、客户、文件名和 Worker 搜索；
 - 顶层一个模型只占一行，内部阶段与 5/23 项制品全部在详情中，不刷屏；
 - 详情显示 Worker、stage、stage message、耗时、ETA、输入 SHA、提交 API 和下载 SHA；
-- 重拓扑详情直接展示真实三模型四视图和用户参考图，可批准、驳回或创建下一版本。
+- 重拓扑详情显示状态、诊断、制品清单和 SHA；三模型四视图由提交方用户端读取并执行人工复核，
+  调度后台不提供批准、驳回或创建下一版本按钮。
 - GPU 与资产任务列表均分页显示，默认 20 条，可切换 50/100；表格与操作文字已按生产大屏统一放大。
 - 资产页可直接跳转到“API 客户 → 统一服务调用方式”，复制 UV/重拓扑 cURL 或 Python 示例。
 
@@ -340,26 +338,16 @@ UV 用时 10/12 秒；重拓扑用时 137/152 秒。全部 Artifact 完成 JSON/
 7. 3090-A 因 DHCP 从 `10.3.34.13` 漂移到 `10.3.34.12`：按唯一 MAC
    `18:c0:4d:9f:13:13` 和 hostname `lilithgames1` 双重确认后更新节点地址。
 
-## 12. 3090-B 快速迁移
+## 12. 3090-B 当前迁移状态
 
-3090-B 唯一物理身份：MAC `2c:f0:5d:76:7b:70`，目标 IP `10.3.34.14`。Windows 原生用于
-后续 Substance/烘焙；WSL2 Asset Worker 用于 UV/重拓扑，不能把两者登记成两台物理 GPU。
+3090-B 当前唯一物理身份为 MAC `3c:7c:3f:a5:b0:4f`、GPU UUID
+`GPU-092a5184-5857-d196-5df2-efa9503368aa`、Windows IP `10.3.34.14`。Windows 原生用于后续
+Substance/烘焙；WSL2 用于 ComfyUI 与 UV/重拓扑，不能把两者登记成两台物理 GPU。
 
-WSL2 准备完成后：
-
-```bash
-cd /opt/gpu-control
-scripts/sync_node_source.sh --host 10.3.34.14 --user <WSL_SSH_USER> --dry-run
-scripts/sync_node_source.sh --host 10.3.34.14 --user <WSL_SSH_USER>
-scripts/install_asset_worker_runtime.sh
-scripts/verify_asset_skills.sh
-scripts/codex_asset_runtime_preflight.sh
-```
-
-必须满足：同一 GPU Control release、同一 Worker image ID、Blender build hash、两套 Skill 8/8
-固定 SHA、每机独立 Codex auth、LAN CA、独立 `ASSET_WORKER_HMAC_SECRET`、真实 heartbeat。只在
-真实 UV + 重拓扑 canary 和断线恢复通过后返回 ACTIVE。完整 Windows/WSL2 方案见
-`50_3090_B_WINDOWS_WSL2_HYBRID_NODE_DEPLOYMENT_PLAN.md`。
+当前已完成：固定地址上报、Node Agent、ComfyUI 真实双工作流验收、Blender Worker 镜像同步、
+Blender `5.1.2`、Skill `asset-skills-2026.07.28-v3` 和 4 个 Asset 槽心跳。尚未完成：B 的真实
+UV/重拓扑 canary、客户侧人工复核回传接口、Windows 原生烘焙 Worker。完整事实、Job ID、SHA 和
+回滚方式见 `57_2026-07-28_3090_B_WINDOWS_WSL2_GPU_ACCEPTANCE.md`。
 
 ## 13. 生产发布与回滚
 
@@ -374,12 +362,13 @@ ImageClip/ModelViewCreator 工作流未修改。
   `5db6aaa3528c642aa94c26109cc5b91eb0f4ad19dad3622a188ebcb7be54b057`；
 - `gpu-control-api:1.5.0`：`sha256:0e8cad452ebae3313a7c2f344d2b96541ff2709898b8e8018842d88c27f87ccd`；
 - `gpu-control-scheduler:1.5.0`：`sha256:49acd3433943ccbc691f81c88e36dd591f2c26d4bd26cd062155012477734dac`；
-- `gpu-control-web:1.5.0`：`sha256:71e2daf214a9ca679f149350f2530289b43b0c2156c3475fd5244277c075b2de`；
-- `unified-scheduler-asset-api:1.5.0`：`sha256:f0b447ab699e499bf8d31acafc817d666ea64426f7d224f3a6f06955dba03184`；
+- 当前运行 `gpu-control-web:1.5.0`：`sha256:0a0ef7a476d1d737b284571eb99eb22d0429262204fd4cc41790bc244c831558`；
+- 当前运行 `unified-scheduler-asset-api:1.5.0`：`sha256:85c248e57f03fd5be75022fa8592c9d388872b1cbd0ecf0e92366b647e13c5cf`；
 - `li3d/blender-worker:1.1.0`：`sha256:c43941fb6dd4bbb68eec89eacd92c42e73d86677daa505d9980e7e4a1c0065a6`；
 - 离线归档：`/srv/gpu-control/images/unified-scheduler-1.5.0-images.tar.gz`，SHA-256
   `598f25a0a9100b9ebd1e87d084eb3be31e2168ac1b624768260619abc3fbfac8`；
-- 4090 Worker：ONLINE，2 槽；3090-A Worker：ONLINE，3 槽；均为 0 个在途资产任务；
+- 4090 Worker：ONLINE，2 槽；3090-A Worker：ONLINE，3 槽；3090-B Worker：ONLINE，4 槽；
+  均为 0 个在途资产任务。B 的真实资产 canary 仍需补做；
 - 生产 API、Asset API、Scheduler、Web、Nginx、PostgreSQL、Redis 均健康；ComfyUI 保持 healthy。
 
 回滚时先停止新的 Asset 提交和领取，等待/取消 Asset Job，再回滚 API/Web/Worker 镜像。数据库迁移

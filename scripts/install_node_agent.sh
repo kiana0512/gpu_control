@@ -47,6 +47,7 @@ python3 -m venv "${root}/.venv"
 "${root}/.venv/bin/pip" install \
   --disable-pip-version-check \
   --ignore-requires-python \
+  --no-build-isolation \
   --no-cache-dir \
   --no-deps \
   "${root}"
@@ -76,6 +77,7 @@ chmod 0644 /etc/gpu-control/node-role
   printf 'NODE_ID=%s\n' "${NODE_ID:-}"
   printf 'CONTROL_HOST=%s\n' "${CONTROL_HOST:-}"
   printf 'NODE_ADVERTISE_IP=%s\n' "${NODE_ADVERTISE_IP:-}"
+  printf 'NODE_MAC_ADDRESS=%s\n' "${NODE_MAC_ADDRESS:-}"
   printf 'NODE_HEARTBEAT_INTERVAL_SECONDS=%s\n' "${NODE_HEARTBEAT_INTERVAL_SECONDS:-10}"
   printf 'NODE_CONTROL_CA_CERT=%s\n' "${NODE_CONTROL_CA_CERT:-/etc/gpu-control/lan-ca.crt}"
 } > /etc/gpu-control/node-agent.env

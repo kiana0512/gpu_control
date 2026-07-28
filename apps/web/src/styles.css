@@ -346,6 +346,7 @@ main {
   background: var(--amber);
 }
 .status-mark.failed i,
+.status-mark.failing i,
 .status-mark.timed_out i {
   background: var(--red);
 }

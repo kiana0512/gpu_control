@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 usage() {
-  echo "用法: $0 --host HOST [--user USER] [--project all|imageclip|modelview] [--dry-run] [--manifest-only] [--delete]"
+  echo "用法: $0 --host HOST [--user USER] [--port PORT] [--known-hosts-file PATH] [--project all|imageclip|modelview] [--dry-run] [--manifest-only] [--delete]"
 }
 
 host=""
 user="${USER}"
 project="all"
 dry=()
+port="22"
+ssh_options=()
 manifest_only=false
 delete=false
 while (($#)); do
   case "$1" in
     --host) host="$2"; shift 2 ;;
     --user) user="$2"; shift 2 ;;
+    --port) port="$2"; shift 2 ;;
+    --known-hosts-file) ssh_options+=(-o "UserKnownHostsFile=$2" -o StrictHostKeyChecking=yes); shift 2 ;;
     --project) project="$2"; shift 2 ;;
     --dry-run) dry=(--dry-run); shift ;;
     --manifest-only) manifest_only=true; shift ;;
@@ -23,6 +27,7 @@ while (($#)); do
   esac
 done
 [[ -n "${host}" ]] || { usage >&2; exit 2; }
+[[ "${port}" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535)) || { usage >&2; exit 2; }
 [[ "${project}" =~ ^(all|imageclip|modelview)$ ]] || { usage >&2; exit 2; }
 
 imageclip_root="${IMAGECLIP_ROOT:-/opt/imageclip}"
@@ -41,8 +46,8 @@ sync_tree() {
   local label="$1" source_dir="$2" target_dir="$3"
   [[ -d "${source_dir}" ]] || { echo "错误：${label} 模型目录不存在：${source_dir}" >&2; exit 1; }
   echo "同步 ${label}: ${source_dir}/ -> ${user}@${host}:${target_dir}/"
-  ssh "${user}@${host}" "mkdir -p '${target_dir}'"
-  rsync "${options[@]}" "${dry[@]}" "${source_dir}/" "${user}@${host}:${target_dir}/"
+  ssh -p "${port}" "${ssh_options[@]}" "${user}@${host}" "mkdir -p '${target_dir}'"
+  rsync "${options[@]}" "${dry[@]}" -e "ssh -p ${port} ${ssh_options[*]}" "${source_dir}/" "${user}@${host}:${target_dir}/"
 }
 
 if [[ "${project}" == "all" || "${project}" == "imageclip" ]]; then
@@ -51,7 +56,7 @@ if [[ "${project}" == "all" || "${project}" == "imageclip" ]]; then
     # ComfyUI-nunchaku registers these optional model categories during import.
     # The shared model root is mounted read-only in ComfyUI, so the directories
     # must exist on the host before the container starts.
-    ssh "${user}@${host}" \
+    ssh -p "${port}" "${ssh_options[@]}" "${user}@${host}" \
       "mkdir -p /opt/imageclip/models/pulid /opt/imageclip/models/insightface /opt/imageclip/models/facexlib /opt/imageclip/models/ipadapter /opt/imageclip/models/clip"
   fi
 fi
@@ -61,7 +66,7 @@ if [[ "${project}" == "all" || "${project}" == "modelview" ]]; then
   else
     sync_tree "ModelViewCreator" "${modelview_root}/model" "/opt/modelviewcreator/model"
     if ((${#dry[@]} == 0)); then
-      ssh "${user}@${host}" '
+      ssh -p "${port}" "${ssh_options[@]}" "${user}@${host}" '
         set -eu
         mkdir -p /opt/imageclip/models
         if [ -e /opt/imageclip/models/SEEDVR2 ] && [ ! -L /opt/imageclip/models/SEEDVR2 ]; then
@@ -79,5 +84,5 @@ if ((${#dry[@]})); then
 elif [[ "${manifest_only}" == true ]]; then
   echo "manifest-only 完成：模型文件未同步。"
 else
-  ssh "${user}@${host}" 'cd /opt/gpu-control && scripts/verify_comfy_projects.sh'
+  ssh -p "${port}" "${ssh_options[@]}" "${user}@${host}" 'cd /opt/gpu-control && scripts/verify_comfy_projects.sh'
 fi

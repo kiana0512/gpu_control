@@ -74,6 +74,19 @@ def worker_headers(settings: Settings, path: str, body: bytes) -> dict[str, str]
     }
 
 
+async def test_asset_api_auto_discovers_client_by_source_ip_without_api_key(
+    tmp_path: Path,
+) -> None:
+    async for _, client in prepared_asset_app(tmp_path):
+        first = await client.get("/api/v1/assets/capacity")
+        assert first.status_code == 200, first.text
+
+        # A repeated request from the same source IP must resolve to the same
+        # automatically managed client instead of creating a conflict.
+        repeated = await client.get("/api/v1/assets/capacity")
+        assert repeated.status_code == 200, repeated.text
+
+
 async def signed_post(
     client: httpx.AsyncClient, settings: Settings, path: str, payload: dict[str, object]
 ) -> httpx.Response:

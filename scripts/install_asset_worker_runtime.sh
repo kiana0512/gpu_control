@@ -2,23 +2,31 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 [--host HOST --user USER] [--dry-run] [--prepare-only]" >&2
+  echo "Usage: $0 [--host HOST --user USER] [--port PORT] [--known-hosts-file PATH] [--dry-run] [--prepare-only]" >&2
 }
 
 target_host=""
 target_user=""
+target_port="22"
+known_hosts_file=""
 dry_run=false
 prepare_only=false
 while (($#)); do
   case "$1" in
     --host) target_host="${2:?--host requires a value}"; shift 2 ;;
     --user) target_user="${2:?--user requires a value}"; shift 2 ;;
+    --port) target_port="${2:?--port requires a value}"; shift 2 ;;
+    --known-hosts-file) known_hosts_file="${2:?--known-hosts-file requires a value}"; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
     --prepare-only) prepare_only=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
   esac
 done
+[[ "$target_port" =~ ^[0-9]+$ ]] && ((target_port >= 1 && target_port <= 65535)) || {
+  echo "Invalid SSH port: $target_port" >&2
+  exit 2
+}
 if [[ -n "$target_host" || -n "$target_user" ]]; then
   [[ -n "$target_host" && -n "$target_user" ]] || { usage; exit 2; }
 fi
@@ -56,27 +64,33 @@ if [[ -z "$target_host" ]]; then
 fi
 
 remote="$target_user@$target_host"
+ssh_options=(-p "$target_port" -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+rsync_ssh=(ssh "${ssh_options[@]}")
+if [[ -n "$known_hosts_file" ]]; then
+  ssh_options+=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts_file")
+  rsync_ssh=(ssh "${ssh_options[@]}")
+fi
 if ! $dry_run; then
-  ssh "$remote" mkdir -p \
+  ssh "${ssh_options[@]}" "$remote" mkdir -p \
     "$runtime_root/codex" "$runtime_root/asset-skills/blender-pbr-uv" \
     "$runtime_root/asset-skills/blender-retopology-compare-iterate"
 fi
-rsync "${rsync_flags[@]}" "$codex_path" "$remote:$runtime_root/codex/codex"
+rsync "${rsync_flags[@]}" -e "${rsync_ssh[*]}" "$codex_path" "$remote:$runtime_root/codex/codex"
 for skill in blender-pbr-uv blender-retopology-compare-iterate; do
-  rsync "${rsync_flags[@]}" "$skill_root/$skill/" \
+  rsync "${rsync_flags[@]}" -e "${rsync_ssh[*]}" "$skill_root/$skill/" \
     "$remote:$runtime_root/asset-skills/$skill/"
 done
 if ! $dry_run; then
-  ssh "$remote" chmod 0755 "$runtime_root/codex/codex"
-  ssh "$remote" env \
+  ssh "${ssh_options[@]}" "$remote" chmod 0755 "$runtime_root/codex/codex"
+  ssh "${ssh_options[@]}" "$remote" env \
     CODEX_BINARY="$runtime_root/codex/codex" \
     CODEX_HOME="/home/$target_user/.codex" \
     "$runtime_root/codex/codex" --version
-  ssh "$remote" \
+  ssh "${ssh_options[@]}" "$remote" \
     "$repo_root/scripts/verify_asset_skills.sh" \
     --root "$runtime_root/asset-skills"
   if ! $prepare_only; then
-    ssh "$remote" test -r /home/"$target_user"/.codex/auth.json
+    ssh "${ssh_options[@]}" "$remote" test -r /home/"$target_user"/.codex/auth.json
   fi
 fi
 echo "Remote Asset Worker runtime synchronized: $remote:$runtime_root"

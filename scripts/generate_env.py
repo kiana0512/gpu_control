@@ -56,6 +56,7 @@ def worker_values(
     agent_secret: str,
     asset_secret: str,
     asset_concurrency: int,
+    node_mac_address: str = "",
 ) -> dict[str, str]:
     return {
         "ENVIRONMENT": "production",
@@ -64,6 +65,7 @@ def worker_values(
         "NODE_ID": node_id,
         "NODE_BIND_IP": "0.0.0.0",  # noqa: S104 - UFW restricts worker ports to control.
         "NODE_ADVERTISE_IP": node_ip,
+        "NODE_MAC_ADDRESS": node_mac_address,
         "NODE_AGENT_HMAC_SECRET": agent_secret,
         "ASSET_WORKER_HMAC_SECRET": asset_secret,
         "ASSET_WORKER_MAX_CONCURRENCY": str(asset_concurrency),
@@ -204,6 +206,7 @@ def node(args: argparse.Namespace) -> None:
             args.agent_secret,
             args.asset_worker_secret,
             args.asset_worker_concurrency,
+            args.node_mac_address,
         ),
         set(),
     )
@@ -232,6 +235,11 @@ def main() -> None:
     node_parser.add_argument("--agent-secret", required=True)
     node_parser.add_argument("--asset-worker-secret", required=True)
     node_parser.add_argument("--asset-worker-concurrency", type=int, default=2)
+    node_parser.add_argument(
+        "--node-mac-address",
+        default="",
+        help="Physical host MAC override for hybrid WSL nodes",
+    )
     node_parser.add_argument("--output", default=str(ROOT / ".env"))
     node_parser.set_defaults(handler=node)
     args = parser.parse_args()

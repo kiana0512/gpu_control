@@ -56,6 +56,38 @@ async def test_comfy_client_accepts_empty_free_response() -> None:
         await client.close()
 
 
+async def test_comfy_client_overwrites_and_repairs_zero_byte_upload(tmp_path) -> None:
+    source = tmp_path / "frame-0034.png"
+    expected = b"complete-png-payload"
+    source.write_bytes(expected)
+    uploads = 0
+
+    async def flaky_upload(request: httpx.Request) -> httpx.Response:
+        nonlocal uploads
+        if request.method == "POST" and request.url.path == "/upload/image":
+            uploads += 1
+            assert b'name="overwrite"' in request.content
+            assert b"true" in request.content
+            return httpx.Response(
+                200,
+                json={"name": source.name, "subfolder": "job-1", "type": "input"},
+            )
+        if request.method == "GET" and request.url.path == "/view":
+            # Reproduce a dropped first upload which left an empty destination.
+            return httpx.Response(200, content=b"" if uploads == 1 else expected)
+        return httpx.Response(404)
+
+    client = ComfyClient("http://fake", transport=httpx.MockTransport(flaky_upload))
+    try:
+        uploaded = await client.upload(source, subfolder="job-1", max_attempts=2)
+        assert uploads == 2
+        assert uploaded["verified"] is True
+        assert uploaded["size_bytes"] == len(expected)
+        assert uploaded["attempt"] == 2
+    finally:
+        await client.close()
+
+
 def test_output_collection_is_limited_to_declared_nodes() -> None:
     history = {
         "prompt": {

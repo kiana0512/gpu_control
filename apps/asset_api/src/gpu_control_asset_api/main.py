@@ -190,6 +190,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         x_api_key: Annotated[str | None, Header()] = None,
     ) -> Principal:
         client: ApiClient | None = None
+        source_ip = str(
+            ipaddress.ip_address(request.client.host if request.client else "127.0.0.1")
+        )
         if x_api_key:
             parts = x_api_key.split("_", 2)
             if len(parts) != 3 or parts[0] != "gpc":
@@ -206,9 +209,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             client = await db.get(ApiClient, key.client_id)
             key.last_used_at = datetime.now(UTC)
         else:
-            source_ip = str(
-                ipaddress.ip_address(request.client.host if request.client else "127.0.0.1")
-            )
             clients = list(
                 (await db.scalars(select(ApiClient).where(ApiClient.role == "client"))).all()
             )
@@ -217,8 +217,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 client = matches[0]
             elif len(matches) > 1:
                 raise HTTPException(409, detail={"code": "CLIENT_IP_CONFLICT"})
+            else:
+                auto_id = f"ip-{hashlib.sha256(source_ip.encode()).hexdigest()[:12]}"
+                client = await db.get(ApiClient, auto_id)
+                if client is None:
+                    client = ApiClient(
+                        id=auto_id,
+                        name=f"自动发现 {source_ip}",
+                        role="client",
+                        client_kind="production",
+                        max_queued=cfg.default_tenant_max_queued,
+                        max_running=cfg.default_tenant_max_running,
+                        daily_quota=1000,
+                        weight=1,
+                        allowed_ips=[source_ip],
+                        last_seen_ip=source_ip,
+                        last_seen_at=datetime.now(UTC),
+                    )
+                    db.add(client)
+                    try:
+                        await db.flush()
+                    except IntegrityError:
+                        await db.rollback()
+                        client = await db.get(ApiClient, auto_id)
         if client is None or not client.enabled or client.role != "client":
-            raise HTTPException(401, detail={"code": "AUTH_FAILED"})
+            raise HTTPException(403, detail={"code": "AUTH_FAILED"})
+        client.last_seen_ip = source_ip
+        client.last_seen_at = datetime.now(UTC)
         await db.commit()
         return Principal(id=client.id)
 

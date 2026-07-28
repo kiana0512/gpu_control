@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "../api";
 import type {
@@ -20,10 +20,6 @@ const jobState = ref<"ALL" | "ACTIVE" | "REVIEW" | "SUCCEEDED" | "FAILED">(
 const jobSearch = ref("");
 const selectedJob = ref<AssetJobInfo | null>(null);
 const cancellingJobId = ref("");
-const reviewingJobId = ref("");
-const iteratingJobId = ref("");
-const previewUrls = ref<Record<string, string>>({});
-const previewLoading = ref(false);
 
 const workers = computed(() => overview.value?.workers ?? []);
 const filteredJobs = computed(() => {
@@ -142,38 +138,59 @@ function statusLabel(value: string) {
   return labels[value] ?? value;
 }
 
-function clearPreviewUrls() {
-  Object.values(previewUrls.value).forEach((url) => URL.revokeObjectURL(url));
-  previewUrls.value = {};
+const terminalStatuses = new Set([
+  "SUCCEEDED",
+  "WAITING_REVIEW",
+  "REVIEW_REJECTED",
+  "FAILED",
+  "CANCELLED",
+]);
+
+function isTerminal(job: AssetJobInfo) {
+  return terminalStatuses.has(job.status);
 }
 
-async function openJob(job: AssetJobInfo) {
-  clearPreviewUrls();
-  selectedJob.value = job;
-  if (job.job_type !== "RETOPOLOGY_PROCESS_V1") return;
-  const previews = job.artifacts.filter((artifact) =>
-    ["comparison", "reference_images"].includes(artifact.kind),
-  );
-  if (!previews.length) return;
-  previewLoading.value = true;
-  try {
-    const loaded = await Promise.all(
-      previews.map(async (artifact) => [
-        artifact.kind,
-        URL.createObjectURL(await api.assetArtifact(job.job_id, artifact.id)),
-      ] as const),
-    );
-    previewUrls.value = Object.fromEntries(loaded);
-  } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : "复核图片加载失败");
-  } finally {
-    previewLoading.value = false;
+function elapsedSeconds(job: AssetJobInfo) {
+  if (!job.started_at) return 0;
+  const startedAt = Date.parse(job.started_at);
+  const terminalAt = job.finished_at ?? job.timing.last_progress_at;
+  const endedAt =
+    isTerminal(job) && terminalAt ? Date.parse(terminalAt) : Date.now();
+  if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt)) {
+    return job.timing.elapsed_seconds;
   }
+  return Math.max(0, Math.floor((endedAt - startedAt) / 1000));
+}
+
+function timingSummary(job: AssetJobInfo) {
+  const elapsed = readableDuration(elapsedSeconds(job));
+  if (isTerminal(job)) return `总耗时 ${elapsed}`;
+  const remaining = readableDuration(job.timing.estimated_remaining_seconds);
+  return `已用 ${elapsed} · 剩余约 ${remaining}`;
+}
+
+function stageLabel(value: string) {
+  const labels: Record<string, string> = {
+    QUEUED: "等待可用 Worker",
+    CLAIMED: "Worker 已领取任务",
+    RUNNING: "正在执行",
+    RETOPOLOGY_AGENT_PLANNING: "AI 正在分析模型并制定重拓扑方案",
+    RETOPOLOGY_GENERATING: "正在生成重拓扑候选",
+    RETOPOLOGY_RENDERING: "正在生成三模型四视图",
+    RETOPOLOGY_AUDITING: "正在执行拓扑与轮廓审计",
+    WAITING_REVIEW: "等待人工四视图复核",
+    SUCCEEDED: "交付完成",
+    FAILED: "执行失败",
+    CANCELLED: "任务已取消",
+  };
+  return labels[value] ?? value.replaceAll("_", " ");
+}
+
+function openJob(job: AssetJobInfo) {
+  selectedJob.value = job;
 }
 
 function closeJob() {
-  clearPreviewUrls();
-  previewLoading.value = false;
   selectedJob.value = null;
 }
 
@@ -192,65 +209,6 @@ async function downloadArtifact(
     ElMessage.error(cause instanceof Error ? cause.message : "制品下载失败");
   }
 }
-
-async function reviewJob(job: AssetJobInfo, decision: "APPROVE" | "REJECT") {
-  try {
-    const approved = decision === "APPROVE";
-    const result = await ElMessageBox.prompt(
-      approved
-        ? "确认已逐项检查高模、参考低模与生成低模的前/侧/顶/透视图？"
-        : "请填写驳回原因，系统会保留当前候选和全部审计证据。",
-      approved ? "批准重拓扑候选" : "驳回重拓扑候选",
-      {
-        confirmButtonText: approved ? "确认批准" : "确认驳回",
-        cancelButtonText: "返回",
-        inputValue: approved ? "四视图、轮廓、拓扑及源文件保护检查通过" : "",
-        inputPlaceholder: "至少输入 3 个字符",
-        inputValidator: (value) => value.trim().length >= 3 || "请输入复核说明",
-        type: approved ? "warning" : "error",
-      },
-    );
-    reviewingJobId.value = job.job_id;
-    await api.reviewAssetJob(job.job_id, decision, result.value.trim());
-    ElMessage.success(approved ? "候选已批准并发布" : "候选已驳回并保留证据");
-    closeJob();
-    await run();
-  } catch (cause) {
-    if (cause !== "cancel" && cause !== "close") {
-      ElMessage.error(cause instanceof Error ? cause.message : "复核操作失败");
-    }
-  } finally {
-    reviewingJobId.value = "";
-  }
-}
-
-async function iterateJob(job: AssetJobInfo) {
-  try {
-    const result = await ElMessageBox.prompt(
-      "填写 v002（或下一版本）必须修正的轮廓、布线或组件问题。旧候选不会被覆盖。",
-      "创建下一版拓扑候选",
-      {
-        confirmButtonText: "创建新版本",
-        cancelButtonText: "返回",
-        inputPlaceholder: "至少输入 3 个字符",
-        inputValidator: (value) => value.trim().length >= 3 || "请输入迭代反馈",
-      },
-    );
-    iteratingJobId.value = job.job_id;
-    const next = await api.iterateAssetJob(job.job_id, result.value.trim());
-    ElMessage.success(`已创建 ${next.generated_low_object}`);
-    closeJob();
-    await run();
-  } catch (cause) {
-    if (cause !== "cancel" && cause !== "close") {
-      ElMessage.error(cause instanceof Error ? cause.message : "创建迭代失败");
-    }
-  } finally {
-    iteratingJobId.value = "";
-  }
-}
-
-onBeforeUnmount(clearPreviewUrls);
 
 function readableSize(value: number) {
   if (value < 1024) return `${value} B`;
@@ -533,8 +491,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <i><b :style="{ width: `${job.progress}%` }"></b></i
             ><small>{{ Math.round(job.progress) }}% · {{ job.stage_message }}</small>
             <em
-              >已用 {{ readableDuration(job.timing.elapsed_seconds) }} · 剩余约
-              {{ readableDuration(job.timing.estimated_remaining_seconds) }}</em
+              >{{ timingSummary(job) }}</em
             >
           </div>
           <div class="asset-job-actions">
@@ -615,17 +572,14 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
               ><strong>{{ selectedJob.attempt_count }}</strong>
             </div>
             <div>
-              <span>当前阶段</span><strong>{{ selectedJob.stage }}</strong>
+              <span>当前阶段</span><strong>{{ stageLabel(selectedJob.stage) }}</strong>
             </div>
             <div>
               <span>提交 API</span><strong>{{ jobApiPath(selectedJob.job_type) }}</strong>
             </div>
             <div>
               <span>时间</span
-              ><strong
-                >已用 {{ readableDuration(selectedJob.timing.elapsed_seconds) }} · 剩余约
-                {{ readableDuration(selectedJob.timing.estimated_remaining_seconds) }}</strong
-              >
+              ><strong>{{ timingSummary(selectedJob) }}</strong>
             </div>
           </section>
           <section class="asset-stage-message">
@@ -638,52 +592,11 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <code class="asset-hash">{{ selectedJob.input_sha256 }}</code>
           </section>
           <section v-if="selectedJob.job_type === 'RETOPOLOGY_PROCESS_V1'">
-            <h3>三模型 × 四视图复核</h3>
-            <p v-if="previewLoading">正在读取真实复核制品……</p>
-            <div v-else class="asset-review-images">
-              <figure v-if="previewUrls.comparison">
-                <img :src="previewUrls.comparison" alt="高模、参考低模与生成低模四视图对比" />
-                <figcaption>高模 / 参考低模 / 生成低模 · 前 / 侧 / 顶 / 透视</figcaption>
-              </figure>
-              <figure v-if="previewUrls.reference_images">
-                <img :src="previewUrls.reference_images" alt="用户提供的多视角参考图" />
-                <figcaption>用户多视角参考图（仅用于复核，不修改源图）</figcaption>
-              </figure>
-              <p v-if="!previewUrls.comparison && !previewLoading">
-                四视图制品尚未生成，不能进行批准。
-              </p>
-            </div>
-            <div
-              v-if="selectedJob.status === 'WAITING_REVIEW'"
-              class="asset-review-actions"
-            >
-              <button
-                class="primary"
-                :disabled="reviewingJobId === selectedJob.job_id || !previewUrls.comparison"
-                @click="reviewJob(selectedJob, 'APPROVE')"
-              >
-                批准并发布
-              </button>
-              <button
-                class="danger-button"
-                :disabled="reviewingJobId === selectedJob.job_id"
-                @click="reviewJob(selectedJob, 'REJECT')"
-              >
-                驳回候选
-              </button>
-            </div>
-            <div
-              v-if="selectedJob.status === 'REVIEW_REJECTED'"
-              class="asset-review-actions"
-            >
-              <button
-                class="primary"
-                :disabled="iteratingJobId === selectedJob.job_id"
-                @click="iterateJob(selectedJob)"
-              >
-                {{ iteratingJobId === selectedJob.job_id ? "创建中" : "按评语创建下一版" }}
-              </button>
-            </div>
+            <h3>用户端人工复核</h3>
+            <p>
+              调度中心只记录状态、诊断与制品清单，不在这里执行批准或驳回。
+              三模型四视图及其 SHA-256 会通过任务 API 返回给提交方，由用户端展示并回传复核决定。
+            </p>
           </section>
           <section>
             <h3>原子交付物（{{ selectedJob.artifacts.length }}）</h3>

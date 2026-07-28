@@ -11,6 +11,7 @@ const labels: Record<string, string> = {
   RUNNING: "运行中",
   VALIDATING: "校验中",
   ASSEMBLING: "汇总中",
+  FAILING: "失败收尾中",
   CANCELLING: "取消中",
   SUCCEEDED: "已成功",
   FAILED: "失败",

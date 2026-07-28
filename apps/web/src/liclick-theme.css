@@ -410,6 +410,7 @@ tbody tr:hover td {
 }
 
 .status-mark.failed,
+.status-mark.failing,
 .status-mark.timed_out {
   color: #ff879a;
   border-color: rgba(255, 73, 102, 0.24);

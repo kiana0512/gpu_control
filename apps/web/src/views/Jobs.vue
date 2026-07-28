@@ -35,6 +35,13 @@ watch(pageCount, (count) => {
 });
 const terminalStatuses = ["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT"];
 const isBatch = computed(() => selectedJob.value?.kind === "batch");
+const selectedDisplayStatus = computed(() =>
+  selectedJob.value?.kind === "batch" &&
+  selectedJob.value.status === "CANCELLING" &&
+  selectedJob.value.error
+    ? "FAILING"
+    : selectedJob.value?.status ?? "",
+);
 const canCancel = computed(
   () =>
     selectedJob.value && !terminalStatuses.includes(selectedJob.value.status),
@@ -275,7 +282,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           </button>
         </header>
         <div class="task-result" :class="selectedJob.status.toLowerCase()">
-          <StatusMark :value="selectedJob.status" /><strong>{{
+          <StatusMark :value="selectedDisplayStatus" /><strong>{{
             selectedJob.status === "SUCCEEDED"
               ? isBatch
                 ? "全部序列帧已校验并生成完整结果包"
@@ -284,6 +291,8 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
                 ? isBatch
                   ? "批次失败，未向调用方暴露不完整结果"
                   : "任务执行失败，请查看下方错误信息"
+                : selectedDisplayStatus === "FAILING"
+                  ? "子任务失败，系统正在安全收尾；这不是用户取消"
                 : isBatch
                   ? "批次状态与逐帧进度已同步"
                   : "任务状态已同步"

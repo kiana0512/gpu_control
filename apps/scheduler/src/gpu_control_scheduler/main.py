@@ -735,31 +735,37 @@ class Scheduler:
                     item.status = BatchItemStatus.RUNNING.value
                     active_progress += max(0.0, min(job.progress, 99.0)) / 100
 
-            if batch.cancel_requested or failure_item is not None:
+            # A child failure is not a user cancellation.  Keep feeding and
+            # processing the other frames so the failure remains isolated and
+            # observable.  The all-or-nothing contract is enforced only at the
+            # final parent transition: any exhausted child makes the parent
+            # FAILED and no result archive is published.
+            if failure_item is not None and not batch.cancel_requested:
+                if not batch.error_code:
+                    batch.error_code = failure_item.error_code
+                    batch.error_message = (
+                        f"帧 {failure_item.ordinal} {failure_item.input_relative_path}: "
+                        f"{failure_item.error_message}"
+                    )[:1000]
+                    await transition_batch(
+                        session,
+                        batch,
+                        BatchStatus(batch.status),
+                        "batch.item_failed_continuing",
+                        {
+                            "ordinal": failure_item.ordinal,
+                            "error_code": failure_item.error_code,
+                        },
+                    )
+
+            if batch.cancel_requested:
                 if batch.status != BatchStatus.CANCELLING.value:
-                    if failure_item is not None:
-                        batch.error_code = failure_item.error_code
-                        batch.error_message = (
-                            f"帧 {failure_item.ordinal} {failure_item.input_relative_path}: "
-                            f"{failure_item.error_message}"
-                        )[:1000]
-                        await transition_batch(
-                            session,
-                            batch,
-                            BatchStatus.CANCELLING,
-                            "batch.failure_cancelling",
-                            {
-                                "ordinal": failure_item.ordinal,
-                                "error_code": failure_item.error_code,
-                            },
-                        )
-                    else:
-                        await transition_batch(
-                            session,
-                            batch,
-                            BatchStatus.CANCELLING,
-                            "batch.cancelling",
-                        )
+                    await transition_batch(
+                        session,
+                        batch,
+                        BatchStatus.CANCELLING,
+                        "batch.cancelling",
+                    )
                 for item in items:
                     if not item.job_id and item.status == BatchItemStatus.PENDING.value:
                         item.status = BatchItemStatus.CANCELLED.value
@@ -798,10 +804,24 @@ class Scheduler:
             terminal_count = (
                 batch.succeeded_items + batch.failed_items + batch.cancelled_items
             )
+            if (
+                terminal_count == batch.total_items
+                and batch.failed_items
+                and not batch.cancel_requested
+            ):
+                await transition_batch(
+                    session,
+                    batch,
+                    BatchStatus.FAILED,
+                    "batch.failed_after_all_items",
+                    {"failed_items": batch.failed_items},
+                )
+                await session.commit()
+                return False
             if batch.status == BatchStatus.CANCELLING.value and terminal_count == batch.total_items:
-                if batch.error_code:
+                if not batch.cancel_requested:
                     await transition_batch(
-                        session, batch, BatchStatus.FAILED, "batch.failed"
+                        session, batch, BatchStatus.FAILED, "batch.failed_drain_complete"
                     )
                 else:
                     await transition_batch(

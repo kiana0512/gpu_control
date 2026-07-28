@@ -72,6 +72,12 @@ class ComfyClient:
             return value
         except httpx.TimeoutException as exc:
             raise ComfyError("COMFY_TIMEOUT", f"ComfyUI timeout: {path}") from exc
+        except httpx.RequestError as exc:
+            raise ComfyError(
+                "COMFY_CONNECT_ERROR",
+                f"ComfyUI request failed: {path}",
+                {"error_type": type(exc).__name__},
+            ) from exc
         except httpx.HTTPStatusError as exc:
             details: dict[str, Any] = {"status": exc.response.status_code}
             try:
@@ -105,16 +111,112 @@ class ComfyClient:
         return await self._json("GET", f"/history/{prompt_id}")
 
     async def upload(
-        self, path: Path, *, mask: bool = False, subfolder: str = ""
+        self,
+        path: Path,
+        *,
+        mask: bool = False,
+        subfolder: str = "",
+        verify: bool = True,
+        max_attempts: int = 3,
     ) -> dict[str, Any]:
-        endpoint = "/upload/mask" if mask else "/upload/image"
+        """Upload an input atomically enough for immediate Comfy execution.
+
+        ComfyUI may create the destination before the request body has arrived.  If
+        the connection then drops, a zero-byte file is left behind.  Retrying with
+        ``overwrite=false`` reports success while preserving that corrupt file.
+        Always overwrite the job-scoped destination and read it back before prompt
+        submission so transport failures never consume an inference attempt.
+        """
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
+        expected_size = path.stat().st_size
+        if expected_size < 1:
+            raise ComfyError("INPUT_INVALID", f"input file is empty: {path.name}")
+        digest = hashlib.sha256()
         with path.open("rb") as source:
-            return await self._json(
-                "POST",
-                endpoint,
-                files={"image": (path.name, source, "application/octet-stream")},
-                data={"subfolder": subfolder, "overwrite": "false"},
-            )
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        expected_sha256 = digest.hexdigest()
+        endpoint = "/upload/mask" if mask else "/upload/image"
+        last_error: ComfyError | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with path.open("rb") as source:
+                    uploaded = await self._json(
+                        "POST",
+                        endpoint,
+                        files={"image": (path.name, source, "application/octet-stream")},
+                        data={"subfolder": subfolder, "overwrite": "true"},
+                    )
+                remote_name = str(uploaded.get("name") or path.name)
+                remote_subfolder = str(uploaded.get("subfolder") or subfolder)
+                if verify:
+                    remote_size, remote_sha256 = await self.remote_digest(
+                        ComfyOutput(remote_name, remote_subfolder, "input"),
+                        max_bytes=expected_size,
+                    )
+                    if remote_size != expected_size or remote_sha256 != expected_sha256:
+                        raise ComfyError(
+                            "COMFY_UPLOAD_INTEGRITY_FAILED",
+                            "uploaded input differs from the source",
+                            {
+                                "filename": remote_name,
+                                "subfolder": remote_subfolder,
+                                "expected_size": expected_size,
+                                "actual_size": remote_size,
+                                "expected_sha256": expected_sha256,
+                                "actual_sha256": remote_sha256,
+                                "attempt": attempt,
+                            },
+                        )
+                return {
+                    **uploaded,
+                    "verified": verify,
+                    "size_bytes": expected_size,
+                    "sha256": expected_sha256,
+                    "attempt": attempt,
+                }
+            except ComfyError as exc:
+                last_error = exc
+                if attempt >= max_attempts:
+                    raise
+                await asyncio.sleep(min(0.25 * (2 ** (attempt - 1)), 1.0))
+        assert last_error is not None
+        raise last_error
+
+    async def remote_digest(
+        self, output: ComfyOutput, *, max_bytes: int = 2_147_483_648
+    ) -> tuple[int, str]:
+        query = urlencode(
+            {"filename": output.filename, "subfolder": output.subfolder, "type": output.kind}
+        )
+        total = 0
+        digest = hashlib.sha256()
+        try:
+            async with self.http.stream("GET", f"/view?{query}") as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes():
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ComfyError(
+                            "COMFY_UPLOAD_INTEGRITY_FAILED",
+                            "uploaded input exceeds the source size",
+                        )
+                    digest.update(chunk)
+        except httpx.TimeoutException as exc:
+            raise ComfyError("COMFY_TIMEOUT", "ComfyUI input verification timed out") from exc
+        except httpx.RequestError as exc:
+            raise ComfyError(
+                "COMFY_CONNECT_ERROR",
+                "ComfyUI input verification failed",
+                {"error_type": type(exc).__name__},
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise ComfyError(
+                "COMFY_UPLOAD_INTEGRITY_FAILED",
+                f"ComfyUI input verification returned {exc.response.status_code}",
+            ) from exc
+        return total, digest.hexdigest()
 
     async def submit(self, prompt: dict[str, Any], client_id: str) -> str:
         payload = await self._json(

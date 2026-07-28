@@ -2,14 +2,14 @@
 
 本页是仓库文档导航。今天部署时不要从 30 多份文档逐一翻找，按下面的“现场主线”执行即可；其余文档是遇到具体问题时的细节手册。
 
-## 1. 今天上线只看这七项
+## 1. 当前现场主线
 
 1. 根目录 `GPU_CONTROL_成品部署联调与核心逻辑手册.pdf`：产品结构、核心算法、三机命令、联调、日志、压测和故障定位的单文件版本。
 2. `docs/USER_INPUT_REQUIRED.md`：先补齐真实 IP、SSH 用户、模型、API 工作流和业务限制。
 3. `docs/28_TODAY_DEPLOYMENT_MANUAL.md`：从三台空 Ubuntu 主机开始的完整命令正文。
 4. `docs/30_TODAY_ONSITE_CHECKLIST.md`：现场操作者逐项打勾并记录结果。
 5. `docs/33_3090_NODE_DEPLOYMENT_HANDOFF.md`：2026-07-23 当前双项目镜像、模型和 3090 接入的唯一最新交接步骤。
-6. `docs/40_GPU_CONTROL_MATTING_HANDOFF_V3.md`：动画管家批量抠图当前唯一接口合同。
+6. `docs/56_GPU_CONTROL_MATTING_HANDOFF_V4.md`：动画管家批量抠图当前实施合同；冻结上传完整性、失败隔离与真实取消语义。
 7. `docs/41_2026-07-27_GPU_CONTROL_1_3_2_STRESS_AND_PIPELINE_RECORD.md`：1.3.2/1.3.3 管线修复、三节点真实压力和生产优先级证据。
 8. `docs/42_2026-07-27_ASSETCLAW_V3_ALIGNMENT_RESPONSE.md`：动画管家 V3 固定格式对齐回执与安全启用门禁。
 9. `docs/43_BLENDER_PBR_UV_ASSET_API_CONTRACT_V1.md`：Blender CPU Worker、并发模型、外部 API 和验收合同。
@@ -17,14 +17,15 @@
 11. `docs/45_MODELVIEW_OPTIONAL_PROMPT_AND_SEEDVR2_ROLLOUT.md`：局部重绘可选提示词、SeedVR2 固定依赖和三节点安全升级方案。
 12. `docs/46_2026-07-27_PRODUCTION_DRAIN_AND_ROLLOUT_RUNBOOK.md`：生产任务排空门禁、三节点局部重绘发布、Asset API 启用与回滚执行单。
 13. `docs/55_ASSET_UV_RETOPOLOGY_V3_API_AND_LIVE_ACCEPTANCE.md`：UV/重拓扑当前 API、进度、产物、真实两机验收与 3090-B 迁移唯一交接。
+14. `docs/57_2026-07-28_3090_B_WINDOWS_WSL2_GPU_ACCEPTANCE.md`：3090-B Windows/WSL2 混合节点、真实 GPU API 验收、当前 Asset Worker 状态与后续项。
 
 3090-A 的已完成部署、动态心跳、Web 修复和真实任务证据见
 `docs/34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md`。
 3090-B、动态热缓存、OOM/重试修复、GPU 指标与三卡 10 客户实测见
 `docs/35_2026-07-23_3090_B_AND_THREE_NODE_ACCEPTANCE.md`。
 
-动画管家批量序列帧抠图请只按 `docs/40_GPU_CONTROL_MATTING_HANDOFF_V3.md` 联调；V2 和草案已被
-V3 替代，不能继续作为当前接口合同。1.2.0 初版批处理记录仍保留在
+动画管家批量序列帧抠图请只按 `docs/56_GPU_CONTROL_MATTING_HANDOFF_V4.md` 联调；V1～V3 只保留
+为历史记录，不能继续作为当前接口合同。1.2.0 初版批处理记录仍保留在
 `docs/39_2026-07-24_BATCH_MATTING_DEPLOYMENT_RECORD.md`，1.3.3 的当前事实以 41 号记录为准。
 
 部署完成后看 `docs/IMPLEMENTATION_STATUS.md`，把“现场待测”项改成实际日期、主机和结果，不要覆盖本机验证记录。
@@ -40,10 +41,11 @@ V3 替代，不能继续作为当前接口合同。1.2.0 初版批处理记录�
 | 当前 3090 交接 | `33_3090_NODE_DEPLOYMENT_HANDOFF.md` | 将本机已验证的双项目环境复制到两台 3090 |
 | 3090-A 记录 | `34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md` | A 的实机身份、部署结果、断电恢复与真实任务证据 |
 | B 与三卡验收 | `35_2026-07-23_3090_B_AND_THREE_NODE_ACCEPTANCE.md` | B 的完整部署、性能优化、故障修复和 10 客户三卡实测 |
-| 动画管家 V3 | `40_GPU_CONTROL_MATTING_HANDOFF_V3.md` | 批量抠图当前接口、结果校验、管线门禁和联调清单 |
+| 动画管家 V4 | `56_GPU_CONTROL_MATTING_HANDOFF_V4.md` | 批量抠图当前接口、上传完整性、失败/取消语义和联调清单 |
 | 批处理部署记录 | `39_2026-07-24_BATCH_MATTING_DEPLOYMENT_RECORD.md` | 1.2.0 生产变更、真实三卡证据和回滚点 |
 | 1.3.2/1.3.3 压测记录 | `41_2026-07-27_GPU_CONTROL_1_3_2_STRESS_AND_PIPELINE_RECORD.md` | 最新管线修复、真实 7:3 压力和生产优先级证据 |
 | Asset V3 | `55_ASSET_UV_RETOPOLOGY_V3_API_AND_LIVE_ACCEPTANCE.md` | UV、重拓扑、多视角、进度/ETA、审核与两机真实验收 |
+| 3090-B 混合节点验收 | `57_2026-07-28_3090_B_WINDOWS_WSL2_GPU_ACCEPTANCE.md` | Windows/WSL2 网络、节点身份、GPU 真实任务、Asset Worker 与回滚 |
 | 分角色安装 | `03`—`11` | 网络、准备、4090、3090、镜像、模型、工作流、首次部署 |
 | 使用手册 | `12_WEB_ADMIN_GUIDE.md`、`13_PUBLIC_API_GUIDE.md` | 管理后台和业务 API |
 | 运维 | `15`—`22` | 日志、告警、备份、升级、故障、容量和 FAQ |

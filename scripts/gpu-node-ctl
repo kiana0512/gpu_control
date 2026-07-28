@@ -34,7 +34,12 @@ case "${1:-}" in
     [[ "${lines}" =~ ^[0-9]+$ ]] && (( lines >= 1 && lines <= 2000 )) || { echo "invalid log lines" >&2; exit 2; }
     exec docker compose --project-directory "${PROJECT_DIR}" -f "${COMPOSE_FILE}" "${profile_args[@]}" logs --no-color --tail "${lines}" "${SERVICE_NAME}"
     ;;
-  nvidia-smi) exec /usr/bin/nvidia-smi -q ;;
+  nvidia-smi)
+    if [[ -x /usr/bin/nvidia-smi ]]; then
+      exec /usr/bin/nvidia-smi -q
+    fi
+    exec /usr/lib/wsl/lib/nvidia-smi -q
+    ;;
   system) exec /usr/bin/systemd-run --pipe --wait --collect /bin/sh -c '/usr/bin/df -h /srv; /usr/bin/free -h; /usr/bin/docker version --format "{{.Server.Version}}"' ;;
   diagnostics) exec /opt/gpu-control/scripts/collect_diagnostics.sh --stdout ;;
   *) echo "allowed: status|start|stop|restart|logs <1-2000>|nvidia-smi|system|diagnostics" >&2; exit 2 ;;

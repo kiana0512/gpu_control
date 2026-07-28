@@ -6,6 +6,11 @@ const emit = defineEmits<{ select: [job: JobInfo] }>();
 function isBatch(job: JobInfo) {
   return job.kind === "batch";
 }
+function displayStatus(job: JobInfo) {
+  return isBatch(job) && job.status === "CANCELLING" && job.error
+    ? "FAILING"
+    : job.status;
+}
 function nodeSummary(job: JobInfo) {
   if (!isBatch(job)) return job.node_id ?? "—";
   const entries = Object.entries(job.node_distribution ?? {});
@@ -68,7 +73,7 @@ function nodeSummary(job: JobInfo) {
                 >{{ job.counts.succeeded }} / {{ job.counts.total }} 帧</small
               >
             </td>
-            <td><StatusMark :value="job.status" /></td>
+            <td><StatusMark :value="displayStatus(job)" /></td>
             <td>{{ nodeSummary(job) }}</td>
             <td>
               <div class="progress">

@@ -3,7 +3,13 @@ from pathlib import Path
 
 import gpu_node_agent.main as node_agent
 import httpx
-from gpu_node_agent.main import NodeAgentSettings, _imageclip_pipeline_state, create_app
+from gpu_node_agent.main import (
+    NodeAgentSettings,
+    _current_ip,
+    _imageclip_pipeline_state,
+    _mac_address,
+    create_app,
+)
 
 from packages.gpu_control_core.security import sign_agent_request
 from packages.gpu_control_core.settings import Settings
@@ -16,6 +22,11 @@ def test_worker_agent_does_not_require_control_plane_secrets() -> None:
     )
     assert settings.environment == "production"
     assert settings.node_agent_hmac_secret.endswith("32-characters")
+
+
+def test_hybrid_node_uses_physical_host_identity_over_wsl_nat() -> None:
+    assert _current_ip("10.3.34.11", "10.3.34.14") == "10.3.34.14"
+    assert _mac_address("3C-7C-3F-A5-B0-4F") == "3c:7c:3f:a5:b0:4f"
 
 
 def test_imageclip_pipeline_state_is_deterministic_and_tracks_content(tmp_path: Path) -> None:

@@ -18,7 +18,6 @@ from typing import Any
 
 import httpx
 
-
 TERMINAL = {"SUCCEEDED", "WAITING_REVIEW", "FAILED", "CANCELLED", "REVIEW_REJECTED"}
 
 
