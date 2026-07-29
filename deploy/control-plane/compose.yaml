@@ -76,12 +76,14 @@ services:
       BLENDER_SKILL_VERSION: ${BLENDER_SKILL_VERSION:-asset-skills-2026.07.28}
       UV_SKILL_ROOT: /opt/codex/skills/blender-pbr-uv
       RETOPOLOGY_SKILL_ROOT: /opt/codex/skills/blender-retopology-compare-iterate
+      RETOPOFLOW_ADDON_ROOT: /opt/blender-addons/RetopoFlow
       CODEX_BINARY: /usr/local/bin/codex
       CODEX_AUTH_SOURCE: /run/secrets/codex-auth.json
     volumes:
       - ${CODEX_SKILL_ROOT:-/opt/gpu-control/runtime/asset-skills}:/opt/codex/skills:ro
       - ${CODEX_BINARY_PATH:-/opt/gpu-control/runtime/codex/codex}:/usr/local/bin/codex:ro
       - ${CODEX_ASSET_AUTH_PATH:-/home/lilithgames/.codex/auth.json}:/run/secrets/codex-auth.json:ro
+      - ${RETOPOFLOW_RUNTIME_ROOT:-/opt/gpu-control/runtime/retopoflow/RetopoFlow}:/opt/blender-addons/RetopoFlow:ro
     depends_on:
       asset-api: {condition: service_healthy}
     logging: *default-logging

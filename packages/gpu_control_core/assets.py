@@ -84,13 +84,14 @@ class RetopologyReferenceView(BaseModel):
 
 
 class RetopologyProcessOptions(RetopologyAuditOptions):
-    """Deterministic candidate-generation and visual-review controls."""
+    """Deterministic generation, topology-style and evidence controls."""
 
     generated_low_object: str = Field(
         default="GPUCTRL_Retopo_v001", min_length=1, max_length=128
     )
     algorithm: Literal["agent", "quadriflow", "cleanup_existing"] = "agent"
-    target_faces: int | None = Field(default=None, ge=100, le=5_000_000)
+    topology_style: Literal["quad_dominant", "preserve_existing"] = "quad_dominant"
+    target_faces: int | None = Field(default=None, ge=50, le=5_000_000)
     preserve_sharp: bool = True
     preserve_boundary: bool = True
     render_resolution: Literal[256, 512, 1024] = 512

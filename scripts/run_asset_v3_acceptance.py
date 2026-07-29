@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -28,13 +29,25 @@ def sha256(data: bytes) -> str:
 def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--api-url", required=True)
-    parser.add_argument("--api-key", required=True)
+    parser.add_argument(
+        "--api-key",
+        default=os.getenv("GPU_CONTROL_ACCEPTANCE_API_KEY", ""),
+        help=(
+            "optional X-API-Key; defaults to GPU_CONTROL_ACCEPTANCE_API_KEY; "
+            "omit when the caller is identified by source IP"
+        ),
+    )
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--submit", action="store_true")
     parser.add_argument("--monitor", action="store_true")
     parser.add_argument("--uv-file", type=Path)
     parser.add_argument("--retopology-project", type=Path)
     parser.add_argument("--reference-root", type=Path)
+    parser.add_argument("--high-object", default="bunny_high")
+    parser.add_argument("--reference-object", default="bunny_reference_low")
+    parser.add_argument("--low-object", default="bunny_current_low")
+    parser.add_argument("--generated-object-prefix", default="bunny_generated")
+    parser.add_argument("--target-faces", type=int, default=3000)
     parser.add_argument("--uv-count", type=int, default=2)
     parser.add_argument("--retopology-count", type=int, default=2)
     parser.add_argument("--timeout-seconds", type=int, default=3600)
@@ -89,7 +102,10 @@ def submit(client: httpx.Client, args: argparse.Namespace) -> dict[str, Any]:
                     ),
                 },
             )
-        response.raise_for_status()
+        if response.is_error:
+            raise RuntimeError(
+                f"UV submission rejected ({response.status_code}): {response.text}"
+            )
         payload = response.json()
         jobs.append({"job_id": payload["job_id"], "job_type": "UV_PROCESS_V2"})
     reference_files = [
@@ -106,12 +122,12 @@ def submit(client: httpx.Client, args: argparse.Namespace) -> dict[str, Any]:
         metadata = {
             "external_asset_id": external_id,
             "options": {
-                "high_object": "bunny_high",
-                "reference_object": "bunny_reference_low",
-                "low_object": "bunny_current_low",
-                "generated_low_object": f"bunny_generated_{index:02d}_v001",
+                "high_object": args.high_object,
+                "reference_object": args.reference_object,
+                "low_object": args.low_object,
+                "generated_low_object": f"{args.generated_object_prefix}_{index:02d}_v001",
                 "algorithm": "agent",
-                "target_faces": 3000,
+                "target_faces": args.target_faces,
                 "preserve_sharp": True,
                 "preserve_boundary": True,
                 "render_resolution": 256,
@@ -124,7 +140,7 @@ def submit(client: httpx.Client, args: argparse.Namespace) -> dict[str, Any]:
             ],
             "user_request": (
                 "以高模轮廓为形状权威，以参考低模为布线和面数参考；"
-                "保留耳朵、鼻口和腿部轮廓，生成版本化候选并提交四视图人工复核。"
+                "保留耳朵、鼻口和腿部轮廓，生成版本化候选与四视图验证证据。"
             ),
         }
         handles = [path.open("rb") for _, path in reference_files]
@@ -157,7 +173,11 @@ def submit(client: httpx.Client, args: argparse.Namespace) -> dict[str, Any]:
             project_handle.close()
             for handle in handles:
                 handle.close()
-        response.raise_for_status()
+        if response.is_error:
+            raise RuntimeError(
+                "retopology submission rejected "
+                f"({response.status_code}): {response.text}"
+            )
         payload = response.json()
         jobs.append(
             {"job_id": payload["job_id"], "job_type": "RETOPOLOGY_PROCESS_V1"}
@@ -192,11 +212,7 @@ def monitor(client: httpx.Client, args: argparse.Namespace, state: dict[str, Any
                 )
                 previous[job_id] = current
             if payload["status"] in TERMINAL:
-                expected = (
-                    "SUCCEEDED"
-                    if descriptor["job_type"] == "UV_PROCESS_V2"
-                    else "WAITING_REVIEW"
-                )
+                expected = "SUCCEEDED"
                 if payload["status"] != expected:
                     raise RuntimeError(
                         f"{job_id} ended as {payload['status']}: {payload.get('error')}"
@@ -258,7 +274,7 @@ def monitor(client: httpx.Client, args: argparse.Namespace, state: dict[str, Any
 
 def main() -> None:
     args = arguments()
-    headers = {"X-API-Key": args.api_key}
+    headers = {"X-API-Key": args.api_key} if args.api_key else {}
     with httpx.Client(base_url=args.api_url.rstrip("/"), headers=headers, timeout=3600) as client:
         state = submit(client, args) if args.submit else json.loads(args.state.read_text("utf-8"))
         if args.monitor:

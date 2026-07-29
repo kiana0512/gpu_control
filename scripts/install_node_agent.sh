@@ -42,8 +42,10 @@ python3 -m venv "${root}/.venv"
   "argon2-cffi==25.1.0" \
   "pydantic==2.11.7" \
   "pydantic-settings==2.10.1" \
+  "setuptools==80.9.0" \
   "structlog==25.4.0" \
-  "uvicorn[standard]==0.35.0"
+  "uvicorn[standard]==0.35.0" \
+  "wheel==0.45.1"
 "${root}/.venv/bin/pip" install \
   --disable-pip-version-check \
   --ignore-requires-python \
@@ -80,6 +82,7 @@ chmod 0644 /etc/gpu-control/node-role
   printf 'NODE_MAC_ADDRESS=%s\n' "${NODE_MAC_ADDRESS:-}"
   printf 'NODE_HEARTBEAT_INTERVAL_SECONDS=%s\n' "${NODE_HEARTBEAT_INTERVAL_SECONDS:-10}"
   printf 'NODE_CONTROL_CA_CERT=%s\n' "${NODE_CONTROL_CA_CERT:-/etc/gpu-control/lan-ca.crt}"
+  printf 'CODEX_BINARY=%s\n' "${CODEX_BINARY:-/usr/local/bin/codex}"
 } > /etc/gpu-control/node-agent.env
 chmod 0600 /etc/gpu-control/node-agent.env
 

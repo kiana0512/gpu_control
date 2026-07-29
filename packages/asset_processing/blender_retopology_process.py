@@ -1,8 +1,7 @@
-"""Generate a versioned retopology candidate without mutating source objects.
+"""Generate and validate a versioned retopology result without mutating sources.
 
-Run with Blender, never with the system Python.  The result is deliberately a
-review candidate: automatic QuadriFlow output and deterministic cleanup are not
-allowed to bypass the four-view and strict-audit gates in the control plane.
+Run with Blender, never with the system Python.  Automatic output is published
+only after strict topology audit and deterministic four-view evidence creation.
 """
 
 from __future__ import annotations
@@ -30,6 +29,11 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--generated", required=True)
     parser.add_argument(
         "--algorithm", choices=("quadriflow", "cleanup_existing"), default="quadriflow"
+    )
+    parser.add_argument(
+        "--topology-style",
+        choices=("quad_dominant", "preserve_existing"),
+        default="quad_dominant",
     )
     parser.add_argument("--target-faces", type=int, default=0)
     parser.add_argument("--max-repair-rounds", type=int, default=1)
@@ -90,13 +94,21 @@ def select_only(obj: bpy.types.Object) -> None:
     bpy.context.view_layer.objects.active = obj
 
 
-def topology_counts(obj: bpy.types.Object) -> dict[str, int]:
+def topology_counts(obj: bpy.types.Object) -> dict[str, int | float]:
+    polygons = obj.data.polygons
+    triangles = sum(1 for face in polygons if len(face.vertices) == 3)
+    quads = sum(1 for face in polygons if len(face.vertices) == 4)
+    ngons = sum(1 for face in polygons if len(face.vertices) > 4)
+    faces = len(polygons)
     return {
         "vertices": len(obj.data.vertices),
         "edges": len(obj.data.edges),
-        "faces": len(obj.data.polygons),
-        "triangles": sum(max(0, len(face.vertices) - 2) for face in obj.data.polygons),
-        "ngons": sum(1 for face in obj.data.polygons if len(face.vertices) > 4),
+        "faces": faces,
+        "triangles": triangles,
+        "quads": quads,
+        "ngons": ngons,
+        "triangle_equivalent": sum(max(0, len(face.vertices) - 2) for face in polygons),
+        "quad_ratio": round(quads / faces, 6) if faces else 0.0,
     }
 
 
@@ -124,9 +136,9 @@ def cleanup_mesh(obj: bpy.types.Object) -> dict[str, int]:
         bm.free()
     after = topology_counts(obj)
     return {
-        "vertices_removed": before["vertices"] - after["vertices"],
-        "edges_removed": before["edges"] - after["edges"],
-        "faces_removed": before["faces"] - after["faces"],
+        "vertices_removed": int(before["vertices"]) - int(after["vertices"]),
+        "edges_removed": int(before["edges"]) - int(after["edges"]),
+        "faces_removed": int(before["faces"]) - int(after["faces"]),
     }
 
 
@@ -192,7 +204,7 @@ def main() -> None:
         "reference": geometry_fingerprint(reference),
         "current": geometry_fingerprint(current),
     }
-    target_faces = args.target_faces or max(100, len(reference.data.polygons))
+    target_faces = args.target_faces or max(50, len(reference.data.polygons))
     if args.algorithm == "quadriflow":
         candidate = evaluated_copy(high, args.generated)
         algorithm_report = run_quadriflow(
@@ -219,16 +231,24 @@ def main() -> None:
 
     candidate["gpu_control_role"] = "generated_low"
     candidate["gpu_control_algorithm"] = args.algorithm
+    candidate["gpu_control_topology_style"] = args.topology_style
     candidate["gpu_control_target_faces"] = target_faces
-    candidate["gpu_control_requires_review"] = True
+    candidate["gpu_control_delivery"] = "automatic_after_strict_qa"
     Path(output_blend).parent.mkdir(parents=True, exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=output_blend, check_existing=False)
     export_fbx(candidate, output_fbx)
 
+    candidate_topology = topology_counts(candidate)
+    topology_goal_met = (
+        args.topology_style == "preserve_existing"
+        or float(candidate_topology["quad_ratio"]) >= 0.8
+    )
     report = {
         "schema_version": "retopology_process_report.v1",
         "source_file": Path(source_path).name,
         "algorithm": args.algorithm,
+        "topology_style": args.topology_style,
+        "topology_goal_met": topology_goal_met,
         "algorithm_report": algorithm_report,
         "target_faces": target_faces,
         "objects": {
@@ -241,14 +261,15 @@ def main() -> None:
         "protected_fingerprints_after": protected_after,
         "source_preserved": protected_before == protected_after,
         "cleanup_rounds": cleanup_rounds,
-        "candidate_topology": topology_counts(candidate),
+        "candidate_topology": candidate_topology,
         "candidate_has_uv": bool(candidate.data.uv_layers),
         "material_slots": len(candidate.material_slots),
         "uv_status": "present" if candidate.data.uv_layers else "not_generated",
         "cage_status": "not_generated",
         "bake_status": "not_run",
-        "visual_review_required": ["front", "side", "top", "perspective"],
-        "automatic_final_promotion_allowed": False,
+        "visual_evidence_views": ["front", "side", "top", "perspective"],
+        "manual_review_required": False,
+        "automatic_final_promotion_allowed": topology_goal_met,
     }
     Path(output_report).write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"

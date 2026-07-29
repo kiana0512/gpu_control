@@ -18,6 +18,8 @@
 12. `docs/46_2026-07-27_PRODUCTION_DRAIN_AND_ROLLOUT_RUNBOOK.md`：生产任务排空门禁、三节点局部重绘发布、Asset API 启用与回滚执行单。
 13. `docs/55_ASSET_UV_RETOPOLOGY_V3_API_AND_LIVE_ACCEPTANCE.md`：UV/重拓扑当前 API、进度、产物、真实两机验收与 3090-B 迁移唯一交接。
 14. `docs/57_2026-07-28_3090_B_WINDOWS_WSL2_GPU_ACCEPTANCE.md`：3090-B Windows/WSL2 混合节点、真实 GPU API 验收、当前 Asset Worker 状态与后续项。
+15. `docs/58_2026-07-29_ASSET_V4_CLIENT_HANDOFF_AND_STABILITY.md`：Asset V4 当前唯一客户端合同、自动交付、Codex/RetopoFlow 健康和三机稳定性验收。
+16. `docs/59_2026-07-29_RELEASE_AUDIT_STABILITY_AND_IMAGE_RECORD.md`：本轮完整发布审计、三节点压力测试、镜像与机器可读证据。
 
 3090-A 的已完成部署、动态心跳、Web 修复和真实任务证据见
 `docs/34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md`。
@@ -46,6 +48,8 @@
 | 1.3.2/1.3.3 压测记录 | `41_2026-07-27_GPU_CONTROL_1_3_2_STRESS_AND_PIPELINE_RECORD.md` | 最新管线修复、真实 7:3 压力和生产优先级证据 |
 | Asset V3 | `55_ASSET_UV_RETOPOLOGY_V3_API_AND_LIVE_ACCEPTANCE.md` | UV、重拓扑、多视角、进度/ETA、审核与两机真实验收 |
 | 3090-B 混合节点验收 | `57_2026-07-28_3090_B_WINDOWS_WSL2_GPU_ACCEPTANCE.md` | Windows/WSL2 网络、节点身份、GPU 真实任务、Asset Worker 与回滚 |
+| Asset V4 客户端合同 | `58_2026-07-29_ASSET_V4_CLIENT_HANDOFF_AND_STABILITY.md` | UV/重拓扑当前 API、自动交付、确定性算法、Codex/RetopoFlow 健康与稳定性验收 |
+| 1.5.1 发布审计 | `59_2026-07-29_RELEASE_AUDIT_STABILITY_AND_IMAGE_RECORD.md` | 三节点真实压力、代码审计、镜像归档与机器可读证据 |
 | 分角色安装 | `03`—`11` | 网络、准备、4090、3090、镜像、模型、工作流、首次部署 |
 | 使用手册 | `12_WEB_ADMIN_GUIDE.md`、`13_PUBLIC_API_GUIDE.md` | 管理后台和业务 API |
 | 运维 | `15`—`22` | 日志、告警、备份、升级、故障、容量和 FAQ |

@@ -125,6 +125,19 @@ class WorkerHeartbeat(BaseModel):
     current_jobs: int = Field(ge=0, le=32)
     load_1m: float = Field(ge=0, le=4096)
     available_memory_mb: int = Field(ge=0)
+    codex_cli_version: str | None = Field(default=None, max_length=64)
+    codex_auth_status: str = Field(default="UNKNOWN", max_length=24)
+    codex_probe_status: str = Field(default="NOT_RUN", max_length=24)
+    codex_probe_latency_ms: int | None = Field(default=None, ge=0, le=600000)
+    codex_last_checked_at: datetime | None = None
+    codex_last_success_at: datetime | None = None
+    codex_error_code: str | None = Field(default=None, max_length=64)
+    retopoflow_version: str | None = Field(default=None, max_length=32)
+    retopoflow_revision: str | None = Field(default=None, max_length=64)
+    retopoflow_probe_status: str = Field(default="NOT_RUN", max_length=24)
+    retopoflow_probe_latency_ms: int | None = Field(default=None, ge=0, le=600000)
+    retopoflow_last_checked_at: datetime | None = None
+    retopoflow_error_code: str | None = Field(default=None, max_length=64)
 
 
 class WorkerClaim(BaseModel):
@@ -279,6 +292,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "download_url": f"/api/v1/assets/jobs/{artifact.job_id}/artifacts/{artifact.id}",
         }
 
+    def public_asset_error(job: AssetJob) -> dict[str, str] | None:
+        """Return a stable caller-facing error without exposing Blender internals.
+
+        Full worker diagnostics remain available to administrators through the
+        control-plane overview.  API callers get a concise, actionable contract
+        and never need to interpret Blender stdout/stderr.
+        """
+        if not job.error_code:
+            return None
+        messages = {
+            "UV_QA_FAILED": (
+                "自动展 UV 未通过严格交付 QA；系统已保留输入与诊断，"
+                "不会发布不合格结果。请联系服务端管理员重试或修复。"
+            ),
+            "RETOPOLOGY_AUDIT_FAILED": (
+                "自动重拓扑候选未通过严格交付 QA；诊断制品已保留，"
+                "未发布为最终结果。"
+            ),
+            "BLENDER_EXECUTION_FAILED": (
+                "Blender 资产处理执行失败；系统已保留任务诊断，"
+                "请联系服务端管理员处理后重试。"
+            ),
+        }
+        return {
+            "code": job.error_code,
+            "message": messages.get(
+                job.error_code,
+                "资产处理未完成；系统已保留诊断，请联系服务端管理员。",
+            ),
+        }
+
     async def append_asset_event(
         db: AsyncSession,
         job: AssetJob,
@@ -308,8 +352,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     async def queue_timing(job: AssetJob, db: AsyncSession) -> dict[str, Any]:
         now = datetime.now(UTC)
+        terminal_at = job.finished_at or job.last_progress_at
+        timing_end = (
+            as_utc(terminal_at)
+            if job.status in TERMINAL_ASSET_STATUSES and terminal_at is not None
+            else now
+        )
         elapsed = (
-            max(0, int((now - as_utc(job.started_at)).total_seconds()))
+            max(0, int((timing_end - as_utc(job.started_at)).total_seconds()))
             if job.started_at
             else 0
         )
@@ -359,9 +409,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else None,
         }
 
+    def artifacts_are_downloadable(job: AssetJob) -> bool:
+        return job.status in DOWNLOADABLE_ASSET_STATUSES or (
+            job.status == "FAILED" and job.error_code == "RETOPOLOGY_AUDIT_FAILED"
+        )
+
     async def job_payload(job: AssetJob, db: AsyncSession) -> dict[str, Any]:
         artifacts: list[dict[str, Any]] = []
-        if job.status in DOWNLOADABLE_ASSET_STATUSES:
+        if artifacts_are_downloadable(job):
             rows = list(
                 (
                     await db.scalars(
@@ -392,9 +447,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "created_at": job.created_at.isoformat(),
             "started_at": job.started_at.isoformat() if job.started_at else None,
             "finished_at": job.finished_at.isoformat() if job.finished_at else None,
-            "error": {"code": job.error_code, "message": job.error_message}
-            if job.error_code
-            else None,
+            "error": public_asset_error(job),
+            "delivery_ready": job.status == "SUCCEEDED",
+            "review_required": False,
+            "artifacts_role": (
+                "diagnostic"
+                if job.status == "FAILED"
+                and job.error_code == "RETOPOLOGY_AUDIT_FAILED"
+                else "delivery"
+                if job.status == "SUCCEEDED"
+                else "retained"
+            ),
             "artifacts": artifacts,
         }
 
@@ -611,7 +674,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ],
         reference_images: Annotated[list[UploadFile] | None, File()] = None,
     ) -> JSONResponse:
-        """Create a source-preserving retopology candidate and four-view review job."""
+        """Create a source-preserving candidate with deterministic four-view evidence."""
         try:
             parsed = RetopologyProcessMetadata.model_validate_json(metadata)
             project_filename = validate_asset_filename(project.filename or "")
@@ -913,7 +976,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Annotated[AsyncSession, Depends(session)],
     ) -> FileResponse:
         job = await owned_job(job_id, principal, db)
-        if job.status not in DOWNLOADABLE_ASSET_STATUSES:
+        if not artifacts_are_downloadable(job):
             raise HTTPException(409, detail={"code": "ASSET_NOT_COMPLETE"})
         artifact = await db.get(AssetArtifact, artifact_id)
         if artifact is None or artifact.job_id != job.id:
@@ -980,6 +1043,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         worker.cpu_count = body.cpu_count
         worker.max_concurrency = body.max_concurrency
         worker.current_jobs = body.current_jobs
+        worker.codex_cli_version = body.codex_cli_version
+        worker.codex_auth_status = body.codex_auth_status
+        worker.codex_probe_status = body.codex_probe_status
+        worker.codex_probe_latency_ms = body.codex_probe_latency_ms
+        worker.codex_last_checked_at = body.codex_last_checked_at
+        worker.codex_last_success_at = body.codex_last_success_at
+        worker.codex_error_code = body.codex_error_code
+        worker.retopoflow_version = body.retopoflow_version
+        worker.retopoflow_revision = body.retopoflow_revision
+        worker.retopoflow_probe_status = body.retopoflow_probe_status
+        worker.retopoflow_probe_latency_ms = body.retopoflow_probe_latency_ms
+        worker.retopoflow_last_checked_at = body.retopoflow_last_checked_at
+        worker.retopoflow_error_code = body.retopoflow_error_code
         worker.last_heartbeat_at = datetime.now(UTC)
         resource_ok = (
             body.available_memory_mb >= cfg.asset_worker_min_available_memory_mb
@@ -1304,17 +1380,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(409, detail={"code": "ASSET_OUTPUT_ALREADY_EXISTS"})
             staging.rename(final)
             db.add_all(created)
-            # The bundled Skill explicitly requires matched four-view visual review.
-            # A numeric audit alone is never promoted to a final retopology result.
-            job.status = "WAITING_REVIEW"
-            job.progress = 95
-            job.stage = "WAITING_REVIEW"
-            job.stage_message = "拓扑审计完成，等待人工四视图复核"
-            job.estimated_remaining_seconds = None
-            job.last_progress_at = datetime.now(UTC)
-            job.error_code = (
-                None if bool(audit_payload.get("audit_passed")) else "RETOPOLOGY_AUDIT_FAILED"
+            audit_passed = audit_payload.get("audit_passed") is True
+            job.status = "SUCCEEDED" if audit_passed else "FAILED"
+            job.progress = 100
+            job.stage = "SUCCEEDED" if audit_passed else "FAILED"
+            job.stage_message = (
+                "拓扑严格 QA 已通过，审计制品已发布"
+                if audit_passed
+                else "拓扑硬性 QA 未通过；诊断制品已保留，不可交付"
             )
+            job.estimated_remaining_seconds = 0
+            job.last_progress_at = datetime.now(UTC)
+            job.finished_at = job.last_progress_at
+            job.error_code = None if audit_passed else "RETOPOLOGY_AUDIT_FAILED"
             failures = audit_payload.get("failures")
             job.error_message = (
                 None
@@ -1327,10 +1405,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if worker is not None:
                 worker.current_jobs = max(0, worker.current_jobs - 1)
             await append_asset_event(
-                db, job, details={"event": "asset.waiting_review"}
+                db,
+                job,
+                details={
+                    "event": "asset.succeeded" if audit_passed else "asset.qa_failed",
+                    "audit_passed": audit_passed,
+                },
             )
             await db.commit()
-            return {"accepted": True, "status": job.status, "review_required": True}
+            return {
+                "accepted": True,
+                "status": job.status,
+                "review_required": False,
+                "audit_passed": audit_passed,
+            }
         finally:
             if staging.exists():
                 shutil.rmtree(staging)
@@ -1462,17 +1550,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(
                     422, detail={"code": "RETOPOLOGY_MANIFEST_OBJECTS_MISMATCH"}
                 )
-            visual_review = manifest_payload.get("visual_review")
+            # The old key is accepted while workers roll. This is visual
+            # evidence for deterministic QA, not a manual approval gate.
+            visual_evidence = manifest_payload.get("visual_evidence") or manifest_payload.get(
+                "visual_review"
+            )
             if (
-                not isinstance(visual_review, dict)
-                or visual_review.get("required") is not True
-                or set(visual_review.get("views", []))
+                not isinstance(visual_evidence, dict)
+                or visual_evidence.get("required") is not True
+                or set(visual_evidence.get("views", []))
                 != {"front", "side", "top", "perspective"}
-                or set(visual_review.get("roles", []))
+                or set(visual_evidence.get("roles", []))
                 != {"high", "reference", "generated"}
+                or visual_evidence.get("manual_review_required", False) is not False
             ):
                 raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_VISUAL_REVIEW_MISSING"}
+                    422, detail={"code": "RETOPOLOGY_VISUAL_EVIDENCE_MISSING"}
                 )
             agent_plan = manifest_payload.get("agent_plan")
             if (
@@ -1489,10 +1582,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if (
                 manifest_payload.get("source_preserved") is not True
                 or report_payload.get("source_preserved") is not True
-                or manifest_payload.get("automatic_final_promotion_allowed") is not False
             ):
                 raise HTTPException(
                     422, detail={"code": "RETOPOLOGY_SOURCE_PROTECTION_FAILED"}
+                )
+            topology_goal_met = bool(report_payload.get("topology_goal_met"))
+            if manifest_payload.get("automatic_final_promotion_allowed") != (
+                bool(audit_payload.get("audit_passed")) and topology_goal_met
+            ):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_AUTOMATIC_DELIVERY_INVALID"}
                 )
             for filename, (_, content_type) in {
                 **RETOPOLOGY_PROCESS_REQUIRED_FILENAMES,
@@ -1524,17 +1623,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(409, detail={"code": "ASSET_OUTPUT_ALREADY_EXISTS"})
             staging.rename(final)
             db.add_all(created)
-            job.status = "WAITING_REVIEW"
-            job.progress = 95
-            job.stage = "WAITING_REVIEW"
-            job.stage_message = "候选、严格审计和三组四视图已就绪，等待人工复核"
-            job.estimated_remaining_seconds = None
-            job.last_progress_at = datetime.now(UTC)
-            job.error_code = (
-                None
-                if bool(audit_payload.get("audit_passed"))
-                else "RETOPOLOGY_AUDIT_FAILED"
+            audit_passed = audit_payload.get("audit_passed") is True
+            job.status = "SUCCEEDED" if audit_passed else "FAILED"
+            job.progress = 100
+            job.stage = "SUCCEEDED" if audit_passed else "FAILED"
+            job.stage_message = (
+                "候选已通过严格 QA 与三组四视图生成，自动发布交付"
+                if audit_passed
+                else "候选未通过硬性 QA；诊断制品已保留，不可交付"
             )
+            job.estimated_remaining_seconds = 0
+            job.last_progress_at = datetime.now(UTC)
+            job.finished_at = job.last_progress_at
+            job.error_code = None if audit_passed else "RETOPOLOGY_AUDIT_FAILED"
             failures = audit_payload.get("failures")
             job.error_message = (
                 None
@@ -1552,16 +1653,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 db,
                 job,
                 details={
-                    "event": "asset.waiting_review",
-                    "audit_passed": bool(audit_payload.get("audit_passed")),
+                    "event": "asset.succeeded" if audit_passed else "asset.qa_failed",
+                    "audit_passed": audit_passed,
                 },
             )
             await db.commit()
             return {
                 "accepted": True,
                 "status": job.status,
-                "review_required": True,
-                "audit_passed": bool(audit_payload.get("audit_passed")),
+                "review_required": False,
+                "audit_passed": audit_passed,
             }
         finally:
             if staging.exists():

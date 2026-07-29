@@ -13,6 +13,36 @@ export interface NodeInfo {
   manual_reserved: boolean;
   foreign_queue_detected: boolean;
   last_heartbeat_at?: string | null;
+  codex_cli?: {
+    health: "HEALTHY" | "CHECKING" | "DEGRADED" | "UNAVAILABLE";
+    host_entry_installed: boolean;
+    host_version: string | null;
+    runtime_version: string | null;
+    auth_status: string;
+    probe_status: string;
+    probe_latency_ms: number | null;
+    last_checked_at: string | null;
+    last_success_at: string | null;
+    error_code: string | null;
+    task: {
+      job_id: string;
+      external_asset_id: string;
+      status: string;
+      stage: string;
+      input: {
+        filename: string;
+        sha256: string;
+        high_object: string | null;
+        reference_object: string | null;
+        low_object: string | null;
+        reference_view_count: number;
+        user_request: string | null;
+      };
+      output_contract: string[];
+      is_active: boolean;
+    } | null;
+    scheduler_eligible: false;
+  };
 }
 export interface JobInfo {
   kind?: "job" | "batch";
@@ -121,6 +151,19 @@ export interface AssetWorkerInfo {
   current_jobs: number;
   max_concurrency: number;
   last_heartbeat_at: string | null;
+  codex_cli_version: string | null;
+  codex_auth_status: string;
+  codex_probe_status: string;
+  codex_probe_latency_ms: number | null;
+  codex_last_checked_at: string | null;
+  codex_last_success_at: string | null;
+  codex_error_code: string | null;
+  retopoflow_version: string | null;
+  retopoflow_revision: string | null;
+  retopoflow_probe_status: string;
+  retopoflow_probe_latency_ms: number | null;
+  retopoflow_last_checked_at: string | null;
+  retopoflow_error_code: string | null;
 }
 
 export interface AssetJobInfo {
@@ -151,6 +194,9 @@ export interface AssetJobInfo {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  delivery_ready: boolean;
+  review_required: false;
+  artifacts_role: "delivery" | "diagnostic" | "retained";
   artifacts: AssetArtifactInfo[];
 }
 
@@ -162,7 +208,7 @@ export interface AssetProcessingOverview {
     online_workers: number;
     total_slots: number;
     used_slots: number;
-    waiting_review: number;
+    qa_failed: number;
   };
   workers: AssetWorkerInfo[];
   jobs: AssetJobInfo[];
@@ -177,12 +223,13 @@ export interface AssetProcessingOverview {
     retopology_audit: {
       submit: string;
       format: string;
-      terminal_review_status: string;
+      success_status: string;
     };
     retopology_process: {
       submit: string;
       format: string;
-      review_status: string;
+      success_status: string;
+      delivery_policy: string;
       views: string[];
       roles: string[];
       reference_views_optional: boolean;

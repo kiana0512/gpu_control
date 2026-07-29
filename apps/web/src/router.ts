@@ -5,6 +5,7 @@ const Dashboard = () => import("./views/Dashboard.vue");
 const Jobs = () => import("./views/Jobs.vue");
 const Nodes = () => import("./views/Nodes.vue");
 const Assets = () => import("./views/Assets.vue");
+const CodexRuntime = () => import("./views/CodexRuntime.vue");
 const ResourceList = () => import("./views/ResourceList.vue");
 const Scheduling = () => import("./views/Scheduling.vue");
 const Logs = () => import("./views/Logs.vue");
@@ -19,6 +20,7 @@ export const router = createRouter({
     { path: "/jobs", component: Jobs },
     { path: "/nodes", component: Nodes },
     { path: "/asset-processing", component: Assets },
+    { path: "/codex", component: CodexRuntime },
     {
       path: "/workflows",
       component: ResourceList,

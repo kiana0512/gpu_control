@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpu-control"
-version = "1.5.0"
+version = "1.5.1"
 description = "Three-node ComfyUI GPU scheduling and operations platform"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -80,4 +80,8 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = ["yaml.*", "jsonschema.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["bpy", "bmesh", "mathutils"]
 ignore_missing_imports = true

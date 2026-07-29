@@ -17,7 +17,6 @@ const connectedNodes = computed(() =>
 const onlineCount = computed(
   () => connectedNodes.value.filter((node) => node.health === "ONLINE").length,
 );
-
 async function load() {
   error.value = "";
   try {
@@ -102,8 +101,9 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
   <div class="page nodes-page">
     <div class="page-heading">
       <div>
+        <div class="eyebrow">统一计算节点</div>
         <h1>GPU 推理节点</h1>
-        <p>{{ onlineCount }} 台 GPU 节点在线 · 仅展示 ComfyUI 推理槽；CPU Asset Worker 在资产页独立管理</p>
+        <p>{{ onlineCount }} 台 GPU 在线 · ComfyUI 与推理槽独立管理</p>
       </div>
       <div class="heading-actions">
         <span class="refresh-state"
@@ -131,64 +131,66 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
         class="node-card"
         :class="{ offline: node.health !== 'ONLINE' }"
       >
-        <div class="node-identity">
-          <span class="health-dot" :class="node.health.toLowerCase()"></span>
-          <div>
-            <h2>{{ node.display_name }}</h2>
-            <p>
-              {{ node.id }} ·
-              {{ node.pool === "PRIMARY" ? "主算力" : "备用算力" }}
-            </p>
+        <div class="node-main-row">
+          <div class="node-identity">
+            <span class="health-dot" :class="node.health.toLowerCase()"></span>
+            <div>
+              <h2>{{ node.display_name }}</h2>
+              <p>
+                {{ node.id }} ·
+                {{ node.pool === "PRIMARY" ? "主算力" : "备用算力" }}
+              </p>
+            </div>
           </div>
-        </div>
 
-        <StatusMark :value="node.mode" />
+          <StatusMark :value="node.mode" />
 
-        <div class="node-metrics">
-          <div>
-            <span>GPU 利用率</span
-            ><strong>{{
-              node.health === "ONLINE" ? `${node.gpu_util_percent}%` : "—"
-            }}</strong>
+          <div class="node-metrics">
+            <div>
+              <span>GPU 利用率</span
+              ><strong>{{
+                node.health === "ONLINE" ? `${node.gpu_util_percent}%` : "—"
+              }}</strong>
+            </div>
+            <div>
+              <span>可用显存</span
+              ><strong>{{
+                node.health === "ONLINE"
+                  ? `${(node.free_vram_mb / 1024).toFixed(1)} GB`
+                  : "—"
+              }}</strong>
+            </div>
+            <div>
+              <span>执行槽位</span
+              ><strong>{{
+                node.health === "ONLINE"
+                  ? `${node.current_jobs} / ${node.max_concurrency}`
+                  : "—"
+              }}</strong>
+            </div>
           </div>
-          <div>
-            <span>可用显存</span
-            ><strong>{{
-              node.health === "ONLINE"
-                ? `${(node.free_vram_mb / 1024).toFixed(1)} GB`
-                : "—"
-            }}</strong>
-          </div>
-          <div>
-            <span>执行槽位</span
-            ><strong>{{
-              node.health === "ONLINE"
-                ? `${node.current_jobs} / ${node.max_concurrency}`
-                : "—"
-            }}</strong>
-          </div>
-        </div>
 
-        <div v-if="node.health === 'ONLINE'" class="node-primary-actions">
-          <button
-            v-if="node.mode !== 'ACTIVE'"
-            class="primary"
-            @click="mode(node, 'ACTIVE')"
-          >
-            投入使用
-          </button>
-          <button v-else class="pause-button" @click="mode(node, 'RESERVED')">
-            暂停接单
-          </button>
-          <button class="secondary" @click="openComfy(node)">
-            打开 ComfyUI
-          </button>
-          <button class="secondary" @click="maintenanceNode = node">
-            维护操作
-          </button>
-        </div>
-        <div v-else class="offline-node-note">
-          设备未接入，接入并上报心跳后才可操作
+          <div v-if="node.health === 'ONLINE'" class="node-primary-actions">
+            <button
+              v-if="node.mode !== 'ACTIVE'"
+              class="primary"
+              @click="mode(node, 'ACTIVE')"
+            >
+              投入使用
+            </button>
+            <button v-else class="pause-button" @click="mode(node, 'RESERVED')">
+              暂停接单
+            </button>
+            <button class="secondary" @click="openComfy(node)">
+              打开 ComfyUI
+            </button>
+            <button class="secondary" @click="maintenanceNode = node">
+              维护操作
+            </button>
+          </div>
+          <div v-else class="offline-node-note">
+            设备心跳离线，恢复上报后可操作
+          </div>
         </div>
       </section>
       <div

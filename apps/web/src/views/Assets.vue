@@ -14,9 +14,7 @@ const error = ref("");
 const jobType = ref<
   "ALL" | "UV_PROCESS_V2" | "RETOPOLOGY_AUDIT" | "RETOPOLOGY_PROCESS_V1"
 >("ALL");
-const jobState = ref<"ALL" | "ACTIVE" | "REVIEW" | "SUCCEEDED" | "FAILED">(
-  "ALL",
-);
+const jobState = ref<"ALL" | "ACTIVE" | "SUCCEEDED" | "FAILED">("ALL");
 const jobSearch = ref("");
 const selectedJob = ref<AssetJobInfo | null>(null);
 const cancellingJobId = ref("");
@@ -34,8 +32,6 @@ const filteredJobs = computed(() => {
       jobState.value === "ALL" ||
       (jobState.value === "ACTIVE" &&
         ["QUEUED", "CLAIMED", "RUNNING"].includes(job.status)) ||
-      (jobState.value === "REVIEW" &&
-        ["WAITING_REVIEW", "REVIEW_REJECTED"].includes(job.status)) ||
       (jobState.value === "SUCCEEDED" && job.status === "SUCCEEDED") ||
       (jobState.value === "FAILED" &&
         ["FAILED", "CANCELLED"].includes(job.status));
@@ -73,6 +69,47 @@ const activeJobs = computed(
     (counts.value.CLAIMED ?? 0) +
     (counts.value.RUNNING ?? 0),
 );
+const selectedEvidenceArtifacts = computed(() =>
+  (selectedJob.value?.artifacts ?? []).filter(
+    (artifact) =>
+      artifact.kind.startsWith("view_") ||
+      ["comparison", "reference_images"].includes(artifact.kind),
+  ),
+);
+const selectedCodexArtifacts = computed(() =>
+  (selectedJob.value?.artifacts ?? []).filter((artifact) =>
+    ["agent_prompt", "agent_events", "agent_plan"].includes(artifact.kind),
+  ),
+);
+const selectedPrimaryArtifacts = computed(() =>
+  (selectedJob.value?.artifacts ?? []).filter(
+    (artifact) =>
+      !selectedEvidenceArtifacts.value.includes(artifact) &&
+      !selectedCodexArtifacts.value.includes(artifact),
+  ),
+);
+const selectedDeliverableArtifacts = computed(() =>
+  selectedPrimaryArtifacts.value.filter(
+    (artifact) =>
+      ["blend", "fbx", "candidate_blend", "candidate_fbx"].includes(
+        artifact.kind,
+      ) || /\.(blend|fbx|zip)$/i.test(artifact.filename),
+  ),
+);
+const selectedTechnicalArtifacts = computed(() => {
+  const visibleIds = new Set(
+    selectedDeliverableArtifacts.value.map((artifact) => artifact.id),
+  );
+  return (selectedJob.value?.artifacts ?? []).filter(
+    (artifact) => !visibleIds.has(artifact.id),
+  );
+});
+const selectedUserRequest = computed(() => {
+  const value = selectedJob.value?.options.user_request;
+  return typeof value === "string" && value.trim()
+    ? value
+    : "未提供额外迭代要求";
+});
 
 async function load() {
   error.value = "";
@@ -96,6 +133,33 @@ function workerState(worker: AssetWorkerInfo) {
   return `${worker.current_jobs} / ${worker.max_concurrency} 槽位使用中`;
 }
 
+function codexProbeClass(worker: AssetWorkerInfo) {
+  return (worker.codex_probe_status || "NOT_RUN").toLowerCase();
+}
+
+function codexProbeLabel(worker: AssetWorkerInfo) {
+  if (worker.codex_probe_status === "HEALTHY") return "真实探针正常";
+  if (worker.codex_probe_status === "RUNNING") return "正在验证";
+  if (worker.codex_probe_status === "NOT_RUN") return "等待首次探针";
+  return worker.codex_error_code || worker.codex_probe_status || "状态未知";
+}
+
+function retopoflowProbeClass(worker: AssetWorkerInfo) {
+  if (!worker.retopoflow_probe_status) return "pending";
+  return worker.retopoflow_probe_status === "HEALTHY" ? "healthy" : "unhealthy";
+}
+
+function retopoflowProbeLabel(worker: AssetWorkerInfo) {
+  if (!worker.retopoflow_probe_status) return "RetopoFlow 等待新版心跳";
+  if (worker.retopoflow_probe_status === "HEALTHY") {
+    const revision = worker.retopoflow_revision?.slice(0, 8) ?? "未知提交";
+    return `RetopoFlow ${worker.retopoflow_version} · operator 已调用 · ${revision}`;
+  }
+  if (worker.retopoflow_probe_status === "NOT_RUN")
+    return "RetopoFlow 正在实测";
+  return `RetopoFlow 不可用 · ${worker.retopoflow_error_code ?? worker.retopoflow_probe_status}`;
+}
+
 function jobTypeLabel(value: string) {
   if (value === "UV_PROCESS_V2") return "PBR UV";
   if (value === "RETOPOLOGY_AUDIT") return "拓扑审计";
@@ -107,8 +171,7 @@ function jobTypeLabel(value: string) {
 function jobApiPath(value: string) {
   if (value === "UV_PROCESS_V2" || value === "UV_UNWRAP")
     return "/api/v1/assets/uv/process";
-  if (value === "RETOPOLOGY_AUDIT")
-    return "/api/v1/assets/retopology/audit";
+  if (value === "RETOPOLOGY_AUDIT") return "/api/v1/assets/retopology/audit";
   if (value === "RETOPOLOGY_PROCESS_V1")
     return "/api/v1/assets/retopology/process";
   return "未登记 API";
@@ -130,8 +193,8 @@ function statusLabel(value: string) {
     CLAIMED: "已领取",
     RUNNING: "执行中",
     SUCCEEDED: "已成功",
-    WAITING_REVIEW: "等待人工复核",
-    REVIEW_REJECTED: "复核已驳回",
+    WAITING_REVIEW: "历史待收口",
+    REVIEW_REJECTED: "历史已驳回",
     FAILED: "失败",
     CANCELLED: "已取消",
   };
@@ -169,6 +232,12 @@ function timingSummary(job: AssetJobInfo) {
   return `已用 ${elapsed} · 剩余约 ${remaining}`;
 }
 
+function diagnosticSummary(job: AssetJobInfo) {
+  if (!job.error) return "";
+  const message = (job.error.message ?? "任务未生成有效交付物").trim();
+  return message.length > 220 ? `${message.slice(0, 220)}…` : message;
+}
+
 function stageLabel(value: string) {
   const labels: Record<string, string> = {
     QUEUED: "等待可用 Worker",
@@ -178,7 +247,7 @@ function stageLabel(value: string) {
     RETOPOLOGY_GENERATING: "正在生成重拓扑候选",
     RETOPOLOGY_RENDERING: "正在生成三模型四视图",
     RETOPOLOGY_AUDITING: "正在执行拓扑与轮廓审计",
-    WAITING_REVIEW: "等待人工四视图复核",
+    WAITING_REVIEW: "历史状态待迁移",
     SUCCEEDED: "交付完成",
     FAILED: "执行失败",
     CANCELLED: "任务已取消",
@@ -199,12 +268,14 @@ async function downloadArtifact(
   artifact: AssetJobInfo["artifacts"][number],
 ) {
   try {
-    const url = URL.createObjectURL(await api.assetArtifact(job.job_id, artifact.id));
+    const url = URL.createObjectURL(
+      await api.assetArtifact(job.job_id, artifact.id),
+    );
     const anchor = document.createElement("a");
     anchor.href = url;
     anchor.download = artifact.filename;
     anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : "制品下载失败");
   }
@@ -239,7 +310,11 @@ async function cancelAssetJob(job: AssetJobInfo) {
     await ElMessageBox.confirm(
       `确认取消资产任务 ${job.external_asset_id}？`,
       "取消资产任务",
-      { type: "warning", confirmButtonText: "确认取消", cancelButtonText: "返回" },
+      {
+        type: "warning",
+        confirmButtonText: "确认取消",
+        cancelButtonText: "返回",
+      },
     );
     cancellingJobId.value = job.job_id;
     await api.cancelAssetJob(job.job_id);
@@ -263,10 +338,12 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
       <div>
         <div class="eyebrow">统一资产处理平面</div>
         <h1>Blender PBR UV 与重拓扑</h1>
-        <p>真实 Worker 心跳 · 多任务并发 · 阶段进度与 ETA · 多视角复核 · 原子交付</p>
+        <p>真实 Worker 心跳 · 多任务并发 · 阶段进度与 ETA · 严格 QA 自动交付</p>
         <div class="task-plane-switch" aria-label="任务平面">
           <router-link to="/jobs">GPU 推理任务</router-link>
-          <router-link class="active" to="/asset-processing">CPU 资产任务</router-link>
+          <router-link class="active" to="/asset-processing"
+            >CPU 资产任务</router-link
+          >
           <router-link to="/clients">查看 API 调用示例</router-link>
         </div>
       </div>
@@ -293,8 +370,9 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
       <div>
         <strong>与 GPU 推理任务完全隔离</strong>
         <p>
-          UV 任务只有五项交付物全部通过 Blender 与 FBX 回读 QA
-          后才会发布；重拓扑候选必须完成源指纹、严格审计和三模型四视图复核，禁止自动冒充最终游戏低模。
+          UV 任务只有五项交付物全部通过 Blender 与 FBX 回读 QA 后才会发布；
+          重拓扑通过源指纹、严格审计和三模型四视图证据后自动交付，硬性 QA
+          失败只保留诊断制品。
         </p>
       </div>
       <span>{{ activeJobs }} 个资产任务处理中</span>
@@ -312,9 +390,9 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
         ><small>{{ overview?.summary.used_slots ?? 0 }} 个正在使用</small>
       </section>
       <section>
-        <span>等待复核</span
-        ><strong>{{ overview?.summary.waiting_review ?? 0 }}</strong
-        ><small>拓扑四视图人工门禁</small>
+        <span>严格 QA 失败</span
+        ><strong>{{ overview?.summary.qa_failed ?? 0 }}</strong
+        ><small>不发布交付物，保留诊断证据</small>
       </section>
       <section>
         <span>UV 交付规则</span><strong>5 / 5</strong
@@ -349,10 +427,17 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
               >{{ worker.cpu_count }} 核 · {{ worker.blender_version }}</strong
             >
           </div>
-          <em
-            >{{ workerState(worker)
-            }}<small>{{ worker.skill_version }}</small></em
-          >
+          <em>
+            {{ workerState(worker) }}
+            <small>{{ worker.skill_version }}</small>
+            <small class="worker-codex" :class="codexProbeClass(worker)">
+              Codex {{ worker.codex_cli_version ?? "未发现" }} ·
+              {{ codexProbeLabel(worker) }}
+            </small>
+            <small class="worker-codex" :class="retopoflowProbeClass(worker)">
+              {{ retopoflowProbeLabel(worker) }}
+            </small>
+          </em>
         </div>
         <div v-if="!workers.length && !refreshing" class="asset-empty">
           尚无 Asset Worker 上报心跳
@@ -365,7 +450,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <h2>外部 API 契约</h2>
             <p>幂等提交、轮询状态、原子取件</p>
           </div>
-          <span>v3</span>
+          <span>v4</span>
         </header>
         <dl>
           <div>
@@ -386,13 +471,18 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           <div>
             <dt>状态</dt>
             <dd>
-              {{ overview?.contracts.uv.status ?? "/api/v1/assets/jobs/{job_id}" }}
+              {{
+                overview?.contracts.uv.status ?? "/api/v1/assets/jobs/{job_id}"
+              }}
             </dd>
           </div>
           <div>
             <dt>实时事件</dt>
             <dd>
-              {{ overview?.contracts.uv.events ?? "/api/v1/assets/jobs/{job_id}/events" }}
+              {{
+                overview?.contracts.uv.events ??
+                "/api/v1/assets/jobs/{job_id}/events"
+              }}
             </dd>
           </div>
           <div>
@@ -418,40 +508,59 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
         <div class="asset-filter-row">
           <strong>API 分类</strong>
           <div class="asset-filter" role="group" aria-label="资产任务类型">
-          <button
-            :class="{ active: jobType === 'ALL' }"
-            @click="jobType = 'ALL'"
-          >
-            全部 {{ jobTypeCount("ALL") }}
-          </button>
-          <button
-            :class="{ active: jobType === 'UV_PROCESS_V2' }"
-            @click="jobType = 'UV_PROCESS_V2'"
-          >
-            UV {{ jobTypeCount("UV_PROCESS_V2") }}
-          </button>
-          <button
-            :class="{ active: jobType === 'RETOPOLOGY_AUDIT' }"
-            @click="jobType = 'RETOPOLOGY_AUDIT'"
-          >
-            拓扑审计 {{ jobTypeCount("RETOPOLOGY_AUDIT") }}
-          </button>
-          <button
-            :class="{ active: jobType === 'RETOPOLOGY_PROCESS_V1' }"
-            @click="jobType = 'RETOPOLOGY_PROCESS_V1'"
-          >
-            AI 重拓扑 {{ jobTypeCount("RETOPOLOGY_PROCESS_V1") }}
-          </button>
-        </div>
+            <button
+              :class="{ active: jobType === 'ALL' }"
+              @click="jobType = 'ALL'"
+            >
+              全部 {{ jobTypeCount("ALL") }}
+            </button>
+            <button
+              :class="{ active: jobType === 'UV_PROCESS_V2' }"
+              @click="jobType = 'UV_PROCESS_V2'"
+            >
+              UV {{ jobTypeCount("UV_PROCESS_V2") }}
+            </button>
+            <button
+              :class="{ active: jobType === 'RETOPOLOGY_AUDIT' }"
+              @click="jobType = 'RETOPOLOGY_AUDIT'"
+            >
+              拓扑审计 {{ jobTypeCount("RETOPOLOGY_AUDIT") }}
+            </button>
+            <button
+              :class="{ active: jobType === 'RETOPOLOGY_PROCESS_V1' }"
+              @click="jobType = 'RETOPOLOGY_PROCESS_V1'"
+            >
+              AI 重拓扑 {{ jobTypeCount("RETOPOLOGY_PROCESS_V1") }}
+            </button>
+          </div>
         </div>
         <div class="asset-filter-row">
           <strong>任务状态</strong>
           <div class="asset-filter" role="group" aria-label="资产任务状态">
-            <button :class="{ active: jobState === 'ALL' }" @click="jobState = 'ALL'">全部</button>
-            <button :class="{ active: jobState === 'ACTIVE' }" @click="jobState = 'ACTIVE'">排队 / 执行</button>
-            <button :class="{ active: jobState === 'REVIEW' }" @click="jobState = 'REVIEW'">等待复核</button>
-            <button :class="{ active: jobState === 'SUCCEEDED' }" @click="jobState = 'SUCCEEDED'">已交付</button>
-            <button :class="{ active: jobState === 'FAILED' }" @click="jobState = 'FAILED'">异常 / 取消</button>
+            <button
+              :class="{ active: jobState === 'ALL' }"
+              @click="jobState = 'ALL'"
+            >
+              全部
+            </button>
+            <button
+              :class="{ active: jobState === 'ACTIVE' }"
+              @click="jobState = 'ACTIVE'"
+            >
+              排队 / 执行
+            </button>
+            <button
+              :class="{ active: jobState === 'SUCCEEDED' }"
+              @click="jobState = 'SUCCEEDED'"
+            >
+              已交付
+            </button>
+            <button
+              :class="{ active: jobState === 'FAILED' }"
+              @click="jobState = 'FAILED'"
+            >
+              异常 / 取消
+            </button>
           </div>
           <input
             v-model="jobSearch"
@@ -489,10 +598,10 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           <span>{{ job.worker_id ?? "尚未分配" }}</span>
           <div class="asset-progress">
             <i><b :style="{ width: `${job.progress}%` }"></b></i
-            ><small>{{ Math.round(job.progress) }}% · {{ job.stage_message }}</small>
-            <em
-              >{{ timingSummary(job) }}</em
+            ><small
+              >{{ Math.round(job.progress) }}% · {{ job.stage_message }}</small
             >
+            <em>{{ timingSummary(job) }}</em>
           </div>
           <div class="asset-job-actions">
             <button class="secondary compact" @click="openJob(job)">
@@ -513,7 +622,10 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
         当前筛选下暂无资产任务
       </div>
       <nav class="table-pagination" aria-label="资产任务分页">
-        <span>筛选后 {{ filteredJobs.length }} 条 · 第 {{ currentPage }} / {{ pageCount }} 页</span>
+        <span
+          >筛选后 {{ filteredJobs.length }} 条 · 第 {{ currentPage }} /
+          {{ pageCount }} 页</span
+        >
         <label>
           每页
           <select v-model.number="pageSize">
@@ -522,8 +634,20 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <option :value="100">100</option>
           </select>
         </label>
-        <button class="secondary" :disabled="currentPage <= 1" @click="currentPage--">上一页</button>
-        <button class="secondary" :disabled="currentPage >= pageCount" @click="currentPage++">下一页</button>
+        <button
+          class="secondary"
+          :disabled="currentPage <= 1"
+          @click="currentPage--"
+        >
+          上一页
+        </button>
+        <button
+          class="secondary"
+          :disabled="currentPage >= pageCount"
+          @click="currentPage++"
+        >
+          下一页
+        </button>
       </nav>
     </section>
 
@@ -537,92 +661,134 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
         role="dialog"
         aria-modal="true"
       >
-        <header>
+        <header class="asset-detail-header">
           <div>
+            <span class="asset-detail-kicker">{{
+              jobTypeLabel(selectedJob.job_type)
+            }}</span>
             <h2>{{ selectedJob.external_asset_id }}</h2>
-            <p>
-              {{ selectedJob.job_id }} ·
-              {{ jobTypeLabel(selectedJob.job_type) }}
-            </p>
           </div>
-          <button
-            class="icon-button"
-            aria-label="关闭"
-            @click="closeJob"
-          >
+          <button class="icon-button" aria-label="关闭" @click="closeJob">
             ×
           </button>
         </header>
         <div class="drawer-content">
-          <section class="asset-detail-grid">
+          <section class="asset-status-rail">
+            <span
+              class="asset-status"
+              :class="selectedJob.status.toLowerCase()"
+            >
+              {{ statusLabel(selectedJob.status) }}
+            </span>
             <div>
-              <span>状态</span
-              ><strong>{{ statusLabel(selectedJob.status) }}</strong>
+              <strong>{{ Math.round(selectedJob.progress) }}%</strong>
+              <i><b :style="{ width: `${selectedJob.progress}%` }"></b></i>
             </div>
+            <span>{{ timingSummary(selectedJob) }}</span>
+          </section>
+          <section class="asset-key-facts">
             <div>
-              <span>Worker</span
+              <span>执行节点</span
               ><strong>{{ selectedJob.worker_id ?? "尚未分配" }}</strong>
             </div>
             <div>
-              <span>输入文件</span
-              ><strong>{{ selectedJob.source_filename }}</strong>
-            </div>
-            <div>
-              <span>尝试次数</span
-              ><strong>{{ selectedJob.attempt_count }}</strong>
-            </div>
-            <div>
-              <span>当前阶段</span><strong>{{ stageLabel(selectedJob.stage) }}</strong>
-            </div>
-            <div>
-              <span>提交 API</span><strong>{{ jobApiPath(selectedJob.job_type) }}</strong>
-            </div>
-            <div>
-              <span>时间</span
-              ><strong>{{ timingSummary(selectedJob) }}</strong>
+              <span>当前阶段</span
+              ><strong>{{ stageLabel(selectedJob.stage) }}</strong>
             </div>
           </section>
           <section class="asset-stage-message">
-            <h3>实时进度说明</h3>
+            <h3>{{ isTerminal(selectedJob) ? "处理结果" : "实时进度" }}</h3>
             <p>{{ selectedJob.stage_message }}</p>
-            <small>轮询状态为最终事实；SSE 用于低延迟阶段提示并支持断线续传。</small>
+            <span
+              class="asset-delivery-policy"
+              :class="selectedJob.delivery_ready ? 'ready' : 'blocked'"
+            >
+              {{
+                selectedJob.delivery_ready
+                  ? "质量检查通过"
+                  : selectedJob.artifacts_role === "diagnostic"
+                    ? "质量检查未通过"
+                    : "正在生成交付"
+              }}
+            </span>
+          </section>
+          <section v-if="selectedJob.error" class="asset-failure-summary">
+            <h3>失败原因</h3>
+            <strong>{{ selectedJob.error.code }}</strong>
+            <p>{{ diagnosticSummary(selectedJob) }}</p>
           </section>
           <section>
-            <h3>输入 SHA-256</h3>
-            <code class="asset-hash">{{ selectedJob.input_sha256 }}</code>
+            <div class="asset-section-heading">
+              <div>
+                <h3>最终交付</h3>
+                <p>默认仅显示可直接使用的模型文件。</p>
+              </div>
+              <span>{{ selectedDeliverableArtifacts.length }}</span>
+            </div>
+            <div
+              v-if="selectedDeliverableArtifacts.length"
+              class="asset-deliverables"
+            >
+              <button
+                v-for="artifact in selectedDeliverableArtifacts"
+                :key="artifact.id"
+                class="asset-deliverable"
+                @click="downloadArtifact(selectedJob, artifact)"
+              >
+                <span>{{ artifact.filename }}</span>
+                <small>{{ readableSize(artifact.size_bytes) }}</small>
+                <b>下载</b>
+              </button>
+            </div>
+            <p v-else class="asset-empty-delivery">尚未生成最终交付文件。</p>
           </section>
-          <section v-if="selectedJob.job_type === 'RETOPOLOGY_PROCESS_V1'">
-            <h3>用户端人工复核</h3>
-            <p>
-              调度中心只记录状态、诊断与制品清单，不在这里执行批准或驳回。
-              三模型四视图及其 SHA-256 会通过任务 API 返回给提交方，由用户端展示并回传复核决定。
-            </p>
-          </section>
-          <section>
-            <h3>原子交付物（{{ selectedJob.artifacts.length }}）</h3>
-            <div v-if="selectedJob.artifacts.length" class="asset-artifacts">
-              <div v-for="artifact in selectedJob.artifacts" :key="artifact.id">
-                <button
-                  class="asset-artifact-download"
-                  @click="downloadArtifact(selectedJob, artifact)"
-                >
-                  {{ artifact.filename }}
-                </button>
-                <small
-                  >{{ readableSize(artifact.size_bytes) }} ·
-                  {{ artifact.kind }}</small
-                >
-                <code>{{ artifact.sha256 }}</code>
+          <details class="asset-advanced">
+            <summary>高级诊断</summary>
+            <div class="asset-advanced-facts">
+              <div>
+                <span>任务 ID</span><code>{{ selectedJob.job_id }}</code>
+              </div>
+              <div>
+                <span>输入文件</span
+                ><strong>{{ selectedJob.source_filename }}</strong>
+              </div>
+              <div>
+                <span>尝试次数</span
+                ><strong>{{ selectedJob.attempt_count }}</strong>
+              </div>
+              <div>
+                <span>提交 API</span
+                ><code>{{ jobApiPath(selectedJob.job_type) }}</code>
+              </div>
+              <div class="wide">
+                <span>输入 SHA-256</span
+                ><code>{{ selectedJob.input_sha256 }}</code>
+              </div>
+              <div
+                v-if="selectedJob.job_type === 'RETOPOLOGY_PROCESS_V1'"
+                class="wide"
+              >
+                <span>用户要求</span><strong>{{ selectedUserRequest }}</strong>
               </div>
             </div>
-            <p v-else>任务尚未发布最终交付物。</p>
-          </section>
-          <section v-if="selectedJob.error">
-            <h3>诊断</h3>
-            <p>
-              {{ selectedJob.error.code }} · {{ selectedJob.error.message }}
-            </p>
-          </section>
+            <div
+              v-if="selectedTechnicalArtifacts.length"
+              class="asset-technical-list"
+            >
+              <button
+                v-for="artifact in selectedTechnicalArtifacts"
+                :key="artifact.id"
+                @click="downloadArtifact(selectedJob, artifact)"
+              >
+                <span>{{ artifact.filename }}</span>
+                <small
+                  >{{ artifact.kind }} ·
+                  {{ readableSize(artifact.size_bytes) }}</small
+                >
+              </button>
+            </div>
+            <pre v-if="selectedJob.error">{{ selectedJob.error.message }}</pre>
+          </details>
         </div>
       </aside>
     </div>

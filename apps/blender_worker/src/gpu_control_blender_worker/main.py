@@ -9,8 +9,9 @@ import tempfile
 import time
 import uuid
 import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from PIL import Image, ImageDraw
@@ -23,11 +24,12 @@ LOG = logging.getLogger("gpu_control_blender_worker")
 
 UV_UNWRAP_SCRIPT_SHA256 = "ebfa3546d61c548a11c0e7561c75f93b6ef93308d8da9f27788bf35643303758"
 UV_QA_SCRIPT_SHA256 = "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
+UV_QA_ADAPTER_SHA256 = "8e6bc5dc20a49fac5be2e92accd518d9da9fa629e878f51dc151baa80ad3359a"
 RETOPOLOGY_AUDIT_SCRIPT_SHA256 = (
     "a6575902cfacd7b8106f9c887069d717a880d870fc48a6295431cdcf717a9dc4"
 )
 RETOPOLOGY_PROCESS_SCRIPT_SHA256 = (
-    "4c843d7c45c8665ff5e3ded8db6db1b1344deb16c6b7ffd71b7a6c3ec1b184a0"
+    "e3b11965f338da001523fbc405005270edad1172974d9fbfac0c35917ae522f7"
 )
 RETOPOLOGY_RENDER_SCRIPT_SHA256 = (
     "b1b6344ec78a7c1d333cc875c0eeee20087df27878d67c28fa413f9ab3dcdf09"
@@ -54,6 +56,9 @@ class WorkerSettings(BaseSettings):
     blender_version: str = "5.1.2"
     blender_skill_version: str = "asset-skills-2026.07.28"
     uv_skill_root: Path = Path("/opt/codex/skills/blender-pbr-uv")
+    uv_qa_adapter_script: Path = Path(
+        "/app/packages/asset_processing/blender_uv_qa_adapter.py"
+    )
     retopology_skill_root: Path = Path(
         "/opt/codex/skills/blender-retopology-compare-iterate"
     )
@@ -63,8 +68,14 @@ class WorkerSettings(BaseSettings):
     retopology_render_script: Path = Path(
         "/app/packages/asset_processing/blender_retopology_render.py"
     )
+    retopoflow_addon_root: Path = Path("/opt/blender-addons/RetopoFlow")
+    retopoflow_probe_script: Path = Path("/app/scripts/probe_retopoflow_blender.py")
+    retopoflow_probe_interval_seconds: int = Field(21600, ge=3600, le=604800)
+    retopoflow_probe_timeout_seconds: int = Field(120, ge=30, le=300)
     codex_binary: str = "/usr/local/bin/codex"
     codex_auth_source: Path = Path("/run/secrets/codex-auth.json")
+    codex_health_probe_interval_seconds: int = Field(1800, ge=300, le=86400)
+    codex_health_probe_timeout_seconds: int = Field(90, ge=20, le=300)
     asset_poll_seconds: float = 1.0
 
 
@@ -99,7 +110,11 @@ async def signed_post(
 
 
 async def heartbeat(
-    client: httpx.AsyncClient, settings: WorkerSettings, running: int
+    client: httpx.AsyncClient,
+    settings: WorkerSettings,
+    running: int,
+    codex_health: dict[str, Any],
+    retopoflow_health: dict[str, Any],
 ) -> None:
     payload = {
         "worker_id": settings.asset_worker_id,
@@ -113,11 +128,222 @@ async def heartbeat(
         "current_jobs": running,
         "load_1m": os.getloadavg()[0],
         "available_memory_mb": available_memory_mb(),
+        **codex_health,
+        **retopoflow_health,
     }
     response = await signed_post(
         client, settings, "/internal/v1/assets/workers/heartbeat", payload
     )
     response.raise_for_status()
+
+
+async def inspect_codex_runtime(settings: WorkerSettings) -> dict[str, Any]:
+    """Validate the exact CLI/auth pair mounted into the production worker."""
+    checked_at = datetime.now(UTC).isoformat()
+    binary = Path(settings.codex_binary)
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        return {
+            "codex_cli_version": None,
+            "codex_auth_status": "UNAVAILABLE",
+            "codex_probe_status": "UNAVAILABLE",
+            "codex_probe_latency_ms": None,
+            "codex_last_checked_at": checked_at,
+            "codex_last_success_at": None,
+            "codex_error_code": "BINARY_UNAVAILABLE",
+        }
+    try:
+        auth = json.loads(settings.codex_auth_source.read_text("utf-8"))
+        if not isinstance(auth, dict) or not auth:
+            raise ValueError("empty auth object")
+        auth_status = "AUTHENTICATED"
+    except (OSError, ValueError, json.JSONDecodeError):
+        auth_status = "INVALID"
+    try:
+        process = await asyncio.create_subprocess_exec(
+            str(binary),
+            "--version",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=5)
+        version = stdout.decode(errors="replace").strip()[:64]
+        if process.returncode != 0 or not version:
+            raise RuntimeError("version command failed")
+    except (OSError, RuntimeError, TimeoutError):
+        return {
+            "codex_cli_version": None,
+            "codex_auth_status": auth_status,
+            "codex_probe_status": "UNAVAILABLE",
+            "codex_probe_latency_ms": None,
+            "codex_last_checked_at": checked_at,
+            "codex_last_success_at": None,
+            "codex_error_code": "VERSION_FAILED",
+        }
+    return {
+        "codex_cli_version": version,
+        "codex_auth_status": auth_status,
+        "codex_probe_status": "NOT_RUN" if auth_status == "AUTHENTICATED" else "BLOCKED",
+        "codex_probe_latency_ms": None,
+        "codex_last_checked_at": checked_at,
+        "codex_last_success_at": None,
+        "codex_error_code": None if auth_status == "AUTHENTICATED" else "AUTH_INVALID",
+    }
+
+
+async def run_codex_health_probe(
+    settings: WorkerSettings, health: dict[str, Any]
+) -> None:
+    """Run a bounded, read-only model round-trip; never expose auth or response text."""
+    if health.get("codex_auth_status") != "AUTHENTICATED":
+        return
+    started = time.monotonic()
+    checked_at = datetime.now(UTC).isoformat()
+    try:
+        with tempfile.TemporaryDirectory(prefix="codex-health-") as temporary:
+            root = Path(temporary)
+            codex_home = root / "home"
+            codex_home.mkdir(mode=0o700)
+            shutil.copyfile(settings.codex_auth_source, codex_home / "auth.json")
+            os.chmod(codex_home / "auth.json", 0o600)
+            result = root / "result.txt"
+            environment = dict(os.environ)
+            environment["CODEX_HOME"] = str(codex_home)
+            process = await asyncio.create_subprocess_exec(
+                settings.codex_binary,
+                "exec",
+                "--ephemeral",
+                "--skip-git-repo-check",
+                "--sandbox",
+                "read-only",
+                "--ignore-user-config",
+                "--output-last-message",
+                str(result),
+                "-C",
+                str(root),
+                "Return exactly CODEX_HEALTH_OK. Do not call tools or read files.",
+                env=environment,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(
+                process.communicate(), timeout=settings.codex_health_probe_timeout_seconds
+            )
+            message = result.read_text("utf-8").strip() if result.is_file() else ""
+            if process.returncode != 0 or message != "CODEX_HEALTH_OK":
+                raise RuntimeError("unexpected probe response")
+    except TimeoutError:
+        health.update(
+            codex_probe_status="FAILED",
+            codex_error_code="PROBE_TIMEOUT",
+            codex_last_checked_at=checked_at,
+            codex_probe_latency_ms=int((time.monotonic() - started) * 1000),
+        )
+    except (OSError, RuntimeError):
+        health.update(
+            codex_probe_status="FAILED",
+            codex_error_code="PROBE_FAILED",
+            codex_last_checked_at=checked_at,
+            codex_probe_latency_ms=int((time.monotonic() - started) * 1000),
+        )
+    else:
+        health.update(
+            codex_probe_status="HEALTHY",
+            codex_error_code=None,
+            codex_last_checked_at=checked_at,
+            codex_last_success_at=checked_at,
+            codex_probe_latency_ms=int((time.monotonic() - started) * 1000),
+        )
+
+
+async def codex_health_loop(
+    settings: WorkerSettings, health: dict[str, Any], runtime: dict[str, int]
+) -> None:
+    while True:
+        if runtime["running"] == 0:
+            await run_codex_health_probe(settings, health)
+        await asyncio.sleep(settings.codex_health_probe_interval_seconds)
+
+
+def retopoflow_revision(root: Path) -> str | None:
+    head = root / ".git" / "HEAD"
+    try:
+        value = head.read_text("utf-8").strip()
+    except OSError:
+        return None
+    return value if len(value) == 40 and all(ch in "0123456789abcdef" for ch in value) else None
+
+
+async def run_retopoflow_health_probe(
+    settings: WorkerSettings, health: dict[str, Any]
+) -> None:
+    checked_at = datetime.now(UTC).isoformat()
+    started = time.monotonic()
+    if not settings.retopoflow_addon_root.is_dir():
+        health.update(
+            retopoflow_version=None,
+            retopoflow_revision=None,
+            retopoflow_probe_status="UNAVAILABLE",
+            retopoflow_probe_latency_ms=None,
+            retopoflow_last_checked_at=checked_at,
+            retopoflow_error_code="ADDON_UNAVAILABLE",
+        )
+        return
+    try:
+        with tempfile.TemporaryDirectory(prefix="retopoflow-health-") as temporary:
+            report = Path(temporary) / "report.json"
+            process = await asyncio.create_subprocess_exec(
+                "xvfb-run",
+                "-a",
+                settings.blender_binary,
+                "--factory-startup",
+                "--python",
+                str(settings.retopoflow_probe_script),
+                "--",
+                "--addon-root",
+                str(settings.retopoflow_addon_root),
+                "--output",
+                str(report),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(
+                process.communicate(), timeout=settings.retopoflow_probe_timeout_seconds
+            )
+            payload = json.loads(report.read_text("utf-8"))
+            if process.returncode != 0 or payload.get("healthy") is not True:
+                raise RuntimeError("RetopoFlow operator probe failed")
+    except TimeoutError:
+        health.update(
+            retopoflow_probe_status="FAILED",
+            retopoflow_probe_latency_ms=int((time.monotonic() - started) * 1000),
+            retopoflow_last_checked_at=checked_at,
+            retopoflow_error_code="PROBE_TIMEOUT",
+        )
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        health.update(
+            retopoflow_probe_status="FAILED",
+            retopoflow_probe_latency_ms=int((time.monotonic() - started) * 1000),
+            retopoflow_last_checked_at=checked_at,
+            retopoflow_error_code="PROBE_FAILED",
+        )
+    else:
+        health.update(
+            retopoflow_version=str(payload["version"]),
+            retopoflow_revision=retopoflow_revision(settings.retopoflow_addon_root),
+            retopoflow_probe_status="HEALTHY",
+            retopoflow_probe_latency_ms=int((time.monotonic() - started) * 1000),
+            retopoflow_last_checked_at=checked_at,
+            retopoflow_error_code=None,
+        )
+
+
+async def retopoflow_health_loop(
+    settings: WorkerSettings, health: dict[str, Any], runtime: dict[str, int]
+) -> None:
+    while True:
+        if runtime["running"] == 0:
+            await run_retopoflow_health_probe(settings, health)
+        await asyncio.sleep(settings.retopoflow_probe_interval_seconds)
 
 
 def verified_script(path: Path, expected_sha256: str) -> Path:
@@ -170,7 +396,7 @@ def extract_retopology_bundle(bundle: Path, destination: Path) -> dict[str, Any]
         path = destination / "references" / str(reference.get("filename", ""))
         if not path.is_file() or file_sha256(path) != reference.get("sha256"):
             raise RuntimeError(f"reference image SHA-256 mismatch: {path.name}")
-    return manifest
+    return cast(dict[str, Any], manifest)
 
 
 def contact_sheet(
@@ -251,7 +477,7 @@ async def run_retopology_agent_plan(
                 "type": "string",
                 "enum": ["quadriflow", "cleanup_existing"],
             },
-            "target_faces": {"type": "integer", "minimum": 100, "maximum": 5000000},
+            "target_faces": {"type": "integer", "minimum": 50, "maximum": 5000000},
             "asset_class": {"type": "string"},
             "silhouette_critical_regions": {"type": "array", "items": {"type": "string"}},
             "bake_instead_of_model": {"type": "array", "items": {"type": "string"}},
@@ -273,7 +499,7 @@ Return only JSON matching the supplied schema.
 
 The high-poly is the shape authority. The reference low is the topology-style and density
 authority. The current low is only a starting candidate. Every generated result must still pass
-strict audit and matched front/side/top/perspective human review.
+strict audit and matched front/side/top/perspective visual evidence checks.
 
 User request:
 {input_manifest.get('user_request') or 'No additional natural-language request was supplied.'}
@@ -285,6 +511,7 @@ Object selectors:
 
 Requested target_faces: {options.get('target_faces') or 'derive from reference low'}
 Requested algorithm: {options.get('algorithm')}
+Requested topology style: {options.get('topology_style', 'quad_dominant')}
 External reference views: {json.dumps(input_manifest.get('reference_views', []), ensure_ascii=False)}
 
 Real baseline Blender audit:
@@ -345,9 +572,9 @@ Real baseline Blender audit:
     target_faces = plan.get("target_faces")
     if algorithm not in {"quadriflow", "cleanup_existing"}:
         raise RuntimeError("Codex retopology plan selected an unsupported algorithm")
-    if not isinstance(target_faces, int) or not 100 <= target_faces <= 5_000_000:
+    if not isinstance(target_faces, int) or not 50 <= target_faces <= 5_000_000:
         raise RuntimeError("Codex retopology plan target_faces is invalid")
-    return plan
+    return cast(dict[str, Any], plan)
 
 
 async def start_blender(
@@ -433,9 +660,10 @@ async def run_uv_skill(
     unwrap_script = verified_script(
         settings.uv_skill_root / "scripts" / "unwrap_fbx.py", UV_UNWRAP_SCRIPT_SHA256
     )
-    qa_script = verified_script(
+    verified_script(
         settings.uv_skill_root / "scripts" / "qa_uv.py", UV_QA_SCRIPT_SHA256
     )
+    qa_adapter = verified_script(settings.uv_qa_adapter_script, UV_QA_ADAPTER_SHA256)
     output_dir.mkdir(parents=True, exist_ok=False)
     if job_type == "UV_PROCESS_V2":
         stem = input_path.stem
@@ -505,7 +733,7 @@ async def run_uv_skill(
             "--python-exit-code",
             "1",
             "--python",
-            str(qa_script),
+            str(qa_adapter),
             "--",
             "--input",
             str(source),
@@ -546,6 +774,7 @@ async def run_uv_skill(
         "script_sha256": {
             "unwrap_fbx.py": UV_UNWRAP_SCRIPT_SHA256,
             "qa_uv.py": UV_QA_SCRIPT_SHA256,
+            "gpu_control_qa_adapter.py": UV_QA_ADAPTER_SHA256,
         },
         "passed": not hard_failures,
         "hard_failures": hard_failures,
@@ -599,8 +828,8 @@ async def run_retopology_audit(
     ]
     if bool(options.get("require_closed")):
         arguments.append("--require-closed")
-    # Deliberately omit --strict: an audit failure is a review result, not a
-    # process crash. The control plane exposes it as WAITING_REVIEW.
+    # Deliberately omit --strict so the signed audit and diagnostics can still
+    # be uploaded. The control plane rejects hard-QA failures from review.
     process = await start_blender(settings, *arguments)
     await wait_for_blender(
         client,
@@ -627,7 +856,11 @@ async def run_retopology_audit(
             "low": options["low_object"],
         },
         "audit_passed": bool(audit_payload.get("audit_passed")),
-        "visual_review_required": True,
+        "visual_evidence": {
+            "required": True,
+            "views": ["front", "side", "top", "perspective"],
+            "manual_review_required": False,
+        },
     }
     (output_dir / "retopology_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -721,6 +954,23 @@ async def run_retopology_process(
         if options.get("algorithm") == "agent"
         else str(options["algorithm"])
     )
+    algorithm_resolution_reason = "requested_or_agent_recommendation"
+    baseline_payload = json.loads(baseline_path.read_text("utf-8"))
+    high_topology = (
+        baseline_payload.get("objects", {}).get("high", {}).get("topology", {})
+    )
+    # QuadriFlow deterministically cancels on fragmented/open high meshes.  Do
+    # not let a non-deterministic Agent recommendation turn the same immutable
+    # input into alternating success/failure results.  The existing low mesh is
+    # copied into a new candidate and still passes the normal cleanup, audit,
+    # render and atomic-delivery path; source objects remain untouched.
+    if resolved_algorithm == "quadriflow" and (
+        int(high_topology.get("components", 0)) > 1
+        or int(high_topology.get("boundary_edges", 0)) > 0
+        or int(high_topology.get("nonmanifold_edges", 0)) > 0
+    ):
+        resolved_algorithm = "cleanup_existing"
+        algorithm_resolution_reason = "quadriflow_preflight_rejected_fragmented_or_open_high"
     resolved_target_faces = options.get("target_faces") or int(agent_plan["target_faces"])
 
     process_arguments = [
@@ -750,6 +1000,8 @@ async def run_retopology_process(
         generated,
         "--algorithm",
         resolved_algorithm,
+        "--topology-style",
+        str(options.get("topology_style", "quad_dominant")),
         "--max-repair-rounds",
         str(options["max_repair_rounds"]),
     ]
@@ -894,6 +1146,7 @@ async def run_retopology_process(
             "resolved_algorithm": resolved_algorithm,
             "recommended_target_faces": agent_plan["target_faces"],
             "resolved_target_faces": resolved_target_faces,
+            "resolution_reason": algorithm_resolution_reason,
             "plan_filename": "retopology_agent_plan.json",
             "prompt_filename": "retopology_agent_prompt.txt",
             "events_filename": "retopology_agent_events.jsonl",
@@ -907,13 +1160,16 @@ async def run_retopology_process(
         "reference_views": input_manifest.get("reference_views", []),
         "source_preserved": source_preserved,
         "audit_passed": bool(audit_payload.get("audit_passed")),
-        "visual_review": {
+        "visual_evidence": {
             "required": True,
             "views": ["front", "side", "top", "perspective"],
             "roles": ["high", "reference", "generated"],
             "comparison_filename": "retopology_comparison.png",
+            "manual_review_required": False,
         },
-        "automatic_final_promotion_allowed": False,
+        "automatic_final_promotion_allowed": bool(audit_payload.get("audit_passed"))
+        and source_preserved
+        and bool(report_payload.get("topology_goal_met")),
         "uv_status": report_payload.get("uv_status"),
         "cage_status": report_payload.get("cage_status"),
         "bake_status": report_payload.get("bake_status"),
@@ -1073,13 +1329,24 @@ async def execute_job(
     try:
         await process_job(client, settings, job)
     except Exception as exc:
+        diagnostic = str(exc)[-4000:] or type(exc).__name__
+        error_code = (
+            "UV_QA_FAILED"
+            if job.get("job_type") in {"UV_UNWRAP", "UV_PROCESS_V2"}
+            and (
+                "BLENDER_PBR_UV_QA" in diagnostic
+                or "hard_failures" in diagnostic
+                or "degenerate_uv_faces" in diagnostic
+            )
+            else "BLENDER_EXECUTION_FAILED"
+        )
         try:
             response = await client.post(
                 f"/internal/v1/assets/jobs/{job['job_id']}/fail",
                 headers={"X-Asset-Lease": str(job["lease_token"])},
                 json={
-                    "code": "BLENDER_EXECUTION_FAILED",
-                    "message": str(exc)[-4000:] or type(exc).__name__,
+                    "code": error_code,
+                    "message": diagnostic,
                     "retryable": True,
                 },
             )
@@ -1091,45 +1358,73 @@ async def execute_job(
 
 async def worker_loop(settings: WorkerSettings) -> None:
     timeout = httpx.Timeout(30, read=3600)
+    codex_health = await inspect_codex_runtime(settings)
+    retopoflow_health: dict[str, Any] = {
+        "retopoflow_version": None,
+        "retopoflow_revision": None,
+        "retopoflow_probe_status": "NOT_RUN",
+        "retopoflow_probe_latency_ms": None,
+        "retopoflow_last_checked_at": None,
+        "retopoflow_error_code": None,
+    }
+    runtime = {"running": 0}
+    probe_task = asyncio.create_task(codex_health_loop(settings, codex_health, runtime))
+    retopoflow_probe_task = asyncio.create_task(
+        retopoflow_health_loop(settings, retopoflow_health, runtime)
+    )
     async with httpx.AsyncClient(base_url=settings.asset_api_url, timeout=timeout) as client:
         running: set[asyncio.Task[None]] = set()
         control_plane_backoff = 1.0
-        while True:
-            running = {task for task in running if not task.done()}
-            try:
-                await heartbeat(client, settings, len(running))
-                while len(running) < settings.asset_worker_max_concurrency:
-                    response = await signed_post(
+        try:
+            while True:
+                running = {task for task in running if not task.done()}
+                runtime["running"] = len(running)
+                try:
+                    await heartbeat(
                         client,
                         settings,
-                        "/internal/v1/assets/jobs/claim",
-                        {
-                            "worker_id": settings.asset_worker_id,
-                            "load_1m": os.getloadavg()[0],
-                            "available_memory_mb": available_memory_mb(),
-                        },
+                        len(running),
+                        codex_health,
+                        retopoflow_health,
                     )
-                    response.raise_for_status()
-                    job = response.json().get("job")
-                    if job is None:
-                        break
-                    task = asyncio.create_task(execute_job(client, settings, job))
-                    running.add(task)
-                control_plane_backoff = 1.0
-            except httpx.HTTPError as exc:
-                # A control-plane restart, DNS refresh, or brief network outage
-                # must not permanently remove a Blender worker from the pool.
-                # Keep already-running Blender subprocesses alive and retry the
-                # heartbeat/claim loop with a bounded backoff.
-                LOG.warning(
-                    "asset control plane unavailable (%s); retrying in %.1fs",
-                    type(exc).__name__,
-                    control_plane_backoff,
-                )
-                await asyncio.sleep(control_plane_backoff)
-                control_plane_backoff = min(control_plane_backoff * 2, 30.0)
-                continue
-            await asyncio.sleep(settings.asset_poll_seconds)
+                    while len(running) < settings.asset_worker_max_concurrency:
+                        response = await signed_post(
+                            client,
+                            settings,
+                            "/internal/v1/assets/jobs/claim",
+                            {
+                                "worker_id": settings.asset_worker_id,
+                                "load_1m": os.getloadavg()[0],
+                                "available_memory_mb": available_memory_mb(),
+                            },
+                        )
+                        response.raise_for_status()
+                        job = response.json().get("job")
+                        if job is None:
+                            break
+                        task = asyncio.create_task(execute_job(client, settings, job))
+                        running.add(task)
+                    control_plane_backoff = 1.0
+                except httpx.HTTPError as exc:
+                    # A control-plane restart, DNS refresh, or brief network outage
+                    # must not permanently remove a Blender worker from the pool.
+                    # Keep already-running Blender subprocesses alive and retry the
+                    # heartbeat/claim loop with a bounded backoff.
+                    LOG.warning(
+                        "asset control plane unavailable (%s); retrying in %.1fs",
+                        type(exc).__name__,
+                        control_plane_backoff,
+                    )
+                    await asyncio.sleep(control_plane_backoff)
+                    control_plane_backoff = min(control_plane_backoff * 2, 30.0)
+                    continue
+                await asyncio.sleep(settings.asset_poll_seconds)
+        finally:
+            probe_task.cancel()
+            retopoflow_probe_task.cancel()
+            await asyncio.gather(
+                probe_task, retopoflow_probe_task, return_exceptions=True
+            )
 
 
 def run() -> None:

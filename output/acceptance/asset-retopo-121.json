@@ -1,0 +1,452 @@
+{
+  "workers": [
+    "asset-control-4090",
+    "asset-worker-3090-b"
+  ],
+  "jobs": {
+    "4806dec9-1173-411c-aed6-64155bf3d65e": {
+      "job_type": "RETOPOLOGY_PROCESS_V1",
+      "status": "SUCCEEDED",
+      "worker_id": "asset-control-4090",
+      "attempt_count": 1,
+      "elapsed_seconds": 177,
+      "event_count": 20,
+      "artifacts": [
+        {
+          "kind": "agent_events",
+          "filename": "retopology_agent_events.jsonl",
+          "size_bytes": 6128,
+          "sha256": "9695d754969ea8e056aeeaa33e675ec1b72df57abd55bfd65ee41bb210280127"
+        },
+        {
+          "kind": "agent_plan",
+          "filename": "retopology_agent_plan.json",
+          "size_bytes": 5244,
+          "sha256": "b906cab586795e856dbf3b4c7aa53392da2cb78861ba6a814d75bceb627fa7b1"
+        },
+        {
+          "kind": "agent_prompt",
+          "filename": "retopology_agent_prompt.txt",
+          "size_bytes": 6415,
+          "sha256": "13cd81b7560345b81f0df88a240bcb5d1718b82544a1ebd802952f28837f7afb"
+        },
+        {
+          "kind": "audit",
+          "filename": "retopology_final_audit.json",
+          "size_bytes": 4773,
+          "sha256": "9d15b17f2878bf61b36c8657b73b6a7665834eafc73d372a67e5b84245680415"
+        },
+        {
+          "kind": "baseline_audit",
+          "filename": "retopology_baseline_audit.json",
+          "size_bytes": 4799,
+          "sha256": "15871d0c6cc1c82c8125fe66dc5a5d771f8feefbaa2e7e618d4f374c0ee53c84"
+        },
+        {
+          "kind": "candidate_blend",
+          "filename": "retopology_candidate.blend",
+          "size_bytes": 14804752,
+          "sha256": "856f780fed558e4713d010d28397bce7d31271fa7410efd94876b8a063917d63"
+        },
+        {
+          "kind": "candidate_fbx",
+          "filename": "retopology_candidate.fbx",
+          "size_bytes": 100236,
+          "sha256": "54790faa91e32969fbed87f1164c935d9abdb5c71397fe058209f2f3721aa6c6"
+        },
+        {
+          "kind": "comparison",
+          "filename": "retopology_comparison.png",
+          "size_bytes": 453093,
+          "sha256": "cb11f71e006dc223daeee40e0612663ed82e7ac57bbf49c6d9c1fcc586ac82fe"
+        },
+        {
+          "kind": "manifest",
+          "filename": "retopology_manifest.json",
+          "size_bytes": 2686,
+          "sha256": "fb5cc32323066b637e61bbc71b504a44435afa3e004e0384e325569496926ffa"
+        },
+        {
+          "kind": "process_report",
+          "filename": "retopology_process_report.json",
+          "size_bytes": 1660,
+          "sha256": "a9b5cafd4fc538265dee5d35106aaa3cc7c0f0aac2330f876f21fcb1e6c2785f"
+        },
+        {
+          "kind": "reference_images",
+          "filename": "reference_images.png",
+          "size_bytes": 151682,
+          "sha256": "1a3a54ae7838d8cd15aa196a98b7128974512ee32add1a8156addd325adc3971"
+        },
+        {
+          "kind": "view_generated_front",
+          "filename": "generated_front.png",
+          "size_bytes": 79259,
+          "sha256": "0a302b1576852c78acd5fa10a5cf1874db65fda713f62ae4f7e2caa1e1640702"
+        },
+        {
+          "kind": "view_generated_perspective",
+          "filename": "generated_perspective.png",
+          "size_bytes": 81961,
+          "sha256": "552c9cafa6414b11df292cd4d9037dee6a2a22e77b5b201d5e78b7bf7a064957"
+        },
+        {
+          "kind": "view_generated_side",
+          "filename": "generated_side.png",
+          "size_bytes": 79183,
+          "sha256": "be5523ad26f91447697d665093aeef7d3530628d5ad017f5b73dabbe6a91ec15"
+        },
+        {
+          "kind": "view_generated_top",
+          "filename": "generated_top.png",
+          "size_bytes": 79693,
+          "sha256": "80a7a8c30c359be3c4ad8f1dc7eba09ef9f901efe093b816af2bd6802e9784d4"
+        },
+        {
+          "kind": "view_high_front",
+          "filename": "high_front.png",
+          "size_bytes": 69849,
+          "sha256": "f755adf4ce39d8bef5b90a8305e6dbd3d75c03257e7c0a83258b9d44942495a1"
+        },
+        {
+          "kind": "view_high_perspective",
+          "filename": "high_perspective.png",
+          "size_bytes": 62733,
+          "sha256": "1b46a7de97a87d2f7500dd369418d05c14a0fbc3671fdfb1d8a77e0b5e3f2c21"
+        },
+        {
+          "kind": "view_high_side",
+          "filename": "high_side.png",
+          "size_bytes": 71504,
+          "sha256": "60a36159912fbef7f76ef5c458258b45ea5e9bc7e16a893343278cd36368f2dd"
+        },
+        {
+          "kind": "view_high_top",
+          "filename": "high_top.png",
+          "size_bytes": 67170,
+          "sha256": "f68bd04b6d8ee028d1d5d3e4a675dca32376a329c3b27a3af30bdf08d301b3fa"
+        },
+        {
+          "kind": "view_reference_front",
+          "filename": "reference_front.png",
+          "size_bytes": 81363,
+          "sha256": "a8065d2d8077d84fef96a083f240f43f63c295565e0c08d400f3196a38d51bcc"
+        },
+        {
+          "kind": "view_reference_perspective",
+          "filename": "reference_perspective.png",
+          "size_bytes": 84426,
+          "sha256": "9f4f821afa654a5d09fd39f86859e79c694a57bf1bc8d3690613f318bb19167a"
+        },
+        {
+          "kind": "view_reference_side",
+          "filename": "reference_side.png",
+          "size_bytes": 81282,
+          "sha256": "de9fa6baf68d6c39fd7ba94bc70a6e94e09a5ea0c173c8a6f6c803ed0932d1cb"
+        },
+        {
+          "kind": "view_reference_top",
+          "filename": "reference_top.png",
+          "size_bytes": 82011,
+          "sha256": "ba7abafa33e8e9145d126a029f6cd35d0c6bbe082a128937248c9e28dfc52946"
+        }
+      ]
+    },
+    "b5a06285-26f5-4971-a431-735c1ac1c4df": {
+      "job_type": "RETOPOLOGY_PROCESS_V1",
+      "status": "SUCCEEDED",
+      "worker_id": "asset-control-4090",
+      "attempt_count": 1,
+      "elapsed_seconds": 177,
+      "event_count": 21,
+      "artifacts": [
+        {
+          "kind": "agent_events",
+          "filename": "retopology_agent_events.jsonl",
+          "size_bytes": 6257,
+          "sha256": "446911b07fef4342e62c62753c6d80f461292fcc9d8f9efedb5527c970ef9e5f"
+        },
+        {
+          "kind": "agent_plan",
+          "filename": "retopology_agent_plan.json",
+          "size_bytes": 5373,
+          "sha256": "e789e40d4a1451fb7d78b773611c9b90456bb1f5f77d7e887e96080a8581c6db"
+        },
+        {
+          "kind": "agent_prompt",
+          "filename": "retopology_agent_prompt.txt",
+          "size_bytes": 6415,
+          "sha256": "325b5727929a3c508f15b036affc597deb95aa1f3ec2bf31e1e3372af06272c8"
+        },
+        {
+          "kind": "audit",
+          "filename": "retopology_final_audit.json",
+          "size_bytes": 4773,
+          "sha256": "b4187b25188bffdeff60f4d13bd2394e4aaf5f0563a049235437a626bf47941a"
+        },
+        {
+          "kind": "baseline_audit",
+          "filename": "retopology_baseline_audit.json",
+          "size_bytes": 4799,
+          "sha256": "5efd297620683324f860c98e1290aa30c2d482482ce30bd637cb5ea39838bb94"
+        },
+        {
+          "kind": "candidate_blend",
+          "filename": "retopology_candidate.blend",
+          "size_bytes": 14804752,
+          "sha256": "885a7c2897b61f1d1de5264940ea24c5548b278b3638f64bf0c09c41cf77e8b0"
+        },
+        {
+          "kind": "candidate_fbx",
+          "filename": "retopology_candidate.fbx",
+          "size_bytes": 100236,
+          "sha256": "5ea46c9a180b3419de66d5a52eb1d5570e969b07f32e55a579d4efe20a148721"
+        },
+        {
+          "kind": "comparison",
+          "filename": "retopology_comparison.png",
+          "size_bytes": 453093,
+          "sha256": "cb11f71e006dc223daeee40e0612663ed82e7ac57bbf49c6d9c1fcc586ac82fe"
+        },
+        {
+          "kind": "manifest",
+          "filename": "retopology_manifest.json",
+          "size_bytes": 2700,
+          "sha256": "8dd7812e76d5aab9d77962e4db4f96eaeb22981d23183d8fbc187f6a21be86a2"
+        },
+        {
+          "kind": "process_report",
+          "filename": "retopology_process_report.json",
+          "size_bytes": 1660,
+          "sha256": "8ffac7c559783fd49af3b6c93a7c51242a29c3b1ec3f53e87969e4954f52d895"
+        },
+        {
+          "kind": "reference_images",
+          "filename": "reference_images.png",
+          "size_bytes": 151682,
+          "sha256": "1a3a54ae7838d8cd15aa196a98b7128974512ee32add1a8156addd325adc3971"
+        },
+        {
+          "kind": "view_generated_front",
+          "filename": "generated_front.png",
+          "size_bytes": 79259,
+          "sha256": "4cca39a8ca0f7a3058b8a7adf30ba43dab17d25aa641578853c13a324851847e"
+        },
+        {
+          "kind": "view_generated_perspective",
+          "filename": "generated_perspective.png",
+          "size_bytes": 81961,
+          "sha256": "d4634ba9d54b1a59f644565e421cbdfcaad52dfeae364582ea2d32a7246a0f42"
+        },
+        {
+          "kind": "view_generated_side",
+          "filename": "generated_side.png",
+          "size_bytes": 79183,
+          "sha256": "9ba341fa9d6a1691b56e41fc09d6f5e568ea450e2a299dc696bc2332e0fea4d6"
+        },
+        {
+          "kind": "view_generated_top",
+          "filename": "generated_top.png",
+          "size_bytes": 79693,
+          "sha256": "8e7f898f9096482897e6e77b3981e33d6f169a1b652e0a23b3f4ccb10f46dda1"
+        },
+        {
+          "kind": "view_high_front",
+          "filename": "high_front.png",
+          "size_bytes": 69849,
+          "sha256": "a1e282ec5fb268143ce4ff8a073fd715e2a7ee0a1df75dd6c6273b5025075650"
+        },
+        {
+          "kind": "view_high_perspective",
+          "filename": "high_perspective.png",
+          "size_bytes": 62733,
+          "sha256": "38edb4d887a3cc6a164d3f67626e0092eebe0afd587739777a0e773e9c0daa64"
+        },
+        {
+          "kind": "view_high_side",
+          "filename": "high_side.png",
+          "size_bytes": 71504,
+          "sha256": "f996599a7a6149109af57ad848df548abbaac52bd16a8245a63b4ac52ff04620"
+        },
+        {
+          "kind": "view_high_top",
+          "filename": "high_top.png",
+          "size_bytes": 67170,
+          "sha256": "d6c983548330ed7fd47c98d4b1ed04386592b09266947ddac6510b1893cae11a"
+        },
+        {
+          "kind": "view_reference_front",
+          "filename": "reference_front.png",
+          "size_bytes": 81363,
+          "sha256": "068154f7448a0d9bcf54900d3b378be2453a968a00432ecbf0e63eae81c39e54"
+        },
+        {
+          "kind": "view_reference_perspective",
+          "filename": "reference_perspective.png",
+          "size_bytes": 84426,
+          "sha256": "9d57ca0738fa463e99a3610ccf5ce17015e15c581a24fcf5b7dc367bf36fdeb3"
+        },
+        {
+          "kind": "view_reference_side",
+          "filename": "reference_side.png",
+          "size_bytes": 81282,
+          "sha256": "c69d0e21bb0913c07eafc8ee9b40dc3c9afd68502f87668805924890aeb4d436"
+        },
+        {
+          "kind": "view_reference_top",
+          "filename": "reference_top.png",
+          "size_bytes": 82011,
+          "sha256": "70eb0da03e06e6bea15ab1134137851e5edf5295a3362a9b47ff276ea66c0b6a"
+        }
+      ]
+    },
+    "3e1676d5-83a4-4ff0-850b-bb8c6f0db698": {
+      "job_type": "RETOPOLOGY_PROCESS_V1",
+      "status": "SUCCEEDED",
+      "worker_id": "asset-worker-3090-b",
+      "attempt_count": 1,
+      "elapsed_seconds": 245,
+      "event_count": 24,
+      "artifacts": [
+        {
+          "kind": "agent_events",
+          "filename": "retopology_agent_events.jsonl",
+          "size_bytes": 7863,
+          "sha256": "c9f988f25a6b6b0cf7f4157112356eeded8bbae3c6b9482c5981895821be1672"
+        },
+        {
+          "kind": "agent_plan",
+          "filename": "retopology_agent_plan.json",
+          "size_bytes": 4777,
+          "sha256": "a7412da320411a568cd92dbcc16d0487e9da9909a30d117e40993a7d207cb448"
+        },
+        {
+          "kind": "agent_prompt",
+          "filename": "retopology_agent_prompt.txt",
+          "size_bytes": 6415,
+          "sha256": "0233d7999cc7181cd508abf66ccc060023b4168946af386e8bec8462fa29da5a"
+        },
+        {
+          "kind": "audit",
+          "filename": "retopology_final_audit.json",
+          "size_bytes": 4773,
+          "sha256": "a5e7bfb17275f79becd7ce2579a7c3843f9598d3d9c3239892afa41449ba2ae1"
+        },
+        {
+          "kind": "baseline_audit",
+          "filename": "retopology_baseline_audit.json",
+          "size_bytes": 4799,
+          "sha256": "82122de184b20ab20986410faa15d4ac63d035ec17e5e74551f49500d724fb42"
+        },
+        {
+          "kind": "candidate_blend",
+          "filename": "retopology_candidate.blend",
+          "size_bytes": 14804752,
+          "sha256": "2d1d169aa2c83ed52937fa537a0fc4ca37043e06a05567cad96c534b52a9153f"
+        },
+        {
+          "kind": "candidate_fbx",
+          "filename": "retopology_candidate.fbx",
+          "size_bytes": 100236,
+          "sha256": "ba5e8932e35e449158eac7e5e57f32f4590bd2fca519d494b933465eac6f5018"
+        },
+        {
+          "kind": "comparison",
+          "filename": "retopology_comparison.png",
+          "size_bytes": 453098,
+          "sha256": "0b99c529f33948a4eae07172080d140e6442b66490cd7d94de7860268457b3bb"
+        },
+        {
+          "kind": "manifest",
+          "filename": "retopology_manifest.json",
+          "size_bytes": 2686,
+          "sha256": "621b112872cb85257011f1826b82772b4bd5c4088b4d56b6cbbf9f8c1fa366b6"
+        },
+        {
+          "kind": "process_report",
+          "filename": "retopology_process_report.json",
+          "size_bytes": 1660,
+          "sha256": "8807c05d52c494b8c5acb9ab7a4e40c1b3dfb6c52d302ec88136a6e8542cfc47"
+        },
+        {
+          "kind": "reference_images",
+          "filename": "reference_images.png",
+          "size_bytes": 151682,
+          "sha256": "1a3a54ae7838d8cd15aa196a98b7128974512ee32add1a8156addd325adc3971"
+        },
+        {
+          "kind": "view_generated_front",
+          "filename": "generated_front.png",
+          "size_bytes": 79259,
+          "sha256": "2fae1ab20b0ab2efe2c31c05c831e5a209c382dc6e238c16e9d9797f3fb7be89"
+        },
+        {
+          "kind": "view_generated_perspective",
+          "filename": "generated_perspective.png",
+          "size_bytes": 81961,
+          "sha256": "72e3c7d067c6b01e0e4bb9daf676a5b68372c43945ec7c94ea96b9c3d7f38a4b"
+        },
+        {
+          "kind": "view_generated_side",
+          "filename": "generated_side.png",
+          "size_bytes": 79183,
+          "sha256": "16f7944851cf20fafb695ff7808ef2e29bc31d1c3114bc26061ca78e48cf574d"
+        },
+        {
+          "kind": "view_generated_top",
+          "filename": "generated_top.png",
+          "size_bytes": 79693,
+          "sha256": "9dd66bcc7c71d152bc912eccf0eb7256029db9ffe34752e4dab334f2dbdd9f56"
+        },
+        {
+          "kind": "view_high_front",
+          "filename": "high_front.png",
+          "size_bytes": 69849,
+          "sha256": "8def1fe240a75c5516cac5354179d6607b96affd4c92ef96e9f6fa897b2f5285"
+        },
+        {
+          "kind": "view_high_perspective",
+          "filename": "high_perspective.png",
+          "size_bytes": 62731,
+          "sha256": "85549704ae2297b0d89a11ca43c641bb8d6537a4db7d4484b4ebe73bea6510cc"
+        },
+        {
+          "kind": "view_high_side",
+          "filename": "high_side.png",
+          "size_bytes": 71504,
+          "sha256": "1ddb6360cf6410498a680a96b1a8fd428378ef6319091ce6729b2355dafcd2ae"
+        },
+        {
+          "kind": "view_high_top",
+          "filename": "high_top.png",
+          "size_bytes": 67136,
+          "sha256": "cb4a1e3fe26907a21ee9c36e9575b067b7db1875f413b7ae38da96d417a59b57"
+        },
+        {
+          "kind": "view_reference_front",
+          "filename": "reference_front.png",
+          "size_bytes": 81340,
+          "sha256": "4eef8424f290618f68c5c0d33d14a4812b396c14e4ced7fe055a67295aa05a60"
+        },
+        {
+          "kind": "view_reference_perspective",
+          "filename": "reference_perspective.png",
+          "size_bytes": 84427,
+          "sha256": "94bf7b5e4cf50ccb4f85928d782aa40a15031848f5d629b83cc6c5a94b3ee460"
+        },
+        {
+          "kind": "view_reference_side",
+          "filename": "reference_side.png",
+          "size_bytes": 81236,
+          "sha256": "0c5212250abb05dbb022b551bd88165dfcd3e94e5276eb2d9cbf203a4161dc71"
+        },
+        {
+          "kind": "view_reference_top",
+          "filename": "reference_top.png",
+          "size_bytes": 82000,
+          "sha256": "08a25c5cfe3ebfccd26bb73a0f2797efd5e273622beca56c394b45cddc85b2e7"
+        }
+      ]
+    }
+  }
+}

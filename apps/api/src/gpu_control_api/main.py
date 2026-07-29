@@ -141,6 +141,10 @@ class NodeHeartbeatRequest(BaseModel):
     imageclip_pipeline_sha256: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{64}$", max_length=64
     )
+    codex_cli_installed: bool = False
+    codex_cli_version: str | None = Field(default=None, max_length=64)
+    codex_cli_error: str | None = Field(default=None, max_length=64)
+    codex_cli_checked_at: float | None = Field(default=None, ge=0)
 
     @field_validator("ip")
     @classmethod
@@ -158,17 +162,6 @@ class NodeHeartbeatRequest(BaseModel):
 
 class RetryRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
-    confirm: bool
-
-
-class AssetReviewRequest(BaseModel):
-    decision: Literal["APPROVE", "REJECT"]
-    comment: str = Field(min_length=3, max_length=2000)
-    confirm: bool
-
-
-class AssetIterationRequest(BaseModel):
-    feedback: str = Field(min_length=3, max_length=2000)
     confirm: bool
 
 
@@ -655,9 +648,10 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         replay_key = f"{body.node_id}:{nonce}"
         if replay_key in nonces:
             raise HTTPException(409, detail={"code": "NODE_HEARTBEAT_REPLAY"})
-        raw_body = json.dumps(
-            body.model_dump(), separators=(",", ":"), sort_keys=True
-        ).encode()
+        # Verify the exact bytes sent by the agent. Re-serializing the parsed
+        # model would inject newly added defaults and break signatures from
+        # older agents during a rolling control-plane upgrade.
+        raw_body = await request.body()
         expected = sign_agent_request(
             request.method,
             request.url.path,
@@ -700,6 +694,10 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "agent_last_seen_at": datetime.now(UTC).isoformat(),
                 "imageclip_commit": body.imageclip_commit or "",
                 "imageclip_pipeline_sha256": body.imageclip_pipeline_sha256 or "",
+                "codex_cli_installed": body.codex_cli_installed,
+                "codex_cli_version": body.codex_cli_version or "",
+                "codex_cli_error": body.codex_cli_error or "",
+                "codex_cli_checked_at": body.codex_cli_checked_at,
             }
         )
         node.labels = labels
@@ -2358,6 +2356,25 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         heartbeat_cutoff = now - timedelta(
             seconds=cfg.asset_worker_heartbeat_timeout_seconds
         )
+
+        def utc_value(value: datetime | None) -> datetime | None:
+            if value is None:
+                return None
+            return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+        def elapsed_seconds(job: AssetJob) -> int:
+            started = utc_value(job.started_at)
+            if started is None:
+                return 0
+            terminal = job.status in {
+                "SUCCEEDED",
+                "WAITING_REVIEW",
+                "REVIEW_REJECTED",
+                "FAILED",
+                "CANCELLED",
+            }
+            ended = utc_value(job.finished_at or job.last_progress_at) if terminal else now
+            return max(0, int(((ended or now) - started).total_seconds()))
         workers = list(
             (await db.scalars(select(AssetWorker).order_by(AssetWorker.id))).all()
         )
@@ -2425,7 +2442,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "online_workers": len(online_workers),
                 "total_slots": sum(worker.max_concurrency for worker in online_workers),
                 "used_slots": sum(worker.current_jobs for worker in online_workers),
-                "waiting_review": counts.get("WAITING_REVIEW", 0),
+                "qa_failed": counts.get("FAILED", 0),
             },
             "workers": [
                 {
@@ -2440,6 +2457,25 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     "cpu_count": worker.cpu_count,
                     "current_jobs": worker.current_jobs,
                     "max_concurrency": worker.max_concurrency,
+                    "codex_cli_version": worker.codex_cli_version,
+                    "codex_auth_status": worker.codex_auth_status,
+                    "codex_probe_status": worker.codex_probe_status,
+                    "codex_probe_latency_ms": worker.codex_probe_latency_ms,
+                    "codex_last_checked_at": worker.codex_last_checked_at.isoformat()
+                    if worker.codex_last_checked_at
+                    else None,
+                    "codex_last_success_at": worker.codex_last_success_at.isoformat()
+                    if worker.codex_last_success_at
+                    else None,
+                    "codex_error_code": worker.codex_error_code,
+                    "retopoflow_version": worker.retopoflow_version,
+                    "retopoflow_revision": worker.retopoflow_revision,
+                    "retopoflow_probe_status": worker.retopoflow_probe_status,
+                    "retopoflow_probe_latency_ms": worker.retopoflow_probe_latency_ms,
+                    "retopoflow_last_checked_at": worker.retopoflow_last_checked_at.isoformat()
+                    if worker.retopoflow_last_checked_at
+                    else None,
+                    "retopoflow_error_code": worker.retopoflow_error_code,
                     "last_heartbeat_at": worker.last_heartbeat_at.isoformat()
                     if worker.last_heartbeat_at
                     else None,
@@ -2461,14 +2497,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     "stage": job.stage,
                     "stage_message": job.stage_message,
                     "timing": {
-                        "elapsed_seconds": max(
-                            0,
-                            int(
-                                (now - (job.started_at.replace(tzinfo=UTC) if job.started_at and job.started_at.tzinfo is None else job.started_at)).total_seconds()
-                            ),
-                        )
-                        if job.started_at
-                        else 0,
+                        "elapsed_seconds": elapsed_seconds(job),
                         "estimated_remaining_seconds": job.estimated_remaining_seconds,
                         "last_progress_at": job.last_progress_at.isoformat()
                         if job.last_progress_at
@@ -2479,6 +2508,16 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                         {"code": job.error_code, "message": job.error_message}
                         if job.error_code
                         else None
+                    ),
+                    "delivery_ready": job.status == "SUCCEEDED",
+                    "review_required": False,
+                    "artifacts_role": (
+                        "diagnostic"
+                        if job.status == "FAILED"
+                        and job.error_code == "RETOPOLOGY_AUDIT_FAILED"
+                        else "delivery"
+                        if job.status == "SUCCEEDED"
+                        else "retained"
                     ),
                     "created_at": job.created_at.isoformat(),
                     "started_at": job.started_at.isoformat()
@@ -2502,12 +2541,13 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "retopology_audit": {
                     "submit": "/api/v1/assets/retopology/audit",
                     "format": ".blend",
-                    "terminal_review_status": "WAITING_REVIEW",
+                    "success_status": "SUCCEEDED",
                 },
                 "retopology_process": {
                     "submit": "/api/v1/assets/retopology/process",
                     "format": ".blend + optional reference images",
-                    "review_status": "WAITING_REVIEW",
+                    "success_status": "SUCCEEDED",
+                    "delivery_policy": "strict_qa_auto_publish",
                     "views": ["front", "side", "top", "perspective"],
                     "roles": ["high", "reference", "generated"],
                     "reference_views_optional": True,
@@ -2608,281 +2648,6 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             filename=artifact.filename,
             headers={"X-Artifact-SHA256": artifact.sha256, "Cache-Control": "no-store"},
         )
-
-    @app.post("/admin/asset-jobs/{job_id}/review")
-    async def admin_review_asset_job(
-        job_id: str,
-        body: AssetReviewRequest,
-        request: Request,
-        principal: Annotated[Principal, Depends(require_operator)],
-        db: Annotated[AsyncSession, Depends(session)],
-    ) -> dict[str, Any]:
-        if not body.confirm:
-            raise HTTPException(409, detail={"code": "CONFIRMATION_REQUIRED"})
-        job = await db.get(AssetJob, job_id, with_for_update=True)
-        if job is None:
-            raise HTTPException(404, detail={"code": "ASSET_JOB_NOT_FOUND"})
-        if job.job_type != "RETOPOLOGY_PROCESS_V1" or job.status != "WAITING_REVIEW":
-            raise HTTPException(409, detail={"code": "ASSET_JOB_NOT_REVIEWABLE"})
-        artifacts = list(
-            (
-                await db.scalars(
-                    select(AssetArtifact).where(AssetArtifact.job_id == job.id)
-                )
-            ).all()
-        )
-        by_kind = {artifact.kind: artifact for artifact in artifacts}
-        required_views = {
-            f"view_{role}_{view}"
-            for role in ("high", "reference", "generated")
-            for view in ("front", "side", "top", "perspective")
-        }
-        required = {
-            "candidate_blend",
-            "candidate_fbx",
-            "process_report",
-            "baseline_audit",
-            "audit",
-            "manifest",
-            "comparison",
-            "agent_plan",
-            "agent_prompt",
-            "agent_events",
-            *required_views,
-        }
-        missing = required - set(by_kind)
-        if missing:
-            raise HTTPException(
-                409,
-                detail={"code": "RETOPOLOGY_REVIEW_ARTIFACTS_MISSING", "kinds": sorted(missing)},
-            )
-        try:
-            audit_payload = json.loads(Path(by_kind["audit"].path).read_text("utf-8"))
-            manifest_payload = json.loads(
-                Path(by_kind["manifest"].path).read_text("utf-8")
-            )
-        except (OSError, ValueError) as exc:
-            raise HTTPException(
-                409, detail={"code": "RETOPOLOGY_REVIEW_DATA_INVALID"}
-            ) from exc
-        before = {
-            "status": job.status,
-            "audit_passed": bool(audit_payload.get("audit_passed")),
-        }
-        if body.decision == "APPROVE":
-            if (
-                audit_payload.get("audit_passed") is not True
-                or manifest_payload.get("source_preserved") is not True
-                or manifest_payload.get("automatic_final_promotion_allowed") is not False
-            ):
-                raise HTTPException(
-                    409, detail={"code": "RETOPOLOGY_APPROVAL_GATE_FAILED"}
-                )
-            job.status = "SUCCEEDED"
-            job.progress = 100
-            job.stage = "SUCCEEDED"
-            job.stage_message = "人工四视图复核通过，候选已批准"
-            job.estimated_remaining_seconds = 0
-            job.error_code = None
-            job.error_message = None
-        else:
-            job.status = "REVIEW_REJECTED"
-            job.stage = "REVIEW_REJECTED"
-            job.stage_message = "人工复核驳回；候选和审计证据已保留"
-            job.estimated_remaining_seconds = 0
-            job.error_code = "RETOPOLOGY_REVIEW_REJECTED"
-            job.error_message = body.comment
-        job.last_progress_at = datetime.now(UTC)
-        job.finished_at = datetime.now(UTC)
-        await append_admin_asset_event(
-            db,
-            job,
-            event="asset.reviewed",
-            details={
-                "decision": body.decision,
-                "comment": body.comment,
-                "actor": principal.id,
-            },
-        )
-        await audit(
-            db,
-            request,
-            principal,
-            "asset_job.review",
-            "asset_job",
-            job.id,
-            before,
-            {
-                "status": job.status,
-                "decision": body.decision,
-                "comment": body.comment,
-            },
-        )
-        await db.commit()
-        return {
-            "job_id": job.id,
-            "status": job.status,
-            "decision": body.decision,
-            "reviewed_at": job.finished_at.isoformat(),
-        }
-
-    @app.post("/admin/asset-jobs/{job_id}/iterate")
-    async def admin_iterate_asset_job(
-        job_id: str,
-        body: AssetIterationRequest,
-        request: Request,
-        principal: Annotated[Principal, Depends(require_operator)],
-        db: Annotated[AsyncSession, Depends(session)],
-    ) -> dict[str, Any]:
-        """Create a new immutable candidate version from a rejected candidate."""
-        if not body.confirm:
-            raise HTTPException(409, detail={"code": "CONFIRMATION_REQUIRED"})
-        source_job = await db.get(AssetJob, job_id, with_for_update=True)
-        if (
-            source_job is None
-            or source_job.job_type != "RETOPOLOGY_PROCESS_V1"
-            or source_job.status != "REVIEW_REJECTED"
-        ):
-            raise HTTPException(409, detail={"code": "ASSET_JOB_NOT_ITERABLE"})
-        candidate = await db.scalar(
-            select(AssetArtifact).where(
-                AssetArtifact.job_id == source_job.id,
-                AssetArtifact.kind == "candidate_blend",
-            )
-        )
-        if candidate is None or not Path(candidate.path).is_file():
-            raise HTTPException(
-                409, detail={"code": "RETOPOLOGY_CANDIDATE_MISSING"}
-            )
-        old_generated = str(source_job.options["generated_low_object"])
-        match = re.search(r"_v(\d{3})$", old_generated)
-        next_number = int(match.group(1)) + 1 if match else 2
-        next_generated = (
-            f"{old_generated[:match.start()]}_v{next_number:03d}"
-            if match
-            else f"{old_generated}_v{next_number:03d}"
-        )
-        next_external = f"{source_job.external_asset_id}:iteration:{next_number:03d}"
-        if await db.scalar(
-            select(AssetJob.id).where(
-                AssetJob.client_id == source_job.client_id,
-                AssetJob.external_asset_id == next_external,
-            )
-        ):
-            raise HTTPException(409, detail={"code": "ASSET_ITERATION_EXISTS"})
-
-        new_id = str(uuid.uuid4())
-        staging = cfg.asset_root / f".staging-{new_id}"
-        job_root = cfg.asset_root / new_id
-        staging.mkdir(parents=True, exist_ok=False)
-        try:
-            candidate_path = Path(candidate.path)
-            candidate_sha = sha256_file(candidate_path)
-            options = dict(source_job.options)
-            options["low_object"] = old_generated
-            options["generated_low_object"] = next_generated
-            options["project_filename"] = "retopology_candidate.blend"
-            options["project_sha256"] = candidate_sha
-            options["user_request"] = (
-                f"{source_job.options.get('user_request') or ''}\n"
-                f"Iteration feedback: {body.feedback}"
-            ).strip()
-            input_manifest = {
-                "schema_version": "retopology_input.v1",
-                "external_asset_id": next_external,
-                "project": {
-                    "filename": "retopology_candidate.blend",
-                    "sha256": candidate_sha,
-                    "size_bytes": candidate_path.stat().st_size,
-                },
-                "reference_views": options.get("reference_views", []),
-                "user_request": options["user_request"],
-            }
-            bundle = staging / "retopology_input.zip"
-            with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as output:
-                output.write(candidate_path, "retopology_candidate.blend")
-                output.writestr(
-                    "input_manifest.json",
-                    json.dumps(input_manifest, ensure_ascii=False, indent=2),
-                )
-                with zipfile.ZipFile(source_job.input_path) as original:
-                    for member in original.infolist():
-                        if not member.filename.startswith("references/") or member.is_dir():
-                            continue
-                        output.writestr(member.filename, original.read(member))
-            bundle_sha = sha256_file(bundle)
-            request_hash = hashlib.sha256(
-                json.dumps(
-                    {
-                        "job_type": "RETOPOLOGY_PROCESS_V1",
-                        "parent_job_id": source_job.id,
-                        "input_sha256": bundle_sha,
-                        "options": options,
-                        "feedback": body.feedback,
-                    },
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()
-            staging.rename(job_root)
-            next_job = AssetJob(
-                id=new_id,
-                client_id=source_job.client_id,
-                external_asset_id=next_external,
-                job_type="RETOPOLOGY_PROCESS_V1",
-                status="QUEUED",
-                stage="QUEUED",
-                stage_message=f"候选 v{next_number:03d} 已进入队列",
-                source_filename="retopology_input.zip",
-                input_path=str(job_root / "retopology_input.zip"),
-                input_sha256=bundle_sha,
-                input_size_bytes=(job_root / "retopology_input.zip").stat().st_size,
-                options=options,
-                request_hash=request_hash,
-                request_id=str(request.state.request_id),
-            )
-            db.add(next_job)
-            await db.flush()
-            await append_admin_asset_event(
-                db,
-                next_job,
-                event="asset.iteration_queued",
-                details={
-                    "parent_job_id": source_job.id,
-                    "feedback": body.feedback,
-                    "generated_low_object": next_generated,
-                    "actor": principal.id,
-                },
-            )
-            await audit(
-                db,
-                request,
-                principal,
-                "asset_job.iterate",
-                "asset_job",
-                next_job.id,
-                {"parent_job_id": source_job.id},
-                {
-                    "status": "QUEUED",
-                    "external_asset_id": next_external,
-                    "generated_low_object": next_generated,
-                },
-            )
-            await db.commit()
-        except Exception:
-            await db.rollback()
-            if staging.exists():
-                for child in staging.iterdir():
-                    child.unlink()
-                staging.rmdir()
-            raise
-        return {
-            "job_id": new_id,
-            "parent_job_id": source_job.id,
-            "external_asset_id": next_external,
-            "status": "QUEUED",
-            "generated_low_object": next_generated,
-        }
 
     @app.get("/admin/batches/{batch_id}")
     async def admin_batch_detail(
@@ -3059,10 +2824,103 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         db: Annotated[AsyncSession, Depends(session)],
     ) -> list[dict[str, Any]]:
         rows = (await db.scalars(select(Node).order_by(Node.pool, Node.id))).all()
-        return [
-            {column.name: getattr(row, column.name) for column in Node.__table__.columns}
-            for row in rows
-        ]
+        workers = list(
+            (await db.scalars(select(AssetWorker).order_by(AssetWorker.updated_at.desc()))).all()
+        )
+        codex_jobs = list(
+            (
+                await db.scalars(
+                    select(AssetJob)
+                    .where(AssetJob.job_type == "RETOPOLOGY_PROCESS_V1")
+                    .order_by(AssetJob.created_at.desc())
+                    .limit(500)
+                )
+            ).all()
+        )
+        worker_by_node: dict[str, AssetWorker] = {}
+        for asset_worker in workers:
+            worker_by_node.setdefault(asset_worker.node_id, asset_worker)
+        codex_task_by_worker: dict[str, AssetJob] = {}
+        for job in codex_jobs:
+            if not job.worker_id:
+                continue
+            current = codex_task_by_worker.get(job.worker_id)
+            active = job.status in {"CLAIMED", "RUNNING"}
+            current_active = bool(current and current.status in {"CLAIMED", "RUNNING"})
+            if current is None or (active and not current_active):
+                codex_task_by_worker[job.worker_id] = job
+        payload: list[dict[str, Any]] = []
+        for row in rows:
+            item = {column.name: getattr(row, column.name) for column in Node.__table__.columns}
+            labels = row.labels or {}
+            worker = worker_by_node.get(row.id)
+            installed = bool(labels.get("codex_cli_installed"))
+            auth_status = worker.codex_auth_status if worker else "UNKNOWN"
+            probe_status = worker.codex_probe_status if worker else "NOT_RUN"
+            codex_task = codex_task_by_worker.get(worker.id) if worker else None
+            if installed and auth_status == "AUTHENTICATED" and probe_status == "HEALTHY":
+                health = "HEALTHY"
+            elif installed and auth_status == "AUTHENTICATED" and probe_status == "NOT_RUN":
+                health = "CHECKING"
+            elif installed:
+                health = "DEGRADED"
+            else:
+                health = "UNAVAILABLE"
+            item["codex_cli"] = {
+                "health": health,
+                "host_entry_installed": installed,
+                "host_version": labels.get("codex_cli_version") or None,
+                "runtime_version": worker.codex_cli_version if worker else None,
+                "auth_status": auth_status,
+                "probe_status": probe_status,
+                "probe_latency_ms": worker.codex_probe_latency_ms if worker else None,
+                "last_checked_at": worker.codex_last_checked_at.isoformat()
+                if worker and worker.codex_last_checked_at
+                else None,
+                "last_success_at": worker.codex_last_success_at.isoformat()
+                if worker and worker.codex_last_success_at
+                else None,
+                "error_code": (
+                    worker.codex_error_code
+                    if worker and worker.codex_error_code
+                    else labels.get("codex_cli_error") or None
+                ),
+                "task": (
+                    {
+                        "job_id": codex_task.id,
+                        "external_asset_id": codex_task.external_asset_id,
+                        "status": codex_task.status,
+                        "stage": codex_task.stage,
+                        "input": {
+                            "filename": codex_task.source_filename,
+                            "sha256": codex_task.input_sha256,
+                            "high_object": codex_task.options.get("high_object"),
+                            "reference_object": codex_task.options.get("reference_object"),
+                            "low_object": codex_task.options.get("low_object"),
+                            "reference_view_count": len(
+                                codex_task.options.get("reference_views") or []
+                            ),
+                            "user_request": codex_task.options.get("user_request"),
+                        },
+                        "output_contract": [
+                            "retopology_candidate.blend",
+                            "retopology_candidate.fbx",
+                            "retopology_process_report.json",
+                            "retopology_final_audit.json",
+                            "retopology_manifest.json",
+                            "retopology_agent_prompt.txt",
+                            "retopology_agent_events.jsonl",
+                            "high/reference/generated × front/side/top/perspective PNG",
+                        ],
+                        "is_active": codex_task.status in {"CLAIMED", "RUNNING"},
+                    }
+                    if codex_task
+                    else None
+                ),
+                "scheduler_eligible": False,
+            }
+            payload.append(item)
+        return payload
 
     async def prepare_idle_maintenance(
         node_id: str,

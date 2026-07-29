@@ -38,6 +38,7 @@ class NodeAgentSettings(BaseSettings):
     node_heartbeat_interval_seconds: int = Field(10, ge=5, le=300)
     node_control_ca_cert: Path = Path("/etc/gpu-control/lan-ca.crt")
     imageclip_root: Path = Path("/opt/imageclip")
+    codex_binary: Path = Path("/usr/local/bin/codex")
 
     @model_validator(mode="after")
     def reject_weak_production_secret(self) -> "NodeAgentSettings":
@@ -148,6 +149,47 @@ async def _gpu_metrics() -> dict[str, int]:
     }
 
 
+async def _codex_cli_runtime(binary: Path) -> dict[str, Any]:
+    """Inspect the host CLI entry without reading credentials or calling a model."""
+    checked_at = time.time()
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        return {
+            "codex_cli_installed": False,
+            "codex_cli_version": None,
+            "codex_cli_error": "BINARY_UNAVAILABLE",
+            "codex_cli_checked_at": checked_at,
+        }
+    try:
+        process = await asyncio.create_subprocess_exec(
+            str(binary),
+            "--version",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=5)
+    except TimeoutError:
+        return {
+            "codex_cli_installed": True,
+            "codex_cli_version": None,
+            "codex_cli_error": "VERSION_TIMEOUT",
+            "codex_cli_checked_at": checked_at,
+        }
+    version = stdout.decode(errors="replace").strip()
+    if process.returncode != 0 or not version:
+        return {
+            "codex_cli_installed": True,
+            "codex_cli_version": None,
+            "codex_cli_error": "VERSION_FAILED",
+            "codex_cli_checked_at": checked_at,
+        }
+    return {
+        "codex_cli_installed": True,
+        "codex_cli_version": version[:64],
+        "codex_cli_error": None,
+        "codex_cli_checked_at": checked_at,
+    }
+
+
 def _git_head(repository: Path) -> str:
     head = (repository / ".git" / "HEAD").read_text(encoding="utf-8").strip()
     if head.startswith("ref: "):
@@ -187,7 +229,7 @@ def _imageclip_pipeline_state(repository: Path) -> tuple[str, str]:
 
 def _post_heartbeat(
     cfg: NodeAgentSettings,
-    identity: dict[str, str],
+    identity: dict[str, Any],
 ) -> dict[str, Any]:
     path = "/api/v1/nodes/heartbeat"
     body = json.dumps(identity, separators=(",", ":"), sort_keys=True).encode()
@@ -223,6 +265,8 @@ async def _heartbeat_loop(app: FastAPI, cfg: NodeAgentSettings) -> None:
     mac: str | None = None
     last_ip = ""
     first_success = True
+    codex_health: dict[str, Any] = {}
+    codex_next_check = 0.0
     while True:
         try:
             if gpu_uuid is None:
@@ -235,6 +279,9 @@ async def _heartbeat_loop(app: FastAPI, cfg: NodeAgentSettings) -> None:
             current_ip = await asyncio.to_thread(
                 _current_ip, cfg.control_host, cfg.node_advertise_ip
             )
+            if time.monotonic() >= codex_next_check:
+                codex_health = await _codex_cli_runtime(cfg.codex_binary)
+                codex_next_check = time.monotonic() + 60
             identity = {
                 "node_id": cfg.node_id,
                 "ip": current_ip,
@@ -243,6 +290,7 @@ async def _heartbeat_loop(app: FastAPI, cfg: NodeAgentSettings) -> None:
                 "hostname": socket.gethostname(),
                 "imageclip_commit": imageclip_commit,
                 "imageclip_pipeline_sha256": imageclip_pipeline_sha256,
+                **codex_health,
             }
             result = await asyncio.to_thread(_post_heartbeat, cfg, identity)
             app.state.node_identity = identity
@@ -334,7 +382,7 @@ def create_app(settings: Settings | NodeAgentSettings | None = None) -> FastAPI:
         return {"status": "ready", "control_script": str(control_script)}
 
     @app.get("/v1/identity")
-    async def identity() -> dict[str, str]:
+    async def identity() -> dict[str, Any]:
         current = dict(app.state.node_identity)
         if not current:
             raise HTTPException(503, "node identity is not initialized")

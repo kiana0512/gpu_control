@@ -241,6 +241,25 @@ class AssetWorker(Base):
     max_concurrency: Mapped[int] = mapped_column(Integer, default=2)
     current_jobs: Mapped[int] = mapped_column(Integer, default=0)
     cpu_count: Mapped[int] = mapped_column(Integer, default=1)
+    codex_cli_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    codex_auth_status: Mapped[str] = mapped_column(String(24), default="UNKNOWN")
+    codex_probe_status: Mapped[str] = mapped_column(String(24), default="NOT_RUN")
+    codex_probe_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    codex_last_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    codex_last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    codex_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    retopoflow_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    retopoflow_revision: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    retopoflow_probe_status: Mapped[str] = mapped_column(String(24), default="NOT_RUN")
+    retopoflow_probe_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retopoflow_last_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    retopoflow_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )

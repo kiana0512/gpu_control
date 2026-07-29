@@ -1,0 +1,4172 @@
+{
+  "run_id": "closure-20260729-1345",
+  "started_at": "2026-07-29T05:45:35.218235+00:00",
+  "finished_at": "2026-07-29T05:50:13.758181+00:00",
+  "configuration": {
+    "total": 10,
+    "imageclip_ratio": 0.7,
+    "clients": 10,
+    "submit_concurrency": 10,
+    "target_submit_rps": 5.0,
+    "seed": 20260729
+  },
+  "submission": {
+    "accepted": 10,
+    "failed": 0,
+    "http_statuses": {
+      "202": 10
+    },
+    "throttled_retries": 0,
+    "latency_p50": 0.868,
+    "latency_p95": 1.866,
+    "max_queue_position": 7,
+    "items": [
+      {
+        "ordinal": 0,
+        "workflow_key": "imageclip-rgba",
+        "client_id": "loadtest-closure-20260729-1345-01",
+        "job_id": "08a57ac2-0233-48e7-97a0-129c00dfe234",
+        "status_code": 202,
+        "latency_seconds": 0.06225599400931969,
+        "queue_position": 1,
+        "retries": 0,
+        "error": null
+      },
+      {
+        "ordinal": 1,
+        "workflow_key": "imageclip-rgba",
+        "client_id": "loadtest-closure-20260729-1345-02",
+        "job_id": "2410d088-ad9f-405b-a3fd-746c0377a5a3",
+        "status_code": 202,
+        "latency_seconds": 0.25950602898956276,
+        "queue_position": 1,
+        "retries": 0,
+        "error": null
+      },
+      {
+        "ordinal": 2,
+        "workflow_key": "imageclip-rgba",
+        "client_id": "loadtest-closure-20260729-1345-03",
+        "job_id": "fd80599f-1893-4b1d-a4b0-a8648a59ab52",
+        "status_code": 202,
+        "latency_seconds": 0.45340391600620933,
+        "queue_position": 1,
+        "retries": 0,
+        "error": null
+      },
+      {
+        "ordinal": 3,
+        "workflow_key": "modelview-inpaint",
+        "client_id": "loadtest-closure-20260729-1345-04",
+        "job_id": "83d0c451-0c8f-42e7-8ad2-f408aaa6b8d6",
+        "status_code": 202,
+        "latency_seconds": 0.6606376690033358,
+        "queue_position": 1,
+        "retries": 0,
+        "error": null
+      },
+      {
+        "ordinal": 4,
+        "workflow_key": "imageclip-rgba",
+        "client_id": "loadtest-closure-20260729-1345-05",
+        "job_id": "eecf2f60-87d5-4650-947b-814268ba0d53",
+        "status_code": 202,
+        "latency_seconds": 0.8681629060010891,
+        "queue_position": 2,
+        "retries": 0,
+        "error": null
+      },
+      {
+        "ordinal": 5,
+        "workflow_key": "imageclip-rgba",
+        "client_id": "loadtest-closure-20260729-1345-06",
+        "job_id": "c6933df6-fbc0-453a-a45b-ed61950b3ecf",
+        "status_code": 202,
+        "latency_seconds": 1.060544990003109,
+        "queue_position": 3,
+        "retries": 0,
+        "error": null
+      },
+      {
+        "ordinal": 6,
+        "workflow_key": "imageclip-rgba",
+        "client_id": "loadtest-closure-20260729-1345-07",
+        "job_id": "1fe60e3d-8c27-4b8f-bae0-6a933434d952",
+        "status_code": 202,
+        "latency_seconds": 1.2698405080009252,
+        "queue_position": 4,
+        "retries": 0,
+        "error": null
+      },
+      {
+        "ordinal": 7,
+        "workflow_key": "modelview-inpaint",
+        "client_id": "loadtest-closure-20260729-1345-08",
+        "job_id": "d1d35fe0-a191-48e3-a9b8-f422d5905ef9",
+        "status_code": 202,
+        "latency_seconds": 1.4701329089875799,
+        "queue_position": 5,
+        "retries": 0,
+        "error": null
+      },
+      {
+        "ordinal": 8,
+        "workflow_key": "modelview-inpaint",
+        "client_id": "loadtest-closure-20260729-1345-09",
+        "job_id": "722d42e9-63a5-433b-a6ba-5b8d53c892ca",
+        "status_code": 202,
+        "latency_seconds": 1.6654891629877966,
+        "queue_position": 6,
+        "retries": 0,
+        "error": null
+      },
+      {
+        "ordinal": 9,
+        "workflow_key": "imageclip-rgba",
+        "client_id": "loadtest-closure-20260729-1345-10",
+        "job_id": "2fbdc0e7-6621-4560-a666-0599353c5a51",
+        "status_code": 202,
+        "latency_seconds": 1.8655526140064467,
+        "queue_position": 7,
+        "retries": 0,
+        "error": null
+      }
+    ]
+  },
+  "completed_before_timeout": true,
+  "database": {
+    "observed": 10,
+    "statuses": {
+      "SUCCEEDED": 10
+    },
+    "nodes": {
+      "worker-3090-a": 3,
+      "worker-3090-b": 2,
+      "control-4090": 5
+    },
+    "attempts": {
+      "1": 10
+    },
+    "errors": {},
+    "queue_p50": 78.603,
+    "queue_p95": 220.836,
+    "queue_max": 220.836,
+    "total_p50": 189.614,
+    "total_p95": 273.87,
+    "total_max": 273.87,
+    "workflows": {
+      "imageclip-rgba": {
+        "count": 7,
+        "statuses": {
+          "SUCCEEDED": 7
+        },
+        "execute_p50": 90.171,
+        "execute_p95": 189.468,
+        "execute_max": 189.468
+      },
+      "modelview-inpaint": {
+        "count": 3,
+        "statuses": {
+          "SUCCEEDED": 3
+        },
+        "execute_p50": 40.984,
+        "execute_p95": 70.469,
+        "execute_max": 70.469
+      }
+    },
+    "switch_cost": [
+      {
+        "node_id": "control-4090",
+        "switched": false,
+        "jobs": 3,
+        "avg_seconds": 51.984
+      },
+      {
+        "node_id": "control-4090",
+        "switched": true,
+        "jobs": 2,
+        "avg_seconds": 59.215
+      },
+      {
+        "node_id": "worker-3090-a",
+        "switched": false,
+        "jobs": 2,
+        "avg_seconds": 98.74
+      },
+      {
+        "node_id": "worker-3090-a",
+        "switched": true,
+        "jobs": 1,
+        "avg_seconds": 40.984
+      },
+      {
+        "node_id": "worker-3090-b",
+        "switched": false,
+        "jobs": 1,
+        "avg_seconds": 189.468
+      },
+      {
+        "node_id": "worker-3090-b",
+        "switched": true,
+        "jobs": 1,
+        "avg_seconds": 70.469
+      }
+    ],
+    "jobs": [
+      {
+        "id": "08a57ac2-0233-48e7-97a0-129c00dfe234",
+        "workflow_key": "imageclip-rgba",
+        "status": "SUCCEEDED",
+        "node_id": "worker-3090-a",
+        "attempt_count": 1,
+        "error_code": null,
+        "queue_seconds": "0.169621",
+        "execute_seconds": "95.680453",
+        "total_seconds": "95.850074",
+        "job_dir": "/srv/gpu-control/jobs/2026/07/29/08a57ac2-0233-48e7-97a0-129c00dfe234"
+      },
+      {
+        "id": "2410d088-ad9f-405b-a3fd-746c0377a5a3",
+        "workflow_key": "imageclip-rgba",
+        "status": "SUCCEEDED",
+        "node_id": "worker-3090-b",
+        "attempt_count": 1,
+        "error_code": null,
+        "queue_seconds": "0.145711",
+        "execute_seconds": "189.468420",
+        "total_seconds": "189.614131",
+        "job_dir": "/srv/gpu-control/jobs/2026/07/29/2410d088-ad9f-405b-a3fd-746c0377a5a3"
+      },
+      {
+        "id": "fd80599f-1893-4b1d-a4b0-a8648a59ab52",
+        "workflow_key": "imageclip-rgba",
+        "status": "SUCCEEDED",
+        "node_id": "control-4090",
+        "attempt_count": 1,
+        "error_code": null,
+        "queue_seconds": "0.174558",
+        "execute_seconds": "50.175336",
+        "total_seconds": "50.349894",
+        "job_dir": "/srv/gpu-control/jobs/2026/07/29/fd80599f-1893-4b1d-a4b0-a8648a59ab52"
+      },
+      {
+        "id": "83d0c451-0c8f-42e7-8ad2-f408aaa6b8d6",
+        "workflow_key": "modelview-inpaint",
+        "status": "SUCCEEDED",
+        "node_id": "control-4090",
+        "attempt_count": 1,
+        "error_code": null,
+        "queue_seconds": "50.368526",
+        "execute_seconds": "28.257945",
+        "total_seconds": "78.626471",
+        "job_dir": "/srv/gpu-control/jobs/2026/07/29/83d0c451-0c8f-42e7-8ad2-f408aaa6b8d6"
+      },
+      {
+        "id": "eecf2f60-87d5-4650-947b-814268ba0d53",
+        "workflow_key": "imageclip-rgba",
+        "status": "SUCCEEDED",
+        "node_id": "control-4090",
+        "attempt_count": 1,
+        "error_code": null,
+        "queue_seconds": "78.603109",
+        "execute_seconds": "90.171162",
+        "total_seconds": "168.774271",
+        "job_dir": "/srv/gpu-control/jobs/2026/07/29/eecf2f60-87d5-4650-947b-814268ba0d53"
+      },
+      {
+        "id": "c6933df6-fbc0-453a-a45b-ed61950b3ecf",
+        "workflow_key": "imageclip-rgba",
+        "status": "SUCCEEDED",
+        "node_id": "worker-3090-a",
+        "attempt_count": 1,
+        "error_code": null,
+        "queue_seconds": "95.121727",
+        "execute_seconds": "101.799002",
+        "total_seconds": "196.920729",
+        "job_dir": "/srv/gpu-control/jobs/2026/07/29/c6933df6-fbc0-453a-a45b-ed61950b3ecf"
+      },
+      {
+        "id": "1fe60e3d-8c27-4b8f-bae0-6a933434d952",
+        "workflow_key": "imageclip-rgba",
+        "status": "SUCCEEDED",
+        "node_id": "control-4090",
+        "attempt_count": 1,
+        "error_code": null,
+        "queue_seconds": "168.531836",
+        "execute_seconds": "52.743680",
+        "total_seconds": "221.275516",
+        "job_dir": "/srv/gpu-control/jobs/2026/07/29/1fe60e3d-8c27-4b8f-bae0-6a933434d952"
+      },
+      {
+        "id": "d1d35fe0-a191-48e3-a9b8-f422d5905ef9",
+        "workflow_key": "modelview-inpaint",
+        "status": "SUCCEEDED",
+        "node_id": "worker-3090-b",
+        "attempt_count": 1,
+        "error_code": null,
+        "queue_seconds": "188.576413",
+        "execute_seconds": "70.468904",
+        "total_seconds": "259.045317",
+        "job_dir": "/srv/gpu-control/jobs/2026/07/29/d1d35fe0-a191-48e3-a9b8-f422d5905ef9"
+      },
+      {
+        "id": "722d42e9-63a5-433b-a6ba-5b8d53c892ca",
+        "workflow_key": "modelview-inpaint",
+        "status": "SUCCEEDED",
+        "node_id": "worker-3090-a",
+        "attempt_count": 1,
+        "error_code": null,
+        "queue_seconds": "196.473695",
+        "execute_seconds": "40.984373",
+        "total_seconds": "237.458068",
+        "job_dir": "/srv/gpu-control/jobs/2026/07/29/722d42e9-63a5-433b-a6ba-5b8d53c892ca"
+      },
+      {
+        "id": "2fbdc0e7-6621-4560-a666-0599353c5a51",
+        "workflow_key": "imageclip-rgba",
+        "status": "SUCCEEDED",
+        "node_id": "control-4090",
+        "attempt_count": 1,
+        "error_code": null,
+        "queue_seconds": "220.836332",
+        "execute_seconds": "53.033718",
+        "total_seconds": "273.870050",
+        "job_dir": "/srv/gpu-control/jobs/2026/07/29/2fbdc0e7-6621-4560-a666-0599353c5a51"
+      }
+    ]
+  },
+  "output_validation": {
+    "validated": 10,
+    "failures": []
+  },
+  "samples": [
+    {
+      "statuses": {
+        "QUEUED": 7,
+        "RUNNING": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 12036,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 85.0,
+          "free_vram_mb": 13211,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 6.0,
+          "free_vram_mb": 7337,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:45:37.206997+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 7,
+        "RUNNING": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 12036,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 85.0,
+          "free_vram_mb": 13211,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 6.0,
+          "free_vram_mb": 7337,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:45:40.247790+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 7,
+        "RUNNING": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10869,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12379,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 25.0,
+          "free_vram_mb": 7337,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:45:43.284026+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 7,
+        "RUNNING": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10869,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12379,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 25.0,
+          "free_vram_mb": 7337,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:45:46.322592+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 7,
+        "RUNNING": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10865,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12251,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 25.0,
+          "free_vram_mb": 7337,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:45:49.362004+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 7,
+        "RUNNING": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10853,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12251,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 65.0,
+          "free_vram_mb": 20585,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:45:52.386013+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 7,
+        "RUNNING": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10853,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12251,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 65.0,
+          "free_vram_mb": 20585,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:45:55.414179+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 7,
+        "RUNNING": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 13875,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12251,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 20585,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:45:58.459053+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 7,
+        "RUNNING": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 13875,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12251,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 20585,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:01.496562+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 7,
+        "RUNNING": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11571,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12251,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 20585,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:04.535030+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 7,
+        "RUNNING": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11571,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12251,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 20585,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:07.573899+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 7,
+        "RUNNING": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11511,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12251,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 20585,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:10.607762+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 7,
+        "RUNNING": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11395,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 96.0,
+          "free_vram_mb": 12187,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 1.0,
+          "free_vram_mb": 20585,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:13.627144+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 7,
+        "RUNNING": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11395,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 96.0,
+          "free_vram_mb": 12187,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 1.0,
+          "free_vram_mb": 20585,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:16.667055+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 7,
+        "RUNNING": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11012,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 9.0,
+          "free_vram_mb": 12187,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 20585,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:19.706491+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 7,
+        "RUNNING": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11012,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 9.0,
+          "free_vram_mb": 12187,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 20585,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:22.746096+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 7,
+        "RUNNING": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11075,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12187,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 36.0,
+          "free_vram_mb": 20585,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:25.780287+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 6,
+        "RUNNING": 3,
+        "SUCCEEDED": 1
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11075,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12187,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 36.0,
+          "free_vram_mb": 20585,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:28.813524+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 6,
+        "RUNNING": 3,
+        "SUCCEEDED": 1
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 1.0,
+          "free_vram_mb": 21957,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12187,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 62.0,
+          "free_vram_mb": 14537,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:31.842630+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 6,
+        "RUNNING": 3,
+        "SUCCEEDED": 1
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 22051,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12155,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 98.0,
+          "free_vram_mb": 12265,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:34.883349+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 6,
+        "RUNNING": 3,
+        "SUCCEEDED": 1
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 22051,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12155,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 98.0,
+          "free_vram_mb": 12265,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:37.933384+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 6,
+        "RUNNING": 3,
+        "SUCCEEDED": 1
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 1.0,
+          "free_vram_mb": 22016,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12155,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 95.0,
+          "free_vram_mb": 12137,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:40.969928+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 6,
+        "RUNNING": 3,
+        "SUCCEEDED": 1
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 1.0,
+          "free_vram_mb": 22016,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12155,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 95.0,
+          "free_vram_mb": 12137,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:44.008804+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 6,
+        "RUNNING": 3,
+        "SUCCEEDED": 1
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 3.0,
+          "free_vram_mb": 6172,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12155,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 96.0,
+          "free_vram_mb": 12137,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:47.049291+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 6,
+        "RUNNING": 3,
+        "SUCCEEDED": 1
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 3.0,
+          "free_vram_mb": 6172,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12155,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 96.0,
+          "free_vram_mb": 12137,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:50.092647+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 6,
+        "RUNNING": 3,
+        "SUCCEEDED": 1
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 82.0,
+          "free_vram_mb": 1726,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11771,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 95.0,
+          "free_vram_mb": 12137,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:53.129094+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 5,
+        "RUNNING": 3,
+        "SUCCEEDED": 2
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 82.0,
+          "free_vram_mb": 1726,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11771,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 95.0,
+          "free_vram_mb": 12137,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:56.162575+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 5,
+        "RUNNING": 3,
+        "SUCCEEDED": 2
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 29.0,
+          "free_vram_mb": 6304,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11771,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 95.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:46:59.218164+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 5,
+        "RUNNING": 3,
+        "SUCCEEDED": 2
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 19566,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11771,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 98.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:02.283653+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 5,
+        "RUNNING": 3,
+        "SUCCEEDED": 2
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 19566,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11771,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 98.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:05.350082+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 5,
+        "RUNNING": 3,
+        "SUCCEEDED": 2
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 1.0,
+          "free_vram_mb": 19578,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11771,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 98.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:08.418140+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 2,
+        "SUCCEEDED": 3,
+        "UPLOADING": 1
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 1.0,
+          "free_vram_mb": 19578,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11771,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 98.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:11.458311+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 19566,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 10.0,
+          "free_vram_mb": 13211,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 89.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:14.535751+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 19566,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 10.0,
+          "free_vram_mb": 13211,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 89.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:17.579093+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 23.0,
+          "free_vram_mb": 15677,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 13211,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:20.615956+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 99.0,
+          "free_vram_mb": 11116,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12379,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:23.653586+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 99.0,
+          "free_vram_mb": 11116,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12379,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:26.693838+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11034,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12251,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:29.734049+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11034,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12251,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:32.755401+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11112,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12251,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:35.775407+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11112,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12251,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:38.800230+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 94.0,
+          "free_vram_mb": 11028,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12251,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:41.821571+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 11112,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12251,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 26.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:44.844972+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 11112,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12251,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 26.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:47.889079+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 1.0,
+          "free_vram_mb": 11082,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12251,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 60.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:50.929310+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 1.0,
+          "free_vram_mb": 11082,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12251,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 60.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:53.960672+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 11118,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 95.0,
+          "free_vram_mb": 12187,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 99.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:47:56.994023+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 11118,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 95.0,
+          "free_vram_mb": 12187,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 99.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:00.018665+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11089,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 9.0,
+          "free_vram_mb": 12187,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 99.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:03.043805+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11089,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 9.0,
+          "free_vram_mb": 12187,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 99.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:06.065020+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11119,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12187,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 99.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:09.086779+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11103,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12187,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 97.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:12.109723+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11103,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12187,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 97.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:15.130631+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11093,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12155,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 95.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:18.151447+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11093,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12155,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 95.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:21.172139+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 4,
+        "RUNNING": 3,
+        "SUCCEEDED": 3
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11102,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12155,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 99.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:24.194801+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 3,
+        "RUNNING": 3,
+        "SUCCEEDED": 4
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11102,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12155,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 99.0,
+          "free_vram_mb": 11977,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:27.217972+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 3,
+        "RUNNING": 3,
+        "SUCCEEDED": 4
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 98.0,
+          "free_vram_mb": 12047,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 12155,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 99.0,
+          "free_vram_mb": 11945,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:30.239412+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 3,
+        "RUNNING": 3,
+        "SUCCEEDED": 4
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10947,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 98.0,
+          "free_vram_mb": 11771,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 99.0,
+          "free_vram_mb": 11945,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:33.282171+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 3,
+        "RUNNING": 3,
+        "SUCCEEDED": 4
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10947,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 98.0,
+          "free_vram_mb": 11771,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 99.0,
+          "free_vram_mb": 11945,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:36.320224+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 3,
+        "RUNNING": 3,
+        "SUCCEEDED": 4
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10932,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11771,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 99.0,
+          "free_vram_mb": 11945,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:39.359758+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 3,
+        "RUNNING": 3,
+        "SUCCEEDED": 4
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10932,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11771,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 99.0,
+          "free_vram_mb": 11945,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:42.396034+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 2,
+        "RUNNING": 3,
+        "SUCCEEDED": 5
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10947,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11771,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 94.0,
+          "free_vram_mb": 11945,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:45.426063+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 2,
+        "RUNNING": 3,
+        "SUCCEEDED": 5
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10947,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11771,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 94.0,
+          "free_vram_mb": 11945,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:48.452304+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 2,
+        "RUNNING": 3,
+        "SUCCEEDED": 5
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 18.0,
+          "free_vram_mb": 13769,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11771,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 14.0,
+          "free_vram_mb": 15593,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:51.496759+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 1,
+        "RUNNING": 3,
+        "SUCCEEDED": 6
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11460,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 15771,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 78.0,
+          "free_vram_mb": 23017,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:54.536695+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 1,
+        "RUNNING": 3,
+        "SUCCEEDED": 6
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11460,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 15771,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 78.0,
+          "free_vram_mb": 23017,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:48:57.565479+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 1,
+        "RUNNING": 3,
+        "SUCCEEDED": 6
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10917,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 23323,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 23017,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:00.607803+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 1,
+        "RUNNING": 3,
+        "SUCCEEDED": 6
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10917,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 23323,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 23017,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:03.644189+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 1,
+        "RUNNING": 3,
+        "SUCCEEDED": 6
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 99.0,
+          "free_vram_mb": 11012,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 23291,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 23017,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:06.682487+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 1,
+        "RUNNING": 3,
+        "SUCCEEDED": 6
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 99.0,
+          "free_vram_mb": 11012,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 23291,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 23017,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:09.714644+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 1,
+        "RUNNING": 3,
+        "SUCCEEDED": 6
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10973,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 23291,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 23017,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:12.741294+00:00"
+    },
+    {
+      "statuses": {
+        "QUEUED": 1,
+        "RUNNING": 3,
+        "SUCCEEDED": 6
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11012,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 13243,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 62.0,
+          "free_vram_mb": 22377,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:15.767617+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 3,
+        "SUCCEEDED": 7
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11012,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 13243,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 62.0,
+          "free_vram_mb": 22377,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:18.798931+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 3,
+        "SUCCEEDED": 7
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 97.0,
+          "free_vram_mb": 12038,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 7323,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 13065,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:21.843208+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 3,
+        "SUCCEEDED": 7
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 97.0,
+          "free_vram_mb": 12038,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 7323,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 13065,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:24.877912+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 3,
+        "SUCCEEDED": 7
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11052,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 65.0,
+          "free_vram_mb": 2905,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 24.0,
+          "free_vram_mb": 7337,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:27.907858+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 3,
+        "SUCCEEDED": 7
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11052,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 65.0,
+          "free_vram_mb": 2905,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 24.0,
+          "free_vram_mb": 7337,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:30.949143+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 3,
+        "SUCCEEDED": 7
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11030,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 98.0,
+          "free_vram_mb": 1881,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 5801,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:33.999122+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 2,
+        "SUCCEEDED": 8
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10995,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7481,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 5801,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:37.039500+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 2,
+        "SUCCEEDED": 8
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10995,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7481,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 5801,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:40.074301+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 2,
+        "SUCCEEDED": 8
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 13860,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7481,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 60.0,
+          "free_vram_mb": 2729,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:43.112787+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 2,
+        "SUCCEEDED": 8
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 13860,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7481,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 60.0,
+          "free_vram_mb": 2729,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:46.160125+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 2,
+        "SUCCEEDED": 8
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11197,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7481,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 68.0,
+          "free_vram_mb": 2729,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:49.201191+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 2,
+        "SUCCEEDED": 8
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11197,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7481,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 68.0,
+          "free_vram_mb": 2729,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:52.228422+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 2,
+        "SUCCEEDED": 8
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11027,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7481,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 1705,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:55.263929+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 1,
+        "SUCCEEDED": 9
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11027,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7481,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 1705,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:49:58.307181+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 1,
+        "SUCCEEDED": 9
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10917,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7481,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7305,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:50:01.356256+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 1,
+        "SUCCEEDED": 9
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11011,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7481,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7305,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:50:04.396018+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 1,
+        "SUCCEEDED": 9
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 11011,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7481,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7305,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:50:07.423949+00:00"
+    },
+    {
+      "statuses": {
+        "RUNNING": 1,
+        "SUCCEEDED": 9
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 1,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10918,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7481,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7305,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:50:10.464504+00:00"
+    },
+    {
+      "statuses": {
+        "SUCCEEDED": 10
+      },
+      "nodes": [
+        {
+          "id": "control-4090",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 100.0,
+          "free_vram_mb": 10918,
+          "total_vram_mb": 24564
+        },
+        {
+          "id": "worker-3090-a",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7481,
+          "total_vram_mb": 24576
+        },
+        {
+          "id": "worker-3090-b",
+          "health": "ONLINE",
+          "mode": "ACTIVE",
+          "current_jobs": 0,
+          "gpu_util_percent": 0.0,
+          "free_vram_mb": 7305,
+          "total_vram_mb": 24576
+        }
+      ],
+      "production": {
+        "queued": 0,
+        "active": 0,
+        "oldest_wait": "0"
+      },
+      "captured_at": "2026-07-29T05:50:13.503732+00:00"
+    }
+  ]
+}

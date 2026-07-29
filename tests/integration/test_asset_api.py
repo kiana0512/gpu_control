@@ -451,7 +451,11 @@ async def test_retopology_audit_stops_at_review_gate_and_exposes_audit_artifacts
             "job_id": job_id,
             "job_type": "RETOPOLOGY_AUDIT",
             "input_sha256": hashlib.sha256(input_bytes).hexdigest(),
-            "visual_review_required": True,
+            "visual_evidence": {
+                "required": True,
+                "views": ["front", "side", "top", "perspective"],
+                "manual_review_required": False,
+            },
         }
         completed = await client.post(
             f"/internal/v1/assets/jobs/{job_id}/retopology-complete",
@@ -472,16 +476,18 @@ async def test_retopology_audit_stops_at_review_gate_and_exposes_audit_artifacts
         assert completed.status_code == 200, completed.text
         assert completed.json() == {
             "accepted": True,
-            "status": "WAITING_REVIEW",
-            "review_required": True,
+            "status": "SUCCEEDED",
+            "review_required": False,
+            "audit_passed": True,
         }
         status = await client.get(
             f"/api/v1/assets/jobs/{job_id}",
             headers={"X-API-Key": "gpc_assetkey_secret"},
         )
         assert status.status_code == 200
-        assert status.json()["status"] == "WAITING_REVIEW"
-        assert status.json()["progress"] == 95
+        assert status.json()["status"] == "SUCCEEDED"
+        assert status.json()["progress"] == 100
+        assert status.json()["delivery_ready"] is True
         assert {item["kind"] for item in status.json()["artifacts"]} == {
             "audit",
             "manifest",
@@ -596,11 +602,12 @@ async def test_retopology_process_accepts_reference_views_and_publishes_review_s
             "input_sha256": job["input_sha256"],
             "objects": objects,
             "source_preserved": True,
-            "automatic_final_promotion_allowed": False,
-            "visual_review": {
+            "automatic_final_promotion_allowed": True,
+            "visual_evidence": {
                 "required": True,
                 "views": ["front", "side", "top", "perspective"],
                 "roles": ["high", "reference", "generated"],
+                "manual_review_required": False,
             },
             "agent_plan": {
                 "required": True,
@@ -617,6 +624,7 @@ async def test_retopology_process_accepts_reference_views_and_publishes_review_s
                     {
                         "schema_version": "retopology_process_report.v1",
                         "source_preserved": True,
+                        "topology_goal_met": True,
                     }
                 ).encode(),
                 "application/json",
@@ -644,11 +652,13 @@ async def test_retopology_process_accepts_reference_views_and_publishes_review_s
         )
         assert completed.status_code == 200, completed.text
         body = completed.json()
-        assert body["status"] == "WAITING_REVIEW"
+        assert body["status"] == "SUCCEEDED"
         assert body["audit_passed"] is True
+        assert body["review_required"] is False
         status = await client.get(
             f"/api/v1/assets/jobs/{job_id}",
             headers={"X-API-Key": "gpc_assetkey_secret"},
         )
-        assert status.json()["stage"] == "WAITING_REVIEW"
+        assert status.json()["stage"] == "SUCCEEDED"
+        assert status.json()["delivery_ready"] is True
         assert len(status.json()["artifacts"]) == 23
