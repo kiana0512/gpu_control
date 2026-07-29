@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -32,13 +33,22 @@ def arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         "--topology-style",
-        choices=("quad_dominant", "preserve_existing"),
-        default="quad_dominant",
+        choices=("mixed", "quad_dominant", "preserve_existing"),
+        default="mixed",
+    )
+    parser.add_argument(
+        "--topology-mode", choices=("mixed", "quad_dominant"), default="mixed"
     )
     parser.add_argument("--target-faces", type=int, default=0)
     parser.add_argument("--max-repair-rounds", type=int, default=1)
     parser.add_argument("--preserve-sharp", action="store_true")
     parser.add_argument("--preserve-boundary", action="store_true")
+    parser.add_argument("--planar-reduction", action="store_true")
+    parser.add_argument("--planar-angle-threshold", type=float, default=5.0)
+    parser.add_argument("--preserve-hard-edges", action="store_true")
+    parser.add_argument("--preserve-components", action="store_true")
+    parser.add_argument("--allow-triangles", action="store_true")
+    parser.add_argument("--allow-ngons", action="store_true")
     return parser.parse_args(sys.argv[sys.argv.index("--") + 1 :])
 
 
@@ -100,6 +110,26 @@ def topology_counts(obj: bpy.types.Object) -> dict[str, int | float]:
     quads = sum(1 for face in polygons if len(face.vertices) == 4)
     ngons = sum(1 for face in polygons if len(face.vertices) > 4)
     faces = len(polygons)
+    face_components = 0
+    remaining = set(range(faces))
+    edge_faces: dict[tuple[int, int], list[int]] = {}
+    for face in polygons:
+        for edge in face.edge_keys:
+            edge_faces.setdefault(tuple(sorted(edge)), []).append(face.index)
+    neighbours: dict[int, set[int]] = {index: set() for index in remaining}
+    for linked in edge_faces.values():
+        if len(linked) < 2:
+            continue
+        for index in linked:
+            neighbours[index].update(other for other in linked if other != index)
+    while remaining:
+        face_components += 1
+        stack = [remaining.pop()]
+        while stack:
+            for neighbour in neighbours[stack.pop()]:
+                if neighbour in remaining:
+                    remaining.remove(neighbour)
+                    stack.append(neighbour)
     return {
         "vertices": len(obj.data.vertices),
         "edges": len(obj.data.edges),
@@ -109,6 +139,7 @@ def topology_counts(obj: bpy.types.Object) -> dict[str, int | float]:
         "ngons": ngons,
         "triangle_equivalent": sum(max(0, len(face.vertices) - 2) for face in polygons),
         "quad_ratio": round(quads / faces, 6) if faces else 0.0,
+        "face_components": face_components,
     }
 
 
@@ -139,6 +170,54 @@ def cleanup_mesh(obj: bpy.types.Object) -> dict[str, int]:
         "vertices_removed": int(before["vertices"]) - int(after["vertices"]),
         "edges_removed": int(before["edges"]) - int(after["edges"]),
         "faces_removed": int(before["faces"]) - int(after["faces"]),
+    }
+
+
+def reduce_planar_regions(
+    obj: bpy.types.Object,
+    *,
+    angle_degrees: float,
+    preserve_hard_edges: bool,
+    allow_ngons: bool,
+) -> dict[str, int | float]:
+    """Conservatively dissolve only coplanar internal edges.
+
+    Boundaries are never dissolved. Material, seam, normal and optionally
+    sharp-edge delimiters prevent planar reduction from erasing authored
+    structure. Any resulting N-gon is triangulated when the API forbids N-gons.
+    """
+    before = topology_counts(obj)
+    mesh = obj.data
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        delimit = {"NORMAL", "MATERIAL", "SEAM", "UV"}
+        if preserve_hard_edges:
+            delimit.add("SHARP")
+        bmesh.ops.dissolve_limit(
+            bm,
+            angle_limit=math.radians(angle_degrees),
+            use_dissolve_boundaries=False,
+            verts=list(bm.verts),
+            edges=list(bm.edges),
+            delimit=delimit,
+        )
+        if not allow_ngons:
+            ngons = [face for face in bm.faces if len(face.verts) > 4]
+            if ngons:
+                bmesh.ops.triangulate(
+                    bm, faces=ngons, quad_method="BEAUTY", ngon_method="BEAUTY"
+                )
+        bm.to_mesh(mesh)
+        mesh.update()
+    finally:
+        bm.free()
+    after = topology_counts(obj)
+    return {
+        "angle_degrees": angle_degrees,
+        "faces_before": int(before["faces"]),
+        "faces_after": int(after["faces"]),
+        "faces_reduced": int(before["faces"]) - int(after["faces"]),
     }
 
 
@@ -204,6 +283,11 @@ def main() -> None:
         "reference": geometry_fingerprint(reference),
         "current": geometry_fingerprint(current),
     }
+    source_topology = {
+        "high": topology_counts(high),
+        "reference": topology_counts(reference),
+        "current": topology_counts(current),
+    }
     target_faces = args.target_faces or max(50, len(reference.data.polygons))
     if args.algorithm == "quadriflow":
         candidate = evaluated_copy(high, args.generated)
@@ -220,6 +304,15 @@ def main() -> None:
         cleanup_rounds.append(changes)
         if not any(changes.values()):
             break
+
+    planar_report = None
+    if args.planar_reduction and args.topology_mode == "mixed":
+        planar_report = reduce_planar_regions(
+            candidate,
+            angle_degrees=args.planar_angle_threshold,
+            preserve_hard_edges=args.preserve_hard_edges,
+            allow_ngons=args.allow_ngons,
+        )
 
     protected_after = {
         "high": geometry_fingerprint(high),
@@ -239,18 +332,41 @@ def main() -> None:
     export_fbx(candidate, output_fbx)
 
     candidate_topology = topology_counts(candidate)
-    topology_goal_met = (
-        args.topology_style == "preserve_existing"
-        or float(candidate_topology["quad_ratio"]) >= 0.8
-    )
+    topology_goal_met = bool(candidate_topology["faces"])
+    if not args.allow_ngons and int(candidate_topology["ngons"]) > 0:
+        topology_goal_met = False
+    if not args.allow_triangles and int(candidate_topology["triangles"]) > 0:
+        topology_goal_met = False
+    if args.topology_mode == "quad_dominant":
+        topology_goal_met = topology_goal_met and float(candidate_topology["quad_ratio"]) >= 0.8
+    if args.preserve_components:
+        required_components = max(
+            int(source_topology[role]["face_components"])
+            for role in ("high", "reference", "current")
+        )
+        topology_goal_met = topology_goal_met and int(
+            candidate_topology["face_components"]
+        ) >= required_components
     report = {
         "schema_version": "retopology_process_report.v1",
         "source_file": Path(source_path).name,
         "algorithm": args.algorithm,
         "topology_style": args.topology_style,
+        "topology_mode": args.topology_mode,
         "topology_goal_met": topology_goal_met,
         "algorithm_report": algorithm_report,
         "target_faces": target_faces,
+        "constraints": {
+            "planar_reduction": args.planar_reduction,
+            "planar_angle_threshold": args.planar_angle_threshold,
+            "preserve_hard_edges": args.preserve_hard_edges,
+            "preserve_components": args.preserve_components,
+            "required_face_components": required_components
+            if args.preserve_components
+            else None,
+            "allow_triangles": args.allow_triangles,
+            "allow_ngons": args.allow_ngons,
+        },
         "objects": {
             "high": high.name,
             "reference": reference.name,
@@ -261,7 +377,9 @@ def main() -> None:
         "protected_fingerprints_after": protected_after,
         "source_preserved": protected_before == protected_after,
         "cleanup_rounds": cleanup_rounds,
+        "planar_reduction": planar_report,
         "candidate_topology": candidate_topology,
+        "source_topology": source_topology,
         "candidate_has_uv": bool(candidate.data.uv_layers),
         "material_slots": len(candidate.material_slots),
         "uv_status": "present" if candidate.data.uv_layers else "not_generated",

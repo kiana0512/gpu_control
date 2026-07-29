@@ -8,6 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SUPPORTED_ASSET_EXTENSIONS = frozenset({".fbx", ".obj", ".glb", ".gltf", ".blend"})
 SUPPORTED_REFERENCE_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp"})
+SUPPORTED_BAKER_EXTENSIONS = frozenset({".fbx", ".obj"})
+SUPPORTED_BAKER_TEXTURE_EXTENSIONS = frozenset(
+    {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".tga", ".exr"}
+)
 ASSET_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
@@ -27,6 +31,39 @@ class AssetCreateMetadata(BaseModel):
 
     external_asset_id: str = Field(min_length=1, max_length=128)
     options: UVUnwrapOptions = Field(default_factory=UVUnwrapOptions)
+
+    @field_validator("external_asset_id")
+    @classmethod
+    def valid_external_id(cls, value: str) -> str:
+        if not ASSET_ID_PATTERN.fullmatch(value):
+            raise ValueError("external_asset_id contains unsupported characters")
+        return value
+
+
+class SubstanceBakeOptions(BaseModel):
+    """Whitelisted Substance 3D Baker profiles exposed by GPU Control.
+
+    Callers select a profile and bounded values only.  They can never submit a
+    command, executable path or arbitrary CLI argument.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile: Literal[
+        "ao-self-v1",
+        "normal-dx-v1",
+        "pbr-core-v1",
+        "li3d-pbr-full-v2",
+    ]
+    resolution: Literal[256, 512, 1024, 2048, 4096] = 2048
+    texture_cache_mb: Literal[8192, 16384, 32768] = 32768
+
+
+class SubstanceBakeMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    external_asset_id: str = Field(min_length=1, max_length=128)
+    options: SubstanceBakeOptions
 
     @field_validator("external_asset_id")
     @classmethod
@@ -90,10 +127,19 @@ class RetopologyProcessOptions(RetopologyAuditOptions):
         default="GPUCTRL_Retopo_v001", min_length=1, max_length=128
     )
     algorithm: Literal["agent", "quadriflow", "cleanup_existing"] = "agent"
-    topology_style: Literal["quad_dominant", "preserve_existing"] = "quad_dominant"
+    topology_style: Literal[
+        "mixed", "quad_dominant", "preserve_existing"
+    ] = "mixed"
+    topology_mode: Literal["mixed", "quad_dominant"] = "mixed"
     target_faces: int | None = Field(default=None, ge=50, le=5_000_000)
     preserve_sharp: bool = True
     preserve_boundary: bool = True
+    planar_reduction: bool = True
+    planar_angle_threshold: float = Field(default=5.0, ge=0.1, le=45.0)
+    preserve_hard_edges: bool = True
+    preserve_components: bool = True
+    allow_triangles: bool = True
+    allow_ngons: bool = False
     render_resolution: Literal[256, 512, 1024] = 512
     max_repair_rounds: int = Field(default=1, ge=0, le=2)
 
@@ -143,6 +189,17 @@ def validate_asset_filename(filename: str) -> str:
     return filename
 
 
+def validate_baker_texture_filename(filename: str) -> str:
+    """Return a safe image basename accepted by TextureTransfer.Raytraced."""
+    if not filename or filename != Path(filename).name or "\x00" in filename:
+        raise ValueError("Baker texture filename must be a safe basename")
+    if Path(filename).suffix.lower() not in SUPPORTED_BAKER_TEXTURE_EXTENSIONS:
+        raise ValueError("Baker textures must be PNG, JPG, TIFF, TGA or EXR")
+    if len(filename.encode("utf-8")) > 255:
+        raise ValueError("Baker texture filename is too long")
+    return filename
+
+
 def validate_reference_image_filename(filename: str) -> str:
     """Return a safe basename for an immutable visual reference image."""
     if not filename or filename != Path(filename).name or "\x00" in filename:
@@ -151,6 +208,14 @@ def validate_reference_image_filename(filename: str) -> str:
         raise ValueError("reference images must be PNG, JPG, JPEG or WEBP")
     if len(filename.encode("utf-8")) > 255:
         raise ValueError("reference image filename is too long")
+    return filename
+
+
+def validate_baker_filename(filename: str) -> str:
+    """Return a safe FBX/OBJ basename accepted by the fixed Baker profiles."""
+    filename = validate_asset_filename(filename)
+    if Path(filename).suffix.lower() not in SUPPORTED_BAKER_EXTENSIONS:
+        raise ValueError("Substance Baker inputs must be FBX or OBJ")
     return filename
 
 
@@ -171,6 +236,21 @@ def uv_process_request_hash(metadata: AssetCreateMetadata, input_sha256: str) ->
         "external_asset_id": metadata.external_asset_id,
         "options": metadata.options.model_dump(mode="json"),
         "input_sha256": input_sha256,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def substance_bake_request_hash(
+    metadata: SubstanceBakeMetadata,
+    input_sha256: dict[str, str],
+) -> str:
+    payload = {
+        "job_type": "SUBSTANCE_BAKE_V1",
+        "external_asset_id": metadata.external_asset_id,
+        "options": metadata.options.model_dump(mode="json"),
+        "input_sha256": dict(sorted(input_sha256.items())),
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")

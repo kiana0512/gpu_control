@@ -290,3 +290,65 @@ def test_builder_preserves_autogrow_nested_link_names() -> None:
         "images.image0": ["1", 0],
         "images.image1": ["2", 0],
     }
+
+
+def test_builder_accepts_preview_image_as_the_single_final_output() -> None:
+    workflow = {
+        "nodes": [
+            {"id": 1, "type": "Source", "mode": 0, "inputs": []},
+            {
+                "id": 2,
+                "type": "PreviewImage",
+                "mode": 0,
+                "inputs": [{"name": "images", "link": 1}],
+                "widgets_values": [],
+            },
+        ],
+        "links": [[1, 1, 0, 2, 0]],
+    }
+    definitions = {
+        "Source": {"input": {"required": {}}},
+        "PreviewImage": {
+            "input": {"required": {"images": ["IMAGE", {}]}},
+            "output_node": True,
+        },
+    }
+
+    prompt = build_prompt(workflow, definitions, 2)
+
+    assert set(prompt) == {"1", "2"}
+    assert prompt["2"]["class_type"] == "PreviewImage"
+
+
+def test_builder_resolves_ui_reroute_without_emitting_a_fake_api_node() -> None:
+    workflow = {
+        "nodes": [
+            {"id": 1, "type": "Source", "mode": 0, "inputs": []},
+            {
+                "id": 2,
+                "type": "Reroute",
+                "mode": 0,
+                "inputs": [{"name": "", "link": 1}],
+            },
+            {
+                "id": 3,
+                "type": "PreviewImage",
+                "mode": 0,
+                "inputs": [{"name": "images", "link": 2}],
+                "widgets_values": [],
+            },
+        ],
+        "links": [[1, 1, 0, 2, 0], [2, 2, 0, 3, 0]],
+    }
+    definitions = {
+        "Source": {"input": {"required": {}}},
+        "PreviewImage": {
+            "input": {"required": {"images": ["IMAGE", {}]}},
+            "output_node": True,
+        },
+    }
+
+    prompt = build_prompt(workflow, definitions, 3)
+
+    assert "2" not in prompt
+    assert prompt["3"]["inputs"]["images"] == ["1", 0]

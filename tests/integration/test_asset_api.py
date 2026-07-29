@@ -7,8 +7,9 @@ from pathlib import Path
 
 import httpx
 from gpu_control_asset_api.main import create_app
+from PIL import Image
 
-from packages.gpu_control_core.models import ApiClient, ApiKey, Base
+from packages.gpu_control_core.models import ApiClient, ApiKey, Base, Node
 from packages.gpu_control_core.security import hash_api_secret, sign_agent_request
 from packages.gpu_control_core.settings import Settings
 
@@ -48,6 +49,19 @@ async def prepared_asset_app(tmp_path: Path):
                     client_id="asset-client",
                     prefix="assetkey",
                     secret_hash=hash_api_secret("secret", settings.api_key_pepper),
+                )
+            )
+            db.add(
+                Node(
+                    id="worker-3090-b",
+                    display_name="3090-B",
+                    base_url="http://10.3.34.14:8188",
+                    pool="PRIMARY",
+                    mode="ACTIVE",
+                    health="ONLINE",
+                    current_jobs=0,
+                    max_concurrency=1,
+                    labels={},
                 )
             )
             await db.commit()
@@ -92,6 +106,169 @@ async def signed_post(
 ) -> httpx.Response:
     body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return await client.post(path, content=body, headers=worker_headers(settings, path, body))
+
+
+def png_bytes(size: int) -> bytes:
+    output = io.BytesIO()
+    Image.new("RGB", (size, size), (128, 128, 255)).save(output, format="PNG")
+    return output.getvalue()
+
+
+async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_published(
+    tmp_path: Path,
+) -> None:
+    metadata = {
+        "external_asset_id": "bake:chair:normal:g1",
+        "options": {
+            "profile": "li3d-pbr-full-v2",
+            "resolution": 256,
+            "texture_cache_mb": 32768,
+        },
+    }
+    async for settings, client in prepared_asset_app(tmp_path):
+        created = await client.post(
+            "/api/v1/assets/bake/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "bake:chair:normal:g1",
+            },
+            files={
+                "low_mesh": ("chair_low.fbx", b"low-fbx", "application/octet-stream"),
+                "high_mesh": ("chair_high.fbx", b"high-fbx", "application/octet-stream"),
+                "base_color_texture": ("chair_base.png", png_bytes(8), "image/png"),
+                "roughness_texture": ("chair_roughness.png", png_bytes(8), "image/png"),
+                "metallic_texture": ("chair_metallic.png", png_bytes(8), "image/png"),
+                "metadata": (None, json.dumps(metadata)),
+            },
+        )
+        assert created.status_code == 202, created.text
+        job_id = created.json()["job_id"]
+
+        # A Linux Blender worker must never claim native Windows Baker work.
+        await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/workers/heartbeat",
+            {
+                "worker_id": "asset-worker-3090-a",
+                "node_id": "worker-3090-a",
+                "display_name": "3090-A CPU Worker",
+                "hostname": "lilithgames1",
+                "blender_version": "5.1.2",
+                "skill_version": "asset-skills-v3",
+                "cpu_count": 32,
+                "max_concurrency": 4,
+                "current_jobs": 0,
+                "load_1m": 0.1,
+                "available_memory_mb": 100000,
+            },
+        )
+        linux_claim = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                "worker_id": "asset-worker-3090-a",
+                "load_1m": 0.1,
+                "available_memory_mb": 100000,
+            },
+        )
+        assert linux_claim.json()["job"] is None
+
+        heartbeat = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/workers/heartbeat",
+            {
+                "worker_id": "asset-worker-3090-b-windows",
+                "node_id": "worker-3090-b",
+                "display_name": "3090-B Windows Substance Baker",
+                "hostname": "LILITHGAMES3",
+                "blender_version": "substance-15.1.0",
+                "skill_version": "substance-baker-2026.07.29-v1",
+                "cpu_count": 128,
+                "max_concurrency": 32,
+                "current_jobs": 0,
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+            },
+        )
+        assert heartbeat.json()["status"] == "ONLINE"
+        claim = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                "worker_id": "asset-worker-3090-b-windows",
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+            },
+        )
+        leased = claim.json()["job"]
+        assert leased["job_id"] == job_id
+
+        # Claiming Baker work drains the same physical 3090 from ComfyUI.
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "DRAINING"
+            assert node.labels["substance_bake_fence_job_ids"] == [job_id]
+
+        baked = png_bytes(256)
+        baked_sha = hashlib.sha256(baked).hexdigest()
+        output_kinds = {
+            "base_color",
+            "roughness",
+            "metallic",
+            "ao",
+            "normal_dx",
+            "normal_gl",
+            "world_normal",
+            "curvature",
+            "thickness",
+            "position",
+        }
+        log = b"SAL,SoRa\nBake finished successfully\n"
+        result = json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": job_id,
+                "status": "SUCCEEDED",
+                "profile": "li3d-pbr-full-v2",
+                "tool": {
+                    "version": "15.1.0",
+                    "exe_sha256": "7B920FC6EE6005FAAB072C9280B1772F03D694FF04AA91C5A4DB516F7C9FEC6D",
+                },
+                "execution": {"exit_code": 0},
+                "output_sha256": {kind: baked_sha for kind in output_kinds},
+            }
+        ).encode()
+        completed = await client.post(
+            f"/internal/v1/assets/jobs/{job_id}/substance-complete",
+            headers={"X-Asset-Lease": leased["lease_token"]},
+            files={
+                **{
+                    kind: (f"asset_{kind}.png", baked, "image/png")
+                    for kind in output_kinds
+                },
+                "result": ("baker_result.json", result, "application/json"),
+                "log": ("baker.log", log, "text/plain"),
+            },
+        )
+        assert completed.status_code == 200, completed.text
+        status = await client.get(
+            f"/api/v1/assets/jobs/{job_id}",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert status.json()["status"] == "SUCCEEDED"
+        assert {item["kind"] for item in status.json()["artifacts"]} == (
+            output_kinds | {"result", "log"}
+        )
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "ACTIVE"
+            assert "substance_bake_fence_job_ids" not in node.labels
 
 
 async def test_uv_asset_job_contract_worker_concurrency_and_atomic_artifacts(
@@ -590,10 +767,38 @@ async def test_retopology_process_accepts_reference_views_and_publishes_review_s
             "audit_passed": True,
             "failures": [],
             "preservation": {"high": True, "reference": True},
+            "objects": {
+                "low": {
+                    "topology": {
+                        "faces": 2400,
+                        "triangles": 0,
+                        "quads": 2400,
+                        "ngons": 0,
+                        "nonmanifold_edges": 0,
+                        "loose_edges": 0,
+                        "loose_vertices": 0,
+                        "duplicate_vertices": 0,
+                        "duplicate_faces": 0,
+                        "zero_area_faces": 0,
+                        "inconsistent_orientation_edges": 0,
+                    }
+                }
+            },
+            "comparison": {
+                "dimension_relative_error": [0.01, 0.01, 0.01],
+                "normalized_center_offset": 0.002,
+            },
         }
         agent_plan = {
             "recommended_algorithm": "quadriflow",
             "target_faces": 2400,
+        }
+        quality_gate = {
+            "schema_version": "retopology_quality_gate.v2",
+            "passed": True,
+            "failures": [],
+            "limits": {},
+            "measurements": {},
         }
         manifest = {
             "schema_version": "retopology_process_manifest.v1",
@@ -603,6 +808,7 @@ async def test_retopology_process_accepts_reference_views_and_publishes_review_s
             "objects": objects,
             "source_preserved": True,
             "automatic_final_promotion_allowed": True,
+            "quality_gate": quality_gate,
             "visual_evidence": {
                 "required": True,
                 "views": ["front", "side", "top", "perspective"],
@@ -625,6 +831,20 @@ async def test_retopology_process_accepts_reference_views_and_publishes_review_s
                         "schema_version": "retopology_process_report.v1",
                         "source_preserved": True,
                         "topology_goal_met": True,
+                        "quality_gate": quality_gate,
+                        "source_topology": {
+                            "high": {"face_components": 1},
+                            "reference": {"face_components": 1},
+                            "current": {"face_components": 1}
+                        },
+                        "candidate_topology": {
+                            "faces": 2400,
+                            "triangles": 0,
+                            "quads": 2400,
+                            "ngons": 0,
+                            "quad_ratio": 1.0,
+                            "face_components": 1,
+                        },
                     }
                 ).encode(),
                 "application/json",

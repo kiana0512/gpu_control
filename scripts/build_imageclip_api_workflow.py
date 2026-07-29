@@ -88,8 +88,13 @@ def build_prompt(
         raise ValueError("input must be a ComfyUI UI workflow with nodes and links")
     nodes = {int(node["id"]): node for node in raw_nodes if isinstance(node, dict)}
     final = nodes.get(final_output_node)
-    if final is None or final.get("type") != "SaveImage":
-        raise ValueError("final output node must exist and be SaveImage")
+    final_definition = (
+        definitions.get(str(final.get("type", ""))) if isinstance(final, dict) else None
+    )
+    if final is None or not isinstance(final_definition, dict) or not final_definition.get(
+        "output_node"
+    ):
+        raise ValueError("final output node must exist and be a ComfyUI output node")
     links = {
         int(link[0]): {
             "origin_id": int(link[1]),
@@ -100,6 +105,33 @@ def build_prompt(
         for link in raw_links
         if isinstance(link, list) and len(link) >= 5
     }
+
+    def resolved_origin(link_id: int) -> tuple[dict[str, Any], int]:
+        """Resolve UI-only reroutes to the real API node and output slot."""
+        seen: set[int] = set()
+        current_link_id = link_id
+        while True:
+            if current_link_id in seen:
+                raise ValueError("workflow contains a reroute cycle")
+            seen.add(current_link_id)
+            link = links.get(current_link_id)
+            if link is None:
+                raise ValueError(f"workflow references missing link {current_link_id}")
+            origin = nodes.get(link["origin_id"])
+            if origin is None:
+                raise ValueError(f"workflow link references missing node {link['origin_id']}")
+            if origin.get("type") != "Reroute":
+                return origin, link["origin_slot"]
+            if int(origin.get("mode", 0)) != 0:
+                raise ValueError(f"required reroute {origin['id']} is disabled or bypassed")
+            reroute_inputs = origin.get("inputs", [])
+            if not isinstance(reroute_inputs, list) or len(reroute_inputs) != 1:
+                raise ValueError(f"reroute node {origin['id']} must have one input")
+            upstream = reroute_inputs[0]
+            upstream_link = upstream.get("link") if isinstance(upstream, dict) else None
+            if upstream_link is None:
+                raise ValueError(f"reroute node {origin['id']} is not connected")
+            current_link_id = int(upstream_link)
 
     ancestors: set[int] = set()
     pending = [final_output_node]
@@ -119,16 +151,12 @@ def build_prompt(
                 link = links.get(int(link_id))
                 if link is None or link["target_id"] != node_id:
                     raise ValueError(f"node {node_id} has an invalid input link")
-                origin = nodes.get(link["origin_id"])
-                if origin is None:
-                    raise ValueError(
-                        f"workflow link references missing node {link['origin_id']}"
-                    )
+                origin, _ = resolved_origin(int(link_id))
                 # PrimitiveNode is a UI-only widget proxy. ComfyUI's API export
                 # inlines its single value into the target input and omits the
                 # primitive node from the prompt graph.
                 if origin.get("type") != "PrimitiveNode":
-                    pending.append(link["origin_id"])
+                    pending.append(int(origin["id"]))
 
     prompt: dict[str, Any] = {}
     output_nodes: set[int] = set()
@@ -177,17 +205,16 @@ def build_prompt(
                         )
                     widget_index += 1
             if link_id is not None:
-                link = links[int(link_id)]
-                origin = nodes[link["origin_id"]]
+                origin, origin_slot = resolved_origin(int(link_id))
                 if origin.get("type") == "PrimitiveNode":
                     primitive_values = list(origin.get("widgets_values") or [])
                     if len(primitive_values) != 1:
                         raise ValueError(
-                            f"primitive node {link['origin_id']} must contain exactly one value"
+                            f"primitive node {origin['id']} must contain exactly one value"
                         )
                     inputs[name] = primitive_values[0]
                 else:
-                    inputs[name] = [str(link["origin_id"]), link["origin_slot"]]
+                    inputs[name] = [str(origin["id"]), origin_slot]
             elif has_widget and name in accepted_names:
                 inputs[name] = widget_value
 

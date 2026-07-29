@@ -1,0 +1,103 @@
+{
+  "323": {
+    "_meta": {"title": "LoadImage"},
+    "class_type": "LoadImage",
+    "inputs": {"image": "01.png"}
+  },
+  "324": {
+    "_meta": {"title": "VAELoader"},
+    "class_type": "VAELoader",
+    "inputs": {"vae_name": "qwen_image_vae.safetensors"}
+  },
+  "325": {
+    "_meta": {"title": "FluxKontextMultiReferenceLatentMethod"},
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "inputs": {"conditioning": ["332", 0], "reference_latents_method": "index_timestep_zero"}
+  },
+  "326": {
+    "_meta": {"title": "负向(留空)"},
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {"clip": ["334", 0], "image1": ["323", 0], "prompt": "", "vae": ["324", 0]}
+  },
+  "327": {
+    "_meta": {"title": "FluxKontextMultiReferenceLatentMethod"},
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "inputs": {"conditioning": ["326", 0], "reference_latents_method": "index_timestep_zero"}
+  },
+  "328": {
+    "_meta": {"title": "VAEEncode"},
+    "class_type": "VAEEncode",
+    "inputs": {"pixels": ["331", 0], "vae": ["324", 0]}
+  },
+  "329": {
+    "_meta": {"title": "KSampler"},
+    "class_type": "KSampler",
+    "inputs": {
+      "cfg": 1,
+      "denoise": 1,
+      "latent_image": ["328", 0],
+      "model": ["335", 0],
+      "negative": ["327", 0],
+      "positive": ["325", 0],
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "seed": 347280907993236,
+      "steps": 4
+    }
+  },
+  "330": {
+    "_meta": {"title": "VAEDecode"},
+    "class_type": "VAEDecode",
+    "inputs": {"samples": ["329", 0], "vae": ["324", 0]}
+  },
+  "331": {
+    "_meta": {"title": "缩放到模型友好尺寸"},
+    "class_type": "FluxKontextImageScale",
+    "inputs": {"image": ["323", 0]}
+  },
+  "332": {
+    "_meta": {"title": "✏️ 编辑指令(正向)"},
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "clip": ["334", 0],
+      "image1": ["323", 0],
+      "prompt": "Convert the input image into a grayscale roughness map. Detect each different material area and independently assign physically reasonable roughness values. Maintain precise contours, alignment, material boundaries, seams, wear, scratches, and fine surface details. Do not reproduce albedo colors, lighting, highlights, or shadows.",
+      "vae": ["324", 0]
+    }
+  },
+  "333": {
+    "_meta": {"title": "Lightning 4步加速 LoRA"},
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {"lora_name": "qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors", "model": ["337", 0], "strength_model": 1}
+  },
+  "334": {
+    "_meta": {"title": "CLIPLoader"},
+    "class_type": "CLIPLoader",
+    "inputs": {"clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "device": "default", "type": "qwen_image"}
+  },
+  "335": {
+    "_meta": {"title": "CFGNorm"},
+    "class_type": "CFGNorm",
+    "inputs": {"model": ["336", 0], "pre_cfg": false, "strength": 1}
+  },
+  "336": {
+    "_meta": {"title": "ModelSamplingAuraFlow"},
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {"model": ["338", 0], "shift": 3.5}
+  },
+  "337": {
+    "_meta": {"title": "UnetLoaderGGUF"},
+    "class_type": "UnetLoaderGGUF",
+    "inputs": {"unet_name": "gguf/qwen-image-edit-2511-Q4_K_M.gguf"}
+  },
+  "338": {
+    "_meta": {"title": "LoraLoaderModelOnly"},
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {"lora_name": "qwen-2511/roughness_qwen2511_v1_000006000.safetensors", "model": ["333", 0], "strength_model": 1}
+  },
+  "355": {
+    "_meta": {"title": "PreviewImage"},
+    "class_type": "PreviewImage",
+    "inputs": {"images": ["330", 0]}
+  }
+}

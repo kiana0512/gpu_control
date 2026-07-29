@@ -1,0 +1,45 @@
+workflow_key: modelview-roughness
+version: 2026.07.29-d318bb39-roughness-v1
+template_file: template.api.json
+parameter_schema:
+  type: object
+  properties:
+    image_filename:
+      type: string
+      minLength: 1
+      maxLength: 512
+  required:
+    - image_filename
+  additionalProperties: false
+bindings:
+  image_filename: 323.inputs.image
+allowed_class_types:
+  - CFGNorm
+  - CLIPLoader
+  - FluxKontextImageScale
+  - FluxKontextMultiReferenceLatentMethod
+  - KSampler
+  - LoadImage
+  - LoraLoaderModelOnly
+  - ModelSamplingAuraFlow
+  - PreviewImage
+  - TextEncodeQwenImageEditPlus
+  - UnetLoaderGGUF
+  - VAEDecode
+  - VAEEncode
+  - VAELoader
+required_models:
+  - clip/qwen_2.5_vl_7b_fp8_scaled.safetensors
+  - lora/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors
+  - lora/roughness_qwen2511_v1_000006000.safetensors
+  - unet/qwen-image-edit-2511-Q4_K_M.gguf
+  - vae/qwen_image_vae.safetensors
+required_custom_nodes:
+  - ComfyUI-GGUF
+  - haoze-LiClick@d318bb392040e2d5f6bbd10ae61d832d36d3cb4a
+min_vram_mb: 22000
+timeout_seconds: 1800
+node_labels: {}
+output_nodes:
+  - "355"
+enabled: true

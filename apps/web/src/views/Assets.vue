@@ -12,14 +12,63 @@ import { useAutoRefresh } from "../composables/useAutoRefresh";
 const overview = ref<AssetProcessingOverview | null>(null);
 const error = ref("");
 const jobType = ref<
-  "ALL" | "UV_PROCESS_V2" | "RETOPOLOGY_AUDIT" | "RETOPOLOGY_PROCESS_V1"
+  | "ALL"
+  | "UV_PROCESS_V2"
+  | "RETOPOLOGY_AUDIT"
+  | "RETOPOLOGY_PROCESS_V1"
+  | "SUBSTANCE_BAKE_V1"
 >("ALL");
 const jobState = ref<"ALL" | "ACTIVE" | "SUCCEEDED" | "FAILED">("ALL");
 const jobSearch = ref("");
 const selectedJob = ref<AssetJobInfo | null>(null);
 const cancellingJobId = ref("");
 
-const workers = computed(() => overview.value?.workers ?? []);
+const isSubstanceWorker = (worker: AssetWorkerInfo) =>
+  worker.id === "asset-worker-3090-b-windows" ||
+  worker.id.startsWith("asset-worker-3090-b-windows-");
+
+const workers = computed(() => {
+  const raw = overview.value?.workers ?? [];
+  const bakerRows = raw.filter(isSubstanceWorker);
+  if (!bakerRows.length) return raw;
+  const instanceRows = bakerRows.filter((worker) =>
+    worker.id.startsWith("asset-worker-3090-b-windows-"),
+  );
+  const effectiveRows = instanceRows.length ? instanceRows : bakerRows;
+  const onlineRows = effectiveRows.filter(
+    (worker) => worker.status === "ONLINE",
+  );
+  const newest = [...effectiveRows].sort((left, right) =>
+    (right.last_heartbeat_at ?? "").localeCompare(left.last_heartbeat_at ?? ""),
+  )[0];
+  const aggregate: AssetWorkerInfo = {
+    ...newest,
+    id: "asset-worker-3090-b-windows",
+    display_name: "3090-B Windows Substance Baker",
+    status: onlineRows.length ? "ONLINE" : "OFFLINE",
+    current_jobs: onlineRows.reduce(
+      (sum, worker) => sum + worker.current_jobs,
+      0,
+    ),
+    max_concurrency: onlineRows.reduce(
+      (sum, worker) => sum + worker.max_concurrency,
+      0,
+    ),
+    cpu_count: Math.max(...effectiveRows.map((worker) => worker.cpu_count)),
+  };
+  return [...raw.filter((worker) => !isSubstanceWorker(worker)), aggregate];
+});
+const onlineWorkerCount = computed(
+  () => workers.value.filter((worker) => worker.status === "ONLINE").length,
+);
+const totalAssetSlots = computed(() =>
+  workers.value
+    .filter((worker) => worker.status === "ONLINE")
+    .reduce((sum, worker) => sum + worker.max_concurrency, 0),
+);
+const usedAssetSlots = computed(() =>
+  workers.value.reduce((sum, worker) => sum + worker.current_jobs, 0),
+);
 const filteredJobs = computed(() => {
   const rows = overview.value?.jobs ?? [];
   const needle = jobSearch.value.trim().toLowerCase();
@@ -93,7 +142,7 @@ const selectedDeliverableArtifacts = computed(() =>
     (artifact) =>
       ["blend", "fbx", "candidate_blend", "candidate_fbx"].includes(
         artifact.kind,
-      ) || /\.(blend|fbx|zip)$/i.test(artifact.filename),
+      ) || /\.(blend|fbx|zip|png)$/i.test(artifact.filename),
   ),
 );
 const selectedTechnicalArtifacts = computed(() => {
@@ -164,6 +213,7 @@ function jobTypeLabel(value: string) {
   if (value === "UV_PROCESS_V2") return "PBR UV";
   if (value === "RETOPOLOGY_AUDIT") return "拓扑审计";
   if (value === "RETOPOLOGY_PROCESS_V1") return "AI 重拓扑";
+  if (value === "SUBSTANCE_BAKE_V1") return "Substance PBR 烘焙";
   if (value === "UV_UNWRAP") return "UV 兼容接口";
   return value;
 }
@@ -174,6 +224,7 @@ function jobApiPath(value: string) {
   if (value === "RETOPOLOGY_AUDIT") return "/api/v1/assets/retopology/audit";
   if (value === "RETOPOLOGY_PROCESS_V1")
     return "/api/v1/assets/retopology/process";
+  if (value === "SUBSTANCE_BAKE_V1") return "/api/v1/assets/bake/process";
   return "未登记 API";
 }
 
@@ -232,6 +283,20 @@ function timingSummary(job: AssetJobInfo) {
   return `已用 ${elapsed} · 剩余约 ${remaining}`;
 }
 
+function formatDateTime(value: string | null) {
+  if (!value) return "--";
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(timestamp);
+}
+
 function diagnosticSummary(job: AssetJobInfo) {
   if (!job.error) return "";
   const message = (job.error.message ?? "任务未生成有效交付物").trim();
@@ -247,6 +312,9 @@ function stageLabel(value: string) {
     RETOPOLOGY_GENERATING: "正在生成重拓扑候选",
     RETOPOLOGY_RENDERING: "正在生成三模型四视图",
     RETOPOLOGY_AUDITING: "正在执行拓扑与轮廓审计",
+    BAKING_TEXTURE_TRANSFER: "正在投射高模材质贴图",
+    BAKING_GEOMETRY_MAPS: "正在生成几何派生贴图",
+    BAKING_NORMALS: "正在生成 DX、GL 与世界空间法线",
     WAITING_REVIEW: "历史状态待迁移",
     SUCCEEDED: "交付完成",
     FAILED: "执行失败",
@@ -337,8 +405,8 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
     <div class="page-heading asset-heading">
       <div>
         <div class="eyebrow">统一资产处理平面</div>
-        <h1>Blender PBR UV 与重拓扑</h1>
-        <p>真实 Worker 心跳 · 多任务并发 · 阶段进度与 ETA · 严格 QA 自动交付</p>
+        <h1>统一 PBR 资产处理</h1>
+        <p>粗糙度生成 · Blender UV / 重拓扑 · Windows Substance 烘焙</p>
         <div class="task-plane-switch" aria-label="任务平面">
           <router-link to="/jobs">GPU 推理任务</router-link>
           <router-link class="active" to="/asset-processing"
@@ -370,9 +438,8 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
       <div>
         <strong>与 GPU 推理任务完全隔离</strong>
         <p>
-          UV 任务只有五项交付物全部通过 Blender 与 FBX 回读 QA 后才会发布；
-          重拓扑通过源指纹、严格审计和三模型四视图证据后自动交付，硬性 QA
-          失败只保留诊断制品。
+          CPU 资产队列与 GPU 推理队列相互隔离；UV、重拓扑和烘焙均只发布
+          通过完整性与质量门禁的最终交付物。粗糙度使用独立 GPU API 调度。
         </p>
       </div>
       <span>{{ activeJobs }} 个资产任务处理中</span>
@@ -380,14 +447,12 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 
     <div class="asset-summary">
       <section>
-        <span>在线 Worker</span
-        ><strong>{{ overview?.summary.online_workers ?? 0 }}</strong
+        <span>在线 Worker</span><strong>{{ onlineWorkerCount }}</strong
         ><small>{{ workers.length }} 个已登记</small>
       </section>
       <section>
-        <span>CPU 并发槽位</span
-        ><strong>{{ overview?.summary.total_slots ?? 0 }}</strong
-        ><small>{{ overview?.summary.used_slots ?? 0 }} 个正在使用</small>
+        <span>资产执行槽位</span><strong>{{ totalAssetSlots }}</strong
+        ><small>{{ usedAssetSlots }} 个正在使用</small>
       </section>
       <section>
         <span>严格 QA 失败</span
@@ -395,8 +460,8 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
         ><small>不发布交付物，保留诊断证据</small>
       </section>
       <section>
-        <span>UV 交付规则</span><strong>5 / 5</strong
-        ><small>任一缺失则整批拒绝</small>
+        <span>烘焙输出</span><strong>10 图</strong
+        ><small>颜色、PBR、AO、法线与几何图</small>
       </section>
     </div>
 
@@ -407,7 +472,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <h2>CPU Worker</h2>
             <p>按真实心跳、CPU、内存和租约动态限流</p>
           </div>
-          <span>{{ overview?.summary.online_workers ?? 0 }} 在线</span>
+          <span>{{ onlineWorkerCount }} 在线</span>
         </header>
         <div
           v-for="worker in workers"
@@ -422,7 +487,11 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             </div>
           </div>
           <div>
-            <span>CPU / Blender</span
+            <span>{{
+              isSubstanceWorker(worker)
+                ? "Windows / Substance"
+                : "CPU / Blender"
+            }}</span
             ><strong
               >{{ worker.cpu_count }} 核 · {{ worker.blender_version }}</strong
             >
@@ -430,12 +499,23 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           <em>
             {{ workerState(worker) }}
             <small>{{ worker.skill_version }}</small>
-            <small class="worker-codex" :class="codexProbeClass(worker)">
+            <small
+              v-if="!isSubstanceWorker(worker)"
+              class="worker-codex"
+              :class="codexProbeClass(worker)"
+            >
               Codex {{ worker.codex_cli_version ?? "未发现" }} ·
               {{ codexProbeLabel(worker) }}
             </small>
-            <small class="worker-codex" :class="retopoflowProbeClass(worker)">
+            <small
+              v-if="!isSubstanceWorker(worker)"
+              class="worker-codex"
+              :class="retopoflowProbeClass(worker)"
+            >
               {{ retopoflowProbeLabel(worker) }}
+            </small>
+            <small v-else class="worker-codex healthy">
+              Windows 原生多进程 · 共享 GPU 隔离锁
             </small>
           </em>
         </div>
@@ -465,6 +545,24 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
               {{
                 overview?.contracts.retopology_process.submit ??
                 "/api/v1/assets/retopology/process"
+              }}
+            </dd>
+          </div>
+          <div>
+            <dt>粗糙度</dt>
+            <dd>
+              {{
+                overview?.contracts.roughness.submit ??
+                "/api/v1/services/modelview-roughness"
+              }}
+            </dd>
+          </div>
+          <div>
+            <dt>PBR 烘焙</dt>
+            <dd>
+              {{
+                overview?.contracts.substance_bake.submit ??
+                "/api/v1/assets/bake/process"
               }}
             </dd>
           </div>
@@ -532,6 +630,12 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             >
               AI 重拓扑 {{ jobTypeCount("RETOPOLOGY_PROCESS_V1") }}
             </button>
+            <button
+              :class="{ active: jobType === 'SUBSTANCE_BAKE_V1' }"
+              @click="jobType = 'SUBSTANCE_BAKE_V1'"
+            >
+              PBR 烘焙 {{ jobTypeCount("SUBSTANCE_BAKE_V1") }}
+            </button>
           </div>
         </div>
         <div class="asset-filter-row">
@@ -574,7 +678,8 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
       <div class="asset-job-table" role="table" aria-label="资产任务">
         <div class="asset-job-row asset-job-head" role="row">
           <span>任务 / 来源</span><span>分类 / API</span><span>状态</span
-          ><span>Worker</span><span>进度</span><span>操作</span>
+          ><span>Worker</span><span>任务时间</span><span>进度</span
+          ><span>操作</span>
         </div>
         <div
           v-for="job in jobs"
@@ -596,6 +701,13 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             statusLabel(job.status)
           }}</span>
           <span>{{ job.worker_id ?? "尚未分配" }}</span>
+          <div class="asset-time-stack">
+            <span>提交 {{ formatDateTime(job.created_at) }}</span>
+            <span>开始 {{ formatDateTime(job.started_at) }}</span>
+            <span v-if="isTerminal(job)"
+              >结束 {{ formatDateTime(job.finished_at) }}</span
+            >
+          </div>
           <div class="asset-progress">
             <i><b :style="{ width: `${job.progress}%` }"></b></i
             ><small
@@ -694,6 +806,22 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <div>
               <span>当前阶段</span
               ><strong>{{ stageLabel(selectedJob.stage) }}</strong>
+            </div>
+            <div>
+              <span>提交时间</span
+              ><strong>{{ formatDateTime(selectedJob.created_at) }}</strong>
+            </div>
+            <div>
+              <span>开始时间</span
+              ><strong>{{ formatDateTime(selectedJob.started_at) }}</strong>
+            </div>
+            <div>
+              <span>结束时间</span
+              ><strong>{{ formatDateTime(selectedJob.finished_at) }}</strong>
+            </div>
+            <div>
+              <span>累计耗时</span
+              ><strong>{{ timingSummary(selectedJob) }}</strong>
             </div>
           </section>
           <section class="asset-stage-message">

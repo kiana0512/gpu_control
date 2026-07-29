@@ -11,6 +11,7 @@ const origin = window.location.origin;
 const comfyUrl = `http://${window.location.hostname}:8188/#551d82b0-b1fb-483a-a5ea-564bdb813625`;
 const imageclipUrl = `${origin}/api/v1/services/imageclip-rgba`;
 const modelviewUrl = `${origin}/api/v1/services/modelview-inpaint`;
+const roughnessUrl = `${origin}/api/v1/services/modelview-roughness`;
 const uvUrl = `${origin}/api/v1/assets/uv/process`;
 const retopologyUrl = `${origin}/api/v1/assets/retopology/process`;
 const modelviewPromptEnabled =
@@ -168,6 +169,12 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
               }}</small
             ></span
           ><code>{{ modelviewUrl }}</code>
+        </div>
+        <div>
+          <span
+            ><strong>PBR 粗糙度生成</strong
+            ><small>POST · image 必填 · 固定生产提示词</small></span
+          ><code>{{ roughnessUrl }}</code>
         </div>
       </div>
       <router-link class="inline-link" to="/clients"

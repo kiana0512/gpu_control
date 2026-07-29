@@ -29,12 +29,16 @@ from packages.gpu_control_core.assets import (
     AssetCreateMetadata,
     RetopologyAuditMetadata,
     RetopologyProcessMetadata,
+    SubstanceBakeMetadata,
     asset_request_hash,
     lease_token_hash,
     retopology_audit_request_hash,
     retopology_process_request_hash,
+    substance_bake_request_hash,
     uv_process_request_hash,
     validate_asset_filename,
+    validate_baker_filename,
+    validate_baker_texture_filename,
     validate_reference_image_filename,
 )
 from packages.gpu_control_core.database import Database
@@ -46,6 +50,7 @@ from packages.gpu_control_core.models import (
     AssetJob,
     AssetJobEvent,
     AssetWorker,
+    Node,
 )
 from packages.gpu_control_core.security import sign_agent_request, verify_api_key
 from packages.gpu_control_core.settings import Settings, get_settings
@@ -61,6 +66,44 @@ UV_REQUIRED_ARTIFACTS = {
     "report": ("model_report.json", "application/json"),
     "qa": ("model_QA.json", "application/json"),
 }
+SUBSTANCE_BAKE_OUTPUTS = {
+    "ao-self-v1": {
+        "ao": ("asset_ao.png", "image/png"),
+        "result": ("baker_result.json", "application/json"),
+        "log": ("baker.log", "text/plain; charset=utf-8"),
+    },
+    "normal-dx-v1": {
+        "normal_dx": ("asset_normal_dx.png", "image/png"),
+        "result": ("baker_result.json", "application/json"),
+        "log": ("baker.log", "text/plain; charset=utf-8"),
+    },
+    "pbr-core-v1": {
+        "ao": ("asset_ao.png", "image/png"),
+        "normal_dx": ("asset_normal_dx.png", "image/png"),
+        "result": ("baker_result.json", "application/json"),
+        "log": ("baker.log", "text/plain; charset=utf-8"),
+    },
+    "li3d-pbr-full-v2": {
+        "base_color": ("asset_base_color.png", "image/png"),
+        "roughness": ("asset_roughness.png", "image/png"),
+        "metallic": ("asset_metallic.png", "image/png"),
+        "ao": ("asset_ao.png", "image/png"),
+        "normal_dx": ("asset_normal_dx.png", "image/png"),
+        "normal_gl": ("asset_normal_gl.png", "image/png"),
+        "world_normal": ("asset_world_normal.png", "image/png"),
+        "curvature": ("asset_curvature.png", "image/png"),
+        "thickness": ("asset_thickness.png", "image/png"),
+        "position": ("asset_position.png", "image/png"),
+        "result": ("baker_result.json", "application/json"),
+        "log": ("baker.log", "text/plain; charset=utf-8"),
+    },
+}
+SUBSTANCE_WORKER_ID = "asset-worker-3090-b-windows"
+SUBSTANCE_WORKER_ID_PREFIX = f"{SUBSTANCE_WORKER_ID}-"
+SUBSTANCE_GPU_NODE_ID = "worker-3090-b"
+SUBSTANCE_VERSION = "substance-15.1.0"
+SUBSTANCE_FENCE_LABEL = "substance_bake_fence_job_ids"
+SUBSTANCE_LEGACY_FENCE_LABEL = "substance_bake_fence_job_id"
 RETOPOLOGY_AUDIT_ARTIFACTS = {
     "audit": ("retopology_audit.json", "application/json"),
     "manifest": ("retopology_manifest.json", "application/json"),
@@ -106,6 +149,60 @@ def sha256_path(path: Path) -> str:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def is_substance_worker_id(worker_id: str | None) -> bool:
+    return bool(
+        worker_id
+        and (
+            worker_id == SUBSTANCE_WORKER_ID
+            or worker_id.startswith(SUBSTANCE_WORKER_ID_PREFIX)
+        )
+    )
+
+
+def substance_fence_job_ids(labels: dict[str, Any]) -> list[str]:
+    raw = labels.get(SUBSTANCE_FENCE_LABEL, [])
+    job_ids = [str(value) for value in raw] if isinstance(raw, list) else []
+    legacy = labels.get(SUBSTANCE_LEGACY_FENCE_LABEL)
+    if legacy and str(legacy) not in job_ids:
+        job_ids.append(str(legacy))
+    return job_ids
+
+
+async def release_substance_gpu_fence(
+    db: AsyncSession, job: AssetJob, *, restore_active: bool = True
+) -> None:
+    """Release only this Baker job's fence.
+
+    A stale lease is not proof that Windows restored the WSL ComfyUI container,
+    so that path deliberately keeps the physical node drained for recovery.
+    """
+    if job.job_type != "SUBSTANCE_BAKE_V1":
+        return
+    node = await db.scalar(
+        select(Node).where(Node.id == SUBSTANCE_GPU_NODE_ID).with_for_update()
+    )
+    if node is None:
+        return
+    labels = dict(node.labels or {})
+    fenced_job_ids = substance_fence_job_ids(labels)
+    if job.id not in fenced_job_ids:
+        return
+    fenced_job_ids.remove(job.id)
+    if fenced_job_ids:
+        labels[SUBSTANCE_FENCE_LABEL] = fenced_job_ids
+    else:
+        labels.pop(SUBSTANCE_FENCE_LABEL, None)
+    labels.pop(SUBSTANCE_LEGACY_FENCE_LABEL, None)
+    node.labels = labels
+    if (
+        restore_active
+        and not fenced_job_ids
+        and node.mode == "DRAINING"
+        and not node.manual_reserved
+    ):
+        node.mode = "ACTIVE"
 
 
 class Principal(BaseModel):
@@ -314,6 +411,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "Blender 资产处理执行失败；系统已保留任务诊断，"
                 "请联系服务端管理员处理后重试。"
             ),
+            "SUBSTANCE_EXECUTION_FAILED": (
+                "Substance 3D Baker 执行失败；系统已保留输入和原生 Windows 日志，"
+                "未发布不完整贴图。"
+            ),
+            "SUBSTANCE_RESULT_INVALID": (
+                "Substance 3D Baker 输出未通过完整性校验，未发布为最终贴图。"
+            ),
         }
         return {
             "code": job.error_code,
@@ -366,26 +470,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         queue_position: int | None = None
         estimated_start_seconds: int | None = None
         if job.status == "QUEUED":
-            queue_position = int(
-                await db.scalar(
-                    select(func.count(AssetJob.id)).where(
-                        AssetJob.status == "QUEUED",
-                        AssetJob.created_at <= job.created_at,
-                    )
-                )
-                or 1
+            queue_query = select(func.count(AssetJob.id)).where(
+                AssetJob.status == "QUEUED",
+                AssetJob.created_at <= job.created_at,
             )
-            slots = int(
-                await db.scalar(
-                    select(
-                        func.coalesce(
-                            func.sum(
-                                AssetWorker.max_concurrency - AssetWorker.current_jobs
-                            ),
-                            0,
-                        )
-                    ).where(AssetWorker.status == "ONLINE")
+            worker_query = select(
+                func.coalesce(func.sum(AssetWorker.max_concurrency - AssetWorker.current_jobs), 0)
+            ).where(AssetWorker.status == "ONLINE")
+            if job.job_type == "SUBSTANCE_BAKE_V1":
+                queue_query = queue_query.where(AssetJob.job_type == "SUBSTANCE_BAKE_V1")
+                worker_query = worker_query.where(
+                    (AssetWorker.id == SUBSTANCE_WORKER_ID)
+                    | AssetWorker.id.startswith(SUBSTANCE_WORKER_ID_PREFIX)
                 )
+            else:
+                queue_query = queue_query.where(AssetJob.job_type != "SUBSTANCE_BAKE_V1")
+                worker_query = worker_query.where(
+                    AssetWorker.id != SUBSTANCE_WORKER_ID,
+                    ~AssetWorker.id.startswith(SUBSTANCE_WORKER_ID_PREFIX),
+                )
+            queue_position = int(await db.scalar(queue_query) or 1)
+            slots = int(
+                await db.scalar(worker_query)
                 or 0
             )
             typical_seconds = {
@@ -393,6 +499,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "UV_PROCESS_V2": 240,
                 "RETOPOLOGY_AUDIT": 120,
                 "RETOPOLOGY_PROCESS_V1": 900,
+                "SUBSTANCE_BAKE_V1": 600,
             }.get(job.job_type, 300)
             estimated_start_seconds = (
                 0
@@ -626,6 +733,175 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             idempotency_key=idempotency_key,
             request_hash_builder=lambda input_sha: asset_request_hash(parsed, input_sha),
         )
+
+    @app.post("/api/v1/assets/bake/process")
+    async def create_substance_bake_job(
+        request: Request,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+        low_mesh: Annotated[UploadFile, File()],
+        metadata: Annotated[str, Form()],
+        idempotency_key: Annotated[
+            str, Header(alias="Idempotency-Key", min_length=1, max_length=128)
+        ],
+        high_mesh: Annotated[UploadFile | None, File()] = None,
+        cage_mesh: Annotated[UploadFile | None, File()] = None,
+        base_color_texture: Annotated[UploadFile | None, File()] = None,
+        roughness_texture: Annotated[UploadFile | None, File()] = None,
+        metallic_texture: Annotated[UploadFile | None, File()] = None,
+    ) -> JSONResponse:
+        """Queue one fixed-profile Substance 3D Baker job for native Windows 3090-B."""
+        try:
+            parsed = SubstanceBakeMetadata.model_validate_json(metadata)
+            low_name = validate_baker_filename(low_mesh.filename or "")
+            high_name = (
+                validate_baker_filename(high_mesh.filename or "") if high_mesh else None
+            )
+            cage_name = (
+                validate_baker_filename(cage_mesh.filename or "") if cage_mesh else None
+            )
+            if parsed.options.profile in {"normal-dx-v1", "pbr-core-v1", "li3d-pbr-full-v2"} and not high_mesh:
+                raise ValueError(f"{parsed.options.profile} requires high_mesh")
+            texture_uploads = {
+                "base_color": base_color_texture,
+                "roughness": roughness_texture,
+                "metallic": metallic_texture,
+            }
+            if parsed.options.profile == "li3d-pbr-full-v2":
+                missing = [role for role, upload in texture_uploads.items() if upload is None]
+                if missing:
+                    raise ValueError(
+                        "li3d-pbr-full-v2 requires base_color_texture, roughness_texture and metallic_texture"
+                    )
+        except ValueError as exc:
+            raise HTTPException(
+                422, detail={"code": "BAKE_INPUT_INVALID", "message": str(exc)}
+            ) from exc
+
+        staging = cfg.asset_root / f".staging-{uuid.uuid4().hex}"
+        input_root = staging / "input"
+        input_root.mkdir(parents=True, exist_ok=False)
+        try:
+            input_sha: dict[str, str] = {}
+            received = 0
+            role_uploads = [
+                ("low", low_mesh, low_name),
+                ("high", high_mesh, high_name),
+                ("cage", cage_mesh, cage_name),
+            ]
+            for role, upload in texture_uploads.items():
+                if upload is not None:
+                    role_uploads.append(
+                        (role, upload, validate_baker_texture_filename(upload.filename or ""))
+                    )
+            bundle_files: dict[str, str] = {}
+            for role, upload, original_name in role_uploads:
+                if upload is None or original_name is None:
+                    continue
+                bundle_name = f"asset_{role}{Path(original_name).suffix.lower()}"
+                digest, size = await persist_upload(
+                    upload,
+                    input_root / bundle_name,
+                    bytes_already_received=received,
+                )
+                received += size
+                input_sha[role] = digest
+                bundle_files[role] = bundle_name
+
+            request_hash = substance_bake_request_hash(parsed, input_sha)
+            existing = await db.scalar(
+                select(AssetIdempotencyKey).where(
+                    AssetIdempotencyKey.client_id == principal.id,
+                    AssetIdempotencyKey.key == idempotency_key,
+                    AssetIdempotencyKey.expires_at > datetime.now(UTC),
+                )
+            )
+            if existing is not None:
+                if existing.request_hash != request_hash:
+                    raise HTTPException(409, detail={"code": "IDEMPOTENCY_CONFLICT"})
+                old_job = await db.get(AssetJob, existing.job_id)
+                if old_job is None:
+                    raise HTTPException(500, detail={"code": "ASSET_JOB_NOT_FOUND"})
+                return JSONResponse(await job_payload(old_job, db), 200)
+            duplicate_external = await db.scalar(
+                select(AssetJob).where(
+                    AssetJob.client_id == principal.id,
+                    AssetJob.external_asset_id == parsed.external_asset_id,
+                )
+            )
+            if duplicate_external is not None:
+                raise HTTPException(409, detail={"code": "EXTERNAL_ASSET_CONFLICT"})
+
+            request_document = {
+                "schema_version": 1,
+                "job_type": "SUBSTANCE_BAKE_V1",
+                "external_asset_id": parsed.external_asset_id,
+                "options": parsed.options.model_dump(mode="json"),
+                "files": bundle_files,
+                "input_sha256": input_sha,
+            }
+            (staging / "request.json").write_text(
+                json.dumps(request_document, ensure_ascii=False, sort_keys=True, indent=2),
+                encoding="utf-8",
+            )
+            bundle = staging / "substance_bake_input.zip"
+            with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.write(staging / "request.json", "request.json")
+                for bundle_name in bundle_files.values():
+                    archive.write(input_root / bundle_name, f"input/{bundle_name}")
+            bundle_sha = sha256_path(bundle)
+            bundle_size = bundle.stat().st_size
+
+            job_id = str(uuid.uuid4())
+            job_root = cfg.asset_root / job_id
+            job_root.mkdir(parents=True, exist_ok=False)
+            bundle.rename(job_root / bundle.name)
+            options = parsed.options.model_dump(mode="json")
+            options["files"] = bundle_files
+            options["input_sha256"] = input_sha
+            job = AssetJob(
+                id=job_id,
+                client_id=principal.id,
+                external_asset_id=parsed.external_asset_id,
+                job_type="SUBSTANCE_BAKE_V1",
+                status="QUEUED",
+                source_filename=bundle.name,
+                input_path=str(job_root / bundle.name),
+                input_sha256=bundle_sha,
+                input_size_bytes=bundle_size,
+                options=options,
+                request_hash=request_hash,
+                request_id=str(request.state.request_id),
+            )
+            db.add(job)
+            await db.flush()
+            await append_asset_event(
+                db,
+                job,
+                details={
+                    "event": "asset.queued",
+                    "request_id": job.request_id,
+                    "profile": parsed.options.profile,
+                    "runtime": "worker-3090-b-windows",
+                },
+            )
+            db.add(
+                AssetIdempotencyKey(
+                    client_id=principal.id,
+                    key=idempotency_key,
+                    request_hash=request_hash,
+                    job_id=job_id,
+                    expires_at=datetime.now(UTC) + timedelta(days=7),
+                )
+            )
+            await db.commit()
+            return JSONResponse(await job_payload(job, db), 202)
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(409, detail={"code": "ASSET_CONFLICT"}) from exc
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
 
     @app.post("/api/v1/assets/retopology/audit")
     async def create_retopology_audit_job(
@@ -1041,7 +1317,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         worker.blender_version = body.blender_version
         worker.skill_version = body.skill_version
         worker.cpu_count = body.cpu_count
-        worker.max_concurrency = body.max_concurrency
+        # Windows Baker concurrency is represented by independent one-job
+        # workers.  This keeps leases and process failures isolated while the
+        # shared physical-GPU fence remains active until the last bake exits.
+        worker.max_concurrency = (
+            1 if is_substance_worker_id(body.worker_id) else body.max_concurrency
+        )
         worker.current_jobs = body.current_jobs
         worker.codex_cli_version = body.codex_cli_version
         worker.codex_auth_status = body.codex_auth_status
@@ -1061,7 +1342,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             body.available_memory_mb >= cfg.asset_worker_min_available_memory_mb
             and body.load_1m / body.cpu_count <= cfg.asset_worker_max_load_per_cpu
         )
-        worker.status = "ONLINE" if body.blender_version == "5.1.2" and resource_ok else "DRAINING"
+        runtime_version_ok = (
+            body.blender_version == SUBSTANCE_VERSION
+            if is_substance_worker_id(body.worker_id)
+            else body.blender_version == "5.1.2"
+        )
+        worker.status = "ONLINE" if runtime_version_ok and resource_ok else "DRAINING"
         await db.commit()
         return {"accepted": True, "status": worker.status}
 
@@ -1113,6 +1399,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             stale.lease_token_hash = None
             stale.lease_expires_at = None
             stale.last_progress_at = datetime.now(UTC)
+            await release_substance_gpu_fence(db, stale, restore_active=False)
             await append_asset_event(
                 db, stale, details={"event": "asset.lease_expired"}
             )
@@ -1128,14 +1415,55 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             or body.load_1m / max(worker.cpu_count, 1) > cfg.asset_worker_max_load_per_cpu
         ):
             return JSONResponse({"job": None}, 200)
+        substance_node: Node | None = None
+        if is_substance_worker_id(worker.id):
+            # Lock the physical GPU node before the asset job row.  The GPU
+            # scheduler uses the same lock order, preventing a ComfyUI claim
+            # from racing a native Windows Baker claim.
+            substance_node = await db.scalar(
+                select(Node)
+                .where(Node.id == SUBSTANCE_GPU_NODE_ID)
+                .with_for_update()
+            )
+            labels = dict(substance_node.labels or {}) if substance_node else {}
+            fenced_job_ids = substance_fence_job_ids(labels)
+            if (
+                substance_node is None
+                or (
+                    substance_node.mode != "ACTIVE"
+                    and not (substance_node.mode == "DRAINING" and fenced_job_ids)
+                )
+                or substance_node.health != "ONLINE"
+                or substance_node.current_jobs != 0
+                or substance_node.manual_reserved
+                or substance_node.external_busy
+                or substance_node.foreign_queue_detected
+            ):
+                return JSONResponse({"job": None}, 200)
+
+        claim_query = select(AssetJob).where(
+            AssetJob.status == "QUEUED", AssetJob.cancel_requested.is_(False)
+        )
+        if is_substance_worker_id(worker.id):
+            claim_query = claim_query.where(AssetJob.job_type == "SUBSTANCE_BAKE_V1")
+        else:
+            claim_query = claim_query.where(AssetJob.job_type != "SUBSTANCE_BAKE_V1")
         job = await db.scalar(
-            select(AssetJob)
-            .where(AssetJob.status == "QUEUED", AssetJob.cancel_requested.is_(False))
+            claim_query
             .order_by(AssetJob.created_at)
             .with_for_update(skip_locked=True)
         )
         if job is None:
             return JSONResponse({"job": None}, 200)
+        if substance_node is not None:
+            labels = dict(substance_node.labels or {})
+            fenced_job_ids = substance_fence_job_ids(labels)
+            if job.id not in fenced_job_ids:
+                fenced_job_ids.append(job.id)
+            labels[SUBSTANCE_FENCE_LABEL] = fenced_job_ids
+            labels.pop(SUBSTANCE_LEGACY_FENCE_LABEL, None)
+            substance_node.labels = labels
+            substance_node.mode = "DRAINING"
         token = secrets.token_urlsafe(32)
         now = datetime.now(UTC)
         job.status = "CLAIMED"
@@ -1152,6 +1480,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "UV_PROCESS_V2": 240,
             "RETOPOLOGY_AUDIT": 120,
             "RETOPOLOGY_PROCESS_V1": 900,
+            "SUBSTANCE_BAKE_V1": 600,
         }.get(job.job_type, 300)
         job.last_progress_at = now
         worker.current_jobs += 1
@@ -1404,6 +1733,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             worker = await db.get(AssetWorker, job.worker_id) if job.worker_id else None
             if worker is not None:
                 worker.current_jobs = max(0, worker.current_jobs - 1)
+            await release_substance_gpu_fence(db, job)
             await append_asset_event(
                 db,
                 job,
@@ -1522,6 +1852,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(
                     422, detail={"code": "RETOPOLOGY_PROCESS_REPORT_INVALID"}
                 )
+            quality_gate = report_payload.get("quality_gate")
+            if (
+                not isinstance(quality_gate, dict)
+                or quality_gate.get("schema_version") != "retopology_quality_gate.v2"
+                or not isinstance(quality_gate.get("passed"), bool)
+                or not isinstance(quality_gate.get("failures"), list)
+            ):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_QUALITY_GATE_INVALID"}
+                )
             if (
                 agent_plan_payload.get("recommended_algorithm")
                 not in {"quadriflow", "cleanup_existing"}
@@ -1587,6 +1927,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     422, detail={"code": "RETOPOLOGY_SOURCE_PROTECTION_FAILED"}
                 )
             topology_goal_met = bool(report_payload.get("topology_goal_met"))
+            if (
+                topology_goal_met != bool(quality_gate.get("passed"))
+                or manifest_payload.get("quality_gate") != quality_gate
+            ):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_QUALITY_GATE_MISMATCH"}
+                )
             if manifest_payload.get("automatic_final_promotion_allowed") != (
                 bool(audit_payload.get("audit_passed")) and topology_goal_met
             ):
@@ -1624,37 +1971,59 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             staging.rename(final)
             db.add_all(created)
             audit_passed = audit_payload.get("audit_passed") is True
-            job.status = "SUCCEEDED" if audit_passed else "FAILED"
+            report_promotable = report_payload.get("topology_goal_met") is True
+            manifest_promotable = (
+                manifest_payload.get("automatic_final_promotion_allowed") is True
+            )
+            quality_passed = audit_passed and report_promotable and manifest_promotable
+            quality_failures: list[str] = []
+            reported_failures = audit_payload.get("failures")
+            if isinstance(reported_failures, list):
+                quality_failures.extend(str(item) for item in reported_failures)
+            gate_failures = quality_gate.get("failures")
+            if isinstance(gate_failures, list):
+                quality_failures.extend(str(item) for item in gate_failures)
+            if not report_promotable:
+                quality_failures.append(
+                    "topology_goal_met=false: target face/topology requirement was not met"
+                )
+            if not manifest_promotable:
+                quality_failures.append(
+                    "automatic_final_promotion_allowed=false: candidate is not deliverable"
+                )
+            job.status = "SUCCEEDED" if quality_passed else "FAILED"
             job.progress = 100
-            job.stage = "SUCCEEDED" if audit_passed else "FAILED"
+            job.stage = "SUCCEEDED" if quality_passed else "FAILED"
             job.stage_message = (
                 "候选已通过严格 QA 与三组四视图生成，自动发布交付"
-                if audit_passed
-                else "候选未通过硬性 QA；诊断制品已保留，不可交付"
+                if quality_passed
+                else "候选未满足拓扑目标或硬性 QA；仅保留诊断制品，不可交付"
             )
             job.estimated_remaining_seconds = 0
             job.last_progress_at = datetime.now(UTC)
             job.finished_at = job.last_progress_at
-            job.error_code = None if audit_passed else "RETOPOLOGY_AUDIT_FAILED"
-            failures = audit_payload.get("failures")
+            job.error_code = (
+                None if quality_passed else "RETOPOLOGY_QUALITY_GATE_FAILED"
+            )
             job.error_message = (
                 None
                 if job.error_code is None
-                else json.dumps(
-                    failures if isinstance(failures, list) else [], ensure_ascii=False
-                )
+                else json.dumps(quality_failures, ensure_ascii=False)
             )
             job.lease_expires_at = None
             job.lease_token_hash = None
             worker = await db.get(AssetWorker, job.worker_id) if job.worker_id else None
             if worker is not None:
                 worker.current_jobs = max(0, worker.current_jobs - 1)
+            await release_substance_gpu_fence(db, job)
             await append_asset_event(
                 db,
                 job,
                 details={
-                    "event": "asset.succeeded" if audit_passed else "asset.qa_failed",
+                    "event": "asset.succeeded" if quality_passed else "asset.qa_failed",
                     "audit_passed": audit_passed,
+                    "topology_goal_met": report_promotable,
+                    "automatic_final_promotion_allowed": manifest_promotable,
                 },
             )
             await db.commit()
@@ -1663,6 +2032,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "status": job.status,
                 "review_required": False,
                 "audit_passed": audit_passed,
+                "quality_gate_passed": quality_passed,
             }
         finally:
             if staging.exists():
@@ -1780,6 +2150,171 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if staging.exists():
                 shutil.rmtree(staging)
 
+    @app.post("/internal/v1/assets/jobs/{job_id}/substance-complete")
+    async def worker_complete_substance(
+        job_id: str,
+        db: Annotated[AsyncSession, Depends(session)],
+        lease: Annotated[str, Header(alias="X-Asset-Lease")],
+        result: Annotated[UploadFile, File()],
+        log: Annotated[UploadFile, File()],
+        ao: Annotated[UploadFile | None, File()] = None,
+        normal_dx: Annotated[UploadFile | None, File()] = None,
+        normal_gl: Annotated[UploadFile | None, File()] = None,
+        world_normal: Annotated[UploadFile | None, File()] = None,
+        curvature: Annotated[UploadFile | None, File()] = None,
+        thickness: Annotated[UploadFile | None, File()] = None,
+        position: Annotated[UploadFile | None, File()] = None,
+        base_color: Annotated[UploadFile | None, File()] = None,
+        roughness: Annotated[UploadFile | None, File()] = None,
+        metallic: Annotated[UploadFile | None, File()] = None,
+    ) -> dict[str, Any]:
+        job = await leased_job(job_id, lease, db)
+        if job.job_type != "SUBSTANCE_BAKE_V1":
+            raise HTTPException(409, detail={"code": "ASSET_JOB_TYPE_MISMATCH"})
+        profile = str(job.options.get("profile", ""))
+        contract = SUBSTANCE_BAKE_OUTPUTS.get(profile)
+        if contract is None:
+            raise HTTPException(409, detail={"code": "SUBSTANCE_PROFILE_INVALID"})
+        supplied: dict[str, UploadFile | None] = {
+            "ao": ao,
+            "normal_dx": normal_dx,
+            "normal_gl": normal_gl,
+            "world_normal": world_normal,
+            "curvature": curvature,
+            "thickness": thickness,
+            "position": position,
+            "base_color": base_color,
+            "roughness": roughness,
+            "metallic": metallic,
+            "result": result,
+            "log": log,
+        }
+        if any(supplied[kind] is None for kind in contract):
+            raise HTTPException(422, detail={"code": "SUBSTANCE_ARTIFACT_MISSING"})
+        if any(upload is not None and kind not in contract for kind, upload in supplied.items()):
+            raise HTTPException(422, detail={"code": "SUBSTANCE_ARTIFACT_UNEXPECTED"})
+
+        staging = cfg.asset_root / job.id / f".outputs-{uuid.uuid4().hex}"
+        final = cfg.asset_root / job.id / "output"
+        staging.mkdir(parents=True, exist_ok=False)
+        created: list[AssetArtifact] = []
+        actual_sha: dict[str, str] = {}
+        try:
+            for kind, (filename, content_type) in contract.items():
+                upload = supplied[kind]
+                assert upload is not None
+                path = staging / filename
+                digest = hashlib.sha256()
+                size = 0
+                with path.open("xb") as destination:
+                    while chunk := await upload.read(1024 * 1024):
+                        size += len(chunk)
+                        if size > cfg.asset_max_upload_bytes:
+                            raise HTTPException(413, detail={"code": "ASSET_TOO_LARGE"})
+                        digest.update(chunk)
+                        destination.write(chunk)
+                if size == 0:
+                    raise HTTPException(
+                        422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind}
+                    )
+                actual_sha[kind] = digest.hexdigest()
+                created.append(
+                    AssetArtifact(
+                        id=str(uuid.uuid4()),
+                        job_id=job.id,
+                        kind=kind,
+                        filename=filename,
+                        path=str(final / filename),
+                        content_type=content_type,
+                        size_bytes=size,
+                        sha256=actual_sha[kind],
+                    )
+                )
+
+            expected_resolution = int(job.options.get("resolution", 0))
+            for kind in (
+                "ao", "normal_dx", "normal_gl", "world_normal", "curvature",
+                "thickness", "position", "base_color", "roughness", "metallic",
+            ):
+                if kind not in contract:
+                    continue
+                try:
+                    with Image.open(staging / contract[kind][0]) as image:
+                        image.verify()
+                    with Image.open(staging / contract[kind][0]) as image:
+                        if image.format != "PNG" or image.size != (
+                            expected_resolution,
+                            expected_resolution,
+                        ):
+                            raise HTTPException(
+                                422,
+                                detail={"code": "SUBSTANCE_IMAGE_INVALID", "kind": kind},
+                            )
+                except (OSError, UnidentifiedImageError) as exc:
+                    raise HTTPException(
+                        422, detail={"code": "SUBSTANCE_IMAGE_INVALID", "kind": kind}
+                    ) from exc
+
+            try:
+                result_payload = json.loads(
+                    (staging / contract["result"][0]).read_text("utf-8")
+                )
+                log_text = (staging / contract["log"][0]).read_text(
+                    "utf-8", errors="replace"
+                )
+            except (OSError, ValueError) as exc:
+                raise HTTPException(
+                    422, detail={"code": "SUBSTANCE_RESULT_INVALID"}
+                ) from exc
+            tool = result_payload.get("tool") or {}
+            execution = result_payload.get("execution") or {}
+            output_hashes = result_payload.get("output_sha256") or {}
+            if (
+                result_payload.get("schema_version") != 1
+                or result_payload.get("job_id") != job.id
+                or result_payload.get("status") != "SUCCEEDED"
+                or result_payload.get("profile") != profile
+                or tool.get("version") != "15.1.0"
+                or tool.get("exe_sha256")
+                != "7B920FC6EE6005FAAB072C9280B1772F03D694FF04AA91C5A4DB516F7C9FEC6D"
+                or execution.get("exit_code") != 0
+                or any(output_hashes.get(kind) != actual_sha[kind] for kind in contract if kind not in {"result", "log"})
+                or "Bake finished successfully" not in log_text
+            ):
+                raise HTTPException(422, detail={"code": "SUBSTANCE_RESULT_INVALID"})
+
+            if final.exists():
+                raise HTTPException(409, detail={"code": "ASSET_OUTPUT_ALREADY_EXISTS"})
+            staging.rename(final)
+            db.add_all(created)
+            job.status = "SUCCEEDED"
+            job.progress = 100
+            job.stage = "SUCCEEDED"
+            job.stage_message = "Substance 3D Baker 原生 Windows 结果已校验并原子发布"
+            job.estimated_remaining_seconds = 0
+            job.last_progress_at = datetime.now(UTC)
+            job.finished_at = datetime.now(UTC)
+            job.lease_expires_at = None
+            job.lease_token_hash = None
+            worker = await db.get(AssetWorker, job.worker_id) if job.worker_id else None
+            if worker is not None:
+                worker.current_jobs = max(0, worker.current_jobs - 1)
+            await release_substance_gpu_fence(db, job)
+            await append_asset_event(
+                db,
+                job,
+                details={
+                    "event": "asset.succeeded",
+                    "profile": profile,
+                    "runtime": "worker-3090-b-windows",
+                },
+            )
+            await db.commit()
+            return {"accepted": True, "status": job.status}
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+
     @app.post("/internal/v1/assets/jobs/{job_id}/fail")
     async def worker_fail(
         job_id: str,
@@ -1813,6 +2348,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job.lease_token_hash = None
         job.lease_expires_at = None
         job.last_progress_at = datetime.now(UTC)
+        await release_substance_gpu_fence(db, job)
         await append_asset_event(
             db,
             job,

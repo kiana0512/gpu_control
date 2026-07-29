@@ -1,5 +1,8 @@
 manifest_version: 1
 models:
+  - path: clip/qwen_2.5_vl_7b_fp8_scaled.safetensors
+    size_bytes: 9384670680
+    sha256: cb5636d852a0ea6a9075ab1bef496c0db7aef13c02350571e388aea959c5c0b4
   - path: clip/clip_l.safetensors
     size_bytes: 246144152
     sha256: 660c6f5b1abae9dc498ac2d21e1347d2abdb0cf6c0c0c8576cd796491d9a6cdd
@@ -9,12 +12,24 @@ models:
   - path: lora/flux-turbo-alpha-8tp.safetensors
     size_bytes: 694082424
     sha256: 77f7523a5e9c3da6cfc730c6b07461129fa52997ea06168e9ed5312228aa0bff
+  - path: lora/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors
+    size_bytes: 849608296
+    sha256: 22226e8d05d354bb356627d428809f5afd7819399b077238a2b70a82883a904f
+  - path: lora/roughness_qwen2511_v1_000006000.safetensors
+    size_bytes: 590058840
+    sha256: 5aa41c1035efb088d361e2de982612d3f9f940148fe9368885ad588959cd0e5c
   - path: unet/Nunchaku-svdq-int4_r32-flux.1-fill-dev.safetensors
     size_bytes: 6770275936
     sha256: 8ef7c319ec6634ad80358482000abe3761b6ed195c48c68ce0393ed6b866af68
+  - path: unet/qwen-image-edit-2511-Q4_K_M.gguf
+    size_bytes: 12990544480
+    sha256: f2feaf9267a65d198cb4751db5dd8f5e69cb7bf53a924bdd36327ee167447638
   - path: vae/ae.safetensors
     size_bytes: 335304388
     sha256: afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38
+  - path: vae/qwen_image_vae.safetensors
+    size_bytes: 253806246
+    sha256: a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f
   - path: SEEDVR2/seedvr2_ema_7b_sharp-Q4_K_M.gguf
     size_bytes: 4758306592
     sha256: 7aed800ac4eb8e0d18569a954c0ff35f5a1caa3ed5d920e66cc31405f75b6e69

@@ -74,6 +74,25 @@ if [[ "${project}" == "all" || "${project}" == "modelview" ]]; then
           exit 1
         fi
         ln -sfn /opt/modelviewcreator/model/SEEDVR2 /opt/imageclip/models/SEEDVR2
+
+        # The approved roughness workflow stores its loaders in category
+        # subdirectories. Keep one canonical model copy and expose only links.
+        mkdir -p \
+          /opt/modelviewcreator/model/lora/qwen \
+          /opt/modelviewcreator/model/lora/qwen-2511 \
+          /opt/modelviewcreator/model/unet/gguf
+        if [ -f /opt/modelviewcreator/model/lora/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors ]; then
+          ln -sfn ../Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors \
+            /opt/modelviewcreator/model/lora/qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors
+        fi
+        if [ -f /opt/modelviewcreator/model/lora/roughness_qwen2511_v1_000006000.safetensors ]; then
+          ln -sfn ../roughness_qwen2511_v1_000006000.safetensors \
+            /opt/modelviewcreator/model/lora/qwen-2511/roughness_qwen2511_v1_000006000.safetensors
+        fi
+        if [ -f /opt/modelviewcreator/model/unet/qwen-image-edit-2511-Q4_K_M.gguf ]; then
+          ln -sfn ../qwen-image-edit-2511-Q4_K_M.gguf \
+            /opt/modelviewcreator/model/unet/gguf/qwen-image-edit-2511-Q4_K_M.gguf
+        fi
       '
     fi
   fi

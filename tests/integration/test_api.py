@@ -771,12 +771,17 @@ async def test_source_ip_auto_enrolls_without_api_key(tmp_path: Path) -> None:
 
 async def test_direct_image_service_reports_missing_workflow(tmp_path: Path) -> None:
     async for _, client in prepared_app(tmp_path):
-        response = await client.post(
+        for endpoint in (
             "/api/v1/services/imageclip-rgba",
-            files={"image": ("input.png", b"not-an-image", "image/png")},
-        )
-        assert response.status_code == 404
-        assert response.json()["detail"]["code"] == "WORKFLOW_NOT_FOUND"
+            "/api/v1/services/modelview-inpaint",
+            "/api/v1/services/modelview-roughness",
+        ):
+            response = await client.post(
+                endpoint,
+                files={"image": ("input.png", b"not-an-image", "image/png")},
+            )
+            assert response.status_code == 404
+            assert response.json()["detail"]["code"] == "WORKFLOW_NOT_FOUND"
 
 
 async def test_callback_url_allowlist_and_one_time_secret(tmp_path: Path) -> None:

@@ -144,6 +144,7 @@ function nodeState(node: NodeInfo) {
 function workflowName(key: string) {
   if (key === "imageclip-rgba") return "ImageClip 抠图";
   if (key === "modelview-inpaint") return "ModelView 局部重绘";
+  if (key === "modelview-roughness") return "PBR 粗糙度";
   return key;
 }
 

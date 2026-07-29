@@ -18,8 +18,10 @@ const codeTab = ref<"curl" | "python">("curl");
 type PublicService =
   | "imageclip-rgba"
   | "modelview-inpaint"
+  | "modelview-roughness"
   | "asset-uv"
-  | "asset-retopology";
+  | "asset-retopology"
+  | "asset-bake";
 const selectedService = ref<PublicService>(
   "imageclip-rgba",
 );
@@ -99,11 +101,15 @@ const serviceUrl = computed(() => {
     return `${publicBase.value}/api/v1/assets/uv/process`;
   if (selectedService.value === "asset-retopology")
     return `${publicBase.value}/api/v1/assets/retopology/process`;
+  if (selectedService.value === "asset-bake")
+    return `${publicBase.value}/api/v1/assets/bake/process`;
   return `${publicBase.value}/api/v1/services/${selectedService.value}`;
 });
 const outputName = computed(() =>
   selectedService.value === "imageclip-rgba"
     ? "result-rgba.png"
+    : selectedService.value === "modelview-roughness"
+      ? "result-roughness.png"
     : "result-inpaint.png",
 );
 const curlExample = computed(() => {
@@ -121,6 +127,17 @@ const curlExample = computed(() => {
       "  -F 'project=@crate.blend' \\",
       "  -F 'reference_images=@crate_front.png' \\",
       "  -F 'metadata={\"external_asset_id\":\"asset:crate:retopo:001\",\"options\":{\"high_object\":\"crate_high\",\"reference_object\":\"crate_reference_low\",\"low_object\":\"crate_current_low\",\"generated_low_object\":\"crate_generated_v001\",\"target_faces\":3000}};type=application/json'",
+    ].join("\n");
+  if (selectedService.value === "asset-bake")
+    return [
+      `curl -X POST '${serviceUrl.value}' \\`,
+      "  -H 'Idempotency-Key: asset-chair-bake-001' \\",
+      "  -F 'low_mesh=@chair_low_uv.fbx' \\",
+      "  -F 'high_mesh=@chair_high.fbx' \\",
+      "  -F 'base_color_texture=@chair_basecolor.png' \\",
+      "  -F 'roughness_texture=@chair_roughness.png' \\",
+      "  -F 'metallic_texture=@chair_metallic.png' \\",
+      "  -F 'metadata={\"external_asset_id\":\"asset:chair:bake:001\",\"options\":{\"profile\":\"li3d-pbr-full-v2\",\"resolution\":2048,\"texture_cache_mb\":32768}};type=application/json'",
     ].join("\n");
   const lines = [
     `curl -X POST '${serviceUrl.value}' \\`,
@@ -140,6 +157,8 @@ const pythonExample = computed(() => {
     return `import json, requests\n\nwith open("chair.fbx", "rb") as model:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "asset-chair-uv-001"},\n        files={"asset": ("chair.fbx", model, "application/octet-stream")},\n        data={"metadata": json.dumps({"external_asset_id": "asset:chair:uv:001", "options": {"resolution": 2048, "padding_px": 10}})},\n        timeout=60,\n    )\nresponse.raise_for_status()\nprint(response.json())`;
   if (selectedService.value === "asset-retopology")
     return `import json, requests\n\nmetadata = {"external_asset_id": "asset:crate:retopo:001", "options": {"high_object": "crate_high", "reference_object": "crate_reference_low", "low_object": "crate_current_low", "generated_low_object": "crate_generated_v001", "target_faces": 3000}}\nwith open("crate.blend", "rb") as project, open("crate_front.png", "rb") as front:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "asset-crate-retopo-001"},\n        files=[("project", ("crate.blend", project)), ("reference_images", ("crate_front.png", front, "image/png"))],\n        data={"metadata": json.dumps(metadata)},\n        timeout=60,\n    )\nresponse.raise_for_status()\nprint(response.json())`;
+  if (selectedService.value === "asset-bake")
+    return `import json, requests\n\nmetadata = {"external_asset_id": "asset:chair:bake:001", "options": {"profile": "li3d-pbr-full-v2", "resolution": 2048, "texture_cache_mb": 32768}}\nwith open("chair_low_uv.fbx", "rb") as low, open("chair_high.fbx", "rb") as high, open("chair_basecolor.png", "rb") as base, open("chair_roughness.png", "rb") as roughness, open("chair_metallic.png", "rb") as metallic:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "asset-chair-bake-001"},\n        files={"low_mesh": ("chair_low_uv.fbx", low), "high_mesh": ("chair_high.fbx", high), "base_color_texture": ("chair_basecolor.png", base, "image/png"), "roughness_texture": ("chair_roughness.png", roughness, "image/png"), "metallic_texture": ("chair_metallic.png", metallic, "image/png")},\n        data={"metadata": json.dumps(metadata)},\n        timeout=60,\n    )\nresponse.raise_for_status()\nprint(response.json())`;
   return `import requests\n\nwith open("input.png", "rb") as source:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "order-001-attempt-1"},\n        files={"image": ("input.png", source, "image/png")},${
           selectedService.value === "modelview-inpaint" &&
           modelviewPromptEnabled
@@ -770,6 +789,11 @@ function formatCell(value: unknown) {
             >
               ModelView 局部重绘
             </button><button
+              :class="{ active: selectedService === 'modelview-roughness' }"
+              @click="selectedService = 'modelview-roughness'"
+            >
+              PBR 粗糙度
+            </button><button
               :class="{ active: selectedService === 'asset-uv' }"
               @click="selectedService = 'asset-uv'"
             >
@@ -779,6 +803,11 @@ function formatCell(value: unknown) {
               @click="selectedService = 'asset-retopology'"
             >
               AI 重拓扑
+            </button><button
+              :class="{ active: selectedService === 'asset-bake' }"
+              @click="selectedService = 'asset-bake'"
+            >
+              Substance PBR 烘焙
             </button>
           </div>
           <ol>
@@ -789,9 +818,15 @@ function formatCell(value: unknown) {
               multipart 字段为 <code>asset + metadata</code>；成功后原子发布 5 项。
             </li>
             <li v-else-if="selectedService === 'asset-retopology'">
-              multipart 字段为 <code>project + metadata + reference_images[]</code>；支持多视角和人工审核。
+              multipart 字段为 <code>project + metadata + reference_images[]</code>；支持多视角并由服务端质量门自动验收。
+            </li>
+            <li v-else-if="selectedService === 'asset-bake'">
+              multipart 字段为低模、高模、Base Color、Roughness、Metallic 与 metadata；仅由 3090-B Windows 原生 Substance Worker 执行。
             </li>
             <li v-else>multipart 图片字段固定为 <code>image</code>。</li>
+            <li v-if="selectedService === 'modelview-roughness'">
+              服务使用版本锁定的内置提示词；调用方不能传入或覆盖提示词。
+            </li>
             <li
               v-if="
                 selectedService === 'modelview-inpaint' &&

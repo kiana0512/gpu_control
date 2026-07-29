@@ -201,7 +201,7 @@ export interface AssetJobInfo {
 }
 
 export interface AssetProcessingOverview {
-  schema_version: "asset-admin.v3";
+  schema_version: "asset-admin.v4";
   as_of: string;
   summary: {
     counts: Record<string, number>;
@@ -234,6 +234,21 @@ export interface AssetProcessingOverview {
       roles: string[];
       reference_views_optional: boolean;
       maximum_reference_views: number;
+      status: string;
+      events: string;
+    };
+    roughness: {
+      submit: string;
+      format: string;
+      runtime: string;
+      response: string;
+    };
+    substance_bake: {
+      submit: string;
+      format: string;
+      profile: string;
+      runtime: string;
+      artifact_count: number;
       status: string;
       events: string;
     };

@@ -1345,6 +1345,28 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             idempotency_key,
         )
 
+    @app.post("/api/v1/services/modelview-roughness", response_class=FileResponse)
+    async def modelview_roughness_service(
+        request: Request,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+        image: Annotated[UploadFile, File()],
+        parameters: Annotated[str, Form()] = "{}",
+        idempotency_key: Annotated[
+            str | None, Header(alias="Idempotency-Key", max_length=128)
+        ] = None,
+    ) -> FileResponse:
+        """Render the approved fixed-prompt roughness workflow for one image."""
+        return await run_image_service(
+            request,
+            "modelview-roughness",
+            principal,
+            db,
+            image,
+            parameters,
+            idempotency_key,
+        )
+
     async def owned_batch(
         batch_id: str, principal: Principal, db: AsyncSession
     ) -> JobBatch:
@@ -2435,7 +2457,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
 
         online_workers = [worker for worker in workers if worker_online(worker)]
         return {
-            "schema_version": "asset-admin.v3",
+            "schema_version": "asset-admin.v4",
             "as_of": now.isoformat(),
             "summary": {
                 "counts": counts,
@@ -2514,7 +2536,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     "artifacts_role": (
                         "diagnostic"
                         if job.status == "FAILED"
-                        and job.error_code == "RETOPOLOGY_AUDIT_FAILED"
+                        and job.error_code
+                        in {"RETOPOLOGY_AUDIT_FAILED", "RETOPOLOGY_QUALITY_GATE_FAILED"}
                         else "delivery"
                         if job.status == "SUCCEEDED"
                         else "retained"
@@ -2552,6 +2575,21 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     "roles": ["high", "reference", "generated"],
                     "reference_views_optional": True,
                     "maximum_reference_views": 32,
+                    "status": "/api/v1/assets/jobs/{job_id}",
+                    "events": "/api/v1/assets/jobs/{job_id}/events",
+                },
+                "roughness": {
+                    "submit": "/api/v1/services/modelview-roughness",
+                    "format": "multipart image",
+                    "runtime": "GPU: control-4090 / worker-3090-a / worker-3090-b",
+                    "response": "final image/png",
+                },
+                "substance_bake": {
+                    "submit": "/api/v1/assets/bake/process",
+                    "format": "low mesh + high mesh + Base Color/Roughness/Metallic textures",
+                    "profile": "li3d-pbr-full-v2",
+                    "runtime": "native Windows 3090-B",
+                    "artifact_count": 12,
                     "status": "/api/v1/assets/jobs/{job_id}",
                     "events": "/api/v1/assets/jobs/{job_id}/events",
                 },

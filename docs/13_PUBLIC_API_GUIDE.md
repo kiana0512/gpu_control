@@ -35,6 +35,16 @@ curl -X POST 'https://10.3.34.11/api/v1/services/modelview-inpaint' \
   --output result-inpaint.png
 ```
 
+PBR 粗糙度生成，返回最终粗糙度图片。该接口只接收图片；工作流提示词由生产版本固定，
+调用方不能传入或覆盖：
+
+```bash
+curl -X POST 'https://10.3.34.11/api/v1/services/modelview-roughness' \
+  -H 'Idempotency-Key: material-roughness-001-attempt-1' \
+  -F 'image=@material.png' \
+  --output result-roughness.png
+```
+
 Python 示例：
 
 ```python

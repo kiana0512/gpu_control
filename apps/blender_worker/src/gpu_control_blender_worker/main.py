@@ -29,7 +29,7 @@ RETOPOLOGY_AUDIT_SCRIPT_SHA256 = (
     "a6575902cfacd7b8106f9c887069d717a880d870fc48a6295431cdcf717a9dc4"
 )
 RETOPOLOGY_PROCESS_SCRIPT_SHA256 = (
-    "e3b11965f338da001523fbc405005270edad1172974d9fbfac0c35917ae522f7"
+    "f18ceebcc5f47279ee1f11c5bcfcec9c76cec8ebdd7247c74b9412b26aa47501"
 )
 RETOPOLOGY_RENDER_SCRIPT_SHA256 = (
     "b1b6344ec78a7c1d333cc875c0eeee20087df27878d67c28fa413f9ab3dcdf09"
@@ -433,6 +433,110 @@ def contact_sheet(
         )
     output.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(output, format="PNG", optimize=True)
+
+
+def retopology_quality_gate(
+    audit: dict[str, Any], report: dict[str, Any], options: dict[str, Any]
+) -> dict[str, Any]:
+    """Compute the authoritative automatic-delivery gate.
+
+    The agent recommendation and Blender exit code are deliberately excluded:
+    delivery depends on measured geometry, source preservation and evidence.
+    """
+    failures: list[str] = []
+    if audit.get("audit_passed") is not True:
+        failures.append("SIGNED_AUDIT_FAILED")
+    if report.get("source_preserved") is not True:
+        failures.append("SOURCE_FINGERPRINT_CHANGED")
+
+    low = audit.get("objects", {}).get("low", {}).get("topology", {})
+    if not isinstance(low, dict) or not low:
+        failures.append("LOW_TOPOLOGY_EVIDENCE_MISSING")
+        low = {}
+    hard_zero_metrics = (
+        "nonmanifold_edges",
+        "loose_edges",
+        "loose_vertices",
+        "duplicate_vertices",
+        "duplicate_faces",
+        "zero_area_faces",
+        "inconsistent_orientation_edges",
+    )
+    for metric in hard_zero_metrics:
+        if int(low.get(metric, 0) or 0) != 0:
+            failures.append(f"{metric.upper()}={int(low.get(metric, 0) or 0)}")
+    if not bool(options.get("allow_ngons", False)) and int(low.get("ngons", 0) or 0):
+        failures.append(f"NGONS={int(low.get('ngons', 0) or 0)}")
+    if not bool(options.get("allow_triangles", True)) and int(
+        low.get("triangles", 0) or 0
+    ):
+        failures.append(f"TRIANGLES={int(low.get('triangles', 0) or 0)}")
+    if int(low.get("faces", 0) or 0) <= 0:
+        failures.append("EMPTY_LOW_MESH")
+
+    comparison = audit.get("comparison", {})
+    dimension_errors = comparison.get("dimension_relative_error", [])
+    if not isinstance(dimension_errors, list) or len(dimension_errors) != 3:
+        failures.append("DIMENSION_ERROR_EVIDENCE_MISSING")
+    else:
+        maximum_dimension_error = max(float(value) for value in dimension_errors)
+        if maximum_dimension_error > 0.03:
+            failures.append(f"DIMENSION_RELATIVE_ERROR={maximum_dimension_error:.6f}>0.03")
+    center_offset = comparison.get("normalized_center_offset")
+    if not isinstance(center_offset, int | float):
+        failures.append("CENTER_OFFSET_EVIDENCE_MISSING")
+    elif float(center_offset) > 0.01:
+        failures.append(f"NORMALIZED_CENTER_OFFSET={float(center_offset):.6f}>0.01")
+
+    source_topology = report.get("source_topology", {})
+    candidate = report.get("candidate_topology", {})
+    if bool(options.get("preserve_components", True)):
+        source_components = {
+            role: topology.get("face_components")
+            for role, topology in source_topology.items()
+            if role in {"high", "reference", "current"} and isinstance(topology, dict)
+        }
+        candidate_components = candidate.get("face_components")
+        if (
+            set(source_components) != {"high", "reference", "current"}
+            or not all(isinstance(value, int) for value in source_components.values())
+            or not isinstance(candidate_components, int)
+        ):
+            failures.append("COMPONENT_EVIDENCE_MISSING")
+        else:
+            required_components = max(source_components.values())
+            if candidate_components < required_components:
+                failures.append(
+                    f"FACE_COMPONENTS_LOST={required_components - candidate_components}"
+                )
+        if isinstance(candidate_components, int) and candidate_components <= 0:
+            failures.append(
+                "CANDIDATE_COMPONENT_COUNT_INVALID"
+            )
+
+    topology_mode = str(options.get("topology_mode", "mixed"))
+    if topology_mode == "quad_dominant" and float(candidate.get("quad_ratio", 0.0)) < 0.8:
+        failures.append("QUAD_RATIO_BELOW_0.8")
+
+    return {
+        "schema_version": "retopology_quality_gate.v2",
+        "passed": not failures,
+        "failures": failures,
+        "limits": {
+            "maximum_dimension_relative_error": 0.03,
+            "maximum_normalized_center_offset": 0.01,
+            "component_loss_allowed": False,
+            "ngons_allowed": bool(options.get("allow_ngons", False)),
+            "triangles_allowed": bool(options.get("allow_triangles", True)),
+        },
+        "measurements": {
+            "dimension_relative_error": dimension_errors,
+            "normalized_center_offset": center_offset,
+            "candidate_topology": candidate,
+            "source_topology": source_topology,
+            "audited_low_topology": low,
+        },
+    }
 
 
 async def run_retopology_agent_plan(
@@ -1001,7 +1105,11 @@ async def run_retopology_process(
         "--algorithm",
         resolved_algorithm,
         "--topology-style",
-        str(options.get("topology_style", "quad_dominant")),
+        str(options.get("topology_style", "mixed")),
+        "--topology-mode",
+        str(options.get("topology_mode", "mixed")),
+        "--planar-angle-threshold",
+        str(options.get("planar_angle_threshold", 5.0)),
         "--max-repair-rounds",
         str(options["max_repair_rounds"]),
     ]
@@ -1010,6 +1118,15 @@ async def run_retopology_process(
         process_arguments.append("--preserve-sharp")
     if bool(options.get("preserve_boundary")):
         process_arguments.append("--preserve-boundary")
+    for option, argument in (
+        ("planar_reduction", "--planar-reduction"),
+        ("preserve_hard_edges", "--preserve-hard-edges"),
+        ("preserve_components", "--preserve-components"),
+        ("allow_triangles", "--allow-triangles"),
+        ("allow_ngons", "--allow-ngons"),
+    ):
+        if bool(options.get(option)):
+            process_arguments.append(argument)
     process = await start_blender(settings, *process_arguments)
     await wait_for_blender(
         client,
@@ -1121,6 +1238,13 @@ async def run_retopology_process(
 
     audit_payload = json.loads(final_audit.read_text("utf-8"))
     report_payload = json.loads(process_report.read_text("utf-8"))
+    quality_gate = retopology_quality_gate(audit_payload, report_payload, options)
+    report_payload["quality_gate"] = quality_gate
+    report_payload["topology_goal_met"] = quality_gate["passed"]
+    report_payload["automatic_final_promotion_allowed"] = quality_gate["passed"]
+    process_report.write_text(
+        json.dumps(report_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     preservation = audit_payload.get("preservation", {})
     source_preserved = (
         isinstance(preservation, dict)
@@ -1167,9 +1291,9 @@ async def run_retopology_process(
             "comparison_filename": "retopology_comparison.png",
             "manual_review_required": False,
         },
-        "automatic_final_promotion_allowed": bool(audit_payload.get("audit_passed"))
-        and source_preserved
-        and bool(report_payload.get("topology_goal_met")),
+        "quality_gate": quality_gate,
+        "automatic_final_promotion_allowed": bool(quality_gate["passed"])
+        and source_preserved,
         "uv_status": report_payload.get("uv_status"),
         "cage_status": report_payload.get("cage_status"),
         "bake_status": report_payload.get("bake_status"),

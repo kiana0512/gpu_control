@@ -343,12 +343,13 @@
   gap: 4px;
 }
 .asset-filter button {
-  padding: 7px 10px;
+  min-height: 36px;
+  padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: 7px;
   color: #919aad;
   background: transparent;
-  font-size: 11px;
+  font-size: 13px;
   cursor: pointer;
 }
 .asset-filter button.active {
@@ -365,14 +366,14 @@
   outline: none;
   color: var(--ink);
   background: #0d111b;
-  font-size: 11px;
+  font-size: 13px;
 }
 .asset-search:focus {
   border-color: rgba(184, 120, 255, 0.7);
   box-shadow: 0 0 0 2px rgba(184, 120, 255, 0.1);
 }
 .asset-job-table {
-  min-width: 900px;
+  min-width: 1180px;
 }
 .asset-jobs-card {
   overflow-x: auto;
@@ -380,12 +381,12 @@
 .asset-job-row {
   display: grid;
   grid-template-columns:
-    minmax(240px, 1.35fr) 110px 125px minmax(150px, 0.9fr)
-    130px 140px;
+    minmax(260px, 1.35fr) 130px 112px minmax(155px, 0.85fr)
+    minmax(190px, 0.95fr) minmax(180px, 1fr) 132px;
   align-items: center;
   gap: 16px;
-  min-height: 60px;
-  padding: 10px 18px;
+  min-height: 76px;
+  padding: 14px 20px;
   border-bottom: 1px solid var(--line);
   color: #c6ccda;
   font-size: 14px;
@@ -413,11 +414,24 @@
 .asset-api-kind code {
   overflow-wrap: anywhere;
   color: #778095;
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.55;
 }
 .asset-job-row small {
   color: #778095;
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.asset-time-stack {
+  display: grid;
+  gap: 5px;
+  color: #aab2c1;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+}
+.asset-time-stack span {
+  white-space: nowrap;
 }
 .asset-status {
   width: max-content;
@@ -474,7 +488,7 @@
 .asset-progress em {
   flex-basis: 100%;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12.5px;
   font-style: normal;
   line-height: 1.35;
 }
@@ -641,7 +655,7 @@
   max-width: 720px;
   margin: 0;
   color: #f4f6fb;
-  font-size: clamp(22px, 2.2vw, 30px);
+  font-size: clamp(24px, 2.2vw, 32px);
   line-height: 1.34;
   word-break: break-word;
 }
@@ -690,7 +704,7 @@
 }
 .asset-status-rail > span:last-child {
   color: #a3acbd;
-  font-size: 12px;
+  font-size: 14px;
   white-space: nowrap;
 }
 .asset-key-facts {
@@ -713,20 +727,20 @@
 .asset-key-facts span,
 .asset-integrity > span:first-child {
   color: #778195;
-  font-size: 12px;
+  font-size: 13px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 .asset-key-facts strong {
   overflow-wrap: anywhere;
   color: #e7eaf2;
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.6;
 }
 .asset-stage-message {
   display: grid;
   gap: 8px;
-  padding: 18px 20px;
+  padding: 24px 26px !important;
   border: 1px solid rgba(145, 76, 235, 0.3);
   border-radius: 12px;
   background: rgba(137, 71, 225, 0.06);
@@ -735,8 +749,14 @@
 .asset-stage-message p {
   margin: 0;
 }
-.asset-stage-message p {
+.asset-detail .asset-stage-message h3 {
+  color: #eef1f7;
+  font-size: 20px;
+  line-height: 1.45;
+}
+.asset-detail .asset-stage-message p {
   color: #aab2c1;
+  font-size: 15px;
   line-height: 1.65;
 }
 .asset-failure-summary {
