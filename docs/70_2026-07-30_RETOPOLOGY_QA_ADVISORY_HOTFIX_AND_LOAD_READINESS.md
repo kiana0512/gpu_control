@@ -93,7 +93,14 @@ Substance pending/fence/recovery 标签，并回滚四个控制面组件，不�
 
 ## 6. 当前交付与后续证据
 
+- 用户截图中的外部任务
+  `li3d:xiangzi_high:retopology:e5faa9ca-1857-41ee-9631-2973f4c7a782` 对应内部任务
+  `c012128b-d1ae-4f6b-959b-74018ad35696`，它在 advisory 上线前于 2026-07-30 18:43:07
+  （Asia/Singapore）以 `RETOPOLOGY_QUALITY_GATE_FAILED` 终止。该历史记录保持不可变，没有把旧失败
+  伪写成成功；
 - 首个生产 advisory 任务 `0554fcf1-50ae-40de-bc15-fdbcdd3805d7` 已以 `SUCCEEDED` 完成，
+  它是同一 `xiangzi_high` 资产在修复后的新请求，外部 ID 为
+  `li3d:xiangzi_high:retopology:b65aff8b-6487-4c7d-8140-184c912a68d8`，并保留
   `qa_warning=RETOPOLOGY_QUALITY_GATE_WARNING`；随后发现动画管家按 V5 正式 kind 过滤，旧响应中的
   `candidate_blend/candidate_fbx` 会落入诊断区。已把该任务的同一不可变字节发布为
   `blend/retopology_final.blend`（14,798,992 bytes，SHA-256
