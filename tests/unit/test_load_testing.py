@@ -387,6 +387,28 @@ def test_telemetry_never_quits_the_locust_runner_directly() -> None:
     assert direct_quits == []
 
 
+def test_telemetry_shutdown_drains_inflight_sample_before_fallback_kill() -> None:
+    source_path = Path(__file__).resolve().parents[2] / "tests/load/locustfile.py"
+    source = source_path.read_text(encoding="utf-8")
+    module = ast.parse(source)
+    telemetry_loop = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "telemetry_loop"
+    )
+    stop_telemetry = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "stop_telemetry"
+    )
+    loop_source = ast.get_source_segment(source, telemetry_loop) or ""
+    stop_source = ast.get_source_segment(source, stop_telemetry) or ""
+
+    assert "if _telemetry_stop:" in loop_source
+    assert ".join(timeout=TELEMETRY_SHUTDOWN_GRACE_SECONDS)" in stop_source
+    assert stop_source.index(".join(") < stop_source.index(".kill(")
+
+
 def test_locust_uses_status_scoped_recovery_and_sync_e2e_route_name() -> None:
     source_path = Path(__file__).resolve().parents[2] / "tests/load/locustfile.py"
     source = source_path.read_text(encoding="utf-8")

@@ -175,6 +175,7 @@ ACTIVE_STATUS_QUERY_ORDER = (
     "CANCELLING",
 )
 TELEMETRY_INTERVAL_SECONDS = 5.0
+TELEMETRY_SHUTDOWN_GRACE_SECONDS = TELEMETRY_INTERVAL_SECONDS + 1.0
 TEARDOWN_CANCEL_MAX_ATTEMPTS = 3
 TEARDOWN_CANCEL_INITIAL_BACKOFF_SECONDS = 0.25
 TEARDOWN_CANCEL_MAXIMUM_BACKOFF_SECONDS = 1.0
@@ -1018,6 +1019,12 @@ def telemetry_loop(environment: Any) -> None:
                 return
             if handle_telemetry_watchdog(sample, environment):
                 return
+            # Let an in-flight sample finish when test_stop requests shutdown.
+            # Killing it here can erase that sample and push the explicit final
+            # sample beyond the allowed cadence even though every HTTP read was
+            # healthy.
+            if _telemetry_stop:
+                return
             elapsed = time.monotonic() - cycle_started
             gevent.sleep(max(0.1, TELEMETRY_INTERVAL_SECONDS - elapsed))
 
@@ -1041,7 +1048,9 @@ def stop_telemetry(environment: Any | None = None, **_: Any) -> None:
     greenlet = _telemetry_greenlet
     _telemetry_greenlet = None
     if greenlet is not None and greenlet is not gevent.getcurrent():
-        greenlet.kill(block=True, timeout=5)
+        greenlet.join(timeout=TELEMETRY_SHUTDOWN_GRACE_SECONDS)
+        if not greenlet.dead:
+            greenlet.kill(block=True, timeout=1)
     if _telemetry_started_monotonic is None or _telemetry_final_sample_written:
         return
     _telemetry_final_sample_written = True
