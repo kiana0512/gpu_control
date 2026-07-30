@@ -77,6 +77,78 @@ const assetActiveJobs = computed(() => {
   const counts = assetOverview.value?.summary.counts ?? {};
   return (counts.QUEUED ?? 0) + (counts.CLAIMED ?? 0) + (counts.RUNNING ?? 0);
 });
+const assetTotalSlots = computed(() =>
+  onlineAssetWorkers.value.reduce(
+    (total, worker) => total + worker.max_concurrency,
+    0,
+  ),
+);
+const assetUsedSlots = computed(() =>
+  onlineAssetWorkers.value.reduce(
+    (total, worker) => total + worker.current_jobs,
+    0,
+  ),
+);
+const availableGpuSlots = computed(() =>
+  Math.max(0, activeSlots.value - usedSlots.value),
+);
+const foreignQueueNodes = computed(() =>
+  nodes.value.filter((node) => node.foreign_queue_detected),
+);
+const schedulingRisks = computed(() => {
+  const risks: Array<{
+    tone: "danger" | "warning" | "healthy";
+    title: string;
+    detail: string;
+  }> = [];
+  if (!nodes.value.length) {
+    risks.push({
+      tone: "danger",
+      title: "尚未读取到 GPU 节点",
+      detail: "新任务会继续留在队列，直到节点恢复心跳并满足兼容性检查。",
+    });
+  } else if (!activeNodes.value.length) {
+    risks.push({
+      tone: "danger",
+      title: "当前没有可接单 GPU 节点",
+      detail:
+        "节点可能处于离线、排空、保留或停用状态；运行中的任务不会被页面强制迁移。",
+    });
+  } else if (activeNodes.value.length < nodes.value.length) {
+    risks.push({
+      tone: "warning",
+      title: `${nodes.value.length - activeNodes.value.length} 个 GPU 节点未参与接单`,
+      detail:
+        "调度器仍会在剩余兼容节点间继续分配，不会因首个节点不可用阻塞整批任务。",
+    });
+  }
+  if (foreignQueueNodes.value.length) {
+    risks.push({
+      tone: "warning",
+      title: `${foreignQueueNodes.value.length} 个节点检测到外部队列`,
+      detail:
+        "外部 ComfyUI 任务可能占用显存或执行槽；调度器会按节点上报状态保护新任务。",
+    });
+  }
+  if (!enabledWorkflows.value.length) {
+    risks.push({
+      tone: "danger",
+      title: "没有已启用的工作流版本",
+      detail: "所有 GPU 新任务都会因工作流门禁无法领取。",
+    });
+  }
+  if (!risks.length) {
+    risks.push({
+      tone: "healthy",
+      title: "当前未发现调度容量风险",
+      detail: "在线节点、执行槽与工作流门禁均有可用路径。",
+    });
+  }
+  return risks;
+});
+const overflowState = computed(() =>
+  form.overflow_4090_auto_enabled ? "自动备用已开启" : "自动备用已关闭",
+);
 const freeVramGb = computed({
   get: () => Number((form.overflow_4090_min_free_vram_mb / 1024).toFixed(1)),
   set: (value: number) => {
@@ -107,8 +179,8 @@ async function load() {
 async function save() {
   if (!changed.value) return;
   await ElMessageBox.confirm(
-    "确认保存调度策略吗？新任务会立即使用这些条件，正在运行的任务不受影响。",
-    "保存调度策略",
+    "确认把这些条件应用到后续新任务吗？正在运行的任务不受影响，保存操作会进入审计记录。",
+    "确认更新调度条件",
     { type: "warning" },
   );
   saving.value = true;
@@ -152,11 +224,13 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 </script>
 
 <template>
-  <div class="page scheduling-page">
+  <div class="page scheduling-page schedule-redesign">
     <div class="page-heading">
       <div>
-        <h1>调度策略</h1>
-        <p>GPU 推理与 CPU Asset 双平面调度、生产优先级和故障恢复</p>
+        <h1>调度运行说明</h1>
+        <p>
+          看清任务如何分配、当前还有多少容量，以及哪些高级条件会影响新任务。
+        </p>
       </div>
       <div class="heading-actions">
         <span class="refresh-state"
@@ -168,198 +242,312 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             }}</small
           ></span
         >
-        <button class="secondary" @click="run">立即刷新</button>
+        <button type="button" class="secondary" @click="run">
+          {{ refreshing ? "刷新中…" : "立即刷新" }}
+        </button>
       </div>
     </div>
 
     <div v-if="error" class="error-banner persistent-error">
-      <strong>策略加载失败</strong><span>{{ error }}</span
-      ><button @click="run">重试</button>
+      <strong>调度状态加载失败</strong><span>{{ error }}</span
+      ><button type="button" @click="run">重试</button>
     </div>
 
-    <section class="mode-summary">
-      <div>
-        <span>当前集群模式</span><strong>{{ clusterMode }}</strong>
-        <p>
-          当前由 {{ nodes.length }} 个已登记 GPU 节点独立握手；离线节点不计入可用槽位，页面不再假定 3090-B 在线。
-        </p>
-      </div>
-      <div class="mode-node">
-        <span>实时执行槽位</span>
-        <strong>{{ usedSlots }} / {{ activeSlots || totalSlots }}</strong>
-        <small>{{ enabledWorkflows.length }} 个工作流版本已启用</small>
+    <section class="dispatch-explainer">
+      <header>
+        <div>
+          <h2>一个新任务会怎样被分配</h2>
+          <p>下面四步由后端调度器自动完成，关闭浏览器也不会中断。</p>
+        </div>
+        <span class="rules-live">规则已生效</span>
+      </header>
+      <ol class="dispatch-flow">
+        <li>
+          <b>1</b>
+          <div>
+            <strong>记录任务与客户身份</strong
+            ><span>真实业务与测试任务可独立筛选；本页不会发起压测。</span>
+          </div>
+        </li>
+        <li>
+          <b>2</b>
+          <div>
+            <strong>筛掉不兼容节点</strong
+            ><span>核对工作流版本、插件、模型与显存。</span>
+          </div>
+        </li>
+        <li>
+          <b>3</b>
+          <div>
+            <strong>尝试可用节点</strong
+            ><span>首个节点不适配时继续尝试其它候选。</span>
+          </div>
+        </li>
+        <li>
+          <b>4</b>
+          <div>
+            <strong>领取并持续审计</strong
+            ><span>租约、防重复、重试和执行证据由后端保存。</span>
+          </div>
+        </li>
+      </ol>
+      <div class="dispatch-safety-note">
+        <strong>页面只负责展示与配置</strong>
+        <span
+          >刷新、切换页面或关闭浏览器都不会改变正在运行的任务；保存高级条件只影响后续新任务。</span
+        >
       </div>
     </section>
 
-    <div class="policy-layout">
-      <section class="policy-section cluster-section">
-        <header>
-          <div>
-            <h2>实时计算节点</h2>
-            <p>节点状态来自心跳；IP 变化后由节点身份与注册地址恢复连接。</p>
-          </div>
-          <span
-            class="cluster-health"
-            :class="{ degraded: activeNodes.length !== nodes.length }"
+    <section class="capacity-overview">
+      <header>
+        <div>
+          <h2>实时容量</h2>
+          <p>
+            {{
+              clusterMode
+            }}；节点数和槽位均来自实时心跳，不使用固定写死的数据。
+          </p>
+        </div>
+        <span
+          class="cluster-health"
+          :class="{ degraded: activeNodes.length !== nodes.length }"
+        >
+          {{ activeNodes.length }} / {{ nodes.length }} GPU 节点可接单
+        </span>
+      </header>
+
+      <div class="capacity-metrics">
+        <article>
+          <span>GPU 空闲槽位</span>
+          <strong
+            >{{ availableGpuSlots }} / {{ activeSlots || totalSlots }}</strong
           >
-            {{ activeNodes.length }} / {{ nodes.length }} 在线并接单
-          </span>
-        </header>
-        <div class="scheduler-node-grid">
-          <article
-            v-for="node in orderedNodes"
-            :key="node.id"
-            class="scheduler-node"
-          >
+          <small>{{ usedSlots }} 个槽位正在执行</small>
+        </article>
+        <article>
+          <span>已启用工作流</span>
+          <strong>{{ enabledWorkflows.length }}</strong>
+          <small>只有身份匹配的节点可领取</small>
+        </article>
+        <article>
+          <span>CPU Asset 槽位</span>
+          <strong>{{ assetUsedSlots }} / {{ assetTotalSlots }}</strong>
+          <small>{{ assetActiveJobs }} 个资产任务处理中</small>
+        </article>
+        <article>
+          <span>4090 备用条件</span>
+          <strong>{{
+            form.overflow_4090_auto_enabled ? "开启" : "关闭"
+          }}</strong>
+          <small>仅节点处于 OVERFLOW 时生效</small>
+        </article>
+      </div>
+
+      <div class="capacity-lanes">
+        <section>
+          <div class="capacity-lane-title">
             <div>
-              <i :class="node.health.toLowerCase()"></i>
-              <strong>{{ node.display_name }}</strong>
-              <span>{{ node.id }}</span>
+              <strong>GPU 推理节点</strong
+              ><span>执行 ImageClip / ModelView 工作流</span>
+            </div>
+            <router-link to="/nodes">管理节点 →</router-link>
+          </div>
+          <ul class="capacity-node-list">
+            <li v-for="node in orderedNodes" :key="node.id">
+              <div class="capacity-node-name">
+                <i :class="node.health.toLowerCase()"></i>
+                <div>
+                  <strong>{{ node.display_name }}</strong
+                  ><span>{{ node.id }}</span>
+                </div>
+              </div>
+              <dl>
+                <div>
+                  <dt>接单状态</dt>
+                  <dd>{{ nodeState(node) }}</dd>
+                </div>
+                <div>
+                  <dt>槽位</dt>
+                  <dd>{{ node.current_jobs }} / {{ node.max_concurrency }}</dd>
+                </div>
+                <div>
+                  <dt>空闲显存</dt>
+                  <dd>{{ (node.free_vram_mb / 1024).toFixed(1) }} GB</dd>
+                </div>
+              </dl>
+            </li>
+            <li v-if="!orderedNodes.length" class="capacity-empty">
+              尚无 GPU 节点心跳，调度器会保留队列等待恢复。
+            </li>
+          </ul>
+        </section>
+
+        <section>
+          <div class="capacity-lane-title">
+            <div>
+              <strong>CPU Asset Worker</strong
+              ><span>独立处理 UV、重拓扑和烘焙</span>
+            </div>
+            <router-link to="/asset-processing">查看资产任务 →</router-link>
+          </div>
+          <ul class="capacity-node-list">
+            <li v-for="worker in assetWorkers" :key="worker.id">
+              <div class="capacity-node-name">
+                <i
+                  :class="worker.status === 'ONLINE' ? 'online' : 'offline'"
+                ></i>
+                <div>
+                  <strong>{{ worker.display_name }}</strong
+                  ><span>{{ worker.node_id }}</span>
+                </div>
+              </div>
+              <dl>
+                <div>
+                  <dt>接单状态</dt>
+                  <dd>
+                    {{ worker.status === "ONLINE" ? "可接单" : "心跳离线" }}
+                  </dd>
+                </div>
+                <div>
+                  <dt>槽位</dt>
+                  <dd>
+                    {{ worker.current_jobs }} / {{ worker.max_concurrency }}
+                  </dd>
+                </div>
+                <div>
+                  <dt>运行时</dt>
+                  <dd>Blender {{ worker.blender_version }}</dd>
+                </div>
+              </dl>
+            </li>
+            <li v-if="!assetWorkers.length" class="capacity-empty">
+              尚无 Asset Worker 心跳；CPU 资产队列与 GPU 推理队列互不占用。
+            </li>
+          </ul>
+        </section>
+      </div>
+    </section>
+
+    <div class="schedule-insight-grid">
+      <section class="rule-ledger-section">
+        <header>
+          <h2>当前分配规则</h2>
+          <p>白话说明每条规则影响谁，以及控制台目前读到的状态。</p>
+        </header>
+        <ol class="rule-ledger">
+          <li>
+            <b>01</b>
+            <div>
+              <strong>兼容性门禁优先</strong>
+              <p>版本、模型、插件或显存不满足时，节点不会领取任务。</p>
             </div>
             <dl>
-              <div>
-                <dt>状态</dt>
-                <dd>{{ nodeState(node) }}</dd>
-              </div>
-              <div>
-                <dt>执行槽位</dt>
-                <dd>{{ node.current_jobs }} / {{ node.max_concurrency }}</dd>
-              </div>
-              <div>
-                <dt>可用显存</dt>
-                <dd>{{ (node.free_vram_mb / 1024).toFixed(1) }} GB</dd>
-              </div>
+              <dt>当前值</dt>
+              <dd>{{ enabledWorkflows.length }} 个工作流版本启用</dd>
+              <dt>影响</dt>
+              <dd>所有 GPU 新任务</dd>
             </dl>
-          </article>
-        </div>
-      </section>
-
-      <section class="policy-section cluster-section">
-        <header>
-          <div>
-            <h2>CPU Asset Worker</h2>
-            <p>UV 与重拓扑使用独立领取、租约和并发槽，不参与 GPU 工作流选择。</p>
-          </div>
-          <span
-            class="cluster-health"
-            :class="{ degraded: onlineAssetWorkers.length !== assetWorkers.length }"
-          >
-            {{ onlineAssetWorkers.length }} / {{ assetWorkers.length }} 在线 ·
-            {{ assetActiveJobs }} 个任务处理中
-          </span>
-        </header>
-        <div class="scheduler-node-grid">
-          <article
-            v-for="worker in assetWorkers"
-            :key="worker.id"
-            class="scheduler-node"
-          >
+          </li>
+          <li>
+            <b>02</b>
             <div>
-              <i :class="worker.status === 'ONLINE' ? 'online' : 'offline'"></i>
-              <strong>{{ worker.display_name }}</strong>
-              <span>{{ worker.node_id }}</span>
+              <strong>候选节点逐个尝试</strong>
+              <p>一个候选不兼容不会挡住其它兼容节点，批次可继续分散执行。</p>
             </div>
             <dl>
-              <div><dt>状态</dt><dd>{{ worker.status === "ONLINE" ? "可接资产任务" : "心跳离线" }}</dd></div>
-              <div><dt>CPU 槽位</dt><dd>{{ worker.current_jobs }} / {{ worker.max_concurrency }}</dd></div>
-              <div><dt>运行时</dt><dd>Blender {{ worker.blender_version }}</dd></div>
+              <dt>当前值</dt>
+              <dd>{{ activeNodes.length }} 个节点可参与</dd>
+              <dt>影响</dt>
+              <dd>GPU 节点选择</dd>
             </dl>
-          </article>
-          <div v-if="!assetWorkers.length" class="asset-empty">
-            尚无 Asset Worker 心跳；不会用硬编码节点填充。
-          </div>
-        </div>
-      </section>
-
-      <section class="policy-section scheduler-rules-section">
-        <header>
-          <div>
-            <h2>当前任务分配规则</h2>
-            <p>以下规则由调度器实时执行，不依赖浏览器保持打开。</p>
-          </div>
-          <span class="rules-live">已生效</span>
-        </header>
-        <ol class="scheduler-rules">
-          <li>
-            <b>1</b>
-            <div>
-              <strong>兼容性先筛选</strong
-              ><span
-                >只允许工作流版本、模型、节点插件和显存均满足要求的节点领取任务。</span
-              >
-            </div>
           </li>
           <li>
-            <b>2</b>
+            <b>03</b>
             <div>
-              <strong>真实业务绝对优先</strong
-              ><span
-                >压力测试任务只占用真实客户暂时用不到的空闲
-                GPU，不会抢占真实请求。</span
-              >
+              <strong>生产 / 测试范围可追溯</strong>
+              <p>
+                客户身份用于独立查看和容量门禁；压测流量必须由外部执行门禁确认空闲窗口后放行。
+              </p>
             </div>
+            <dl>
+              <dt>当前值</dt>
+              <dd>生产 / 测试身份分层</dd>
+              <dt>影响</dt>
+              <dd>展示范围与压测准入</dd>
+            </dl>
           </li>
           <li>
-            <b>3</b>
+            <b>04</b>
             <div>
-              <strong>客户公平与优先级老化</strong
-              ><span
-                >同优先级按客户轮转；等待时间会逐步提升有效优先级，避免单个客户长期饥饿。</span
-              >
+              <strong>租约、防重复与恢复</strong>
+              <p>数据库领取、持久化提交意图和重试记录共同避免重复执行。</p>
             </div>
-          </li>
-          <li>
-            <b>4</b>
-            <div>
-              <strong>并发领取与防重复</strong
-              ><span
-                >当前在线节点并行领取兼容任务，数据库行锁与租约保证一个任务只会被一个节点执行。</span
-              >
-            </div>
-          </li>
-          <li>
-            <b>5</b>
-            <div>
-              <strong>可追溯排队反馈</strong
-              ><span
-                >提交后返回任务
-                ID、排队位置和状态地址；控制台分别展示真实任务与压力测试。</span
-              >
-            </div>
-          </li>
-          <li>
-            <b>6</b>
-            <div>
-              <strong>失败恢复</strong
-              ><span
-                >节点失联或执行失败按策略重试，输入、输出、执行节点、耗时和错误均保留审计记录。</span
-              >
-            </div>
+            <dl>
+              <dt>当前值</dt>
+              <dd>后端自动执行</dd>
+              <dt>影响</dt>
+              <dd>失败与重启恢复</dd>
+            </dl>
           </li>
         </ol>
-        <div class="asset-scheduler-note">
-          <strong>资产任务独立规则</strong>
-          <span>UV / 重拓扑按 Asset Worker CPU、内存与空闲槽领取；支持轮询、SSE、ETA、取消和原子制品，不消耗 GPU 推理槽。</span>
-        </div>
-        <div class="workflow-strip">
-          <span>已启用工作流</span>
-          <strong
-            v-for="workflow in enabledWorkflows"
-            :key="`${workflow.workflow_key}:${workflow.version}`"
-          >
-            {{ workflowName(workflow.workflow_key) }} · {{ workflow.version }}
-          </strong>
-        </div>
       </section>
 
-      <section class="policy-section">
+      <aside class="schedule-risk-panel">
+        <header>
+          <h2>风险提示</h2>
+          <p>只展示当前能从心跳与配置确认的风险。</p>
+        </header>
+        <ul>
+          <li
+            v-for="risk in schedulingRisks"
+            :key="risk.title"
+            :class="risk.tone"
+          >
+            <i></i>
+            <div>
+              <strong>{{ risk.title }}</strong
+              ><span>{{ risk.detail }}</span>
+            </div>
+          </li>
+        </ul>
+      </aside>
+    </div>
+
+    <section class="workflow-identity-strip">
+      <div>
+        <strong>已启用工作流身份</strong
+        ><span>节点只有在身份一致时才会接单。</span>
+      </div>
+      <div class="workflow-identities">
+        <span
+          v-for="workflow in enabledWorkflows"
+          :key="`${workflow.workflow_key}:${workflow.version}`"
+          >{{ workflowName(workflow.workflow_key)
+          }}<b>{{ workflow.version }}</b></span
+        >
+        <span v-if="!enabledWorkflows.length" class="missing"
+          >当前没有启用版本</span
+        >
+      </div>
+    </section>
+
+    <details class="advanced-policy">
+      <summary>
+        <div>
+          <strong>4090 备用模式高级条件</strong>
+          <span
+            >仅当 4090 节点被运维切换为 OVERFLOW
+            时，这些条件才参与新任务分配。</span
+          >
+        </div>
+        <em>{{ overflowState }} · 展开配置</em>
+      </summary>
+      <div class="advanced-policy-content">
         <header>
           <div>
-            <h2>4090 备用模式高级条件</h2>
-            <p>
-              当前 4090 为 ACTIVE 时不使用这些门槛；仅在维护时切换为 OVERFLOW
-              后生效。
-            </p>
+            <h2>是否允许自动启用 4090 备用容量</h2>
+            <p>开启后仍需同时满足队列、时间、显存和利用率门槛。</p>
           </div>
           <label class="switch-control"
             ><input
@@ -379,7 +567,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
                 min="1"
               /><b>个</b>
             </div>
-            <small>备用模式下，队列达到这个数量时允许 4090 接单。</small></label
+            <small>队列达到这个数量后，才允许备用 4090 接单。</small></label
           >
           <label
             ><span>最长等待超过</span>
@@ -390,7 +578,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
                 min="1"
               /><b>秒</b>
             </div>
-            <small>即使队列不长，等待过久也允许启用。</small></label
+            <small>队列不长但等待过久时，也可触发备用容量。</small></label
           >
           <label
             ><span>允许使用时间</span>
@@ -400,18 +588,13 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
                 placeholder="留空表示全天；例如 22:00-06:00"
               />
             </div>
-            <small>多个时间段用英文逗号分隔。</small></label
+            <small>多个时间段使用英文逗号分隔。</small></label
           >
         </div>
-      </section>
-
-      <section class="policy-section">
-        <header>
-          <div>
-            <h2>4090 备用模式安全限制</h2>
-            <p>防止 4090 被临时人工使用时，备用调度误占 GPU。</p>
-          </div>
-        </header>
+        <div class="advanced-divider">
+          <strong>安全限制</strong
+          ><span>防止 4090 正在被人工使用时被备用调度误占。</span>
+        </div>
         <div class="policy-fields two-columns">
           <label
             ><span>至少保留空闲显存</span>
@@ -423,7 +606,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
                 step="0.5"
               /><b>GB</b>
             </div>
-            <small>低于该值时不会自动向 4090 分配任务。</small></label
+            <small>低于该值时不会自动分配任务。</small></label
           >
           <label
             ><span>GPU 利用率低于</span>
@@ -438,16 +621,34 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <small>高于该值表示 GPU 正忙，不会自动接单。</small></label
           >
         </div>
-      </section>
-    </div>
+      </div>
+    </details>
 
     <div class="save-bar" :class="{ visible: changed }">
-      <span>{{ changed ? "有尚未保存的修改" : "所有设置已保存" }}</span>
+      <span>
+        <strong>{{
+          changed ? "有尚未保存的调度条件" : "所有调度条件已保存"
+        }}</strong>
+        <small>{{
+          changed ? "保存后只影响后续新任务" : "运行中任务不受此页面影响"
+        }}</small>
+      </span>
       <div>
-        <button class="secondary" :disabled="!changed || saving" @click="reset">
-          撤销修改</button
-        ><button class="primary" :disabled="!changed || saving" @click="save">
-          {{ saving ? "保存中…" : "保存策略" }}
+        <button
+          type="button"
+          class="secondary"
+          :disabled="!changed || saving"
+          @click="reset"
+        >
+          撤销修改
+        </button>
+        <button
+          type="button"
+          class="primary"
+          :disabled="!changed || saving"
+          @click="save"
+        >
+          {{ saving ? "保存中…" : "确认并保存" }}
         </button>
       </div>
     </div>

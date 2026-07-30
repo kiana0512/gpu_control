@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.5（候选）— 2026-07-30
+
+- 对齐动画管家优化后的 V4.1 合同：父批次固化 ImageClip 身份快照、完整阶段时间、节点/attempt 性能证据，并在 create、父 GET、分页 manifest 和最终 ZIP manifest 返回同一身份。
+- 封闭批次子任务取消和产物旁路；父批次完整 `SUCCEEDED` 前，父/子结果均不可读取，节点中断也不能绕过持久化父取消操作。
+- 父取消改为显式 API Key、稳定幂等键、持久 operation 和完整审计；公共 cancel POST 受理回执使用 `CANCEL_REQUESTED`，持久父 GET 在收敛期间仍使用 `CANCELLING`；没有合法取消 operation 的终态不会被补写成合法 `CANCELLED`。
+- 新增从生产基线 `20260729_0010` 升级的候选迁移 `20260730_0011`；该迁移尚未在生产执行，必须随完整 1.5.5 drain、备份和回滚门禁发布。
+- 调度器遍历全部可用节点寻找兼容任务，避免首个不兼容节点造成队头阻塞；prompt 提交使用持久确定性 client ID，崩溃恢复只做对账，不重复 POST。
+- API、Scheduler、Asset API、Web 和节点代理增加统一版本/源码 revision 证据；候选镜像带 OCI labels，发布校验器要求 clean commit、registry digest 和与 manifest 绑定的 SBOM。
+- 新增根目录和 Web 专用 `.dockerignore`，排除 `.git`、LFS 归档、缓存、运行时数据与本地密钥，缩小候选镜像构建上下文并避免把宿主数据带入镜像。
+- 未修改 ImageClip 工作流、模型、提示词、参数、图拓扑或输出语义；本候选版本在联合故障注入、固定素材基准和灰度完成前不标记为生产验收。
+
 ## 1.3.3 — 2026-07-27
 
 - 修复批量父任务与单帧任务进度在 ComfyUI 内部节点切换时回退的问题；任务进度和聚合进度现在均为单调值。

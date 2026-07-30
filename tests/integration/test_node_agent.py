@@ -81,6 +81,21 @@ async def test_node_agent_requires_signature_and_rejects_replay() -> None:
             assert replay.status_code == 409
 
 
+async def test_node_agent_health_exposes_package_and_source_identity(monkeypatch) -> None:
+    monkeypatch.setattr(node_agent, "_runtime_identity", lambda: ("1.5.5", "a" * 40))
+    app = create_app(Settings(environment="test", node_agent_hmac_secret="test-secret"))
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://agent") as client:
+            response = await client.get("/health/live")
+            assert response.status_code == 200
+            assert response.json() == {
+                "status": "live",
+                "package_version": "1.5.5",
+                "source_revision": "a" * 40,
+            }
+
+
 async def test_gpu_metrics_are_signed_and_return_live_values(monkeypatch) -> None:
     secret = "node-agent-test-secret"
 

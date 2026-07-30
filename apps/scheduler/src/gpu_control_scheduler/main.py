@@ -1,16 +1,20 @@
 import asyncio
 import ipaddress
 import json
+import os
+import re
 import signal
 import socket
 import uuid
 from datetime import UTC, datetime, timedelta
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
 import httpx
-from prometheus_client import Counter, Gauge, Histogram, start_http_server
+from prometheus_client import Counter, Gauge, Histogram, Info, start_http_server
 from redis.asyncio import Redis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +26,7 @@ from packages.gpu_control_core.batches import (
     build_result_archive,
     materialize_batch_item,
     transition_batch,
+    workflow_identity_from_row,
 )
 from packages.gpu_control_core.database import Database
 from packages.gpu_control_core.enums import (
@@ -35,9 +40,11 @@ from packages.gpu_control_core.logging import bind_context, configure_logging, l
 from packages.gpu_control_core.models import (
     ApiClient,
     BatchArtifact,
+    BatchCancelOperation,
     CallbackAttempt,
     Job,
     JobArtifact,
+    JobAttempt,
     JobBatch,
     JobBatchItem,
     JobCallback,
@@ -46,8 +53,13 @@ from packages.gpu_control_core.models import (
     WorkflowNodeCompatibility,
     WorkflowVersion,
 )
-from packages.gpu_control_core.repository import claim_next_job, release_lease, transition_job
-from packages.gpu_control_core.scheduling import OverflowGuard, QueueSnapshot, choose_node
+from packages.gpu_control_core.repository import (
+    claim_next_job,
+    prompt_client_id,
+    release_lease,
+    transition_job,
+)
+from packages.gpu_control_core.scheduling import OverflowGuard, QueueSnapshot, rank_nodes
 from packages.gpu_control_core.security import (
     derive_callback_secret,
     sign_agent_request,
@@ -75,6 +87,154 @@ CALLBACK_ATTEMPTS = Counter(
 CALLBACK_FAILURES = Counter(
     "gpu_control_callback_failures_total", "Callback deliveries that exhausted retries"
 )
+BUILD_INFO = Info(
+    "gpu_control_scheduler_build",
+    "Scheduler package, immutable build version and source revision",
+)
+BUILD_ALIGNED = Gauge(
+    "gpu_control_scheduler_build_aligned",
+    "1 when the installed package version matches the immutable build version",
+)
+
+FAIL_CLOSED_SUBMISSION_ERRORS = frozenset(
+    {
+        "COMFY_SUBMISSION_UNKNOWN",
+        "COMFY_SUBMISSION_DUPLICATE",
+        "COMFY_SUBMISSION_RECONCILE_FAILED",
+    }
+)
+
+
+def runtime_version_metadata() -> dict[str, Any]:
+    try:
+        installed = package_version("gpu-control")
+    except PackageNotFoundError:
+        installed = None
+    build_version = os.environ.get("GPU_CONTROL_BUILD_VERSION")
+    build_revision = os.environ.get("GPU_CONTROL_BUILD_REVISION")
+    return {
+        "component": "gpu-control-scheduler",
+        "package_version": installed,
+        "build_version": build_version,
+        "source_revision": build_revision,
+        "version_aligned": bool(installed and build_version and installed == build_version),
+        "provenance_complete": bool(
+            installed
+            and build_version
+            and installed == build_version
+            and build_revision
+            and re.fullmatch(r"[0-9a-f]{40}", build_revision)
+        ),
+    }
+
+
+async def reconcile_prompt_submission(client: ComfyClient, client_id: str) -> str:
+    """Resolve one durable submit intent without issuing another POST /prompt."""
+    try:
+        prompt_ids = await client.prompt_ids_for_client(client_id)
+    except ComfyError as exc:
+        raise ComfyError(
+            "COMFY_SUBMISSION_RECONCILE_FAILED",
+            "cannot reconcile the persisted prompt submission intent",
+            {"client_id": client_id, "cause": exc.code},
+        ) from exc
+    if not prompt_ids:
+        raise ComfyError(
+            "COMFY_SUBMISSION_UNKNOWN",
+            "persisted prompt submission intent was not found in Comfy queue or history",
+            {"client_id": client_id},
+        )
+    if len(prompt_ids) != 1:
+        raise ComfyError(
+            "COMFY_SUBMISSION_DUPLICATE",
+            "multiple Comfy prompts share one durable submission id",
+            {"client_id": client_id, "prompt_ids": prompt_ids},
+        )
+    return prompt_ids[0]
+
+
+async def current_job_attempt(
+    session: AsyncSession, job: Job, *, lock: bool = False
+) -> JobAttempt:
+    query = select(JobAttempt).where(
+        JobAttempt.job_id == job.id,
+        JobAttempt.attempt == job.attempt_count,
+    )
+    if lock:
+        query = query.with_for_update()
+    attempt = await session.scalar(query)
+    if attempt is None:
+        raise RuntimeError("current durable job attempt is missing")
+    return attempt
+
+
+async def prepare_prompt_submission(session: AsyncSession, job: Job) -> str:
+    """Persist one outbound submit intent before POST /prompt is allowed."""
+    attempt = await current_job_attempt(session, job, lock=True)
+    expected = prompt_client_id(job.id, job.attempt_count)
+    if job.submission_client_id not in {None, expected}:
+        raise RuntimeError("job submission client id does not match its attempt")
+    if attempt.prompt_client_id not in {None, expected}:
+        raise RuntimeError("attempt prompt client id does not match its identity")
+    job.submission_client_id = expected
+    attempt.prompt_client_id = expected
+    if job.submission_intent_at is None:
+        job.submission_intent_at = datetime.now(UTC)
+        attempt.prompt_attempts += 1
+    return expected
+
+
+async def persist_prompt_id(session: AsyncSession, job: Job, prompt_id: str) -> None:
+    attempt = await current_job_attempt(session, job, lock=True)
+    if job.prompt_id not in {None, prompt_id} or attempt.prompt_id not in {None, prompt_id}:
+        raise ComfyError(
+            "COMFY_SUBMISSION_DUPLICATE",
+            "recovered prompt id conflicts with persisted attempt identity",
+        )
+    job.prompt_id = prompt_id
+    attempt.prompt_id = prompt_id
+
+
+async def mark_gpu_started(session: AsyncSession, job: Job) -> None:
+    attempt = await current_job_attempt(session, job, lock=True)
+    if attempt.gpu_started_at is None:
+        attempt.gpu_started_at = datetime.now(UTC)
+    if job.status == JobStatus.SUBMITTED.value:
+        await transition_job(session, job, JobStatus.RUNNING, "executor.running")
+
+
+async def mark_gpu_finished(session: AsyncSession, job: Job) -> None:
+    attempt = await current_job_attempt(session, job, lock=True)
+    now = datetime.now(UTC)
+    if job.status == JobStatus.SUBMITTED.value:
+        await transition_job(session, job, JobStatus.RUNNING, "executor.running_recovered")
+    if attempt.gpu_finished_at is None:
+        # A completion recovered without a start event is useful evidence, but
+        # it is not a zero-duration GPU sample.  Preserve the missing start so
+        # parent/node performance stays explicitly incomplete instead of
+        # fabricating service time.
+        attempt.gpu_finished_at = now
+
+
+async def fail_closed_prompt_submission(
+    session: AsyncSession, job: Job, error: ComfyError
+) -> None:
+    job.error_code = error.code
+    job.error_message = str(error)[:1000]
+    if JobStatus(job.status) not in TERMINAL_JOB_STATUSES:
+        await transition_job(
+            session,
+            job,
+            JobStatus.FAILED,
+            "executor.submission_fail_closed",
+            {"error_code": error.code, **error.details},
+        )
+        await release_lease(
+            session,
+            job,
+            attempt_status=JobStatus.FAILED,
+            attempt_error={"code": error.code, "message": job.error_message},
+        )
 
 
 def monotonic_job_progress(current: float, value: float, maximum: float) -> float:
@@ -557,11 +717,12 @@ class Scheduler:
                 ).all()
             )
             for job in jobs:
-                if job.prompt_id and job.node_id:
+                if job.node_id and (job.prompt_id or job.submission_intent_at):
                     logger().info(
                         "scheduler.recover_submitted",
                         job_id=job.id,
                         prompt_id=job.prompt_id,
+                        submission_client_id=job.submission_client_id,
                         node_id=job.node_id,
                     )
                     self.executions[job.id] = asyncio.create_task(
@@ -578,6 +739,30 @@ class Scheduler:
                         session, job, JobStatus.RETRY_WAIT, "scheduler.recover_pre_submit"
                     )
                     await transition_job(session, job, JobStatus.QUEUED, "scheduler.requeued")
+                    job.node_id = None
+                    job.claimed_at = None
+                    job.submission_client_id = None
+                    job.submission_intent_at = None
+                else:
+                    # SUBMITTED/RUNNING without either a prompt id or a durable
+                    # intent cannot be retried safely after a restart.
+                    job.error_code = "COMFY_SUBMISSION_UNKNOWN"
+                    job.error_message = "active job has no recoverable prompt identity"
+                    await transition_job(
+                        session,
+                        job,
+                        JobStatus.FAILED,
+                        "scheduler.recovery_identity_missing",
+                    )
+                    await release_lease(
+                        session,
+                        job,
+                        attempt_status=JobStatus.FAILED,
+                        attempt_error={
+                            "code": job.error_code,
+                            "message": job.error_message,
+                        },
+                    )
             await session.commit()
 
     async def reconcile_batches(self) -> None:
@@ -641,6 +826,13 @@ class Scheduler:
                 return False
             if batch.status == BatchStatus.ASSEMBLING.value:
                 return True
+            previous_progress = batch.progress
+            previous_progress_counts = (
+                batch.running_items,
+                batch.succeeded_items,
+                batch.failed_items,
+                batch.cancelled_items,
+            )
             items = list(
                 (
                     await session.scalars(
@@ -694,6 +886,11 @@ class Scheduler:
                     if (
                         not batch.cancel_requested
                         and job.attempt_count < job.max_attempts
+                        and job.error_code not in FAIL_CLOSED_SUBMISSION_ERRORS
+                        and (
+                            job.prompt_id is None
+                            or job.error_code == "COMFY_EXECUTION_ERROR"
+                        )
                         and batch.status
                         not in {BatchStatus.CANCELLING.value, BatchStatus.ASSEMBLING.value}
                     ):
@@ -713,6 +910,8 @@ class Scheduler:
                         )
                         job.node_id = None
                         job.prompt_id = None
+                        job.submission_client_id = None
+                        job.submission_intent_at = None
                         job.progress = 0
                         job.cancel_requested = False
                         job.claimed_at = None
@@ -801,9 +1000,51 @@ class Scheduler:
                 batch.succeeded_items + batch.failed_items + batch.cancelled_items,
                 active_progress,
             )
+            first_gpu_started = None
+            last_gpu_finished = None
+            gpu_started_attempts = 0
+            gpu_finished_attempts = 0
+            if job_ids:
+                timing = (
+                    await session.execute(
+                        select(
+                            func.min(JobAttempt.gpu_started_at),
+                            func.max(JobAttempt.gpu_finished_at),
+                            func.count(JobAttempt.gpu_started_at),
+                            func.count(JobAttempt.gpu_finished_at),
+                        ).where(JobAttempt.job_id.in_(job_ids))
+                    )
+                ).one()
+                (
+                    first_gpu_started,
+                    last_gpu_finished,
+                    gpu_started_attempts,
+                    gpu_finished_attempts,
+                ) = timing
+            if batch.started_at is None and first_gpu_started is not None:
+                batch.started_at = first_gpu_started
+            progress_counts = (
+                batch.running_items,
+                batch.succeeded_items,
+                batch.failed_items,
+                batch.cancelled_items,
+            )
+            if (
+                batch.progress > previous_progress
+                or progress_counts != previous_progress_counts
+            ):
+                batch.last_progress_at = datetime.now(UTC)
             terminal_count = (
                 batch.succeeded_items + batch.failed_items + batch.cancelled_items
             )
+            if (
+                terminal_count == batch.total_items
+                and batch.execution_finished_at is None
+                and last_gpu_finished is not None
+                and gpu_started_attempts > 0
+                and gpu_started_attempts == gpu_finished_attempts
+            ):
+                batch.execution_finished_at = last_gpu_finished
             if (
                 terminal_count == batch.total_items
                 and batch.failed_items
@@ -819,14 +1060,43 @@ class Scheduler:
                 await session.commit()
                 return False
             if batch.status == BatchStatus.CANCELLING.value and terminal_count == batch.total_items:
-                if not batch.cancel_requested:
+                operation = await session.scalar(
+                    select(BatchCancelOperation)
+                    .where(BatchCancelOperation.batch_id == batch.id)
+                    .with_for_update()
+                )
+                valid_cancel_audit = bool(
+                    operation is not None
+                    and operation.tenant_id == batch.tenant_id
+                    and operation.status == "REQUESTED"
+                    and operation.request_id.strip()
+                    and operation.requested_by.strip()
+                    and operation.source in {"public_api", "admin_api"}
+                    and operation.reason.strip()
+                    and operation.idempotency_key.strip()
+                )
+                if not batch.cancel_requested or not valid_cancel_audit:
+                    batch.error_code = "CANCEL_AUDIT_MISSING"
+                    batch.error_message = (
+                        "取消终态缺少完整且有效的 BatchCancelOperation 审计记录"
+                    )
                     await transition_batch(
-                        session, batch, BatchStatus.FAILED, "batch.failed_drain_complete"
+                        session,
+                        batch,
+                        BatchStatus.FAILED,
+                        "batch.cancel_audit_missing",
+                        {"cancel_operation_id": operation.id if operation else None},
                     )
                 else:
                     await transition_batch(
                         session, batch, BatchStatus.CANCELLED, "batch.cancelled"
                     )
+                    assert operation is not None
+                    operation.status = "COMPLETED"
+                    if operation.finished_at is None:
+                        operation.finished_at = datetime.now(UTC)
+                    operation.completed_items = batch.succeeded_items + batch.failed_items
+                    operation.cancelled_items = batch.cancelled_items
                 await session.commit()
                 return False
             if batch.succeeded_items == batch.total_items:
@@ -841,7 +1111,7 @@ class Scheduler:
                 return True
             if (
                 batch.status == BatchStatus.QUEUED.value
-                and (batch.queued_items or batch.running_items or batch.succeeded_items)
+                and batch.started_at is not None
             ):
                 await transition_batch(session, batch, BatchStatus.RUNNING, "batch.running")
             await session.commit()
@@ -936,6 +1206,41 @@ class Scheduler:
                             session, batch, BatchStatus.FAILED, "batch.workflow_missing"
                         )
                     continue
+                try:
+                    current_identity = workflow_identity_from_row(workflow)
+                except BatchContractError as exc:
+                    batch.error_code = exc.code
+                    batch.error_message = str(exc)[:1000]
+                    await transition_batch(
+                        session,
+                        batch,
+                        BatchStatus.FAILED,
+                        "batch.workflow_identity_invalid",
+                    )
+                    continue
+                expected_identity = {
+                    "workflow_key": batch.workflow_key,
+                    "workflow_version": batch.workflow_version,
+                    "pipeline_commit": batch.pipeline_commit,
+                    "pipeline_sha256": batch.pipeline_sha256,
+                    "output_node": batch.output_node,
+                }
+                if current_identity != expected_identity:
+                    batch.error_code = "WORKFLOW_IDENTITY_DRIFT"
+                    batch.error_message = (
+                        "批次固定的工作流身份与当前工作流版本不一致，已闭锁且不创建子任务"
+                    )
+                    await transition_batch(
+                        session,
+                        batch,
+                        BatchStatus.FAILED,
+                        "batch.workflow_identity_drift",
+                        {
+                            "expected": expected_identity,
+                            "actual": current_identity,
+                        },
+                    )
+                    continue
                 await materialize_batch_item(
                     session, self.storage, self.settings, batch, item, workflow
                 )
@@ -990,6 +1295,13 @@ class Scheduler:
                 )
             external_batch_id = batch.external_batch_id
             batch_dir = Path(batch.batch_dir)
+            workflow_identity = {
+                "workflow_key": batch.workflow_key,
+                "workflow_version": batch.workflow_version,
+                "pipeline_commit": batch.pipeline_commit,
+                "pipeline_sha256": batch.pipeline_sha256,
+                "output_node": batch.output_node,
+            }
         try:
             built = await asyncio.to_thread(
                 build_result_archive,
@@ -997,6 +1309,7 @@ class Scheduler:
                 external_batch_id,
                 batch_dir,
                 frames,
+                workflow_identity,
             )
         except BatchContractError as exc:
             async with self.db.session() as session:
@@ -1075,35 +1388,51 @@ class Scheduler:
                     and str((candidate.labels or {}).get("warm_workflow", ""))
                     == target_workflow
                 }
-                node, exclusions = choose_node(
+                candidates, exclusions = rank_nodes(
                     nodes,
                     snapshot,
                     guard,
                     self.settings.node_heartbeat_timeout_seconds,
                     preferred_node_ids=warm_nodes,
                 )
-                if node is None:
+                if not candidates:
                     logger().debug(
                         "scheduler.no_node", exclusions=exclusions
                     )
                     break
+                candidate_nodes = [(candidate.id, candidate.pool) for candidate in candidates]
                 # rollback() expires ORM instances. Keep scalar values before
                 # ending the read transaction so async SQLAlchemy never tries
                 # to lazy-load an expired Node outside greenlet_spawn.
-                node_id = node.id
-                node_pool = node.pool
                 await session.rollback()
-                async with session.begin():
-                    assignment = await claim_next_job(
-                        session,
-                        node_id,
-                        self.settings.priority_aging_seconds,
-                        queue_snapshot=snapshot,
-                        overflow_guard=guard,
-                        heartbeat_timeout_seconds=self.settings.node_heartbeat_timeout_seconds,
-                        batch_max_running=self.settings.batch_max_running_per_tenant,
-                    )
+                assignment = None
+                node_id = ""
+                node_pool = ""
+                compatibility_misses: list[str] = []
+                for candidate_id, candidate_pool in candidate_nodes:
+                    async with session.begin():
+                        candidate_assignment = await claim_next_job(
+                            session,
+                            candidate_id,
+                            self.settings.priority_aging_seconds,
+                            queue_snapshot=snapshot,
+                            overflow_guard=guard,
+                            heartbeat_timeout_seconds=self.settings.node_heartbeat_timeout_seconds,
+                            batch_max_running=self.settings.batch_max_running_per_tenant,
+                        )
+                    if candidate_assignment is None:
+                        compatibility_misses.append(candidate_id)
+                        continue
+                    assignment = candidate_assignment
+                    node_id = candidate_id
+                    node_pool = candidate_pool
+                    break
                 if assignment is None:
+                    logger().debug(
+                        "scheduler.no_compatible_assignment",
+                        candidates=[candidate_id for candidate_id, _ in candidate_nodes],
+                        compatibility_misses=compatibility_misses,
+                    )
                     break
                 job, _ = assignment
                 if node_pool == "OVERFLOW":
@@ -1161,6 +1490,48 @@ class Scheduler:
                     )
                 )
                 try:
+                    if recovering and not job.prompt_id and job.submission_intent_at:
+                        client_id = job.submission_client_id or prompt_client_id(
+                            job.id, job.attempt_count
+                        )
+                        try:
+                            recovered_prompt_id = await reconcile_prompt_submission(
+                                client, client_id
+                            )
+                        except ComfyError as exc:
+                            await fail_closed_prompt_submission(session, job, exc)
+                            await session.commit()
+                            FAILED.labels(exc.code).inc()
+                            await self.publish(
+                                {
+                                    "event": "job.failed",
+                                    "job_id": job.id,
+                                    "error_code": exc.code,
+                                }
+                            )
+                            return
+                        await persist_prompt_id(session, job, recovered_prompt_id)
+                        if job.status == JobStatus.CLAIMED.value:
+                            await transition_job(
+                                session, job, JobStatus.UPLOADING, "scheduler.recover_uploading"
+                            )
+                        if job.status == JobStatus.UPLOADING.value:
+                            await transition_job(
+                                session,
+                                job,
+                                JobStatus.SUBMITTED,
+                                "scheduler.recovered_submission",
+                                {"prompt_id": recovered_prompt_id, "client_id": client_id},
+                            )
+                        self.storage.atomic_json(
+                            Path(job.job_dir) / "comfy" / "submit.response.json",
+                            {
+                                "prompt_id": recovered_prompt_id,
+                                "client_id": client_id,
+                                "recovered": True,
+                            },
+                        )
+                        await session.commit()
                     if recovering and job.prompt_id:
                         history = await client.history(job.prompt_id)
                         if job.prompt_id in history:
@@ -1174,23 +1545,14 @@ class Scheduler:
                             if isinstance(item, list) and len(item) > 1
                         }
                         if job.prompt_id not in prompt_ids:
-                            job.error_code = "COMFY_RECOVERY_UNKNOWN"
-                            job.error_message = (
-                                "prompt_id 不在 ComfyUI 队列或历史中，未盲目重复提交"
+                            error = ComfyError(
+                                "COMFY_SUBMISSION_UNKNOWN",
+                                "prompt_id 不在 ComfyUI 队列或历史中，已闭锁且不会重复提交",
+                                {"prompt_id": job.prompt_id},
                             )
-                            await transition_job(
-                                session, job, JobStatus.FAILED, "scheduler.recovery_unknown"
-                            )
-                            await release_lease(
-                                session,
-                                job,
-                                attempt_status=JobStatus.FAILED,
-                                attempt_error={
-                                    "code": "COMFY_RECOVERY_UNKNOWN",
-                                    "message": job.error_message,
-                                },
-                            )
+                            await fail_closed_prompt_submission(session, job, error)
                             await session.commit()
+                            FAILED.labels(error.code).inc()
                             return
                     if not job.prompt_id:
                         previous_workflow = await session.scalar(
@@ -1245,20 +1607,65 @@ class Scheduler:
                                     )
                                 )
                         self.storage.atomic_json(root / "comfy" / "upload.responses.json", uploads)
+                        attempt = await current_job_attempt(session, job, lock=True)
+                        attempt.upload_attempts += sum(
+                            max(1, int(upload.get("attempt", 1))) for upload in uploads
+                        )
                         rendered = json.loads(
                             (root / "workflow" / "rendered.api.json").read_text(encoding="utf-8")
                         )
-                        prompt_id = await client.submit(rendered, f"gpu-control-{job.id}")
-                        job.prompt_id = prompt_id
+                        client_id = await prepare_prompt_submission(session, job)
+                        # The intent and prompt-attempt count must be durable
+                        # before the non-transactional Comfy request begins.
+                        await session.commit()
+                        recovered_after_submit_error = False
+                        try:
+                            submitted_prompt_id = await client.submit(rendered, client_id)
+                        except ComfyError as submit_error:
+                            try:
+                                submitted_prompt_id = await reconcile_prompt_submission(
+                                    client, client_id
+                                )
+                                recovered_after_submit_error = True
+                            except ComfyError as reconcile_error:
+                                error = ComfyError(
+                                    reconcile_error.code,
+                                    str(reconcile_error),
+                                    {
+                                        **reconcile_error.details,
+                                        "submit_error_code": submit_error.code,
+                                    },
+                                )
+                                await fail_closed_prompt_submission(session, job, error)
+                                await session.commit()
+                                FAILED.labels(error.code).inc()
+                                await self.publish(
+                                    {
+                                        "event": "job.failed",
+                                        "job_id": job.id,
+                                        "error_code": error.code,
+                                    }
+                                )
+                                return
+                        await persist_prompt_id(session, job, submitted_prompt_id)
                         await transition_job(
                             session,
                             job,
                             JobStatus.SUBMITTED,
                             "executor.submitted",
-                            {"prompt_id": prompt_id},
+                            {
+                                "prompt_id": submitted_prompt_id,
+                                "client_id": client_id,
+                                "recovered_after_submit_error": recovered_after_submit_error,
+                            },
                         )
                         self.storage.atomic_json(
-                            root / "comfy" / "submit.response.json", {"prompt_id": prompt_id}
+                            root / "comfy" / "submit.response.json",
+                            {
+                                "prompt_id": submitted_prompt_id,
+                                "client_id": client_id,
+                                "recovered_after_submit_error": recovered_after_submit_error,
+                            },
                         )
                         await session.commit()
                     if job.cancel_requested:
@@ -1275,16 +1682,22 @@ class Scheduler:
                         )
                         await session.commit()
                         return
-                    if job.status == JobStatus.SUBMITTED.value:
-                        await transition_job(session, job, JobStatus.RUNNING, "executor.running")
-                        await session.commit()
                     cancellation_task = asyncio.create_task(self.watch_cancellation(job.id, client))
                     try:
                         try:
                             async for event in client.events(
-                                job.prompt_id or "", f"gpu-control-{job.id}"
+                                job.prompt_id or "",
+                                job.submission_client_id
+                                or prompt_client_id(job.id, job.attempt_count),
                             ):
-                                if event.get("type") == "progress":
+                                event_type = str(event.get("type", ""))
+                                if event_type in {
+                                    "execution_start",
+                                    "executing",
+                                    "progress",
+                                }:
+                                    await mark_gpu_started(session, job)
+                                if event_type == "progress":
                                     data = event.get("data", {})
                                     job.progress = monotonic_job_progress(
                                         job.progress,
@@ -1299,6 +1712,15 @@ class Scheduler:
                                             "progress": job.progress,
                                         }
                                     )
+                                elif event_type in {
+                                    "execution_success",
+                                    "execution_error",
+                                    "history_recovered",
+                                }:
+                                    await mark_gpu_finished(session, job)
+                                    await session.commit()
+                                elif event_type in {"execution_start", "executing"}:
+                                    await session.commit()
                         except ComfyError:
                             await session.refresh(job)
                             if not job.cancel_requested:
@@ -1388,6 +1810,9 @@ class Scheduler:
         async with self.db.session() as session:
             job = await session.get(Job, job_id, with_for_update=True)
             if job is not None and JobStatus(job.status) not in TERMINAL_JOB_STATUSES:
+                attempt = await current_job_attempt(session, job, lock=True)
+                if attempt.gpu_started_at is not None and attempt.gpu_finished_at is None:
+                    attempt.gpu_finished_at = datetime.now(UTC)
                 job.error_code = "JOB_TIMEOUT"
                 job.error_message = f"任务超过工作流截止时间 {timeout_seconds} 秒"
                 await transition_job(
@@ -1421,6 +1846,8 @@ class Scheduler:
         entry = history.get(job.prompt_id or "")
         if not entry:
             raise ComfyError("COMFY_OUTPUT_MISSING", "history does not contain prompt")
+        await mark_gpu_finished(session, job)
+        await session.commit()
         status = entry.get("status", {})
         if status.get("status_str") == "error":
             error_message = "ComfyUI execution error"
@@ -1487,9 +1914,14 @@ class Scheduler:
         await self.publish({"event": "job.succeeded", "job_id": job.id})
 
     async def fail_job(self, job_id: str, code: str, message: str) -> None:
+        cancelled = False
         async with self.db.session() as session:
             job = await session.get(Job, job_id, with_for_update=True)
             if job is None:
+                return
+            if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
+                # Late transport/task exceptions cannot rewrite a committed
+                # success, cancellation, timeout, or failure terminal state.
                 return
             job.error_code = code
             job.error_message = message[:1000]
@@ -1502,50 +1934,82 @@ class Scheduler:
                     labels.pop("warm_workflow", None)
                     labels.pop("warm_workflow_at", None)
                     node.labels = labels
-            if job.status not in {
-                JobStatus.FAILED.value,
-                JobStatus.CANCELLED.value,
-                JobStatus.SUCCEEDED.value,
-            }:
-                if job.attempt_count < job.max_attempts and not job.prompt_id:
-                    await transition_job(
-                        session,
-                        job,
-                        JobStatus.RETRY_WAIT,
-                        "executor.retry_wait",
-                        {"error_code": code},
-                    )
-                    await release_lease(
-                        session,
-                        job,
-                        attempt_status=JobStatus.FAILED,
-                        attempt_error={"code": code, "message": message[:1000]},
-                    )
-                    await transition_job(session, job, JobStatus.QUEUED, "executor.retry_queued")
-                    job.node_id = None
-                    job.prompt_id = None
-                    job.claimed_at = None
-                    job.started_at = None
-                    job.finished_at = None
-                    job.progress = 0
-                    job.cancel_requested = False
-                    job.not_before = None
-                else:
-                    await transition_job(
-                        session, job, JobStatus.FAILED, "executor.failed", {"error_code": code}
-                    )
-                    await release_lease(
-                        session,
-                        job,
-                        attempt_status=JobStatus.FAILED,
-                        attempt_error={"code": code, "message": message[:1000]},
-                    )
+            if job.status == JobStatus.CANCELLING.value:
+                # Cancellation is already a durable, authenticated intent.
+                # An executor/transport error racing with that intent must
+                # not enter the retry branch (CANCELLING -> RETRY_WAIT is
+                # illegal) or turn a requested cancellation into FAILED.
+                await transition_job(
+                    session,
+                    job,
+                    JobStatus.CANCELLED,
+                    "executor.cancelled_after_error",
+                    {"error_code": code},
+                )
+                await release_lease(
+                    session,
+                    job,
+                    attempt_status=JobStatus.CANCELLED,
+                    attempt_error={"code": code, "message": message[:1000]},
+                )
+                cancelled = True
+            elif (
+                job.attempt_count < job.max_attempts
+                and not job.prompt_id
+                and job.submission_intent_at is None
+            ):
+                await transition_job(
+                    session,
+                    job,
+                    JobStatus.RETRY_WAIT,
+                    "executor.retry_wait",
+                    {"error_code": code},
+                )
+                await release_lease(
+                    session,
+                    job,
+                    attempt_status=JobStatus.FAILED,
+                    attempt_error={"code": code, "message": message[:1000]},
+                )
+                await transition_job(session, job, JobStatus.QUEUED, "executor.retry_queued")
+                job.node_id = None
+                job.prompt_id = None
+                job.submission_client_id = None
+                job.submission_intent_at = None
+                job.claimed_at = None
+                job.started_at = None
+                job.finished_at = None
+                job.progress = 0
+                job.cancel_requested = False
+                job.not_before = None
+            else:
+                await transition_job(
+                    session, job, JobStatus.FAILED, "executor.failed", {"error_code": code}
+                )
+                await release_lease(
+                    session,
+                    job,
+                    attempt_status=JobStatus.FAILED,
+                    attempt_error={"code": code, "message": message[:1000]},
+                )
             await session.commit()
+        if cancelled:
+            await self.publish({"event": "job.cancelled", "job_id": job_id})
+            return
         FAILED.labels(code).inc()
         await self.publish({"event": "job.failed", "job_id": job_id, "error_code": code})
 
     async def run(self) -> None:
         configure_logging("scheduler", self.settings.environment)
+        runtime_identity = runtime_version_metadata()
+        BUILD_INFO.info(
+            {
+                key: str(value) if value is not None else "unknown"
+                for key, value in runtime_identity.items()
+            }
+        )
+        BUILD_ALIGNED.set(1 if runtime_identity["version_aligned"] else 0)
+        logger().info("scheduler.runtime_identity", **runtime_identity)
         start_http_server(9108)
         async with self.db.session() as lock_session:
             if not await self.db.acquire_scheduler_lock(lock_session):

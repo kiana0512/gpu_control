@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "suite": "backend-full-pytest",
+  "started_at_utc": "2026-07-30T08:53:58Z",
+  "finished_at_utc": "2026-07-30T08:54:19Z",
+  "exit_code": 0,
+  "result": "PASS",
+  "tests": 143,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "junit_path": "artifacts/control-plane/1.5.5/evidence/tests/backend.junit.xml",
+  "junit_sha256": "c34fddd6cee555454aeba3aa777fed4f742fda8ed8cde0fa3ed9fd9dc4648e51",
+  "isolation": {
+    "network": "none",
+    "source_mount": "read-only",
+    "cpus": 2,
+    "memory": "3g",
+    "pids_limit": 384,
+    "pytest_cache": "disabled",
+    "production_access": false
+  }
+}

@@ -1,0 +1,30 @@
+schema_version: "1.0"
+
+# All paths intentionally point outside the repository. The execution gate
+# rejects missing, empty, or repository-owned fixtures. Metadata files contain
+# the normal API JSON bodies; the harness replaces only external IDs.
+apis:
+  imageclip_batch:
+    archive: /opt/gpu-control-load-fixtures/imageclip/frames.zip
+    manifest: /opt/gpu-control-load-fixtures/imageclip/manifest.json
+  modelview_roughness:
+    image: /opt/gpu-control-load-fixtures/roughness/material.png
+  uv_process:
+    asset: /opt/gpu-control-load-fixtures/uv/asset.fbx
+    metadata: /opt/gpu-control-load-fixtures/uv/metadata.json
+  retopology_audit:
+    project: /opt/gpu-control-load-fixtures/retopology/audit.blend
+    metadata: /opt/gpu-control-load-fixtures/retopology/audit.metadata.json
+  retopology_process:
+    project: /opt/gpu-control-load-fixtures/retopology/process.blend
+    metadata: /opt/gpu-control-load-fixtures/retopology/process.metadata.json
+    reference_images:
+      - /opt/gpu-control-load-fixtures/retopology/front.png
+      - /opt/gpu-control-load-fixtures/retopology/side.png
+  substance_bake:
+    low_mesh: /opt/gpu-control-load-fixtures/bake/asset_low.fbx
+    high_mesh: /opt/gpu-control-load-fixtures/bake/asset_high.fbx
+    base_color_texture: /opt/gpu-control-load-fixtures/bake/base_color.png
+    roughness_texture: /opt/gpu-control-load-fixtures/bake/roughness.png
+    metallic_texture: /opt/gpu-control-load-fixtures/bake/metallic.png
+    metadata: /opt/gpu-control-load-fixtures/bake/metadata.json

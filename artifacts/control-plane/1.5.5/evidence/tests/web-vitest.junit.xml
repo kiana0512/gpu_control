@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="8" failures="0" errors="0" time="0.037709865">
+    <testsuite name="tests/dashboard.test.ts" timestamp="2026-07-30T08:59:21.673Z" hostname="c771b6511679" tests="3" failures="0" errors="0" skipped="0" time="0.034545345">
+        <testcase classname="tests/dashboard.test.ts" name="StatusMark &gt; renders state text and semantic class" time="0.008426911">
+        </testcase>
+        <testcase classname="tests/dashboard.test.ts" name="JobsTable &gt; renders a sequence batch as one parent row with aggregate details" time="0.021850144">
+        </testcase>
+        <testcase classname="tests/dashboard.test.ts" name="JobsTable &gt; marks synthetic load jobs without changing the production row shape" time="0.003655167">
+        </testcase>
+    </testsuite>
+    <testsuite name="tests/job-presentation.test.ts" timestamp="2026-07-30T08:59:21.674Z" hostname="c771b6511679" tests="5" failures="0" errors="0" skipped="0" time="0.00316452">
+        <testcase classname="tests/job-presentation.test.ts" name="job presentation evidence rules &gt; classifies ImageClip parent batches by their public API" time="0.001393433">
+        </testcase>
+        <testcase classname="tests/job-presentation.test.ts" name="job presentation evidence rules &gt; derives durations only from valid reported endpoints" time="0.000443527">
+        </testcase>
+        <testcase classname="tests/job-presentation.test.ts" name="job presentation evidence rules &gt; does not invent a duration when an endpoint is missing" time="0.000185387">
+        </testcase>
+        <testcase classname="tests/job-presentation.test.ts" name="job presentation evidence rules &gt; uses server performance values without treating zero as missing" time="0.000146397">
+        </testcase>
+        <testcase classname="tests/job-presentation.test.ts" name="job presentation evidence rules &gt; computes the nearest-rank percentile from observed values only" time="0.000199943">
+        </testcase>
+    </testsuite>
+</testsuites>

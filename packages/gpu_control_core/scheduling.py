@@ -100,14 +100,20 @@ def overflow_exclusion(
     return None
 
 
-def choose_node(
+def rank_nodes(
     nodes: Sequence[NodeLike],
     queue: QueueSnapshot,
     guard: OverflowGuard,
     heartbeat_timeout_seconds: int,
     now: datetime | None = None,
     preferred_node_ids: set[str] | None = None,
-) -> tuple[NodeLike | None, dict[str, str]]:
+) -> tuple[list[NodeLike], dict[str, str]]:
+    """Return every currently eligible node in scheduling order.
+
+    Compatibility is deliberately not handled here because it is specific to
+    the queued job.  Callers must try the full ordered list: the first healthy
+    node may have no compatible queued work while a later node does.
+    """
     current = now or datetime.now(UTC)
     exclusions: dict[str, str] = {}
     primary: list[NodeLike] = []
@@ -125,13 +131,38 @@ def choose_node(
                 exclusions[node.id] = reason
             else:
                 overflow.append(node)
-    candidates = primary if primary else overflow
     preferred = preferred_node_ids or set()
-    candidates.sort(
-        key=lambda node: (
-            0 if node.id in preferred else 1,
-            node.last_assigned_at or datetime.min.replace(tzinfo=UTC),
-            node.id,
+
+    def order(candidates: list[NodeLike]) -> None:
+        candidates.sort(
+            key=lambda node: (
+                0 if node.id in preferred else 1,
+                node.last_assigned_at or datetime.min.replace(tzinfo=UTC),
+                node.id,
+            )
         )
+
+    order(primary)
+    order(overflow)
+    # Preserve the existing primary-before-overflow policy while still making
+    # overflow a compatibility fallback when no primary can claim queued work.
+    return [*primary, *overflow], exclusions
+
+
+def choose_node(
+    nodes: Sequence[NodeLike],
+    queue: QueueSnapshot,
+    guard: OverflowGuard,
+    heartbeat_timeout_seconds: int,
+    now: datetime | None = None,
+    preferred_node_ids: set[str] | None = None,
+) -> tuple[NodeLike | None, dict[str, str]]:
+    candidates, exclusions = rank_nodes(
+        nodes,
+        queue,
+        guard,
+        heartbeat_timeout_seconds,
+        now,
+        preferred_node_ids,
     )
     return (candidates[0] if candidates else None), exclusions

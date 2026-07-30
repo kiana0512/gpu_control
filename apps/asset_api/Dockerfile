@@ -1,12 +1,21 @@
-FROM python:3.11.13-slim-bookworm AS builder
+ARG PYTHON_BASE_IMAGE=python:3.11.13-slim-bookworm
+FROM ${PYTHON_BASE_IMAGE} AS builder
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY packages ./packages
 COPY apps/asset_api/src ./apps/asset_api/src
 RUN python -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir .
 
-FROM python:3.11.13-slim-bookworm AS runtime
+FROM ${PYTHON_BASE_IMAGE} AS runtime
+ARG GPU_CONTROL_VERSION=1.5.5
+ARG GPU_CONTROL_REVISION=unknown
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PATH=/opt/venv/bin:$PATH
+ENV GPU_CONTROL_BUILD_VERSION=${GPU_CONTROL_VERSION} \
+    GPU_CONTROL_BUILD_REVISION=${GPU_CONTROL_REVISION}
+LABEL org.opencontainers.image.title="GPU Control Asset API" \
+      org.opencontainers.image.version="${GPU_CONTROL_VERSION}" \
+      org.opencontainers.image.revision="${GPU_CONTROL_REVISION}" \
+      org.opencontainers.image.source="https://github.com/kiana0512/gpu_control.git"
 RUN groupadd --gid 10001 gpucontrol && useradd --uid 10001 --gid gpucontrol --create-home gpucontrol
 WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv

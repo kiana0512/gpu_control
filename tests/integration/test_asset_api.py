@@ -6,12 +6,34 @@ import uuid
 from pathlib import Path
 
 import httpx
+import pytest
 from gpu_control_asset_api.main import create_app
 from PIL import Image
 
 from packages.gpu_control_core.models import ApiClient, ApiKey, Base, Node
 from packages.gpu_control_core.security import hash_api_secret, sign_agent_request
 from packages.gpu_control_core.settings import Settings
+
+
+async def test_asset_api_version_exposes_aligned_immutable_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GPU_CONTROL_BUILD_VERSION", "1.5.5")
+    monkeypatch.setenv("GPU_CONTROL_BUILD_REVISION", "a" * 40)
+    monkeypatch.setattr(
+        "gpu_control_asset_api.main.importlib.metadata.version", lambda _: "1.5.5"
+    )
+    async for _, client in prepared_asset_app(tmp_path):
+        response = await client.get("/api/v1/assets/version")
+        assert response.status_code == 200
+        assert response.json() == {
+            "component": "asset-api",
+            "package_version": "1.5.5",
+            "build_version": "1.5.5",
+            "source_revision": "a" * 40,
+            "version_aligned": True,
+            "provenance_complete": True,
+        }
 
 
 async def prepared_asset_app(tmp_path: Path):

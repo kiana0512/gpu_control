@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpu-control"
-version = "1.5.4"
+version = "1.5.5"
 description = "Three-node ComfyUI GPU scheduling and operations platform"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -24,6 +24,7 @@ dependencies = [
   "PyYAML==6.0.2",
   "redis==6.2.0",
   "SQLAlchemy==2.0.41",
+  "starlette==0.47.3",
   "structlog==25.4.0",
   "uvicorn[standard]==0.35.0",
   "websockets==15.0.1",

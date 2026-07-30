@@ -3,6 +3,7 @@ import { session } from "./api";
 
 const Dashboard = () => import("./views/Dashboard.vue");
 const Jobs = () => import("./views/Jobs.vue");
+const Analysis = () => import("./views/Analysis.vue");
 const Nodes = () => import("./views/Nodes.vue");
 const Assets = () => import("./views/Assets.vue");
 const CodexRuntime = () => import("./views/CodexRuntime.vue");
@@ -18,6 +19,7 @@ export const router = createRouter({
     { path: "/login", component: Login, meta: { public: true } },
     { path: "/", component: Dashboard },
     { path: "/jobs", component: Jobs },
+    { path: "/analysis", component: Analysis },
     { path: "/nodes", component: Nodes },
     { path: "/asset-processing", component: Assets },
     { path: "/codex", component: CodexRuntime },

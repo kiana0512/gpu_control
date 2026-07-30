@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import hmac
+import importlib.metadata
 import ipaddress
 import json
 import os
@@ -261,6 +262,12 @@ class WorkerFailure(BaseModel):
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     cfg = settings or get_settings()
+    try:
+        runtime_version = importlib.metadata.version("gpu-control")
+    except importlib.metadata.PackageNotFoundError:
+        runtime_version = "development"
+    build_version = os.getenv("GPU_CONTROL_BUILD_VERSION", runtime_version)
+    source_revision = os.getenv("GPU_CONTROL_BUILD_REVISION", "unknown")
     asset_secret = cfg.asset_worker_hmac_secret.strip()
     if (
         len(asset_secret) < 32
@@ -278,7 +285,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         yield
         await app.state.db.close()
 
-    app = FastAPI(title="Unified Scheduling Center - Asset API", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(
+        title="Unified Scheduling Center - Asset API",
+        version=runtime_version,
+        lifespan=lifespan,
+    )
 
     @app.middleware("http")
     async def request_context(request: Request, call_next: Any) -> Any:
@@ -293,6 +304,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def session(request: Request) -> AsyncIterator[AsyncSession]:
         async with request.app.state.db.session() as db:
             yield db
+
+    @app.get("/version")
+    @app.get("/api/v1/assets/version")
+    async def version_info() -> dict[str, Any]:
+        return {
+            "component": "asset-api",
+            "package_version": runtime_version,
+            "build_version": build_version,
+            "source_revision": source_revision,
+            "version_aligned": runtime_version == build_version,
+            "provenance_complete": runtime_version == build_version
+            and re.fullmatch(r"[0-9a-f]{40}", source_revision) is not None,
+        }
 
     async def api_principal(
         request: Request,

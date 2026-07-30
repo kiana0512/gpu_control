@@ -52,7 +52,9 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
       <div>
         <span
           class="health-dot"
-          :class="(assets?.summary.online_workers ?? 0) > 0 ? 'online' : 'offline'"
+          :class="
+            (assets?.summary.online_workers ?? 0) > 0 ? 'online' : 'offline'
+          "
         ></span
         ><span
           ><strong>CPU Asset 平面</strong
@@ -185,7 +187,10 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
     <section class="system-section">
       <header>
         <h2>3D 资产处理 API</h2>
-        <p>异步提交后通过 Job URL 或 SSE 获取阶段、进度和 ETA；与 GPU 推理队列完全隔离。</p>
+        <p>
+          异步提交后通过 Job URL 或 SSE 获取阶段、进度和 ETA；与 GPU
+          推理队列完全隔离。
+        </p>
       </header>
       <div class="endpoint-list">
         <div>

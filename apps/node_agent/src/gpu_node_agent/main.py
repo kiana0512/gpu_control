@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import importlib.metadata
 import json
 import os
 import re
@@ -22,6 +23,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from packages.gpu_control_core.logging import configure_logging, logger
 from packages.gpu_control_core.security import sign_agent_request
 from packages.gpu_control_core.settings import Settings
+
+
+def _runtime_identity() -> tuple[str, str]:
+    try:
+        package_version = importlib.metadata.version("gpu-control")
+    except importlib.metadata.PackageNotFoundError:
+        package_version = "development"
+    return package_version, os.getenv("GPU_CONTROL_REVISION", "unknown")
 
 
 class NodeAgentSettings(BaseSettings):
@@ -267,6 +276,7 @@ async def _heartbeat_loop(app: FastAPI, cfg: NodeAgentSettings) -> None:
     first_success = True
     codex_health: dict[str, Any] = {}
     codex_next_check = 0.0
+    node_agent_version, source_revision = _runtime_identity()
     while True:
         try:
             if gpu_uuid is None:
@@ -290,8 +300,11 @@ async def _heartbeat_loop(app: FastAPI, cfg: NodeAgentSettings) -> None:
                 "hostname": socket.gethostname(),
                 "imageclip_commit": imageclip_commit,
                 "imageclip_pipeline_sha256": imageclip_pipeline_sha256,
+                "node_agent_version": node_agent_version,
                 **codex_health,
             }
+            if re.fullmatch(r"[0-9a-f]{40}", source_revision):
+                identity["source_revision"] = source_revision
             result = await asyncio.to_thread(_post_heartbeat, cfg, identity)
             app.state.node_identity = identity
             if first_success or current_ip != last_ip:
@@ -316,6 +329,7 @@ async def _heartbeat_loop(app: FastAPI, cfg: NodeAgentSettings) -> None:
 
 def create_app(settings: Settings | NodeAgentSettings | None = None) -> FastAPI:
     cfg = settings or NodeAgentSettings()
+    node_agent_version, source_revision = _runtime_identity()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -331,7 +345,13 @@ def create_app(settings: Settings | NodeAgentSettings | None = None) -> FastAPI:
             heartbeat_task.cancel()
             await asyncio.gather(heartbeat_task, return_exceptions=True)
 
-    app = FastAPI(title="GPU Node Agent", docs_url=None, redoc_url=None, lifespan=lifespan)
+    app = FastAPI(
+        title="GPU Node Agent",
+        version=node_agent_version,
+        docs_url=None,
+        redoc_url=None,
+        lifespan=lifespan,
+    )
 
     @app.middleware("http")
     async def authenticate(request: Request, call_next: Any) -> Any:
@@ -371,7 +391,11 @@ def create_app(settings: Settings | NodeAgentSettings | None = None) -> FastAPI:
 
     @app.get("/health/live")
     async def health() -> dict[str, str]:
-        return {"status": "live"}
+        return {
+            "status": "live",
+            "package_version": node_agent_version,
+            "source_revision": source_revision,
+        }
 
     @app.get("/health/ready")
     async def ready() -> dict[str, Any]:

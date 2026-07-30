@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -166,10 +167,20 @@ async def transition_batch(
     now = datetime.now(UTC)
     batch.status = target.value
     batch.updated_at = now
-    if target == BatchStatus.RUNNING and batch.started_at is None:
-        batch.started_at = now
+    if target == BatchStatus.QUEUED and batch.queued_at is None:
+        batch.queued_at = now
+    # ``started_at`` and ``execution_finished_at`` are GPU evidence, not state
+    # transition timestamps.  The scheduler writes them from durable
+    # JobAttempt GPU events; filling either with ``now`` here would make a
+    # restart/recovered history look like measured GPU wall time.
+    if target == BatchStatus.ASSEMBLING:
+        if batch.assembling_at is None:
+            batch.assembling_at = now
+    if target == BatchStatus.SUCCEEDED and batch.artifact_ready_at is None:
+        batch.artifact_ready_at = now
     if target in TERMINAL_BATCH_STATUSES:
-        batch.finished_at = now
+        if batch.finished_at is None:
+            batch.finished_at = now
     session.add(
         BatchEvent(
             batch_id=batch.id,
@@ -377,6 +388,41 @@ def workflow_manifest_from_row(workflow: WorkflowVersion) -> WorkflowManifest:
     )
 
 
+def workflow_identity_from_row(workflow: WorkflowVersion) -> dict[str, str]:
+    """Return the fail-closed identity persisted on every new ImageClip batch."""
+
+    labels = {str(key): str(value) for key, value in (workflow.node_labels or {}).items()}
+    pipeline_commit = labels.get("imageclip_commit", "")
+    pipeline_sha256 = labels.get("imageclip_pipeline_sha256", "")
+    if re.fullmatch(r"[0-9a-f]{40}", pipeline_commit) is None:
+        raise BatchContractError(
+            "WORKFLOW_IDENTITY_INVALID", "workflow imageclip_commit is missing or invalid"
+        )
+    if re.fullmatch(r"[0-9a-f]{64}", pipeline_sha256) is None:
+        raise BatchContractError(
+            "WORKFLOW_IDENTITY_INVALID",
+            "workflow imageclip_pipeline_sha256 is missing or invalid",
+        )
+    output_nodes = [str(value) for value in (workflow.output_nodes or [])]
+    if len(output_nodes) != 1:
+        raise BatchContractError(
+            "WORKFLOW_IDENTITY_INVALID", "ImageClip workflow must have exactly one output node"
+        )
+    output_node_id = output_nodes[0]
+    output_definition = (workflow.template or {}).get(output_node_id)
+    if not isinstance(output_definition, dict) or output_definition.get("class_type") != "SaveImage":
+        raise BatchContractError(
+            "WORKFLOW_IDENTITY_INVALID", "ImageClip output node must be a SaveImage node"
+        )
+    return {
+        "workflow_key": workflow.workflow_key,
+        "workflow_version": workflow.version,
+        "pipeline_commit": pipeline_commit,
+        "pipeline_sha256": pipeline_sha256,
+        "output_node": f"SaveImage #{output_node_id}",
+    }
+
+
 async def materialize_batch_item(
     session: AsyncSession,
     storage: LocalJobStorage,
@@ -464,7 +510,17 @@ def build_result_archive(
     external_batch_id: str,
     batch_dir: Path,
     frames: list[ArchiveFrame],
+    workflow_identity: dict[str, str | None] | None = None,
 ) -> BuiltBatchArchive:
+    if workflow_identity is None:
+        identity_path = batch_dir / "workflow.identity.json"
+        if identity_path.is_file():
+            loaded_identity = json.loads(identity_path.read_text(encoding="utf-8"))
+            if isinstance(loaded_identity, dict):
+                workflow_identity = {
+                    str(key): str(value) if value is not None else None
+                    for key, value in loaded_identity.items()
+                }
     items: list[dict[str, Any]] = []
     for frame in sorted(frames, key=lambda value: value.ordinal):
         digest = hashlib.sha256()
@@ -512,6 +568,7 @@ def build_result_archive(
         "schema_version": "1.0",
         "batch_id": batch_id,
         "external_batch_id": external_batch_id,
+        **(workflow_identity or {}),
         "total": len(items),
         "items": items,
     }

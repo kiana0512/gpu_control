@@ -97,10 +97,16 @@ def create_app(state: State | None = None) -> FastAPI:
             pending.append([999, "external", {}, {"client_id": "not-gpu-control"}])
         return {"queue_running": pending[:1], "queue_pending": pending[1:]}
 
-    @app.get("/history/{prompt_id}")
-    async def history(prompt_id: str) -> dict[str, Any]:
+    def history_entry(prompt_id: str) -> dict[str, Any]:
         if prompt_id not in fake.prompts or not completed(prompt_id):
             return {}
+        item = fake.prompts[prompt_id]
+        prompt_record = [
+            0,
+            prompt_id,
+            item["prompt"],
+            {"client_id": item["client_id"]},
+        ]
         if fake.behavior.execution_error:
             return {
                 prompt_id: {
@@ -110,6 +116,7 @@ def create_app(state: State | None = None) -> FastAPI:
                         "messages": [["execution_error", {"exception_message": "fake"}]],
                     },
                     "outputs": {},
+                    "prompt": prompt_record,
                 }
             }
         outputs: dict[str, Any] = {}
@@ -121,7 +128,24 @@ def create_app(state: State | None = None) -> FastAPI:
                 fake.files[item["filename"]] = b"\x89PNG\r\n\x1a\nFAKE"
             outputs = {"9": {"images": images}}
         return {
-            prompt_id: {"status": {"completed": True, "status_str": "success"}, "outputs": outputs}
+            prompt_id: {
+                "status": {"completed": True, "status_str": "success"},
+                "outputs": outputs,
+                "prompt": prompt_record,
+            }
+        }
+
+    @app.get("/history/{prompt_id}")
+    async def history(prompt_id: str) -> dict[str, Any]:
+        return history_entry(prompt_id)
+
+    @app.get("/history")
+    async def all_history(max_items: int = 10_000) -> dict[str, Any]:
+        completed_ids = [prompt_id for prompt_id in fake.prompts if completed(prompt_id)]
+        selected = completed_ids[-max(1, max_items) :]
+        return {
+            prompt_id: history_entry(prompt_id)[prompt_id]
+            for prompt_id in selected
         }
 
     @app.get("/view")

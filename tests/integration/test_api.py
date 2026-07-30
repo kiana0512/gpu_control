@@ -9,9 +9,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
+import pytest
 from gpu_control_api.main import _merge_service_parameter, create_app
 from sqlalchemy import func, select
 
+from packages.gpu_control_core.enums import BatchStatus
 from packages.gpu_control_core.models import (
     Alert,
     ApiClient,
@@ -19,9 +21,13 @@ from packages.gpu_control_core.models import (
     AssetArtifact,
     AssetJob,
     AssetWorker,
+    AuditLog,
     Base,
     BatchArtifact,
+    BatchCancelOperation,
+    BatchIdempotencyKey,
     Job,
+    JobArtifact,
     JobBatch,
     JobEvent,
     Node,
@@ -48,6 +54,24 @@ def test_modelview_prompt_form_field_merges_without_ambiguity() -> None:
         assert "不能冲突" in str(exc)
     else:
         raise AssertionError("conflicting prompt sources must fail closed")
+
+
+async def test_api_version_exposes_immutable_build_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GPU_CONTROL_BUILD_VERSION", "1.5.5")
+    monkeypatch.setenv("GPU_CONTROL_BUILD_REVISION", "a" * 40)
+    monkeypatch.setattr("gpu_control_api.main.package_version", lambda _: "1.5.5")
+    async for _, client in prepared_app(tmp_path):
+        response = await client.get("/api/v1/version")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["component"] == "api"
+        assert payload["version"] == "1.5.5"
+        assert payload["build_version"] == "1.5.5"
+        assert payload["source_revision"] == "a" * 40
+        assert payload["provenance_complete"] is True
+        assert payload["version_aligned"] is True
 
 
 async def prepared_app(tmp_path: Path):
@@ -309,6 +333,18 @@ async def test_batch_api_idempotency_isolation_and_parent_only_admin_list(
         )
         assert first.status_code == 202, first.text
         batch_id = first.json()["batch_id"]
+        expected_identity = {
+            "workflow_key": "imageclip-rgba",
+            "workflow_version": "test-1",
+            "pipeline_commit": "7" * 40,
+            "pipeline_sha256": "8" * 64,
+            "output_node": "SaveImage #9",
+        }
+        assert {key: first.json()[key] for key in expected_identity} == expected_identity
+        assert first.json()["validated_at"] is not None
+        assert first.json()["queued_at"] is not None
+        assert first.json()["updated_at"] is not None
+        assert first.json()["started_at"] is None
 
         repeated = await client.post(
             "/api/v1/batches/imageclip-rgba",
@@ -338,8 +374,7 @@ async def test_batch_api_idempotency_isolation_and_parent_only_admin_list(
             headers={"X-API-Key": "gpc_abcd1234_secret"},
         )
         assert own_status.status_code == 200
-        assert own_status.json()["pipeline_commit"] == "7" * 40
-        assert own_status.json()["pipeline_sha256"] == "8" * 64
+        assert {key: own_status.json()[key] for key in expected_identity} == expected_identity
         assert own_status.json()["counts"] == {
             "total": 1,
             "pending": 1,
@@ -349,6 +384,106 @@ async def test_batch_api_idempotency_isolation_and_parent_only_admin_list(
             "failed": 0,
             "cancelled": 0,
         }
+        manifest_status = await client.get(
+            f"/api/v1/batches/{batch_id}/manifest",
+            headers={"X-API-Key": "gpc_abcd1234_secret"},
+        )
+        assert {
+            key: manifest_status.json()[key] for key in expected_identity
+        } == expected_identity
+        async with app.state.db.session() as session:
+            workflow_row = await session.scalar(
+                select(WorkflowVersion).where(
+                    WorkflowVersion.workflow_key == "imageclip-rgba",
+                    WorkflowVersion.version == "test-1",
+                )
+            )
+            assert workflow_row is not None
+            workflow_row.node_labels = {
+                "imageclip_commit": "a" * 40,
+                "imageclip_pipeline_sha256": "b" * 64,
+            }
+            workflow_row.output_nodes = ["1"]
+            workflow_row.enabled = False
+            existing_key = await session.scalar(
+                select(BatchIdempotencyKey).where(
+                    BatchIdempotencyKey.client_id == "tenant",
+                    BatchIdempotencyKey.key == "animation-batch-001",
+                )
+            )
+            assert existing_key is not None
+            canonical_manifest = json.dumps(
+                manifest,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+            existing_key.request_hash = hashlib.sha256(
+                b"test-1\x00" + canonical_manifest
+            ).hexdigest()
+            session.add(
+                WorkflowVersion(
+                    workflow_key="imageclip-rgba",
+                    version="test-2",
+                    template={
+                        "1": {
+                            "class_type": "LoadImage",
+                            "inputs": {"image": "placeholder.png"},
+                        },
+                        "9": {"class_type": "SaveImage", "inputs": {}},
+                    },
+                    parameter_schema={
+                        "type": "object",
+                        "properties": {"image_filename": {"type": "string"}},
+                        "required": ["image_filename"],
+                        "additionalProperties": False,
+                    },
+                    bindings={"image_filename": "1.inputs.image"},
+                    allowed_class_types=["LoadImage", "SaveImage"],
+                    required_models=[],
+                    required_custom_nodes=[],
+                    min_vram_mb=0,
+                    timeout_seconds=60,
+                    node_labels={
+                        "imageclip_commit": "a" * 40,
+                        "imageclip_pipeline_sha256": "b" * 64,
+                    },
+                    output_nodes=["9"],
+                    enabled=True,
+                    template_sha256="batch-test-2",
+                )
+            )
+            await session.commit()
+        immutable_status = await client.get(
+            f"/api/v1/batches/{batch_id}",
+            headers={"X-API-Key": "gpc_abcd1234_secret"},
+        )
+        assert {
+            key: immutable_status.json()[key] for key in expected_identity
+        } == expected_identity
+        replay_after_workflow_switch = await client.post(
+            "/api/v1/batches/imageclip-rgba",
+            headers=headers,
+            files={
+                "archive": ("frames.zip", archive.getvalue(), "application/zip"),
+                "manifest": (None, json.dumps(manifest)),
+            },
+        )
+        assert replay_after_workflow_switch.status_code == 200
+        assert replay_after_workflow_switch.json()["batch_id"] == batch_id
+        assert {
+            key: replay_after_workflow_switch.json()[key] for key in expected_identity
+        } == expected_identity
+        legacy_replay_conflict = await client.post(
+            "/api/v1/batches/imageclip-rgba",
+            headers=headers,
+            files={
+                "archive": ("frames.zip", archive.getvalue(), "application/zip"),
+                "manifest": (None, json.dumps(changed)),
+            },
+        )
+        assert legacy_replay_conflict.status_code == 409
+        assert legacy_replay_conflict.json()["detail"]["code"] == "IDEMPOTENCY_CONFLICT"
         foreign_status = await client.get(
             f"/api/v1/batches/{batch_id}",
             headers={"X-API-Key": "gpc_tenantb1_secret-b"},
@@ -443,12 +578,34 @@ async def test_batch_api_idempotency_isolation_and_parent_only_admin_list(
             headers={"X-API-Key": "gpc_abcd1234_secret"},
         )
         public_url = public_detail.json()["artifacts"][0]["download_url"]
+        assert {
+            key: public_detail.json()["artifact"][key] for key in expected_identity
+        } == expected_identity
         assert public_url.startswith(f"/api/v1/batches/{batch_id}/artifacts/")
-        assert (
-            await client.get(
-                public_url, headers={"X-API-Key": "gpc_abcd1234_secret"}
-            )
-        ).content == b"result"
+        full_download = await client.get(
+            public_url, headers={"X-API-Key": "gpc_abcd1234_secret"}
+        )
+        assert full_download.content == b"result"
+        assert full_download.headers["accept-ranges"] == "bytes"
+        assert full_download.headers["x-artifact-sha256"] == hashlib.sha256(
+            b"result"
+        ).hexdigest()
+        ranged_download = await client.get(
+            public_url,
+            headers={
+                "X-API-Key": "gpc_abcd1234_secret",
+                "X-Request-ID": "assetclaw-range-test",
+                "Range": "bytes=2-",
+            },
+        )
+        assert ranged_download.status_code == 206
+        assert ranged_download.content == b"sult"
+        assert ranged_download.headers["content-range"] == "bytes 2-5/6"
+        assert ranged_download.headers["content-length"] == "4"
+        assert ranged_download.headers["x-request-id"] == "assetclaw-range-test"
+        assert ranged_download.headers["x-artifact-sha256"] == hashlib.sha256(
+            b"result"
+        ).hexdigest()
         assert (
             await client.get(
                 public_url, headers={"X-API-Key": "gpc_tenantb1_secret-b"}
@@ -456,6 +613,381 @@ async def test_batch_api_idempotency_isolation_and_parent_only_admin_list(
         ).status_code == 404
         async with app.state.db.session() as session:
             assert await session.get(JobBatch, batch_id) is not None
+
+
+async def test_batch_cancel_operation_child_guards_and_audit(tmp_path: Path) -> None:
+    async for app, client in prepared_app(tmp_path):
+        batch_id = str(uuid.uuid4())
+        child_id = str(uuid.uuid4())
+        artifact_id = str(uuid.uuid4())
+        parent_artifact_id = str(uuid.uuid4())
+        batch_dir = tmp_path / "jobs" / "batches" / batch_id
+        child_dir = tmp_path / "jobs" / child_id
+        batch_dir.mkdir(parents=True)
+        child_dir.mkdir(parents=True)
+        parent_output = batch_dir / "result.zip"
+        parent_output.write_bytes(b"premature-parent-result")
+        child_output = child_dir / "output.png"
+        child_output.write_bytes(b"child-result")
+        now = datetime.now(UTC)
+        async with app.state.db.session() as session:
+            session.add(
+                JobBatch(
+                    id=batch_id,
+                    tenant_id="tenant",
+                    external_batch_id="assetclaw:cancel-contract:g1",
+                    workflow_key="imageclip-rgba",
+                    workflow_version="test-1",
+                    pipeline_commit="7" * 40,
+                    pipeline_sha256="8" * 64,
+                    output_node="SaveImage #9",
+                    status="QUEUED",
+                    failure_policy="all_or_nothing",
+                    output_naming="preserve_stem_png",
+                    parameters={},
+                    request_hash="batch-cancel-hash",
+                    request_id="batch-cancel-create",
+                    trace_id="batch-cancel-trace",
+                    batch_dir=str(batch_dir),
+                    manifest_sha256="1" * 64,
+                    archive_sha256="2" * 64,
+                    archive_size_bytes=1,
+                    total_items=1,
+                    pending_items=1,
+                    validated_at=now,
+                    queued_at=now,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                Job(
+                    id=child_id,
+                    tenant_id="tenant",
+                    workflow_key="imageclip-rgba",
+                    workflow_version="test-1",
+                    status="RUNNING",
+                    priority="batch",
+                    parameters={},
+                    request_hash="batch-child-hash",
+                    request_id="batch-child-request",
+                    trace_id="batch-child-trace",
+                    job_dir=str(child_dir),
+                    batch_id=batch_id,
+                    node_id="worker-3090-a",
+                )
+            )
+            session.add(
+                JobArtifact(
+                    id=artifact_id,
+                    job_id=child_id,
+                    kind="output",
+                    relative_path="output.png",
+                    content_type="image/png",
+                    size_bytes=len(b"child-result"),
+                    sha256=hashlib.sha256(b"child-result").hexdigest(),
+                )
+            )
+            session.add(
+                BatchArtifact(
+                    id=parent_artifact_id,
+                    batch_id=batch_id,
+                    kind="result_archive",
+                    relative_path="result.zip",
+                    filename="result.zip",
+                    content_type="application/zip",
+                    size_bytes=len(b"premature-parent-result"),
+                    sha256=hashlib.sha256(b"premature-parent-result").hexdigest(),
+                )
+            )
+            await session.commit()
+
+        api_headers = {"X-API-Key": "gpc_abcd1234_secret"}
+        child_list = await client.get(
+            f"/api/v1/jobs/{child_id}/artifacts", headers=api_headers
+        )
+        assert child_list.status_code == 409
+        assert child_list.json()["detail"]["code"] == "ARTIFACT_NOT_READY"
+        child_download = await client.get(
+            f"/api/v1/jobs/{child_id}/artifacts/{artifact_id}", headers=api_headers
+        )
+        assert child_download.status_code == 409
+        assert child_download.json()["detail"]["code"] == "ARTIFACT_NOT_READY"
+        parent_download = await client.get(
+            f"/api/v1/batches/{batch_id}/artifacts/{parent_artifact_id}",
+            headers=api_headers,
+        )
+        assert parent_download.status_code == 409
+        assert parent_download.json()["detail"]["code"] == "ARTIFACT_NOT_READY"
+
+        for parent_status in ("RUNNING", "ASSEMBLING"):
+            async with app.state.db.session() as session:
+                guarded_batch = await session.get(JobBatch, batch_id)
+                assert guarded_batch is not None
+                guarded_batch.status = parent_status
+                await session.commit()
+            for artifact_url in (
+                f"/api/v1/jobs/{child_id}/artifacts",
+                f"/api/v1/jobs/{child_id}/artifacts/{artifact_id}",
+                f"/api/v1/batches/{batch_id}/artifacts/{parent_artifact_id}",
+            ):
+                blocked = await client.get(artifact_url, headers=api_headers)
+                assert blocked.status_code == 409
+                assert blocked.json()["detail"]["code"] == "ARTIFACT_NOT_READY"
+
+        async with app.state.db.session() as session:
+            guarded_batch = await session.get(JobBatch, batch_id)
+            assert guarded_batch is not None
+            guarded_batch.status = "QUEUED"
+            await session.commit()
+
+        rejected_public = await client.post(
+            f"/api/v1/jobs/{child_id}/cancel", headers=api_headers
+        )
+        assert rejected_public.status_code == 409
+        assert rejected_public.json()["detail"]["code"] == "BATCH_CHILD_CANCEL_FORBIDDEN"
+
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        admin_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        rejected_node_interrupt = await client.post(
+            "/admin/nodes/worker-3090-a/interrupt",
+            headers=admin_headers,
+            json={"reason": "operator interrupt test", "confirm": True},
+        )
+        assert rejected_node_interrupt.status_code == 409
+        assert (
+            rejected_node_interrupt.json()["detail"]["code"]
+            == "BATCH_CHILD_INTERRUPT_FORBIDDEN"
+        )
+        async with app.state.db.session() as session:
+            guarded_child = await session.get(Job, child_id)
+            guarded_node = await session.get(Node, "worker-3090-a")
+            assert guarded_child is not None and guarded_child.status == "RUNNING"
+            assert guarded_child.cancel_requested is False
+            assert guarded_node is not None and guarded_node.mode == "ACTIVE"
+        rejected_admin = await client.post(
+            f"/admin/jobs/{child_id}/cancel",
+            headers=admin_headers,
+            json={"reason": "must use parent batch", "confirm": True},
+        )
+        assert rejected_admin.status_code == 409
+        assert rejected_admin.json()["detail"]["code"] == "BATCH_CHILD_CANCEL_FORBIDDEN"
+
+        cancel_key = "assetclaw:cancel-contract:g1:cancel"
+        missing_explicit_key = await client.post(
+            f"/api/v1/batches/{batch_id}/cancel",
+            headers={"Idempotency-Key": cancel_key},
+        )
+        assert missing_explicit_key.status_code == 401
+        assert missing_explicit_key.json()["detail"]["code"] == "EXPLICIT_API_KEY_REQUIRED"
+
+        cancel_headers = {
+            **api_headers,
+            "Idempotency-Key": cancel_key,
+            "X-Request-ID": "assetclaw-cancel-01",
+        }
+        cancelled = await client.post(
+            f"/api/v1/batches/{batch_id}/cancel",
+            headers=cancel_headers,
+            json={"reason": "user requested cancellation"},
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        cancel_payload = cancelled.json()
+        assert cancel_payload["status"] == "CANCEL_REQUESTED"
+        assert cancel_payload["cancel_status"] == "REQUESTED"
+        assert cancel_payload["cancel_request_id"] == "assetclaw-cancel-01"
+        assert cancel_payload["cancel_idempotency_key"] == cancel_key
+        assert cancel_payload["cancel_requested_by"] == "tenant"
+        assert cancel_payload["cancel_source"] == "public_api"
+        assert cancel_payload["cancel_reason"] == "user requested cancellation"
+        assert cancel_payload["cancel_counts"]["not_started"] == 1
+
+        replayed = await client.post(
+            f"/api/v1/batches/{batch_id}/cancel",
+            headers={**cancel_headers, "X-Request-ID": "assetclaw-cancel-retry"},
+            json={"reason": "this replay must not replace the original"},
+        )
+        assert replayed.status_code == 200
+        assert replayed.json()["status"] == "CANCEL_REQUESTED"
+        assert replayed.json()["cancel_operation_id"] == cancel_payload["cancel_operation_id"]
+        assert replayed.json()["cancel_request_id"] == "assetclaw-cancel-01"
+        assert replayed.json()["cancel_reason"] == "user requested cancellation"
+
+        async with app.state.db.session() as session:
+            batch = await session.get(JobBatch, batch_id)
+            operation = await session.scalar(
+                select(BatchCancelOperation).where(
+                    BatchCancelOperation.batch_id == batch_id
+                )
+            )
+            assert batch is not None and operation is not None
+            batch.status = "CANCELLED"
+            batch.cancelled_items = 1
+            batch.pending_items = 0
+            batch.finished_at = datetime.now(UTC)
+            operation.status = "COMPLETED"
+            operation.finished_at = batch.finished_at
+            operation.cancelled_items = 1
+            await session.commit()
+        terminal_replay = await client.post(
+            f"/api/v1/batches/{batch_id}/cancel", headers=cancel_headers
+        )
+        assert terminal_replay.status_code == 200
+        assert terminal_replay.json()["cancel_operation_id"] == cancel_payload[
+            "cancel_operation_id"
+        ]
+        wrong_cancel_key = await client.post(
+            f"/api/v1/batches/{batch_id}/cancel",
+            headers={**api_headers, "Idempotency-Key": f"{cancel_key}:other"},
+        )
+        assert wrong_cancel_key.status_code == 409
+        assert wrong_cancel_key.json()["detail"]["code"] == "IDEMPOTENCY_CONFLICT"
+
+        illegal_batch_id = str(uuid.uuid4())
+        illegal_external_id = "assetclaw:illegal-cancelled:g1"
+        illegal_batch_dir = tmp_path / "jobs" / "batches" / illegal_batch_id
+        illegal_batch_dir.mkdir(parents=True)
+        async with app.state.db.session() as session:
+            session.add(
+                JobBatch(
+                    id=illegal_batch_id,
+                    tenant_id="tenant",
+                    external_batch_id=illegal_external_id,
+                    workflow_key="imageclip-rgba",
+                    workflow_version="test-1",
+                    pipeline_commit="7" * 40,
+                    pipeline_sha256="8" * 64,
+                    output_node="SaveImage #9",
+                    status="CANCELLED",
+                    failure_policy="all_or_nothing",
+                    output_naming="preserve_stem_png",
+                    parameters={},
+                    request_hash="illegal-cancelled-hash",
+                    request_id="illegal-cancelled-request",
+                    trace_id="illegal-cancelled-trace",
+                    batch_dir=str(illegal_batch_dir),
+                    manifest_sha256="3" * 64,
+                    archive_sha256="4" * 64,
+                    archive_size_bytes=1,
+                    total_items=1,
+                    cancelled_items=1,
+                    created_at=now,
+                    validated_at=now,
+                    queued_at=now,
+                    finished_at=now,
+                    updated_at=now,
+                )
+            )
+            await session.commit()
+        illegal_terminal_cancel = await client.post(
+            f"/api/v1/batches/{illegal_batch_id}/cancel",
+            headers={
+                **api_headers,
+                "Idempotency-Key": f"{illegal_external_id}:cancel",
+            },
+        )
+        assert illegal_terminal_cancel.status_code == 409
+        assert illegal_terminal_cancel.json()["detail"]["code"] == "BATCH_NOT_CANCELLABLE"
+
+        async with app.state.db.session() as session:
+            assert int(
+                await session.scalar(select(func.count(BatchCancelOperation.id))) or 0
+            ) == 1
+            rejected_audits = int(
+                await session.scalar(
+                    select(func.count(AuditLog.id)).where(
+                        AuditLog.action == "job.cancel.rejected_batch_child",
+                        AuditLog.result == "REJECTED",
+                    )
+                )
+                or 0
+            )
+            assert rejected_audits == 2
+            node_interrupt_audits = int(
+                await session.scalar(
+                    select(func.count(AuditLog.id)).where(
+                        AuditLog.action == "node.interrupt.rejected_batch_child",
+                        AuditLog.result == "REJECTED",
+                    )
+                )
+                or 0
+            )
+            assert node_interrupt_audits == 1
+            cancel_audits = int(
+                await session.scalar(
+                    select(func.count(AuditLog.id)).where(
+                        AuditLog.action == "batch.cancel",
+                        AuditLog.target_id == batch_id,
+                    )
+                )
+                or 0
+            )
+            assert cancel_audits == 1
+
+
+async def test_admin_parent_cancel_uses_public_acknowledgement_state(tmp_path: Path) -> None:
+    async for app, client in prepared_app(tmp_path):
+        batch_id = str(uuid.uuid4())
+        now = datetime.now(UTC)
+        async with app.state.db.session() as session:
+            session.add(
+                JobBatch(
+                    id=batch_id,
+                    tenant_id="tenant",
+                    external_batch_id="assetclaw:admin-cancel:g1",
+                    workflow_key="imageclip-rgba",
+                    workflow_version="test-1",
+                    pipeline_commit="7" * 40,
+                    pipeline_sha256="8" * 64,
+                    output_node="SaveImage #9",
+                    status=BatchStatus.QUEUED.value,
+                    failure_policy="all_or_nothing",
+                    output_naming="preserve_stem_png",
+                    parameters={},
+                    request_hash="admin-cancel-hash",
+                    request_id="admin-cancel-create",
+                    trace_id="admin-cancel-trace",
+                    batch_dir=str(tmp_path / "jobs" / "batches" / batch_id),
+                    manifest_sha256="1" * 64,
+                    archive_sha256="2" * 64,
+                    archive_size_bytes=1,
+                    total_items=1,
+                    pending_items=1,
+                    validated_at=now,
+                    queued_at=now,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            await session.commit()
+
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        response = await client.post(
+            f"/admin/batches/{batch_id}/cancel",
+            headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+            json={"reason": "admin parent cancellation", "confirm": True},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "CANCEL_REQUESTED"
+        assert response.json()["cancel_status"] == "REQUESTED"
+        assert response.json()["cancel_source"] == "admin_api"
+
+        async with app.state.db.session() as session:
+            batch = await session.get(JobBatch, batch_id)
+            operation = await session.scalar(
+                select(BatchCancelOperation).where(
+                    BatchCancelOperation.batch_id == batch_id
+                )
+            )
+            assert batch is not None and operation is not None
+            assert batch.status == BatchStatus.CANCELLING.value
+            assert operation.status == "REQUESTED"
 
 
 async def test_uploaded_image_binding_uses_isolated_job_subfolder(tmp_path: Path) -> None:
@@ -712,6 +1244,8 @@ async def test_admin_retry_clears_previous_execution_and_keeps_error_audit(
             job.status = "FAILED"
             job.node_id = "worker-3090-a"
             job.prompt_id = "old-prompt"
+            job.submission_client_id = "gpu-control-old-attempt"
+            job.submission_intent_at = now
             job.progress = 73
             job.attempt_count = 1
             job.cancel_requested = True
@@ -746,6 +1280,7 @@ async def test_admin_retry_clears_previous_execution_and_keeps_error_audit(
             job = await db.get(Job, job_id)
             assert job is not None
             assert job.claimed_at is None and job.not_before is None
+            assert job.submission_client_id is None and job.submission_intent_at is None
             assert job.cancel_requested is False
             event = await db.scalar(
                 select(JobEvent).where(
@@ -1077,6 +1612,8 @@ async def test_signed_node_heartbeat_updates_address_and_dynamic_monitoring(
         payload = {
             "gpu_uuid": "GPU-9f116ee8-a845-c3a3-b10d-fdd6a9f8cc6c",
             "hostname": "gpu-worker-a",
+            "node_agent_version": "1.5.5",
+            "source_revision": "9" * 40,
             "imageclip_commit": "7" * 40,
             "imageclip_pipeline_sha256": "8" * 64,
             "ip": "10.0.0.99",
@@ -1117,6 +1654,8 @@ async def test_signed_node_heartbeat_updates_address_and_dynamic_monitoring(
             assert node.labels["gpu_uuid"] == payload["gpu_uuid"]
             assert node.labels["imageclip_commit"] == "7" * 40
             assert node.labels["imageclip_pipeline_sha256"] == "8" * 64
+            assert node.labels["node_agent_version"] == "1.5.5"
+            assert node.labels["source_revision"] == "9" * 40
             assert node.custom_nodes_version == "imageclip:777777777777:888888888888"
         targets = await client.get("/internal/prometheus/workers")
         assert targets.status_code == 200

@@ -5,7 +5,9 @@
 面向两台 RTX 3090 工作节点和一台 RTX 4090 控制中心的统一任务调度、运维与可观测平台；GPU
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
-当前应用版本：`1.5.4`；三机 ComfyUI 固定镜像：`projects-0.2.3`。GPU 推理平面继续提供三机图片 API 与分布式序列帧调度；独立 CPU Asset 平面提供 Blender PBR UV、AI 重拓扑和 Windows Substance 烘焙 API，支持并发 Worker、轮询与可续传 SSE 进度、动态 ETA、多视角参考、严格 QA 自动发布和逐产物 SHA-256 校验。生产链路没有人工发布门；任一严格 QA 失败均拒绝发布。两个平面使用独立队列与租约，资产任务不会占用或阻塞 GPU 推理槽。
+生产在线版本：`1.5.4`，最后核验的生产数据库修订为 `20260729_0010`；当前工作树中的 V4.1 对齐候选版本为 `1.5.5`，对应候选迁移 `20260730_0011`（未部署、未执行生产迁移、未联合验收）；三机 ComfyUI 固定镜像：`projects-0.2.3`。GPU 推理平面继续提供三机图片 API 与分布式序列帧调度；独立 CPU Asset 平面提供 Blender PBR UV、AI 重拓扑和 Windows Substance 烘焙 API，支持并发 Worker、轮询与可续传 SSE 进度、动态 ETA、多视角参考、严格 QA 自动发布和逐产物 SHA-256 校验。生产链路没有人工发布门；任一严格 QA 失败均拒绝发布。两个平面使用独立队列与租约，资产任务不会占用或阻塞 GPU 推理槽。
+
+1.5.5 的候选镜像与离线归档只允许按 `docs/68_2026-07-30_CONTROL_PLANE_1_5_5_REPRODUCIBLE_PACKAGING.md` 执行；默认命令仅生成计划，缺少已推送干净提交、固定 SBOM generator、精确确认令牌或 registry 证据时不得写成正式发布。
 
 ```mermaid
 flowchart LR
@@ -30,7 +32,7 @@ flowchart LR
 | asyncio scheduler | `SKIP LOCKED` 领取、公平队列、节点选择、执行、恢复与回调 |
 | Redis | 非持久唤醒、实时事件和限流；中断不会丢任务 |
 | ComfyUI client/Fake | 上传、提交、WS、历史、下载、取消、释放模型；无 GPU 可测 |
-| Vue 3 管理台 | LiClick 风格总览、任务、节点、工作流、客户、策略、日志和审计 |
+| Vue 3 管理台 | 动画管家对齐的任务/API 分类、真实阶段时间、性能分析、可解释调度、节点、日志和审计 |
 | Alloy/Loki/Grafana | 三机日志集中、指标、仪表盘与告警 |
 | Node Agent / `gpuctl` | HMAC 受限运维与统一启动器；不挂 Docker Socket |
 
@@ -96,3 +98,5 @@ make verify
 - [Asset V4 客户端合同](docs/58_2026-07-29_ASSET_V4_CLIENT_HANDOFF_AND_STABILITY.md) · [Substance Baker API](docs/58_2026-07-29_SUBSTANCE_BAKER_API.md)
 - [发布审计与稳定性记录](docs/59_2026-07-29_RELEASE_AUDIT_STABILITY_AND_IMAGE_RECORD.md) · [粗糙度与烘焙 V2 交接](docs/59_2026-07-29_ROUGHNESS_AND_SUBSTANCE_BAKER_API_HANDOFF_V2.md)
 - [UV / 重拓扑 V5 交接](docs/60_2026-07-29_UV_AND_RETOPOLOGY_API_HANDOFF_V5.md) · [Baker 四槽发布](docs/61_2026-07-29_SUBSTANCE_BAKER_4_SLOT_RELEASE.md) · [可复现备份与滚动更新](docs/62_2026-07-30_REPRODUCIBLE_BACKUP_AND_ROLLING_UPDATE.md)
+- [三节点发布与恢复闭环](docs/63_2026-07-30_THREE_NODE_RELEASE_AND_RECOVERY_CLOSURE.md) · [动画管家 V4.1 首轮事实回执](docs/64_2026-07-30_ASSETCLAW_GPU_CONTROL_V4_1_RECEIPT.md) · [动画管家优化后第二轮对齐回执](docs/65_2026-07-30_ASSETCLAW_POST_OPTIMIZATION_ALIGNMENT_RECEIPT.md)
+- [WebUI 运行中心重构](docs/66_2026-07-30_WEBUI_OPERATIONS_REDESIGN.md) · [六 API 综合压测手册](docs/67_2026-07-30_SIX_API_MIXED_LOAD_TEST_RUNBOOK.md)

@@ -110,6 +110,49 @@ class ComfyClient:
     async def history(self, prompt_id: str) -> dict[str, Any]:
         return await self._json("GET", f"/history/{prompt_id}")
 
+    async def prompt_ids_for_client(
+        self, client_id: str, *, max_history_items: int = 10_000
+    ) -> list[str]:
+        """Find already accepted prompts for a deterministic submission id.
+
+        This is the recovery half of the scheduler's submit intent protocol.
+        Comfy assigns prompt ids, so after an ambiguous HTTP outcome we search
+        both the live queue and retained history by the caller-controlled
+        ``client_id`` before deciding whether a new submission is safe.
+        """
+        if not client_id or len(client_id) > 128:
+            raise ValueError("client_id must contain 1..128 characters")
+        if max_history_items < 1:
+            raise ValueError("max_history_items must be positive")
+
+        found: set[str] = set()
+        queue = await self.queue()
+        for section in ("queue_running", "queue_pending"):
+            for item in queue.get(section, []):
+                if not isinstance(item, list) or len(item) < 4:
+                    continue
+                metadata = item[3] if isinstance(item[3], dict) else {}
+                if str(metadata.get("client_id", "")) == client_id:
+                    found.add(str(item[1]))
+
+        history = await self._json(
+            "GET", "/history", params={"max_items": max_history_items}
+        )
+        for raw_prompt_id, raw_entry in history.items():
+            if not isinstance(raw_entry, dict):
+                continue
+            metadata_candidates: list[dict[str, Any]] = []
+            prompt = raw_entry.get("prompt")
+            if isinstance(prompt, list) and len(prompt) > 3 and isinstance(prompt[3], dict):
+                metadata_candidates.append(prompt[3])
+            for key in ("extra_data", "metadata"):
+                candidate = raw_entry.get(key)
+                if isinstance(candidate, dict):
+                    metadata_candidates.append(candidate)
+            if any(str(item.get("client_id", "")) == client_id for item in metadata_candidates):
+                found.add(str(raw_prompt_id))
+        return sorted(found)
+
     async def upload(
         self,
         path: Path,

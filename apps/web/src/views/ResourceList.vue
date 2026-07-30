@@ -22,9 +22,7 @@ type PublicService =
   | "asset-uv"
   | "asset-retopology"
   | "asset-bake";
-const selectedService = ref<PublicService>(
-  "imageclip-rgba",
-);
+const selectedService = ref<PublicService>("imageclip-rgba");
 const search = ref("");
 const clientScope = ref<"production" | "test">("production");
 const modelviewPromptEnabled =
@@ -110,7 +108,7 @@ const outputName = computed(() =>
     ? "result-rgba.png"
     : selectedService.value === "modelview-roughness"
       ? "result-roughness.png"
-    : "result-inpaint.png",
+      : "result-inpaint.png",
 );
 const curlExample = computed(() => {
   if (selectedService.value === "asset-uv")
@@ -118,7 +116,7 @@ const curlExample = computed(() => {
       `curl -X POST '${serviceUrl.value}' \\`,
       "  -H 'Idempotency-Key: asset-chair-uv-001' \\",
       "  -F 'asset=@chair.fbx' \\",
-      "  -F 'metadata={\"external_asset_id\":\"asset:chair:uv:001\",\"options\":{\"hidden_axis\":\"y+\",\"hard_edge_angle_degrees\":75,\"resolution\":2048,\"padding_px\":10}};type=application/json'",
+      '  -F \'metadata={"external_asset_id":"asset:chair:uv:001","options":{"hidden_axis":"y+","hard_edge_angle_degrees":75,"resolution":2048,"padding_px":10}};type=application/json\'',
     ].join("\n");
   if (selectedService.value === "asset-retopology")
     return [
@@ -126,7 +124,7 @@ const curlExample = computed(() => {
       "  -H 'Idempotency-Key: asset-crate-retopo-001' \\",
       "  -F 'project=@crate.blend' \\",
       "  -F 'reference_images=@crate_front.png' \\",
-      "  -F 'metadata={\"external_asset_id\":\"asset:crate:retopo:001\",\"options\":{\"high_object\":\"crate_high\",\"reference_object\":\"crate_reference_low\",\"low_object\":\"crate_current_low\",\"generated_low_object\":\"crate_generated_v001\",\"target_faces\":3000}};type=application/json'",
+      '  -F \'metadata={"external_asset_id":"asset:crate:retopo:001","options":{"high_object":"crate_high","reference_object":"crate_reference_low","low_object":"crate_current_low","generated_low_object":"crate_generated_v001","target_faces":3000}};type=application/json\'',
     ].join("\n");
   if (selectedService.value === "asset-bake")
     return [
@@ -137,17 +135,14 @@ const curlExample = computed(() => {
       "  -F 'base_color_texture=@chair_basecolor.png' \\",
       "  -F 'roughness_texture=@chair_roughness.png' \\",
       "  -F 'metallic_texture=@chair_metallic.png' \\",
-      "  -F 'metadata={\"external_asset_id\":\"asset:chair:bake:001\",\"options\":{\"profile\":\"li3d-pbr-full-v2\",\"resolution\":2048,\"texture_cache_mb\":32768}};type=application/json'",
+      '  -F \'metadata={"external_asset_id":"asset:chair:bake:001","options":{"profile":"li3d-pbr-full-v2","resolution":2048,"texture_cache_mb":32768}};type=application/json\'',
     ].join("\n");
   const lines = [
     `curl -X POST '${serviceUrl.value}' \\`,
     "  -H 'Idempotency-Key: order-001-attempt-1' \\",
     "  -F 'image=@input.png' \\",
   ];
-  if (
-    selectedService.value === "modelview-inpaint" &&
-    modelviewPromptEnabled
-  )
+  if (selectedService.value === "modelview-inpaint" && modelviewPromptEnabled)
     lines.push("  -F 'prompt=修复蒙版区域的破损边缘' \\");
   lines.push(`  --output '${outputName.value}'`);
   return lines.join("\n");
@@ -160,11 +155,10 @@ const pythonExample = computed(() => {
   if (selectedService.value === "asset-bake")
     return `import json, requests\n\nmetadata = {"external_asset_id": "asset:chair:bake:001", "options": {"profile": "li3d-pbr-full-v2", "resolution": 2048, "texture_cache_mb": 32768}}\nwith open("chair_low_uv.fbx", "rb") as low, open("chair_high.fbx", "rb") as high, open("chair_basecolor.png", "rb") as base, open("chair_roughness.png", "rb") as roughness, open("chair_metallic.png", "rb") as metallic:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "asset-chair-bake-001"},\n        files={"low_mesh": ("chair_low_uv.fbx", low), "high_mesh": ("chair_high.fbx", high), "base_color_texture": ("chair_basecolor.png", base, "image/png"), "roughness_texture": ("chair_roughness.png", roughness, "image/png"), "metallic_texture": ("chair_metallic.png", metallic, "image/png")},\n        data={"metadata": json.dumps(metadata)},\n        timeout=60,\n    )\nresponse.raise_for_status()\nprint(response.json())`;
   return `import requests\n\nwith open("input.png", "rb") as source:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "order-001-attempt-1"},\n        files={"image": ("input.png", source, "image/png")},${
-          selectedService.value === "modelview-inpaint" &&
-          modelviewPromptEnabled
-            ? '\n        data={"prompt": "修复蒙版区域的破损边缘"},'
-            : ""
-        }\n        timeout=1900,\n    )\nresponse.raise_for_status()\nwith open("${outputName.value}", "wb") as output:\n    output.write(response.content)\nprint("job:", response.headers.get("X-Job-ID"))`;
+    selectedService.value === "modelview-inpaint" && modelviewPromptEnabled
+      ? '\n        data={"prompt": "修复蒙版区域的破损边缘"},'
+      : ""
+  }\n        timeout=1900,\n    )\nresponse.raise_for_status()\nwith open("${outputName.value}", "wb") as output:\n    output.write(response.content)\nprint("job:", response.headers.get("X-Job-ID"))`;
 });
 
 function resetClientForm() {
@@ -701,7 +695,9 @@ function formatCell(value: unknown) {
               type="number"
               min="1"
               max="10"
-            /><small>按客户公平性设置；总吞吐由在线 GPU 推理槽动态决定。</small></label
+            /><small
+              >按客户公平性设置；总吞吐由在线 GPU 推理槽动态决定。</small
+            ></label
           ><label
             ><span>每日配额</span
             ><input
@@ -772,7 +768,8 @@ function formatCell(value: unknown) {
         <div class="access-notice">
           <strong>API Key 或来源 IP</strong
           ><span
-            >图片服务同步返回最终图片；UV/重拓扑异步返回 Job，并通过状态 API 或 SSE 获取进度。</span
+            >图片服务同步返回最终图片；UV/重拓扑异步返回 Job，并通过状态 API 或
+            SSE 获取进度。</span
           >
         </div>
         <section class="usage-guide">
@@ -787,23 +784,23 @@ function formatCell(value: unknown) {
               :class="{ active: selectedService === 'modelview-inpaint' }"
               @click="selectedService = 'modelview-inpaint'"
             >
-              ModelView 局部重绘
-            </button><button
+              ModelView 局部重绘</button
+            ><button
               :class="{ active: selectedService === 'modelview-roughness' }"
               @click="selectedService = 'modelview-roughness'"
             >
-              PBR 粗糙度
-            </button><button
+              PBR 粗糙度</button
+            ><button
               :class="{ active: selectedService === 'asset-uv' }"
               @click="selectedService = 'asset-uv'"
             >
-              Blender PBR UV
-            </button><button
+              Blender PBR UV</button
+            ><button
               :class="{ active: selectedService === 'asset-retopology' }"
               @click="selectedService = 'asset-retopology'"
             >
-              AI 重拓扑
-            </button><button
+              AI 重拓扑</button
+            ><button
               :class="{ active: selectedService === 'asset-bake' }"
               @click="selectedService = 'asset-bake'"
             >
@@ -815,13 +812,17 @@ function formatCell(value: unknown) {
               统一入口：<code>{{ serviceUrl }}</code>
             </li>
             <li v-if="selectedService === 'asset-uv'">
-              multipart 字段为 <code>asset + metadata</code>；成功后原子发布 5 项。
+              multipart 字段为 <code>asset + metadata</code>；成功后原子发布 5
+              项。
             </li>
             <li v-else-if="selectedService === 'asset-retopology'">
-              multipart 字段为 <code>project + metadata + reference_images[]</code>；支持多视角并由服务端质量门自动验收。
+              multipart 字段为
+              <code>project + metadata + reference_images[]</code
+              >；支持多视角并由服务端质量门自动验收。
             </li>
             <li v-else-if="selectedService === 'asset-bake'">
-              multipart 字段为低模、高模、Base Color、Roughness、Metallic 与 metadata；仅由 3090-B Windows 原生 Substance Worker 执行。
+              multipart 字段为低模、高模、Base Color、Roughness、Metallic 与
+              metadata；仅由 3090-B Windows 原生 Substance Worker 执行。
             </li>
             <li v-else>multipart 图片字段固定为 <code>image</code>。</li>
             <li v-if="selectedService === 'modelview-roughness'">
@@ -833,7 +834,8 @@ function formatCell(value: unknown) {
                 modelviewPromptEnabled
               "
             >
-              可选文字要求字段为 <code>prompt</code>；省略或留空时自动根据图片反推提示词。
+              可选文字要求字段为
+              <code>prompt</code>；省略或留空时自动根据图片反推提示词。
             </li>
             <li
               v-else-if="
@@ -845,7 +847,8 @@ function formatCell(value: unknown) {
               协议已完成候选实现，将在现有任务清空并完成三节点一致性校验后启用。
             </li>
             <li v-if="selectedService.startsWith('asset-')">
-              HTTP 202 响应提供 <code>job_id/status_url/events_url/cancel_url</code>。
+              HTTP 202 响应提供
+              <code>job_id/status_url/events_url/cancel_url</code>。
             </li>
             <li v-else>响应头 <code>X-Job-ID</code> 可用于日志和排障。</li>
           </ol>
@@ -865,7 +868,11 @@ function formatCell(value: unknown) {
           <pre><code>{{ codeTab === 'curl' ? curlExample : pythonExample }}</code><button @click="copy(codeTab === 'curl' ? curlExample : pythonExample, '调用示例')">复制示例</button></pre>
         </section>
         <footer>
-          <span>{{ selectedService.startsWith("asset-") ? "提交超时建议 60 秒；长任务使用状态 API/SSE" : "图片客户端超时建议设置为 1900 秒" }}</span
+          <span>{{
+            selectedService.startsWith("asset-")
+              ? "提交超时建议 60 秒；长任务使用状态 API/SSE"
+              : "图片客户端超时建议设置为 1900 秒"
+          }}</span
           ><button class="primary" @click="accessPanelOpen = false">
             关闭
           </button>

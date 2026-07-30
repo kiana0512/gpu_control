@@ -504,10 +504,13 @@ def retopology_quality_gate(
         ):
             failures.append("COMPONENT_EVIDENCE_MISSING")
         else:
-            required_components = max(source_components.values())
-            if candidate_components < required_components:
+            required_components = max(
+                cast(int, value) for value in source_components.values()
+            )
+            measured_components = candidate_components
+            if measured_components < required_components:
                 failures.append(
-                    f"FACE_COMPONENTS_LOST={required_components - candidate_components}"
+                    f"FACE_COMPONENTS_LOST={required_components - measured_components}"
                 )
         if isinstance(candidate_components, int) and candidate_components <= 0:
             failures.append(

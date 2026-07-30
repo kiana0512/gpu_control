@@ -56,6 +56,29 @@ async def test_comfy_client_accepts_empty_free_response() -> None:
         await client.close()
 
 
+async def test_prompt_submission_recovery_finds_queue_and_history_without_resubmit() -> None:
+    state = State(behavior=Behavior(duration_seconds=60))
+    client = ComfyClient(
+        "http://fake",
+        transport=httpx.ASGITransport(app=create_app(state)),
+    )
+    try:
+        client_id = "gpu-control-job-1-attempt-1"
+        first = await client.submit({"1": {}}, client_id)
+        assert await client.prompt_ids_for_client(client_id) == [first]
+        assert len(state.prompts) == 1
+
+        state.behavior.duration_seconds = 0
+        assert await client.prompt_ids_for_client(client_id) == [first]
+        assert await client.prompt_ids_for_client("gpu-control-missing-attempt-1") == []
+
+        second = await client.submit({"1": {}}, client_id)
+        assert await client.prompt_ids_for_client(client_id) == sorted([first, second])
+        assert len(state.prompts) == 2
+    finally:
+        await client.close()
+
+
 async def test_comfy_client_overwrites_and_repairs_zero_byte_upload(tmp_path) -> None:
     source = tmp_path / "frame-0034.png"
     expected = b"complete-png-payload"

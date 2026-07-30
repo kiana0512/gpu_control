@@ -2,8 +2,9 @@
 
 本页是仓库文档导航。今天部署时不要从 30 多份文档逐一翻找，按下面的“现场主线”执行即可；其余文档是遇到具体问题时的细节手册。
 
-当前生产基线：GPU Control `1.5.4`、ComfyUI `projects-0.2.3`；3090-A/3090-B 为
-`ONLINE/ACTIVE`，4090 为 `ONLINE/OVERFLOW`。Asset 任务通过严格 QA 后自动发布，
+最近一次已归档的生产基线：GPU Control `1.5.4`、数据库 `20260729_0010`、ComfyUI
+`projects-0.2.3`；归档时 3090-A/3090-B 为 `ONLINE/ACTIVE`，4090 为 `ONLINE/OVERFLOW`。
+断电或重启后必须重新执行只读健康检查，不能把本文档导航当作实时监控。Asset 任务通过严格 QA 后自动发布，
 不存在人工发布门；QA 未通过时必须拒绝交付。
 
 ## 1. 当前现场主线
@@ -30,6 +31,12 @@
 20. `docs/60_2026-07-29_UV_AND_RETOPOLOGY_API_HANDOFF_V5.md`：UV/重拓扑当前客户端合同、自动 QA 发布与错误语义。
 21. `docs/61_2026-07-29_SUBSTANCE_BAKER_4_SLOT_RELEASE.md`：3090-B Windows Baker 四个独立槽位发布记录。
 22. `docs/62_2026-07-30_REPRODUCIBLE_BACKUP_AND_ROLLING_UPDATE.md`：当前可复现镜像、备份状态、滚动更新和回滚手册。
+23. `docs/63_2026-07-30_THREE_NODE_RELEASE_AND_RECOVERY_CLOSURE.md`：当前三节点发布、镜像、恢复点和最终 canary 的闭环事实。
+24. `docs/64_2026-07-30_ASSETCLAW_GPU_CONTROL_V4_1_RECEIPT.md`：动画管家 V4.1 性能稳定合同的首轮事实回执、缺口和联合验收前置项。
+25. `docs/65_2026-07-30_ASSETCLAW_POST_OPTIMIZATION_ALIGNMENT_RECEIPT.md`：动画管家优化后的第二轮代码对齐回执、G-P0-01～07 状态，以及 Docker/Git LFS/联合验收待填证据。
+26. `docs/66_2026-07-30_WEBUI_OPERATIONS_REDESIGN.md`：与动画管家对齐的任务中心、性能分析、调度说明、证据规则和安全发布边界。
+27. `docs/67_2026-07-30_SIX_API_MIXED_LOAD_TEST_RUNBOOK.md`：六 API、GPU/CPU/Windows Worker 的 100+ 用户综合压测计划、安全门禁、遥测和停止条件；默认只生成计划，用户未授权窗口前禁止执行。
+28. `docs/68_2026-07-30_CONTROL_PLANE_1_5_5_REPRODUCIBLE_PACKAGING.md`：1.5.5 四组件候选镜像的干净提交、固定基础镜像、SBOM/provenance、离线分片与 Git LFS 打包门禁；当前仅准备、未执行构建或推送。
 
 3090-A 的已完成部署、动态心跳、Web 修复和真实任务证据见
 `docs/34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md`。
@@ -62,6 +69,11 @@
 | 1.5.4 发布审计 | `59_2026-07-29_RELEASE_AUDIT_STABILITY_AND_IMAGE_RECORD.md`、`62_2026-07-30_REPRODUCIBLE_BACKUP_AND_ROLLING_UPDATE.md` | 三节点真实压力、代码审计、镜像归档、恢复状态与机器可读证据 |
 | 粗糙度与烘焙 | `57_2026-07-29_MODELVIEW_ROUGHNESS_API.md`、`58_2026-07-29_SUBSTANCE_BAKER_API.md`、`59_2026-07-29_ROUGHNESS_AND_SUBSTANCE_BAKER_API_HANDOFF_V2.md`、`61_2026-07-29_SUBSTANCE_BAKER_4_SLOT_RELEASE.md` | 粗糙度 GPU API、Windows Baker API、四槽并发与客户端交接 |
 | UV / 重拓扑 V5 | `60_2026-07-29_UV_AND_RETOPOLOGY_API_HANDOFF_V5.md` | 当前自动严格 QA、无人工门、产物与错误合同 |
+| 动画管家 V4.1 回执 | `64_2026-07-30_ASSETCLAW_GPU_CONTROL_V4_1_RECEIPT.md` | 逐项实现状态、版本证据、身份冲突、P0/P1 缺口与联合验收输入 |
+| 动画管家优化后第二轮回执 | `65_2026-07-30_ASSETCLAW_POST_OPTIMIZATION_ALIGNMENT_RECEIPT.md` | 批准的 691 身份、G-P0-01～07 候选代码状态、取消状态映射、发布与联合验收待填证据 |
+| WebUI 运行中心重构 | `66_2026-07-30_WEBUI_OPERATIONS_REDESIGN.md` | 任务/API 分类、真实时间、性能分析、调度解释、视觉验证与 Web-only 回滚边界 |
+| 六 API 综合压测 | `67_2026-07-30_SIX_API_MIXED_LOAD_TEST_RUNBOOK.md` | 100+ 用户真实请求组合、GPU/CPU/Windows 槽位遥测、生产双重授权和零活动任务门禁；当前仅准备、未执行 |
+| 1.5.5 候选打包 | `68_2026-07-30_CONTROL_PLANE_1_5_5_REPRODUCIBLE_PACKAGING.md` | 四镜像可复现候选、固定基础镜像、SBOM/provenance、离线归档和 LFS 的 fail-closed 门禁；当前仅准备、未执行 |
 | 分角色安装 | `03`—`11` | 网络、准备、4090、3090、镜像、模型、工作流、首次部署 |
 | 使用手册 | `12_WEB_ADMIN_GUIDE.md`、`13_PUBLIC_API_GUIDE.md` | 管理后台和业务 API |
 | 运维 | `15`—`22` | 日志、告警、备份、升级、故障、容量和 FAQ |

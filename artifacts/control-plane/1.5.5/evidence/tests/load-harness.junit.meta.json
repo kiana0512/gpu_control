@@ -1,0 +1,28 @@
+{
+  "schema_version": "gpu-control-offline-test-evidence.v1",
+  "suite": "tests/unit/test_load_testing.py",
+  "runner": "pytest 8.4.1",
+  "started_utc": "2026-07-30T08:49:37.818628+00:00",
+  "finished_utc": "2026-07-30T08:49:37.930628+00:00",
+  "exit_code": 0,
+  "tests": 13,
+  "passed": 13,
+  "failures": 0,
+  "network": "disabled (--network none)",
+  "repository_mount": "read-only",
+  "load_executed": false,
+  "http_requests_sent": false,
+  "locust_started": false,
+  "git_head_before_candidate_commit": "63deec8f57dede18ee64703ccc2b2726032e2f07",
+  "junit_path": "artifacts/control-plane/1.5.5/evidence/tests/load-harness.junit.xml",
+  "junit_sha256": "1ef4e720586c064a02cfb319021c32361b9c52885b2a1954907713fb91e514d9",
+  "source_sha256": {
+    "packages/gpu_control_core/load_testing.py": "f357cc41154537aa3bf059bd452051d0347bc0f7f144ac57106148266f5bbc6b",
+    "scripts/run_six_api_load.py": "1a78ba944982b19780846ae453f9b870ea045a6ee01f8c08794b66e9beebfaba",
+    "tests/load/locustfile.py": "ee66c974551e2f21d11513133e3d1246849ad318e279cb034302ac234eca5f2e",
+    "tests/unit/test_load_testing.py": "5f956859d2145c7eee34602bc11b9e6ff8e2a9b83d06c1d9ba917b22ee98ee81",
+    "tests/load/scenarios/six_api_120.example.yaml": "0e784b44c4053dd02e616c6d572bbb98058067ea2331dac12d8bb8714a673b89",
+    "tests/load/fixtures/six_api.example.yaml": "330232df447b8b28a6c61a26f8f31e18b68f8f4d3c470d692692ceb4e5ef4182"
+  },
+  "command": "python -m pytest tests/unit/test_load_testing.py -q -p no:cacheprovider --junitxml=/evidence/load-harness.junit.xml"
+}

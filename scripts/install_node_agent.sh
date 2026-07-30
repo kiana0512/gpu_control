@@ -17,6 +17,24 @@ readonly root="/opt/gpu-control"
 set -a
 source "${root}/.env"
 set +a
+repository_revision="$(git -C "${root}" rev-parse HEAD)"
+gpu_control_revision="${GPU_CONTROL_REVISION:-${repository_revision}}"
+[[ "${gpu_control_revision}" =~ ^[0-9a-f]{40}$ ]] || {
+  echo "GPU_CONTROL_REVISION 必须是完整的 40 位 Git commit" >&2
+  exit 1
+}
+[[ "${gpu_control_revision}" == "${repository_revision}" ]] || {
+  echo "GPU_CONTROL_REVISION 与当前 GPU Control Git HEAD 不一致" >&2
+  exit 1
+}
+git -C "${root}" diff --quiet --ignore-submodules -- || {
+  echo "GPU Control 有未提交的已跟踪文件，拒绝安装不可验证的节点代理" >&2
+  exit 1
+}
+git -C "${root}" diff --cached --quiet --ignore-submodules -- || {
+  echo "GPU Control 暂存区有未提交内容，拒绝安装不可验证的节点代理" >&2
+  exit 1
+}
 [[ -n "${NODE_AGENT_HMAC_SECRET:-}" && "${NODE_AGENT_HMAC_SECRET}" != CHANGE_ME* ]] || {
   echo "请先在 .env 设置 NODE_AGENT_HMAC_SECRET" >&2
   exit 1
@@ -83,6 +101,7 @@ chmod 0644 /etc/gpu-control/node-role
   printf 'NODE_HEARTBEAT_INTERVAL_SECONDS=%s\n' "${NODE_HEARTBEAT_INTERVAL_SECONDS:-10}"
   printf 'NODE_CONTROL_CA_CERT=%s\n' "${NODE_CONTROL_CA_CERT:-/etc/gpu-control/lan-ca.crt}"
   printf 'CODEX_BINARY=%s\n' "${CODEX_BINARY:-/usr/local/bin/codex}"
+  printf 'GPU_CONTROL_REVISION=%s\n' "${gpu_control_revision}"
 } > /etc/gpu-control/node-agent.env
 chmod 0600 /etc/gpu-control/node-agent.env
 

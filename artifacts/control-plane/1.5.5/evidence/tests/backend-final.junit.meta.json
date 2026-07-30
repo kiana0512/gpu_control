@@ -1,0 +1,27 @@
+{
+  "schema_version": "gpu-control-offline-test-evidence.v1",
+  "suite": "backend-final-full-pytest",
+  "source_revision": "PENDING_SOURCE_COMMIT",
+  "validated_base_head": "63deec8f57dede18ee64703ccc2b2726032e2f07",
+  "started_at_utc": "2026-07-30T09:01:08.529369+00:00",
+  "finished_at_utc": "2026-07-30T09:02:19.970369+00:00",
+  "exit_code": 0,
+  "result": "PASS",
+  "tests": 144,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "duration_seconds": 71.441,
+  "command": "python -m pytest tests -q -p no:cacheprovider --junitxml=/evidence/backend-final.junit.xml",
+  "junit_path": "artifacts/control-plane/1.5.5/evidence/tests/backend-final.junit.xml",
+  "junit_sha256": "e39a07eb309276d91eda192bb4b7f23e7ff0477c134da94ab07810588b0dda09",
+  "isolation": {
+    "network": "none",
+    "source_mount": "read-only",
+    "production_access": false,
+    "cpus": 2,
+    "memory": "3g",
+    "pids_limit": 384,
+    "pytest_cache": "disabled"
+  }
+}

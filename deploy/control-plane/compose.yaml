@@ -27,8 +27,15 @@ services:
 
   api:
     <<: *app
-    build: {context: ../.., dockerfile: apps/api/Dockerfile}
-    image: gpu-control-api:${APP_IMAGE_TAG:-1.5.4}
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+      args:
+        GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.5}
+        GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
+      sbom: true
+      provenance: mode=max
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-api:${APP_IMAGE_TAG:-1.5.5}
     # Starlette spools large multipart uploads before the endpoint streams the
     # archive into its batch layout. Keep that temporary file on the mounted
     # job filesystem instead of the container overlay.
@@ -46,8 +53,15 @@ services:
 
   asset-api:
     <<: *app
-    build: {context: ../.., dockerfile: apps/asset_api/Dockerfile}
-    image: unified-scheduler-asset-api:${APP_IMAGE_TAG:-1.5.4}
+    build:
+      context: ../..
+      dockerfile: apps/asset_api/Dockerfile
+      args:
+        GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.5}
+        GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
+      sbom: true
+      provenance: mode=max
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}unified-scheduler-asset-api:${APP_IMAGE_TAG:-1.5.5}
     environment:
       TMPDIR: /srv/gpu-control/assets
       ASSET_ROOT: ${ASSET_ROOT:-/srv/gpu-control/assets}
@@ -91,8 +105,15 @@ services:
 
   scheduler:
     <<: *app
-    build: {context: ../.., dockerfile: apps/scheduler/Dockerfile}
-    image: gpu-control-scheduler:${APP_IMAGE_TAG:-1.5.4}
+    build:
+      context: ../..
+      dockerfile: apps/scheduler/Dockerfile
+      args:
+        GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.5}
+        GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
+      sbom: true
+      provenance: mode=max
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-scheduler:${APP_IMAGE_TAG:-1.5.5}
     volumes:
       - ${JOB_ROOT:-/srv/gpu-control/jobs}:/srv/gpu-control/jobs
       - /run/gpu-control:/run/gpu-control:ro
@@ -102,11 +123,15 @@ services:
     healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9108/metrics',timeout=2)"], interval: 15s, timeout: 3s, retries: 5}
 
   web:
-    image: gpu-control-web:${APP_IMAGE_TAG:-1.5.4}
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-web:${APP_IMAGE_TAG:-1.5.5}
     build:
       context: ../../apps/web
       args:
         VITE_MODELVIEW_PROMPT_ENABLED: ${VITE_MODELVIEW_PROMPT_ENABLED:-false}
+        GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.5}
+        GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
+      sbom: true
+      provenance: mode=max
     restart: unless-stopped
     healthcheck: {test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"], interval: 15s, timeout: 3s, retries: 5}
     logging: *default-logging

@@ -5,6 +5,7 @@ import hmac
 import ipaddress
 import json
 import mimetypes
+import os
 import re
 import time
 import uuid
@@ -12,6 +13,8 @@ import zipfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
@@ -33,6 +36,7 @@ from packages.gpu_control_core.batches import (
     extract_batch_archive,
     parse_batch_manifest,
     transition_batch,
+    workflow_identity_from_row,
     workflow_manifest_from_row,
 )
 from packages.gpu_control_core.database import Database
@@ -55,11 +59,13 @@ from packages.gpu_control_core.models import (
     AssetWorker,
     AuditLog,
     BatchArtifact,
+    BatchCancelOperation,
     BatchEvent,
     BatchIdempotencyKey,
     IdempotencyKey,
     Job,
     JobArtifact,
+    JobAttempt,
     JobBatch,
     JobBatchItem,
     JobCallback,
@@ -109,6 +115,32 @@ DURATION = Histogram(
 )
 
 
+def runtime_version_metadata() -> dict[str, Any]:
+    try:
+        installed = package_version("gpu-control")
+    except PackageNotFoundError:
+        installed = None
+    declared_build_version = os.environ.get("GPU_CONTROL_BUILD_VERSION")
+    build_revision = os.environ.get("GPU_CONTROL_BUILD_REVISION")
+    build_version = declared_build_version or installed
+    version_aligned = bool(
+        installed and declared_build_version and installed == declared_build_version
+    )
+    return {
+        "component": "api",
+        "version": build_version,
+        "package_version": installed,
+        "build_version": declared_build_version,
+        "source_revision": build_revision,
+        "version_aligned": version_aligned,
+        "provenance_complete": bool(
+            version_aligned
+            and build_revision
+            and re.fullmatch(r"[0-9a-f]{40}", build_revision)
+        ),
+    }
+
+
 class Principal(BaseModel):
     id: str
     role: str
@@ -135,6 +167,12 @@ class NodeHeartbeatRequest(BaseModel):
     mac: str = Field(pattern=r"^(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
     gpu_uuid: str = Field(pattern=r"^GPU-[0-9a-fA-F-]{36}$", max_length=64)
     hostname: str = Field(min_length=1, max_length=128)
+    node_agent_version: str | None = Field(
+        default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+    )
+    source_revision: str | None = Field(
+        default=None, min_length=40, max_length=40, pattern=r"^[0-9a-f]{40}$"
+    )
     imageclip_commit: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{40}$", max_length=40
     )
@@ -163,6 +201,10 @@ class NodeHeartbeatRequest(BaseModel):
 class RetryRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
     confirm: bool
+
+
+class BatchCancelRequest(BaseModel):
+    reason: str = Field(default="client_request", min_length=3, max_length=500)
 
 
 class ApiKeyCreateRequest(BaseModel):
@@ -370,7 +412,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await app.state.redis.aclose()
         await app.state.db.close()
 
-    app = FastAPI(title="GPU Control API", version="1.0.0", lifespan=lifespan)
+    version_info = runtime_version_metadata()
+    app = FastAPI(
+        title="GPU Control API",
+        version=version_info["version"] or "0+unknown",
+        lifespan=lifespan,
+    )
 
     @app.middleware("http")
     async def request_context(request: Request, call_next: Any) -> Any:
@@ -525,6 +572,21 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         await db.commit()
         return Principal(id=client.id, role="client")
 
+    async def explicit_api_key_principal(
+        request: Request,
+        db: Annotated[AsyncSession, Depends(session)],
+        x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+    ) -> Principal:
+        if not x_api_key:
+            raise HTTPException(
+                401,
+                detail={
+                    "code": "EXPLICIT_API_KEY_REQUIRED",
+                    "message": "取消批次必须提供 X-API-Key",
+                },
+            )
+        return await api_principal(request, db, x_api_key)
+
     async def admin_principal(authorization: Annotated[str | None, Header()] = None) -> Principal:
         if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(401, detail={"code": "AUTH_FAILED", "message": "需要管理员令牌"})
@@ -602,6 +664,10 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
     @app.get("/health/live")
     async def live() -> dict[str, str]:
         return {"status": "live"}
+
+    @app.get("/api/v1/version")
+    async def version() -> dict[str, Any]:
+        return runtime_version_metadata()
 
     @app.get("/health/ready")
     async def ready(request: Request) -> dict[str, Any]:
@@ -700,6 +766,10 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "codex_cli_checked_at": body.codex_cli_checked_at,
             }
         )
+        if body.node_agent_version is not None:
+            labels["node_agent_version"] = body.node_agent_version
+        if body.source_revision is not None:
+            labels["source_revision"] = body.source_revision
         node.labels = labels
         node.custom_nodes_version = (
             f"imageclip:{body.imageclip_commit[:12]}:{body.imageclip_pipeline_sha256[:12]}"
@@ -1380,20 +1450,54 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
     async def batch_payload(
         batch: JobBatch, db: AsyncSession, *, admin: bool = False
     ) -> dict[str, Any]:
-        workflow = await db.scalar(
-            select(WorkflowVersion).where(
-                WorkflowVersion.workflow_key == batch.workflow_key,
-                WorkflowVersion.version == batch.workflow_version,
-            )
+        items = list(
+            (
+                await db.scalars(
+                    select(JobBatchItem)
+                    .where(JobBatchItem.batch_id == batch.id)
+                    .order_by(JobBatchItem.ordinal)
+                )
+            ).all()
         )
-        workflow_labels = dict(workflow.node_labels or {}) if workflow is not None else {}
-        distribution_rows = (
-            await db.execute(
-                select(JobBatchItem.node_id, func.count(JobBatchItem.id))
-                .where(JobBatchItem.batch_id == batch.id, JobBatchItem.node_id.is_not(None))
-                .group_by(JobBatchItem.node_id)
+        job_ids = [item.job_id for item in items if item.job_id]
+        attempts = (
+            list(
+                (
+                    await db.scalars(
+                        select(JobAttempt)
+                        .where(JobAttempt.job_id.in_(job_ids))
+                        .order_by(JobAttempt.job_id, JobAttempt.attempt)
+                    )
+                ).all()
             )
-        ).all()
+            if job_ids
+            else []
+        )
+        node_ids = {
+            str(node_id)
+            for node_id in [
+                *(item.node_id for item in items),
+                *(attempt.node_id for attempt in attempts),
+            ]
+            if node_id
+        }
+        nodes = (
+            list((await db.scalars(select(Node).where(Node.id.in_(node_ids)))).all())
+            if node_ids
+            else []
+        )
+        nodes_by_id = {node.id: node for node in nodes}
+        identity = {
+            "workflow_key": batch.workflow_key,
+            "workflow_version": batch.workflow_version,
+            "pipeline_commit": batch.pipeline_commit,
+            "pipeline_sha256": batch.pipeline_sha256,
+            "output_node": batch.output_node,
+        }
+        distribution: dict[str, int] = {}
+        for item in items:
+            if item.node_id:
+                distribution[item.node_id] = distribution.get(item.node_id, 0) + 1
         artifacts: list[dict[str, Any]] = []
         if batch.status == BatchStatus.SUCCEEDED.value:
             artifact_rows = (
@@ -1411,6 +1515,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     "content_type": artifact.content_type,
                     "size_bytes": artifact.size_bytes,
                     "sha256": artifact.sha256,
+                    **identity,
                     "download_url": (
                         f"/admin/batches/{batch.id}/artifacts/{artifact.id}"
                         if admin
@@ -1419,17 +1524,134 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 }
                 for artifact in artifact_rows
             ]
-        return {
+        cancel_operation = await db.scalar(
+            select(BatchCancelOperation).where(BatchCancelOperation.batch_id == batch.id)
+        )
+
+        def duration_ms(start: datetime | None, end: datetime | None) -> int | None:
+            if start is None or end is None:
+                return None
+            return max(0, int((end - start).total_seconds() * 1000))
+
+        def percentile(values: list[int], percent: int) -> int | None:
+            if not values:
+                return None
+            ordered = sorted(values)
+            index = max(0, ((len(ordered) * percent + 99) // 100) - 1)
+            return ordered[min(index, len(ordered) - 1)]
+
+        attempts_by_job: dict[str, list[JobAttempt]] = {}
+        for attempt in attempts:
+            attempts_by_job.setdefault(attempt.job_id, []).append(attempt)
+
+        def reassignments_for(job_attempts: list[JobAttempt]) -> int:
+            return sum(
+                previous.node_id != current.node_id
+                for previous, current in zip(job_attempts, job_attempts[1:], strict=False)
+            )
+        completed_gpu_durations = [
+            value
+            for attempt in attempts
+            if (value := duration_ms(attempt.gpu_started_at, attempt.gpu_finished_at)) is not None
+        ]
+        gpu_measurements_complete = bool(attempts) and len(completed_gpu_durations) == len(attempts)
+        gpu_service_ms_total = (
+            sum(completed_gpu_durations) if completed_gpu_durations else None
+        )
+        node_performance: list[dict[str, Any]] = []
+        for node_id in sorted(node_ids):
+            node = nodes_by_id.get(node_id)
+            labels = dict(node.labels or {}) if node is not None else {}
+            node_items = [item for item in items if item.node_id == node_id]
+            node_attempts = [attempt for attempt in attempts if attempt.node_id == node_id]
+            node_gpu_durations = [
+                value
+                for attempt in node_attempts
+                if (value := duration_ms(attempt.gpu_started_at, attempt.gpu_finished_at))
+                is not None
+            ]
+            node_performance.append(
+                {
+                    "node_id": node_id,
+                    "gpu_model": labels.get("gpu_model") or labels.get("gpu_name") or None,
+                    "worker_version": labels.get("node_agent_version") or None,
+                    "source_revision": labels.get("source_revision") or None,
+                    "workflow_version": batch.workflow_version,
+                    "frames_succeeded": sum(
+                        item.status == "SUCCEEDED" for item in node_items
+                    ),
+                    "frames_failed": sum(item.status == "FAILED" for item in node_items),
+                    "attempts_total": len(node_attempts),
+                    "upload_attempts": sum(attempt.upload_attempts for attempt in node_attempts),
+                    "prompt_attempts": sum(attempt.prompt_attempts for attempt in node_attempts),
+                    "gpu_service_ms": sum(node_gpu_durations) if node_gpu_durations else None,
+                    "frame_ms_p50": percentile(node_gpu_durations, 50),
+                    "frame_ms_p95": percentile(node_gpu_durations, 95),
+                    "max_concurrent_prompts": None,
+                    "input_pixels": sum(item.width * item.height for item in node_items),
+                }
+            )
+        input_pixels_total = sum(item.width * item.height for item in items)
+        can_compute_throughput = (
+            batch.status == BatchStatus.SUCCEEDED.value
+            and gpu_measurements_complete
+            and bool(gpu_service_ms_total)
+        )
+        performance = {
+            "schema_version": "1.0",
+            "input_pixels_total": input_pixels_total,
+            "gpu_service_ms_total": gpu_service_ms_total,
+            "gpu_service_measurements_complete": gpu_measurements_complete,
+            "queue_ms": duration_ms(batch.queued_at, batch.started_at),
+            "execution_ms": duration_ms(batch.started_at, batch.execution_finished_at),
+            "assembly_ms": duration_ms(batch.assembling_at, batch.artifact_ready_at),
+            "artifact_publish_ms": duration_ms(batch.artifact_ready_at, batch.finished_at),
+            "frames_per_gpu_minute": (
+                round(batch.succeeded_items * 60_000 / gpu_service_ms_total, 6)
+                if can_compute_throughput and gpu_service_ms_total is not None
+                else None
+            ),
+            "megapixels_per_gpu_second": (
+                round(input_pixels_total / 1_000_000 / (gpu_service_ms_total / 1000), 6)
+                if can_compute_throughput and gpu_service_ms_total is not None
+                else None
+            ),
+            "scheduler_restarts": None,
+            "reassignments": sum(
+                reassignments_for(job_attempts) for job_attempts in attempts_by_job.values()
+            ),
+            "straggler_ratio": None,
+            "nodes": node_performance,
+        }
+        cancel_payload = (
+            {
+                "cancel_operation_id": cancel_operation.id,
+                "cancel_status": cancel_operation.status,
+                "cancel_requested_at": cancel_operation.requested_at.isoformat(),
+                "cancel_accepted_at": cancel_operation.accepted_at.isoformat(),
+                "cancel_finished_at": cancel_operation.finished_at.isoformat()
+                if cancel_operation.finished_at
+                else None,
+                "cancel_requested_by": cancel_operation.requested_by,
+                "cancel_source": cancel_operation.source,
+                "cancel_reason": cancel_operation.reason,
+                "cancel_request_id": cancel_operation.request_id,
+                "cancel_idempotency_key": cancel_operation.idempotency_key,
+                "cancel_counts": {
+                    "completed": cancel_operation.completed_items,
+                    "cancelled": cancel_operation.cancelled_items,
+                    "not_started": cancel_operation.not_started_items,
+                },
+                "cancel_audit_reference": f"batch_cancel_operation:{cancel_operation.id}",
+            }
+            if cancel_operation is not None
+            else {}
+        )
+        payload = {
             "batch_id": batch.id,
             "external_batch_id": batch.external_batch_id,
             "status": batch.status,
-            "workflow_key": batch.workflow_key,
-            "workflow_version": batch.workflow_version,
-            # These values describe the immutable pipeline selected when the
-            # batch was created.  They are deliberately sourced from the
-            # pinned workflow version instead of the current node heartbeat.
-            "pipeline_commit": workflow_labels.get("imageclip_commit"),
-            "pipeline_sha256": workflow_labels.get("imageclip_pipeline_sha256"),
+            **identity,
             "progress": batch.progress,
             "counts": {
                 "total": batch.total_items,
@@ -1440,17 +1662,48 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "failed": batch.failed_items,
                 "cancelled": batch.cancelled_items,
             },
-            "node_distribution": {
-                str(node_id): int(count) for node_id, count in distribution_rows if node_id
-            },
+            "node_distribution": distribution,
             "created_at": batch.created_at.isoformat(),
+            "validated_at": batch.validated_at.isoformat() if batch.validated_at else None,
+            "queued_at": batch.queued_at.isoformat() if batch.queued_at else None,
             "started_at": batch.started_at.isoformat() if batch.started_at else None,
+            "last_progress_at": batch.last_progress_at.isoformat()
+            if batch.last_progress_at
+            else None,
+            "execution_finished_at": batch.execution_finished_at.isoformat()
+            if batch.execution_finished_at
+            else None,
+            "assembling_at": batch.assembling_at.isoformat() if batch.assembling_at else None,
+            "artifact_ready_at": batch.artifact_ready_at.isoformat()
+            if batch.artifact_ready_at
+            else None,
             "finished_at": batch.finished_at.isoformat() if batch.finished_at else None,
+            "updated_at": batch.updated_at.isoformat(),
             "error": {"code": batch.error_code, "message": batch.error_message}
             if batch.error_code
             else None,
+            "artifact": artifacts[0] if artifacts else None,
             "artifacts": artifacts,
+            "performance": performance,
+            **cancel_payload,
         }
+        return payload
+
+    async def cancel_response_payload(
+        batch: JobBatch, db: AsyncSession, *, admin: bool = False
+    ) -> dict[str, Any]:
+        """Expose the client cancel acknowledgement without changing state storage.
+
+        ``CANCELLING`` remains the durable state-machine value used by the
+        scheduler.  The public cancel contract calls the accepted operation
+        ``CANCEL_REQUESTED``; keeping that translation at the response boundary
+        avoids teaching the scheduler a second in-flight state.
+        """
+
+        payload = await batch_payload(batch, db, admin=admin)
+        if payload.get("cancel_status") == "REQUESTED":
+            payload["status"] = "CANCEL_REQUESTED"
+        return payload
 
     @app.get("/api/v1/scheduler/capacity")
     async def scheduler_capacity(
@@ -1507,11 +1760,54 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             )
             or 0
         )
+        active_workflow = await db.scalar(
+            select(WorkflowVersion)
+            .where(
+                WorkflowVersion.workflow_key == "imageclip-rgba",
+                WorkflowVersion.enabled.is_(True),
+            )
+            .order_by(WorkflowVersion.created_at.desc())
+        )
+        compatible_node_ids: set[str] = set()
+        if active_workflow is not None:
+            compatible_node_ids = set(
+                (
+                    await db.scalars(
+                        select(WorkflowNodeCompatibility.node_id).where(
+                            WorkflowNodeCompatibility.workflow_version_id
+                            == active_workflow.id,
+                            WorkflowNodeCompatibility.compatible.is_(True),
+                        )
+                    )
+                ).all()
+            )
+        compatible_nodes = sum(node.id in compatible_node_ids for node in eligible)
+        tenant_queue_room = max(
+            0,
+            (client.max_queued if client is not None else cfg.default_tenant_max_queued)
+            - tenant_queued,
+        )
+        accepting_batches = (
+            queued_jobs < cfg.system_max_queued
+            and tenant_queue_room > 0
+            and compatible_nodes > 0
+        )
+        suggested_max_new_batches = (
+            min(tenant_queue_room, max(1, available_slots)) if accepting_batches else 0
+        )
+        capacity_generated_at = datetime.now(UTC).isoformat()
         return {
             "schema_version": "1.0",
             "advisory": True,
-            "accepting": queued_jobs < cfg.system_max_queued,
-            "as_of": datetime.now(UTC).isoformat(),
+            "accepting": accepting_batches,
+            "as_of": capacity_generated_at,
+            "accepting_batches": accepting_batches,
+            "suggested_max_new_batches": suggested_max_new_batches,
+            "queue_depth": queued_jobs,
+            "compatible_nodes": compatible_nodes,
+            "estimated_queue_ms_p50": None,
+            "estimated_queue_ms_p90": None,
+            "capacity_generated_at": capacity_generated_at,
             "cluster": {
                 "eligible_nodes": len(eligible),
                 "total_slots": total_slots,
@@ -1540,6 +1836,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             str, Header(alias="Idempotency-Key", min_length=1, max_length=128)
         ],
     ) -> JSONResponse:
+        request_started_at = datetime.now(UTC)
         if len(manifest.encode("utf-8")) > 4 * 1024 * 1024:
             raise HTTPException(
                 413,
@@ -1574,24 +1871,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         )
         async with tenant_lock:
             await request.app.state.db.acquire_tenant_transaction_lock(db, principal.id)
-            workflow = await db.scalar(
-                select(WorkflowVersion)
-                .where(
-                    WorkflowVersion.workflow_key == "imageclip-rgba",
-                    WorkflowVersion.enabled.is_(True),
-                )
-                .order_by(WorkflowVersion.created_at.desc())
-            )
-            if workflow is None:
-                raise HTTPException(
-                    404,
-                    detail={
-                        "code": "WORKFLOW_NOT_FOUND",
-                        "message": "ImageClip RGBA 工作流未启用",
-                    },
-                )
             request_hash = hashlib.sha256(
-                workflow.version.encode() + b"\x00" + canonical_manifest
+                b"imageclip-rgba\x00" + canonical_manifest
             ).hexdigest()
             existing_key = await db.scalar(
                 select(BatchIdempotencyKey).where(
@@ -1601,14 +1882,6 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 )
             )
             if existing_key is not None:
-                if existing_key.request_hash != request_hash:
-                    raise HTTPException(
-                        409,
-                        detail={
-                            "code": "IDEMPOTENCY_CONFLICT",
-                            "message": "相同 Idempotency-Key 的批次内容不同",
-                        },
-                    )
                 existing_batch = await db.get(JobBatch, existing_key.batch_id)
                 if existing_batch is None:
                     raise HTTPException(
@@ -1618,9 +1891,21 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                             "message": "幂等记录对应批次不存在",
                         },
                     )
+                legacy_request_hash = hashlib.sha256(
+                    existing_batch.workflow_version.encode() + b"\x00" + canonical_manifest
+                ).hexdigest()
+                if existing_key.request_hash not in {request_hash, legacy_request_hash}:
+                    raise HTTPException(
+                        409,
+                        detail={
+                            "code": "IDEMPOTENCY_CONFLICT",
+                            "message": "相同 Idempotency-Key 的批次内容不同",
+                        },
+                    )
                 payload = await batch_payload(existing_batch, db)
                 payload.update(
                     {
+                        "accepted_bytes": existing_batch.archive_size_bytes,
                         "status_url": f"/api/v1/batches/{existing_batch.id}",
                         "events_url": f"/api/v1/batches/{existing_batch.id}/events",
                         "manifest_url": f"/api/v1/batches/{existing_batch.id}/manifest",
@@ -1641,6 +1926,29 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                         "message": "external_batch_id 已被其他幂等请求使用",
                     },
                 )
+            workflow = await db.scalar(
+                select(WorkflowVersion)
+                .where(
+                    WorkflowVersion.workflow_key == "imageclip-rgba",
+                    WorkflowVersion.enabled.is_(True),
+                )
+                .order_by(WorkflowVersion.created_at.desc())
+            )
+            if workflow is None:
+                raise HTTPException(
+                    404,
+                    detail={
+                        "code": "WORKFLOW_NOT_FOUND",
+                        "message": "ImageClip RGBA 工作流未启用",
+                    },
+                )
+            try:
+                workflow_identity = workflow_identity_from_row(workflow)
+            except BatchContractError as exc:
+                raise HTTPException(
+                    409,
+                    detail={"code": exc.code, "message": str(exc)},
+                ) from exc
             try:
                 render_parameters = dict(parsed_manifest.parameters)
                 render_parameters["image_filename"] = "batch-validation/input.png"
@@ -1681,6 +1989,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     staging / "manifest.request.json",
                     parsed_manifest.model_dump(mode="json"),
                 )
+                storage.atomic_json(staging / "workflow.identity.json", workflow_identity)
                 batch_now = datetime.now(UTC)
                 root = storage.promote_batch_staging(staging, batch_id, batch_now)
             except BatchContractError as exc:
@@ -1705,6 +2014,9 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 external_batch_id=parsed_manifest.external_batch_id,
                 workflow_key=workflow.workflow_key,
                 workflow_version=workflow.version,
+                pipeline_commit=workflow_identity["pipeline_commit"],
+                pipeline_sha256=workflow_identity["pipeline_sha256"],
+                output_node=workflow_identity["output_node"],
                 status=BatchStatus.VALIDATING.value,
                 failure_policy=parsed_manifest.failure_policy,
                 output_naming=parsed_manifest.output_naming,
@@ -1718,7 +2030,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 archive_size_bytes=archive_size,
                 total_items=len(extracted),
                 pending_items=len(extracted),
-                created_at=batch_now,
+                created_at=request_started_at,
+                validated_at=batch_now,
                 updated_at=batch_now,
             )
             db.add(batch)
@@ -1768,19 +2081,16 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "gpu-control:wakeup",
                 {"event": "batch.queued", "batch_id": batch.id},
             )
-            return JSONResponse(
+            payload = await batch_payload(batch, db)
+            payload.update(
                 {
-                    "batch_id": batch.id,
-                    "external_batch_id": batch.external_batch_id,
-                    "status": batch.status,
-                    "total_items": batch.total_items,
                     "accepted_bytes": batch.archive_size_bytes,
                     "status_url": f"/api/v1/batches/{batch.id}",
                     "events_url": f"/api/v1/batches/{batch.id}/events",
                     "manifest_url": f"/api/v1/batches/{batch.id}/manifest",
-                },
-                202,
+                }
             )
+            return JSONResponse(payload, 202)
 
     @app.get("/api/v1/batches/{batch_id}")
     async def get_batch(
@@ -1813,6 +2123,11 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         return {
             "batch_id": batch.id,
             "external_batch_id": batch.external_batch_id,
+            "workflow_key": batch.workflow_key,
+            "workflow_version": batch.workflow_version,
+            "pipeline_commit": batch.pipeline_commit,
+            "pipeline_sha256": batch.pipeline_sha256,
+            "output_node": batch.output_node,
             "total": batch.total_items,
             "offset": max(offset, 0),
             "items": [
@@ -1887,7 +2202,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             raise HTTPException(
                 409,
                 detail={
-                    "code": "BATCH_NOT_COMPLETE",
+                    "code": "ARTIFACT_NOT_READY",
                     "message": "批次完整成功前不提供结果包",
                 },
             )
@@ -1905,22 +2220,33 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             path,
             media_type=artifact.content_type,
             filename=artifact.filename,
-            headers={"X-Artifact-SHA256": artifact.sha256, "Cache-Control": "no-store"},
+            headers={
+                "X-Artifact-SHA256": artifact.sha256,
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "no-store",
+            },
         )
 
     @app.post("/api/v1/batches/{batch_id}/cancel")
     async def cancel_batch(
         batch_id: str,
         request: Request,
-        principal: Annotated[Principal, Depends(api_principal)],
+        principal: Annotated[Principal, Depends(explicit_api_key_principal)],
         db: Annotated[AsyncSession, Depends(session)],
         idempotency_key: Annotated[
-            str, Header(alias="Idempotency-Key", min_length=1, max_length=128)
+            str, Header(alias="Idempotency-Key", min_length=1, max_length=192)
         ],
+        body: BatchCancelRequest | None = None,
     ) -> dict[str, Any]:
-        batch = await owned_batch(batch_id, principal, db)
-        if BatchStatus(batch.status) in TERMINAL_BATCH_STATUSES:
-            return await batch_payload(batch, db)
+        batch = await db.scalar(
+            select(JobBatch)
+            .where(JobBatch.id == batch_id, JobBatch.tenant_id == principal.id)
+            .with_for_update()
+        )
+        if batch is None:
+            raise HTTPException(
+                404, detail={"code": "BATCH_NOT_FOUND", "message": "批次不存在"}
+            )
         expected_key = f"{batch.external_batch_id}:cancel"
         if idempotency_key != expected_key:
             raise HTTPException(
@@ -1930,24 +2256,165 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     "message": f"取消幂等键必须为 {expected_key}",
                 },
             )
+        existing = await db.scalar(
+            select(BatchCancelOperation).where(
+                BatchCancelOperation.tenant_id == principal.id,
+                BatchCancelOperation.idempotency_key == idempotency_key,
+            )
+        )
+        if existing is not None:
+            if existing.batch_id != batch.id:
+                raise HTTPException(
+                    409,
+                    detail={
+                        "code": "IDEMPOTENCY_CONFLICT",
+                        "message": "取消幂等键已用于其他批次",
+                    },
+                )
+            return await cancel_response_payload(batch, db)
+        existing_for_batch = await db.scalar(
+            select(BatchCancelOperation).where(BatchCancelOperation.batch_id == batch.id)
+        )
+        if existing_for_batch is not None:
+            if existing_for_batch.idempotency_key != idempotency_key:
+                raise HTTPException(
+                    409,
+                    detail={
+                        "code": "IDEMPOTENCY_CONFLICT",
+                        "message": "批次已经存在另一取消操作",
+                    },
+                )
+            return await cancel_response_payload(batch, db)
+        if BatchStatus(batch.status) in TERMINAL_BATCH_STATUSES:
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "BATCH_NOT_CANCELLABLE",
+                    "message": "没有既有取消操作的终态批次不可取消",
+                },
+            )
+        now = datetime.now(UTC)
+        reason = body.reason if body is not None else "client_request"
+        previous_status = batch.status
+        operation = BatchCancelOperation(
+            id=str(uuid.uuid4()),
+            batch_id=batch.id,
+            tenant_id=principal.id,
+            idempotency_key=idempotency_key,
+            request_id=str(request.state.request_id),
+            requested_by=principal.id,
+            source="public_api",
+            source_ip=request.client.host if request.client else "",
+            reason=reason,
+            status="REQUESTED",
+            requested_at=now,
+            accepted_at=now,
+            completed_items=batch.succeeded_items + batch.failed_items,
+            cancelled_items=batch.cancelled_items,
+            not_started_items=batch.pending_items + batch.queued_items,
+        )
+        db.add(operation)
         batch.cancel_requested = True
         if batch.status != BatchStatus.CANCELLING.value:
             await transition_batch(
                 db, batch, BatchStatus.CANCELLING, "batch.cancel_requested"
             )
-        await db.commit()
+        await audit(
+            db,
+            request,
+            principal,
+            "batch.cancel",
+            "batch",
+            batch.id,
+            {"status": previous_status, "cancel_requested": False},
+            {
+                "status": batch.status,
+                "cancel_requested": True,
+                "cancel_operation_id": operation.id,
+                "idempotency_key": operation.idempotency_key,
+                "reason": operation.reason,
+                "source": operation.source,
+            },
+        )
+        try:
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            replay = await db.scalar(
+                select(BatchCancelOperation).where(
+                    BatchCancelOperation.tenant_id == principal.id,
+                    BatchCancelOperation.idempotency_key == idempotency_key,
+                )
+            )
+            if replay is None or replay.batch_id != batch_id:
+                raise HTTPException(
+                    409, detail={"code": "IDEMPOTENCY_CONFLICT"}
+                ) from exc
+            replay_batch = await owned_batch(batch_id, principal, db)
+            return await cancel_response_payload(replay_batch, db)
         await _notify(
             request.app,
             "gpu-control:wakeup",
             {"event": "batch.cancel", "batch_id": batch.id},
         )
-        return await batch_payload(batch, db)
+        return await cancel_response_payload(batch, db)
 
     async def owned_job(job_id: str, principal: Principal, db: AsyncSession) -> Job:
         job = await db.get(Job, job_id)
         if job is None or job.tenant_id != principal.id:
             raise HTTPException(404, detail={"code": "JOB_NOT_FOUND", "message": "任务不存在"})
         return job
+
+    async def reject_batch_child_cancel(
+        job: Job,
+        request: Request,
+        principal: Principal,
+        db: AsyncSession,
+        *,
+        source: str,
+    ) -> None:
+        if job.batch_id is None:
+            return
+        await audit(
+            db,
+            request,
+            principal,
+            "job.cancel.rejected_batch_child",
+            "job",
+            job.id,
+            {"status": job.status, "batch_id": job.batch_id},
+            {
+                "result": "REJECTED",
+                "reason": "batch-owned jobs can only be cancelled through the parent batch",
+                "source": source,
+                "parent_cancel_url": f"/api/v1/batches/{job.batch_id}/cancel",
+            },
+            result="REJECTED",
+        )
+        await db.commit()
+        raise HTTPException(
+            409,
+            detail={
+                "code": "BATCH_CHILD_CANCEL_FORBIDDEN",
+                "message": "批次子任务只能通过父批次取消接口取消",
+                "batch_id": job.batch_id,
+                "cancel_url": f"/api/v1/batches/{job.batch_id}/cancel",
+            },
+        )
+
+    async def require_parent_artifact_ready(job: Job, db: AsyncSession) -> None:
+        if job.batch_id is None:
+            return
+        parent = await db.get(JobBatch, job.batch_id)
+        if parent is None or parent.status != BatchStatus.SUCCEEDED.value:
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "ARTIFACT_NOT_READY",
+                    "message": "父批次完整成功前不提供子任务产物",
+                    "batch_id": job.batch_id,
+                },
+            )
 
     def job_payload(job: Job) -> dict[str, Any]:
         return {
@@ -2014,7 +2481,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         principal: Annotated[Principal, Depends(api_principal)],
         db: Annotated[AsyncSession, Depends(session)],
     ) -> list[dict[str, Any]]:
-        await owned_job(job_id, principal, db)
+        job = await owned_job(job_id, principal, db)
+        await require_parent_artifact_ready(job, db)
         rows = (await db.scalars(select(JobArtifact).where(JobArtifact.job_id == job_id))).all()
         return [
             {
@@ -2035,6 +2503,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         db: Annotated[AsyncSession, Depends(session)],
     ) -> FileResponse:
         job = await owned_job(job_id, principal, db)
+        await require_parent_artifact_ready(job, db)
         artifact = await db.scalar(
             select(JobArtifact).where(JobArtifact.id == artifact_id, JobArtifact.job_id == job_id)
         )
@@ -2043,7 +2512,16 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         path = (Path(job.job_dir) / artifact.relative_path).resolve()
         if Path(job.job_dir).resolve() not in path.parents or not path.is_file():
             raise HTTPException(404, detail={"code": "ARTIFACT_NOT_FOUND"})
-        return FileResponse(path, media_type=artifact.content_type, filename=path.name)
+        return FileResponse(
+            path,
+            media_type=artifact.content_type,
+            filename=path.name,
+            headers={
+                "X-Artifact-SHA256": artifact.sha256,
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "no-store",
+            },
+        )
 
     @app.post("/api/v1/jobs/{job_id}/cancel")
     async def cancel_job(
@@ -2053,6 +2531,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         db: Annotated[AsyncSession, Depends(session)],
     ) -> dict[str, Any]:
         job = await owned_job(job_id, principal, db)
+        await reject_batch_child_cancel(job, request, principal, db, source="public_api")
         if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
             return job_payload(job)
         if job.status == JobStatus.QUEUED.value:
@@ -2684,7 +3163,11 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             path,
             media_type=artifact.content_type,
             filename=artifact.filename,
-            headers={"X-Artifact-SHA256": artifact.sha256, "Cache-Control": "no-store"},
+            headers={
+                "X-Artifact-SHA256": artifact.sha256,
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "no-store",
+            },
         )
 
     @app.get("/admin/batches/{batch_id}")
@@ -2765,7 +3248,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         if batch is None:
             raise HTTPException(404, detail={"code": "BATCH_NOT_FOUND"})
         if batch.status != BatchStatus.SUCCEEDED.value:
-            raise HTTPException(409, detail={"code": "BATCH_NOT_COMPLETE"})
+            raise HTTPException(409, detail={"code": "ARTIFACT_NOT_READY"})
         artifact = await db.scalar(
             select(BatchArtifact).where(
                 BatchArtifact.id == artifact_id,
@@ -2782,7 +3265,11 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             path,
             media_type=artifact.content_type,
             filename=artifact.filename,
-            headers={"X-Artifact-SHA256": artifact.sha256, "Cache-Control": "no-store"},
+            headers={
+                "X-Artifact-SHA256": artifact.sha256,
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "no-store",
+            },
         )
 
     @app.post("/admin/batches/{batch_id}/cancel")
@@ -2792,14 +3279,56 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         request: Request,
         principal: Annotated[Principal, Depends(require_operator)],
         db: Annotated[AsyncSession, Depends(session)],
+        idempotency_key: Annotated[
+            str | None, Header(alias="Idempotency-Key", max_length=192)
+        ] = None,
     ) -> dict[str, Any]:
         if not body.confirm:
             raise HTTPException(409, detail={"code": "CONFIRMATION_REQUIRED"})
         batch = await db.get(JobBatch, batch_id, with_for_update=True)
         if batch is None:
             raise HTTPException(404, detail={"code": "BATCH_NOT_FOUND"})
+        existing_operation = await db.scalar(
+            select(BatchCancelOperation).where(BatchCancelOperation.batch_id == batch.id)
+        )
+        if existing_operation is not None:
+            return await cancel_response_payload(batch, db, admin=True)
+        effective_idempotency_key = idempotency_key or f"admin:{batch.id}:cancel"
+        operation_for_key = await db.scalar(
+            select(BatchCancelOperation).where(
+                BatchCancelOperation.tenant_id == batch.tenant_id,
+                BatchCancelOperation.idempotency_key == effective_idempotency_key,
+            )
+        )
+        if operation_for_key is not None:
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "IDEMPOTENCY_CONFLICT",
+                    "message": "取消幂等键已用于其他批次",
+                },
+            )
         if BatchStatus(batch.status) not in TERMINAL_BATCH_STATUSES:
             before = {"status": batch.status, "cancel_requested": batch.cancel_requested}
+            now = datetime.now(UTC)
+            operation = BatchCancelOperation(
+                id=str(uuid.uuid4()),
+                batch_id=batch.id,
+                tenant_id=batch.tenant_id,
+                idempotency_key=effective_idempotency_key,
+                request_id=str(request.state.request_id),
+                requested_by=principal.id,
+                source="admin_api",
+                source_ip=request.client.host if request.client else "",
+                reason=body.reason,
+                status="REQUESTED",
+                requested_at=now,
+                accepted_at=now,
+                completed_items=batch.succeeded_items + batch.failed_items,
+                cancelled_items=batch.cancelled_items,
+                not_started_items=batch.pending_items + batch.queued_items,
+            )
+            db.add(operation)
             batch.cancel_requested = True
             if batch.status != BatchStatus.CANCELLING.value:
                 await transition_batch(
@@ -2816,7 +3345,10 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 {
                     "status": batch.status,
                     "cancel_requested": True,
+                    "cancel_operation_id": operation.id,
+                    "idempotency_key": operation.idempotency_key,
                     "reason": body.reason,
+                    "source": operation.source,
                 },
             )
             await db.commit()
@@ -2825,7 +3357,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "gpu-control:wakeup",
                 {"event": "batch.cancel", "batch_id": batch.id},
             )
-        return await batch_payload(batch, db, admin=True)
+        return await cancel_response_payload(batch, db, admin=True)
 
     @app.post("/admin/jobs/{job_id}/pin")
     async def pin_job(
@@ -3138,8 +3670,6 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         if node is None:
             raise HTTPException(404, detail={"code": "NODE_NOT_FOUND"})
         before = {"mode": node.mode, "current_jobs": node.current_jobs}
-        node.mode = NodeMode.DRAINING.value
-        node.manual_reserved = False
         jobs = list(
             (
                 await db.scalars(
@@ -3149,6 +3679,67 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 )
             ).all()
         )
+        batch_ids = {str(job.batch_id) for job in jobs if job.batch_id is not None}
+        if batch_ids:
+            parent_batches = list(
+                (
+                    await db.scalars(
+                        select(JobBatch)
+                        .where(JobBatch.id.in_(batch_ids))
+                        .with_for_update()
+                    )
+                ).all()
+            )
+            cancel_operations = list(
+                (
+                    await db.scalars(
+                        select(BatchCancelOperation).where(
+                            BatchCancelOperation.batch_id.in_(batch_ids)
+                        )
+                    )
+                ).all()
+            )
+            parents_by_id = {batch.id: batch for batch in parent_batches}
+            operation_batch_ids = {operation.batch_id for operation in cancel_operations}
+            unsafe_batch_ids = sorted(
+                batch_id
+                for batch_id in batch_ids
+                if batch_id not in parents_by_id
+                or not parents_by_id[batch_id].cancel_requested
+                or batch_id not in operation_batch_ids
+            )
+            if unsafe_batch_ids:
+                unsafe_job_ids = sorted(
+                    job.id for job in jobs if job.batch_id in unsafe_batch_ids
+                )
+                await audit(
+                    db,
+                    request,
+                    principal,
+                    "node.interrupt.rejected_batch_child",
+                    "node",
+                    node_id,
+                    before,
+                    {
+                        "result": "REJECTED",
+                        "reason": "batch child requires an explicit parent cancel operation",
+                        "batch_ids": unsafe_batch_ids,
+                        "job_ids": unsafe_job_ids,
+                    },
+                    result="REJECTED",
+                )
+                await db.commit()
+                raise HTTPException(
+                    409,
+                    detail={
+                        "code": "BATCH_CHILD_INTERRUPT_FORBIDDEN",
+                        "message": "节点包含未通过父批次取消的活动子任务",
+                        "batch_ids": unsafe_batch_ids,
+                        "job_ids": unsafe_job_ids,
+                    },
+                )
+        node.mode = NodeMode.DRAINING.value
+        node.manual_reserved = False
         for job in jobs:
             job.cancel_requested = True
             if job.status not in {JobStatus.CANCELLING.value, JobStatus.DOWNLOADING.value}:
@@ -3271,6 +3862,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         await transition_job(db, job, JobStatus.QUEUED, "admin.requeued")
         job.node_id = None
         job.prompt_id = None
+        job.submission_client_id = None
+        job.submission_intent_at = None
         job.claimed_at = None
         job.started_at = None
         job.finished_at = None
@@ -3299,6 +3892,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         job = await db.get(Job, job_id, with_for_update=True)
         if job is None:
             raise HTTPException(404, detail={"code": "JOB_NOT_FOUND"})
+        await reject_batch_child_cancel(job, request, principal, db, source="admin_api")
         before = {"status": job.status, "cancel_requested": job.cancel_requested}
         if JobStatus(job.status) not in TERMINAL_JOB_STATUSES:
             if job.status == JobStatus.QUEUED.value:

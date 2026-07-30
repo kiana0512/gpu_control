@@ -13,7 +13,9 @@ from packages.gpu_control_core.batches import (
     build_result_archive,
     extract_batch_archive,
     parse_batch_manifest,
+    workflow_identity_from_row,
 )
+from packages.gpu_control_core.models import WorkflowVersion
 from packages.gpu_control_core.settings import Settings
 
 
@@ -114,12 +116,24 @@ def test_result_archive_preserves_paths_order_hashes_and_alpha(tmp_path: Path) -
                 attempts=1,
             )
         ],
+        {
+            "workflow_key": "imageclip-rgba",
+            "workflow_version": "2026.07.30-691770c-r1",
+            "pipeline_commit": "6" * 40,
+            "pipeline_sha256": "7" * 64,
+            "output_node": "SaveImage #25",
+        },
     )
     assert built.sha256 == hashlib.sha256(built.path.read_bytes()).hexdigest()
     with zipfile.ZipFile(built.path) as archive:
         assert archive.namelist() == ["manifest.json", "results/scene/0001.png"]
         result_manifest = json.loads(archive.read("manifest.json"))
     assert result_manifest["total"] == 1
+    assert result_manifest["workflow_key"] == "imageclip-rgba"
+    assert result_manifest["workflow_version"] == "2026.07.30-691770c-r1"
+    assert result_manifest["pipeline_commit"] == "6" * 40
+    assert result_manifest["pipeline_sha256"] == "7" * 64
+    assert result_manifest["output_node"] == "SaveImage #25"
     assert result_manifest["items"][0]["output_sha256"] == output_sha
 
     rgb = tmp_path / "rgb.png"
@@ -144,3 +158,36 @@ def test_result_archive_preserves_paths_order_hashes_and_alpha(tmp_path: Path) -
             ],
         )
     assert no_alpha.value.code == "OUTPUT_ALPHA_MISSING"
+
+
+def test_workflow_identity_is_fail_closed_and_normalizes_output_node() -> None:
+    workflow = WorkflowVersion(
+        workflow_key="imageclip-rgba",
+        version="2026.07.30-691770c-r1",
+        template={"25": {"class_type": "SaveImage", "inputs": {}}},
+        parameter_schema={},
+        bindings={},
+        allowed_class_types=["SaveImage"],
+        required_models=[],
+        required_custom_nodes=[],
+        min_vram_mb=0,
+        timeout_seconds=60,
+        node_labels={
+            "imageclip_commit": "6" * 40,
+            "imageclip_pipeline_sha256": "7" * 64,
+        },
+        output_nodes=["25"],
+        enabled=True,
+        template_sha256="template",
+    )
+    assert workflow_identity_from_row(workflow) == {
+        "workflow_key": "imageclip-rgba",
+        "workflow_version": "2026.07.30-691770c-r1",
+        "pipeline_commit": "6" * 40,
+        "pipeline_sha256": "7" * 64,
+        "output_node": "SaveImage #25",
+    }
+    workflow.node_labels = {"imageclip_commit": "drift"}
+    with pytest.raises(BatchContractError) as invalid:
+        workflow_identity_from_row(workflow)
+    assert invalid.value.code == "WORKFLOW_IDENTITY_INVALID"

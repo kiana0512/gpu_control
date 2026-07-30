@@ -31,6 +31,16 @@ ACTIVE_STATUSES = (
 )
 
 
+def prompt_client_id(job_id: str, attempt: int) -> str:
+    """Build the stable Comfy client id for one durable execution attempt."""
+    if attempt < 1:
+        raise ValueError("attempt must be positive")
+    value = f"gpu-control-{job_id}-attempt-{attempt}"
+    if len(value) > 128:
+        raise ValueError("prompt client id exceeds the persisted contract")
+    return value
+
+
 async def transition_job(
     session: AsyncSession,
     job: Job,
@@ -200,6 +210,9 @@ async def claim_next_job(
                     ),
                 )
                 .where(Job.status == JobStatus.QUEUED.value)
+                # A persisted submission intent is never safe to claim as new
+                # work. Recovery must reconcile that intent with Comfy first.
+                .where(Job.submission_intent_at.is_(None))
                 .where((Job.not_before.is_(None)) | (Job.not_before <= now))
                 .order_by(Job.pinned.desc(), Job.created_at.asc())
                 .limit(200)
@@ -344,6 +357,8 @@ async def claim_next_job(
     chosen.node_id = node.id
     chosen.claimed_at = now
     chosen.attempt_count += 1
+    chosen.submission_client_id = prompt_client_id(chosen.id, chosen.attempt_count)
+    chosen.submission_intent_at = None
     node.current_jobs += 1
     node.last_assigned_at = now
     if client is not None:
@@ -357,6 +372,7 @@ async def claim_next_job(
             attempt=chosen.attempt_count,
             node_id=node.id,
             lease_token=token,
+            prompt_client_id=chosen.submission_client_id,
             status=JobStatus.CLAIMED.value,
         )
     )

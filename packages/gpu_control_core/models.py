@@ -64,6 +64,10 @@ class Job(Base):
     )
     node_id: Mapped[str | None] = mapped_column(ForeignKey("nodes.id"), nullable=True)
     prompt_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    submission_client_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    submission_intent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     progress: Mapped[float] = mapped_column(Float, default=0)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3)
@@ -105,6 +109,9 @@ class JobBatch(Base):
     external_batch_id: Mapped[str] = mapped_column(String(128))
     workflow_key: Mapped[str] = mapped_column(String(128))
     workflow_version: Mapped[str] = mapped_column(String(64))
+    pipeline_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pipeline_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    output_node: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(24), default=BatchStatus.VALIDATING.value)
     failure_policy: Mapped[str] = mapped_column(String(32), default="all_or_nothing")
     output_naming: Mapped[str] = mapped_column(String(32), default="preserve_stem_png")
@@ -130,7 +137,19 @@ class JobBatch(Base):
     last_materialized_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_progress_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    execution_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    assembling_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    artifact_ready_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -224,6 +243,37 @@ class BatchIdempotencyKey(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class BatchCancelOperation(Base):
+    __tablename__ = "batch_cancel_operations"
+    __table_args__ = (
+        UniqueConstraint("batch_id", name="uq_batch_cancel_operation_batch"),
+        UniqueConstraint(
+            "tenant_id", "idempotency_key", name="uq_tenant_batch_cancel_idempotency"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("job_batches.id", ondelete="CASCADE"), index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("api_clients.id", ondelete="CASCADE"), index=True
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(192))
+    request_id: Mapped[str] = mapped_column(String(64), index=True)
+    requested_by: Mapped[str] = mapped_column(String(64))
+    source: Mapped[str] = mapped_column(String(32))
+    source_ip: Mapped[str] = mapped_column(String(64), default="")
+    reason: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(24), default="REQUESTED")
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_items: Mapped[int] = mapped_column(Integer, default=0)
+    cancelled_items: Mapped[int] = mapped_column(Integer, default=0)
+    not_started_items: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class AssetWorker(Base):
@@ -407,8 +457,13 @@ class JobAttempt(Base):
     node_id: Mapped[str] = mapped_column(ForeignKey("nodes.id"))
     lease_token: Mapped[str] = mapped_column(String(64), unique=True)
     prompt_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    prompt_client_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(24), default=JobStatus.CLAIMED.value)
+    upload_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    prompt_attempts: Mapped[int] = mapped_column(Integer, default=0)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    gpu_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    gpu_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     job: Mapped[Job] = relationship(back_populates="attempts")
