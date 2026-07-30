@@ -9,14 +9,20 @@ import yaml
 
 from packages.gpu_control_core.load_testing import (
     API_NAMES,
+    REQUIRED_FULL_BACKUP_PAYLOADS,
     LoadTestConfigurationError,
     RuntimeSettings,
     build_plan,
+    evaluate_load_lifecycle,
     load_fixture_manifest,
+    load_queue_start,
+    load_response_is_retryable,
     load_scenario,
     summarize_records,
     summarize_telemetry,
+    validate_asset_worker_roles,
     validate_production_backup,
+    validate_test_client_capacities,
 )
 
 
@@ -196,19 +202,46 @@ def complete_full_backup(tmp_path: Path, created_at: datetime) -> Path:
                 "BACKUP_FORMAT=2",
                 "MODE=full",
                 f"CREATED_UTC={stamp}",
+                "REPOSITORY_ROOT=/opt/gpu-control",
+                f"GIT_HEAD={'2' * 40}",
+                "POSTGRES_CONTAINER=gpu-control-postgres-1",
+                "POSTGRES_USER=gpu_control",
+                "POSTGRES_DB=gpu_control",
                 "QUIESCE_CHECK=ENFORCED_PRE_AND_POST",
             ]
         )
         + "\n",
         encoding="utf-8",
     )
-    payload = backup_dir / "payload.txt"
-    payload.write_text("offline backup fixture\n", encoding="utf-8")
+    quiesce = "\n".join(
+        [
+            "active_jobs=0",
+            "active_batches=0",
+            "active_asset_jobs=0",
+            "busy_nodes=0",
+            "accepting_online_nodes=0",
+        ]
+    ) + "\n"
+    special_payloads = {
+        "database.dump": b"PGDMP-offline-test\n",
+        "repository.bundle": b"# v2 git bundle\noffline-test\n",
+        "git-head.txt": ("2" * 40 + "\n").encode(),
+        "quiesce-gate-pre.txt": quiesce.encode(),
+        "quiesce-gate-post.txt": quiesce.encode(),
+    }
+    for name in sorted(REQUIRED_FULL_BACKUP_PAYLOADS - {"BACKUP_MANIFEST"}):
+        (backup_dir / name).write_bytes(
+            special_payloads.get(name, f"offline fixture: {name}\n".encode())
+        )
     sums = backup_dir / "SHA256SUMS"
+    payload_paths = sorted(
+        (path for path in backup_dir.iterdir() if path.name != "SHA256SUMS"),
+        key=lambda path: path.name,
+    )
     sums.write_text(
         "".join(
             f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
-            for path in (manifest, payload)
+            for path in payload_paths
         ),
         encoding="utf-8",
     )
@@ -238,6 +271,128 @@ def test_default_runtime_is_plan_only_and_has_no_credentials() -> None:
     assert runtime.allow_load_test is False
     assert runtime.api_keys == ()
     assert runtime.environment == "plan"
+
+
+def test_transport_failures_are_retryable_and_queue_prefers_queued_at() -> None:
+    assert load_response_is_retryable(0) is True
+    assert load_response_is_retryable(None) is True
+    assert load_response_is_retryable(200, has_transport_error=True) is True
+    assert load_response_is_retryable(408) is True
+    assert load_response_is_retryable(429) is True
+    assert load_response_is_retryable(503) is True
+    assert load_response_is_retryable(200) is False
+    assert load_response_is_retryable(422) is False
+    assert (
+        load_queue_start(
+            {
+                "created_at": "2026-07-30T00:00:00Z",
+                "queued_at": "2026-07-30T00:00:05Z",
+            }
+        )
+        == "2026-07-30T00:00:05Z"
+    )
+    assert load_queue_start({"created_at": "legacy"}) == "legacy"
+
+
+def test_every_api_key_must_be_a_test_client_and_accepting() -> None:
+    checks = validate_test_client_capacities(
+        [
+            {"client": {"kind": "test"}, "accepting_batches": True},
+            {"client": {"kind": "test"}, "accepting_batches": True},
+        ],
+        expected_count=2,
+    )
+    assert [item["api_key_index"] for item in checks] == [0, 1]
+
+    try:
+        validate_test_client_capacities(
+            [
+                {"client": {"kind": "test"}, "accepting_batches": True},
+                {"client": {"kind": "production"}, "accepting_batches": True},
+            ],
+            expected_count=2,
+        )
+    except LoadTestConfigurationError as exc:
+        assert "index 1" in str(exc)
+    else:
+        raise AssertionError("every rotating key must be checked independently")
+
+
+def test_cpu_and_substance_worker_capacity_are_independent() -> None:
+    workers = [
+        {
+            "id": f"asset-worker-cpu-{index}",
+            "status": "ONLINE",
+            "current_jobs": 0,
+            "max_concurrency": 2,
+        }
+        for index in range(3)
+    ] + [
+        {
+            "id": "asset-worker-3090-b-windows-01",
+            "status": "ONLINE",
+            "current_jobs": 0,
+            "max_concurrency": 1,
+        }
+    ]
+    result = validate_asset_worker_roles(
+        workers,
+        minimum_cpu_workers=3,
+        minimum_cpu_slots=1,
+        minimum_substance_slots=1,
+    )
+    assert len(result["cpu_workers"]) == 3
+    assert len(result["substance_workers"]) == 1
+    assert result["cpu_available_slots"] == 6
+    assert result["substance_available_slots"] == 1
+
+    substance_only = [
+        {
+            "id": f"asset-worker-3090-b-windows-{index:02d}",
+            "status": "ONLINE",
+            "current_jobs": 0,
+            "max_concurrency": 1,
+        }
+        for index in range(1, 5)
+    ]
+    try:
+        validate_asset_worker_roles(
+            substance_only,
+            minimum_cpu_workers=3,
+            minimum_cpu_slots=1,
+            minimum_substance_slots=1,
+        )
+    except LoadTestConfigurationError as exc:
+        assert "CPU asset workers" in str(exc)
+    else:
+        raise AssertionError("Substance slots must not satisfy the CPU worker gate")
+
+
+def test_lifecycle_gate_rejects_failures_timeouts_artifacts_and_teardown() -> None:
+    success = {
+        "id": "ok",
+        "terminal_status": "SUCCEEDED",
+        "artifact_count": 1,
+    }
+    assert evaluate_load_lifecycle([success], [])["passed"] is True
+
+    cases = [
+        [{"id": "failed", "terminal_status": "FAILED", "artifact_count": 1}],
+        [{"id": "timeout", "terminal_status": None, "poll_timed_out": True}],
+        [{"id": "missing", "terminal_status": "SUCCEEDED", "artifact_count": 0}],
+        [
+            {
+                "id": "bad-sha",
+                "terminal_status": "SUCCEEDED",
+                "artifact_count": 1,
+                "artifact_contract_failed": True,
+            }
+        ],
+    ]
+    for records in cases:
+        assert evaluate_load_lifecycle(records, [])["passed"] is False
+    teardown = [{"task_id": "active", "cancelled": True, "status_code": 200}]
+    assert evaluate_load_lifecycle([success], teardown)["passed"] is False
 
 
 def test_execution_requires_all_gates_and_external_valid_fixtures(tmp_path: Path) -> None:
@@ -342,9 +497,9 @@ def test_production_backup_requires_full_integrity_and_pre_window_age(
     )
 
     assert evidence["status"] == "VERIFIED_FULL_PRE_WINDOW"
-    assert evidence["payload_count"] == 2
+    assert evidence["payload_count"] == len(REQUIRED_FULL_BACKUP_PAYLOADS)
 
-    (backup / "payload.txt").write_text("tampered\n", encoding="utf-8")
+    (backup / "host-data.tar").write_text("tampered\n", encoding="utf-8")
     try:
         validate_production_backup(
             backup,
@@ -355,6 +510,26 @@ def test_production_backup_requires_full_integrity_and_pre_window_age(
         assert "checksum failed" in str(exc)
     else:
         raise AssertionError("tampered production backup must fail closed")
+
+
+def test_production_backup_rejects_label_only_or_incomplete_full_set(
+    tmp_path: Path,
+) -> None:
+    window_start = datetime.now(UTC)
+    backup = complete_full_backup(tmp_path, window_start - timedelta(hours=1))
+    (backup / "database.dump").unlink()
+
+    try:
+        validate_production_backup(
+            backup,
+            approved_window_start=window_start,
+            max_age_hours=24,
+        )
+    except LoadTestConfigurationError as exc:
+        assert "missing required payloads" in str(exc)
+        assert "database.dump" in str(exc)
+    else:
+        raise AssertionError("MODE=full labels cannot replace required recovery payloads")
 
 
 def test_production_backup_rejects_unenforced_quiesce_and_stale_snapshot(
@@ -423,14 +598,21 @@ def test_production_backup_rejects_files_finalized_after_window(tmp_path: Path) 
     window_start = datetime.now(UTC)
     created_at = window_start - timedelta(hours=1)
     backup = complete_full_backup(tmp_path, created_at)
-    manifest = backup / "BACKUP_MANIFEST"
-    payload = backup / "payload.txt"
+    payload = backup / "host-data.tar"
     payload.write_text("changed after the approved window opened\n", encoding="utf-8")
     sums = backup / "SHA256SUMS"
+    payload_paths = sorted(
+        (
+            path
+            for path in backup.iterdir()
+            if path.name not in {"SHA256SUMS", "BACKUP_COMPLETE"}
+        ),
+        key=lambda path: path.name,
+    )
     sums.write_text(
         "".join(
             f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
-            for path in (manifest, payload)
+            for path in payload_paths
         ),
         encoding="utf-8",
     )

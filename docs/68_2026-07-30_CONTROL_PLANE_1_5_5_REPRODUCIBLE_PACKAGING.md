@@ -1,6 +1,6 @@
 # GPU Control 1.5.5 控制面候选打包门禁
 
-> 状态：`PREPARED_NOT_EXECUTED`
+> 状态：`CORRECTED_NOT_REEXECUTED`
 > 范围：API、Scheduler、Asset API、Web 四个 GPU Control 自有镜像
 > 禁止项：本流程不执行 Compose、容器启动、生产重启、数据库迁移、registry push、Git push 或
 > Git LFS push。
@@ -37,8 +37,21 @@
 | 已缓存 SBOM generator 镜像 | 未发现 |
 | `registry.local` | 不作为本流程依赖；不修改 daemon、DNS 或网络 |
 
-因此当前能可靠设计和验证的是：Buildx 同一次 solve 同时导出 Docker tar 与 OCI tar，从 OCI
-attestation manifest 读取 provenance，并核对 in-toto subject 与该 OCI image manifest digest。
+Buildx 的 Docker exporter 不能在带 provenance/SBOM attestation 的 manifest list 上同时导出
+Docker tar。打包器因此对每个组件执行两个严格关联的 solve：
+
+1. **OCI attested solve**：`--provenance=mode=max`，可选 digest-pinned SBOM generator，仅导出 OCI
+   tar，同时导出本地 BuildKit cache；
+2. **Docker-loadable solve**：显式 `--provenance=false`，导入上一步 cache，仅导出 Docker tar。
+
+脚本从 OCI image manifest 读取并校验 config blob digest；Docker tar 加载后，必须满足
+`docker image inspect .Id == OCI config digest`。这项强绑定失败即关闭，因此拆分 exporter 不会把
+两份不同 image config 当成同一候选。OCI provenance/SBOM 的 in-toto subject 仍必须绑定 attested
+OCI image manifest digest，没有降低原证据要求。
+
+首次候选执行在 exporter 阶段以
+`docker exporter does not support exporting manifest lists` 安全失败，没有生成候选目录、启动容器或
+触碰生产。上述拆分修复已通过离线命令断言和单元测试，但按变更门禁尚未重新执行真实构建。
 
 当前不能宣称“完全离线 SBOM 已就绪”。严格模式要求调用者提供已固定到
 `name@sha256:<64 hex>` 的 SBOM generator；构建结束后脚本仍会从 OCI tar 读取 SBOM 并再次核对
@@ -127,8 +140,13 @@ artifacts/control-plane/1.5.5/release-parts/
 
 组合包由一次 `docker image save` 导出四镜像，再使用固定 gzip `mtime=0` 压缩和 128 MiB 分片。
 脚本校验 OCI labels、API/Scheduler/Asset API 的 build version/revision 环境变量、四个互异的本地
-image ID、gzip 可读性、整包与每片 SHA-256。证据文件中的 LFS OID 只是内容哈希候选；只有在后续
+image ID、每个 Docker image ID 与相应 OCI config digest 的一致性、gzip 可读性、整包与每片
+SHA-256。证据中的 `solve_strategy`、OCI manifest/config digest、Docker tar SHA 和
+`docker_oci_config_match` 会保留这条关联链。证据文件中的 LFS OID 只是内容哈希候选；只有在后续
 独立审核的 `git add`/commit/push、`git lfs fsck` 和远端对象检查完成后才能改为已上传。
+
+底层 Git/Docker/Buildx 命令失败时，CLI 会回传退出码及经过 ANSI/控制字符清理、常见凭据遮蔽和
+4096 字符上限截断的 stderr，既保留末尾根因又避免无界日志或常见令牌进入交接记录。
 
 ## 6. 与严格发布校验器的关系
 

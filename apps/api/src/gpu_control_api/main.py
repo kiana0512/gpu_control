@@ -107,6 +107,7 @@ def sha256_file(path: Path) -> str:
             digest.update(chunk)
     return digest.hexdigest()
 
+
 REQUESTS = Counter(
     "gpu_control_http_requests_total", "HTTP requests", ["method", "route", "status"]
 )
@@ -134,9 +135,7 @@ def runtime_version_metadata() -> dict[str, Any]:
         "source_revision": build_revision,
         "version_aligned": version_aligned,
         "provenance_complete": bool(
-            version_aligned
-            and build_revision
-            and re.fullmatch(r"[0-9a-f]{40}", build_revision)
+            version_aligned and build_revision and re.fullmatch(r"[0-9a-f]{40}", build_revision)
         ),
     }
 
@@ -166,6 +165,12 @@ class NodeHeartbeatRequest(BaseModel):
     ip: str
     mac: str = Field(pattern=r"^(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
     gpu_uuid: str = Field(pattern=r"^GPU-[0-9a-fA-F-]{36}$", max_length=64)
+    gpu_model: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9 ._+()/:,\-]{0,127}$",
+    )
     hostname: str = Field(min_length=1, max_length=128)
     node_agent_version: str | None = Field(
         default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]*$"
@@ -173,9 +178,7 @@ class NodeHeartbeatRequest(BaseModel):
     source_revision: str | None = Field(
         default=None, min_length=40, max_length=40, pattern=r"^[0-9a-f]{40}$"
     )
-    imageclip_commit: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{40}$", max_length=40
-    )
+    imageclip_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$", max_length=40)
     imageclip_pipeline_sha256: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{64}$", max_length=64
     )
@@ -355,9 +358,7 @@ def _validate_parameter_limits(value: dict[str, Any]) -> None:
     visit(value, 0)
 
 
-def _merge_service_parameter(
-    parameters_raw: str, name: str, value: str | None
-) -> str:
+def _merge_service_parameter(parameters_raw: str, name: str, value: str | None) -> str:
     """Merge a convenience multipart field into the canonical parameters JSON."""
     if value is None:
         return parameters_raw
@@ -464,7 +465,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> Principal:
         key: ApiKey | None = None
         client: ApiClient | None = None
-        source_ip = str(ipaddress.ip_address(request.client.host if request.client else "127.0.0.1"))
+        source_ip = str(
+            ipaddress.ip_address(request.client.host if request.client else "127.0.0.1")
+        )
         if x_api_key:
             if not x_api_key.startswith("gpc_"):
                 raise HTTPException(
@@ -487,11 +490,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             client = await db.get(ApiClient, key.client_id)
         else:
             clients = list(
-                (
-                    await db.scalars(
-                        select(ApiClient).where(ApiClient.role == "client")
-                    )
-                ).all()
+                (await db.scalars(select(ApiClient).where(ApiClient.role == "client"))).all()
             )
             matches = [row for row in clients if source_ip in (row.allowed_ips or [])]
             if len(matches) > 1:
@@ -522,11 +521,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         last_seen_at=datetime.now(UTC),
                     )
                     db.add(client)
-                    db.add(
-                        RateLimitPolicy(
-                            client_id=auto_id, requests_per_second=5, burst=10
-                        )
-                    )
+                    db.add(RateLimitPolicy(client_id=auto_id, requests_per_second=5, burst=10))
                     try:
                         await db.flush()
                     except IntegrityError:
@@ -640,14 +635,17 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         event: str,
         details: dict[str, Any] | None = None,
     ) -> None:
-        sequence = int(
-            await db.scalar(
-                select(func.coalesce(func.max(AssetJobEvent.sequence), 0)).where(
-                    AssetJobEvent.job_id == job.id
+        sequence = (
+            int(
+                await db.scalar(
+                    select(func.coalesce(func.max(AssetJobEvent.sequence), 0)).where(
+                        AssetJobEvent.job_id == job.id
+                    )
                 )
+                or 0
             )
-            or 0
-        ) + 1
+            + 1
+        )
         db.add(
             AssetJobEvent(
                 job_id=job.id,
@@ -746,11 +744,9 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             if registered and registered.lower() != reported.lower():
                 raise HTTPException(409, detail={"code": "NODE_IDENTITY_MISMATCH", "field": key})
         old_base_url = node.base_url
-        pipeline_changed = (
-            labels.get("imageclip_commit") != (body.imageclip_commit or "")
-            or labels.get("imageclip_pipeline_sha256")
-            != (body.imageclip_pipeline_sha256 or "")
-        )
+        pipeline_changed = labels.get("imageclip_commit") != (
+            body.imageclip_commit or ""
+        ) or labels.get("imageclip_pipeline_sha256") != (body.imageclip_pipeline_sha256 or "")
         labels.update(
             {
                 "host": body.ip,
@@ -770,6 +766,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             labels["node_agent_version"] = body.node_agent_version
         if body.source_revision is not None:
             labels["source_revision"] = body.source_revision
+        if body.gpu_model is not None:
+            labels["gpu_model"] = body.gpu_model
         node.labels = labels
         node.custom_nodes_version = (
             f"imageclip:{body.imageclip_commit[:12]}:{body.imageclip_pipeline_sha256[:12]}"
@@ -793,7 +791,9 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 await refresh_workflow_compatibility(db, version)
         nonces[replay_key] = now
         await db.commit()
-        await _notify(request.app, "gpu-control:wakeup", {"event": "node.heartbeat", "node_id": node.id})
+        await _notify(
+            request.app, "gpu-control:wakeup", {"event": "node.heartbeat", "node_id": node.id}
+        )
         logger().info(
             "node.heartbeat",
             node_id=node.id,
@@ -876,11 +876,17 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 detail={"code": "REFRESH_TOKEN_INVALID", "message": "登录已过期，请重新登录"},
             ) from exc
         client = await db.get(ApiClient, client_id)
-        if client is None or not client.enabled or client.role != role or role not in {
-            "admin",
-            "operator",
-            "viewer",
-        }:
+        if (
+            client is None
+            or not client.enabled
+            or client.role != role
+            or role
+            not in {
+                "admin",
+                "operator",
+                "viewer",
+            }
+        ):
             raise HTTPException(
                 401,
                 detail={"code": "REFRESH_TOKEN_INVALID", "message": "登录已失效，请重新登录"},
@@ -955,7 +961,6 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 403,
                 detail={"code": "PRIORITY_FORBIDDEN", "message": "业务 API 不能直接提交 CRITICAL"},
             )
-        await request.app.state.db.acquire_tenant_transaction_lock(db, principal.id)
         workflow = await db.scalar(
             select(WorkflowVersion).where(
                 WorkflowVersion.workflow_key == workflow_key,
@@ -967,14 +972,6 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             raise HTTPException(
                 404, detail={"code": "WORKFLOW_NOT_FOUND", "message": "工作流版本不存在或未启用"}
             )
-        queued = await db.scalar(
-            select(func.count(Job.id)).where(Job.status == JobStatus.QUEUED.value)
-        )
-        tenant_queued = await db.scalar(
-            select(func.count(Job.id)).where(
-                Job.tenant_id == principal.id, Job.status == JobStatus.QUEUED.value
-            )
-        )
         client = await db.get(ApiClient, principal.id)
         if callback_url:
             allowed_hosts = {
@@ -990,18 +987,6 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                         "message": "回调地址必须是已批准的 HTTPS 域名",
                     },
                 )
-        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        daily = await db.scalar(
-            select(func.count(Job.id)).where(Job.tenant_id == principal.id, Job.created_at >= today)
-        )
-        if client and int(daily or 0) >= client.daily_quota:
-            raise HTTPException(
-                429, detail={"code": "RATE_LIMITED", "message": "今日任务配额已用完"}
-            )
-        if int(queued or 0) >= cfg.system_max_queued or int(tenant_queued or 0) >= (
-            client.max_queued if client else cfg.default_tenant_max_queued
-        ):
-            raise HTTPException(429, detail={"code": "RATE_LIMITED", "message": "队列已达到限制"})
         job_id = str(uuid.uuid4())
         storage: LocalJobStorage = request.app.state.storage
         job_now = datetime.now(UTC)
@@ -1088,6 +1073,12 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         request_hash = _request_hash(
             workflow_key, workflow_version, request_parameters, file_hashes
         )
+        # Upload and image validation intentionally happen before admission so
+        # large request bodies cannot serialize every tenant.  Admission itself
+        # uses the same global -> tenant transaction-lock order as the Scheduler
+        # feeder, then re-counts under those locks before a Job is inserted.
+        await request.app.state.db.acquire_global_admission_transaction_lock(db)
+        await request.app.state.db.acquire_tenant_transaction_lock(db, principal.id)
         if idempotency_key:
             existing = await db.scalar(
                 select(IdempotencyKey).where(
@@ -1121,6 +1112,28 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     },
                     200,
                 )
+        queued = await db.scalar(
+            select(func.count(Job.id)).where(Job.status == JobStatus.QUEUED.value)
+        )
+        tenant_queued = await db.scalar(
+            select(func.count(Job.id)).where(
+                Job.tenant_id == principal.id, Job.status == JobStatus.QUEUED.value
+            )
+        )
+        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        daily = await db.scalar(
+            select(func.count(Job.id)).where(Job.tenant_id == principal.id, Job.created_at >= today)
+        )
+        if client and int(daily or 0) >= client.daily_quota:
+            storage.remove_tree(root)
+            raise HTTPException(
+                429, detail={"code": "RATE_LIMITED", "message": "今日任务配额已用完"}
+            )
+        if int(queued or 0) >= cfg.system_max_queued or int(tenant_queued or 0) >= (
+            client.max_queued if client else cfg.default_tenant_max_queued
+        ):
+            storage.remove_tree(root)
+            raise HTTPException(429, detail={"code": "RATE_LIMITED", "message": "队列已达到限制"})
         trace_id = uuid.uuid4().hex
         request_id = str(request.state.request_id)
         root = storage.promote_staging(root, job_id, job_now)
@@ -1300,9 +1313,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 404,
                 detail={"code": "WORKFLOW_NOT_FOUND", "message": "服务工作流未启用"},
             )
-        tenant_lock = request.app.state.tenant_locks.setdefault(
-            principal.id, asyncio.Lock()
-        )
+        tenant_lock = request.app.state.tenant_locks.setdefault(principal.id, asyncio.Lock())
         async with tenant_lock:
             queued = await _create_job(
                 request,
@@ -1437,14 +1448,10 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             idempotency_key,
         )
 
-    async def owned_batch(
-        batch_id: str, principal: Principal, db: AsyncSession
-    ) -> JobBatch:
+    async def owned_batch(batch_id: str, principal: Principal, db: AsyncSession) -> JobBatch:
         batch = await db.get(JobBatch, batch_id)
         if batch is None or batch.tenant_id != principal.id:
-            raise HTTPException(
-                404, detail={"code": "BATCH_NOT_FOUND", "message": "批次不存在"}
-            )
+            raise HTTPException(404, detail={"code": "BATCH_NOT_FOUND", "message": "批次不存在"})
         return batch
 
     async def batch_payload(
@@ -1531,7 +1538,22 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         def duration_ms(start: datetime | None, end: datetime | None) -> int | None:
             if start is None or end is None:
                 return None
-            return max(0, int((end - start).total_seconds() * 1000))
+            normalized_start = start if start.tzinfo is not None else start.replace(tzinfo=UTC)
+            normalized_end = end if end.tzinfo is not None else end.replace(tzinfo=UTC)
+            value = int(
+                (
+                    normalized_end.astimezone(UTC) - normalized_start.astimezone(UTC)
+                ).total_seconds()
+                * 1000
+            )
+            return value if value >= 0 else None
+
+        def utc_timestamp(value: datetime | None) -> str | None:
+            if value is None:
+                return None
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=UTC)
+            return value.astimezone(UTC).isoformat()
 
         def percentile(values: list[int], percent: int) -> int | None:
             if not values:
@@ -1540,36 +1562,110 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             index = max(0, ((len(ordered) * percent + 99) // 100) - 1)
             return ordered[min(index, len(ordered) - 1)]
 
+        def median(values: list[int]) -> float | None:
+            if not values:
+                return None
+            ordered = sorted(values)
+            middle = len(ordered) // 2
+            if len(ordered) % 2:
+                return float(ordered[middle])
+            return (ordered[middle - 1] + ordered[middle]) / 2
+
         attempts_by_job: dict[str, list[JobAttempt]] = {}
         for attempt in attempts:
             attempts_by_job.setdefault(attempt.job_id, []).append(attempt)
 
-        def reassignments_for(job_attempts: list[JobAttempt]) -> int:
-            return sum(
-                previous.node_id != current.node_id
-                for previous, current in zip(job_attempts, job_attempts[1:], strict=False)
-            )
+        reassignments_in: dict[str, int] = {}
+        reassignments_out: dict[str, int] = {}
+        for job_attempts in attempts_by_job.values():
+            for previous, current in zip(job_attempts, job_attempts[1:], strict=False):
+                if previous.node_id == current.node_id:
+                    continue
+                reassignments_out[previous.node_id] = reassignments_out.get(previous.node_id, 0) + 1
+                reassignments_in[current.node_id] = reassignments_in.get(current.node_id, 0) + 1
+
+        gpu_attempts = [
+            attempt
+            for attempt in attempts
+            if attempt.gpu_started_at is not None or attempt.gpu_finished_at is not None
+        ]
         completed_gpu_durations = [
             value
-            for attempt in attempts
+            for attempt in gpu_attempts
             if (value := duration_ms(attempt.gpu_started_at, attempt.gpu_finished_at)) is not None
         ]
-        gpu_measurements_complete = bool(attempts) and len(completed_gpu_durations) == len(attempts)
-        gpu_service_ms_total = (
-            sum(completed_gpu_durations) if completed_gpu_durations else None
+        completed_gpu_assignments = {
+            (attempt.job_id, attempt.node_id)
+            for attempt in gpu_attempts
+            if duration_ms(attempt.gpu_started_at, attempt.gpu_finished_at) is not None
+        }
+        successful_items_have_gpu_samples = all(
+            item.job_id is not None
+            and item.node_id is not None
+            and (item.job_id, item.node_id) in completed_gpu_assignments
+            for item in items
+            if item.status == "SUCCEEDED"
         )
+        gpu_measurements_complete = (
+            bool(gpu_attempts)
+            and len(completed_gpu_durations) == len(gpu_attempts)
+            and successful_items_have_gpu_samples
+        )
+        gpu_service_ms_total = sum(completed_gpu_durations) if completed_gpu_durations else None
         node_performance: list[dict[str, Any]] = []
+        complete_node_gpu_finishes: dict[str, datetime] = {}
         for node_id in sorted(node_ids):
             node = nodes_by_id.get(node_id)
             labels = dict(node.labels or {}) if node is not None else {}
             node_items = [item for item in items if item.node_id == node_id]
             node_attempts = [attempt for attempt in attempts if attempt.node_id == node_id]
+            node_gpu_attempts = [
+                attempt
+                for attempt in node_attempts
+                if attempt.gpu_started_at is not None or attempt.gpu_finished_at is not None
+            ]
             node_gpu_durations = [
                 value
-                for attempt in node_attempts
+                for attempt in node_gpu_attempts
                 if (value := duration_ms(attempt.gpu_started_at, attempt.gpu_finished_at))
                 is not None
             ]
+            node_successful_final_assignments = {
+                (item.job_id, node_id)
+                for item in node_items
+                if item.status == "SUCCEEDED" and item.job_id is not None
+            }
+            node_successful_items_have_gpu_samples = node_successful_final_assignments.issubset(
+                completed_gpu_assignments
+            )
+            node_gpu_measurements_complete = (
+                bool(node_gpu_attempts)
+                and len(node_gpu_durations) == len(node_gpu_attempts)
+                and node_successful_items_have_gpu_samples
+            )
+            node_gpu_service_ms = sum(node_gpu_durations) if node_gpu_durations else None
+            node_started_at = min(
+                (
+                    attempt.gpu_started_at
+                    for attempt in node_gpu_attempts
+                    if attempt.gpu_started_at is not None
+                ),
+                default=None,
+            )
+            node_finished_at = (
+                max(
+                    (
+                        attempt.gpu_finished_at
+                        for attempt in node_gpu_attempts
+                        if attempt.gpu_finished_at is not None
+                    ),
+                    default=None,
+                )
+                if node_gpu_measurements_complete
+                else None
+            )
+            if node_finished_at is not None:
+                complete_node_gpu_finishes[node_id] = node_finished_at
             node_performance.append(
                 {
                     "node_id": node_id,
@@ -1577,17 +1673,22 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     "worker_version": labels.get("node_agent_version") or None,
                     "source_revision": labels.get("source_revision") or None,
                     "workflow_version": batch.workflow_version,
-                    "frames_succeeded": sum(
-                        item.status == "SUCCEEDED" for item in node_items
-                    ),
+                    "frames_assigned": len({attempt.job_id for attempt in node_attempts}),
+                    "frames_final_assignment": len(node_items),
+                    "frames_succeeded": sum(item.status == "SUCCEEDED" for item in node_items),
                     "frames_failed": sum(item.status == "FAILED" for item in node_items),
                     "attempts_total": len(node_attempts),
                     "upload_attempts": sum(attempt.upload_attempts for attempt in node_attempts),
                     "prompt_attempts": sum(attempt.prompt_attempts for attempt in node_attempts),
-                    "gpu_service_ms": sum(node_gpu_durations) if node_gpu_durations else None,
+                    "gpu_service_ms": node_gpu_service_ms,
+                    "gpu_service_measurements_complete": node_gpu_measurements_complete,
                     "frame_ms_p50": percentile(node_gpu_durations, 50),
                     "frame_ms_p95": percentile(node_gpu_durations, 95),
-                    "max_concurrent_prompts": None,
+                    "node_started_at": utc_timestamp(node_started_at),
+                    "node_finished_at": utc_timestamp(node_finished_at),
+                    "reassignments_in": reassignments_in.get(node_id, 0),
+                    "reassignments_out": reassignments_out.get(node_id, 0),
+                    "max_concurrent_prompts": (node.max_concurrency if node is not None else None),
                     "input_pixels": sum(item.width * item.height for item in node_items),
                 }
             )
@@ -1596,6 +1697,44 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             batch.status == BatchStatus.SUCCEEDED.value
             and gpu_measurements_complete
             and bool(gpu_service_ms_total)
+        )
+        required_straggler_nodes = set(node_ids)
+        straggler_finishes_complete = required_straggler_nodes.issubset(
+            complete_node_gpu_finishes
+        )
+        parent_gpu_wall_ms = duration_ms(batch.started_at, batch.execution_finished_at)
+        node_finish_offsets_ms: list[int] = []
+        straggler_time_bounds_valid = straggler_finishes_complete
+        if straggler_finishes_complete:
+            for node_id in sorted(required_straggler_nodes):
+                node_finished_at = complete_node_gpu_finishes[node_id]
+                finish_offset_ms = duration_ms(batch.started_at, node_finished_at)
+                finish_to_parent_end_ms = duration_ms(
+                    node_finished_at, batch.execution_finished_at
+                )
+                if finish_offset_ms is None or finish_to_parent_end_ms is None:
+                    straggler_time_bounds_valid = False
+                    break
+                node_finish_offsets_ms.append(finish_offset_ms)
+        finish_median_ms = median(node_finish_offsets_ms)
+        can_compute_straggler = (
+            BatchStatus(batch.status) in TERMINAL_BATCH_STATUSES
+            and gpu_measurements_complete
+            and len(required_straggler_nodes) >= 2
+            and straggler_time_bounds_valid
+            and parent_gpu_wall_ms is not None
+            and parent_gpu_wall_ms > 0
+            and finish_median_ms is not None
+        )
+        straggler_ratio = (
+            round(
+                (max(node_finish_offsets_ms) - finish_median_ms) / parent_gpu_wall_ms,
+                6,
+            )
+            if can_compute_straggler
+            and finish_median_ms is not None
+            and parent_gpu_wall_ms is not None
+            else None
         )
         performance = {
             "schema_version": "1.0",
@@ -1617,10 +1756,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 else None
             ),
             "scheduler_restarts": None,
-            "reassignments": sum(
-                reassignments_for(job_attempts) for job_attempts in attempts_by_job.values()
-            ),
-            "straggler_ratio": None,
+            "reassignments": sum(reassignments_out.values()),
+            "straggler_ratio": straggler_ratio,
             "nodes": node_performance,
         }
         cancel_payload = (
@@ -1731,15 +1868,11 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         used_slots = sum(max(0, int(node.current_jobs)) for node in eligible)
         available_slots = max(0, total_slots - used_slots)
         queued_jobs = int(
-            await db.scalar(
-                select(func.count(Job.id)).where(Job.status == JobStatus.QUEUED.value)
-            )
+            await db.scalar(select(func.count(Job.id)).where(Job.status == JobStatus.QUEUED.value))
             or 0
         )
         running_jobs = int(
-            await db.scalar(
-                select(func.count(Job.id)).where(Job.status.in_(list(ACTIVE_STATUSES)))
-            )
+            await db.scalar(select(func.count(Job.id)).where(Job.status.in_(list(ACTIVE_STATUSES))))
             or 0
         )
         tenant_queued = int(
@@ -1774,8 +1907,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 (
                     await db.scalars(
                         select(WorkflowNodeCompatibility.node_id).where(
-                            WorkflowNodeCompatibility.workflow_version_id
-                            == active_workflow.id,
+                            WorkflowNodeCompatibility.workflow_version_id == active_workflow.id,
                             WorkflowNodeCompatibility.compatible.is_(True),
                         )
                     )
@@ -1788,9 +1920,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             - tenant_queued,
         )
         accepting_batches = (
-            queued_jobs < cfg.system_max_queued
-            and tenant_queue_room > 0
-            and compatible_nodes > 0
+            queued_jobs < cfg.system_max_queued and tenant_queue_room > 0 and compatible_nodes > 0
         )
         suggested_max_new_batches = (
             min(tenant_queue_room, max(1, available_slots)) if accepting_batches else 0
@@ -1820,8 +1950,12 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "kind": client.client_kind if client is not None else "production",
                 "queued_jobs": tenant_queued,
                 "running_jobs": tenant_running,
-                "max_queued": client.max_queued if client is not None else cfg.default_tenant_max_queued,
-                "max_running": client.max_running if client is not None else cfg.default_tenant_max_running,
+                "max_queued": client.max_queued
+                if client is not None
+                else cfg.default_tenant_max_queued,
+                "max_running": client.max_running
+                if client is not None
+                else cfg.default_tenant_max_running,
             },
         }
 
@@ -1866,14 +2000,10 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 422,
                 detail={"code": "INPUT_INVALID", "message": str(exc)},
             ) from exc
-        tenant_lock = request.app.state.tenant_locks.setdefault(
-            principal.id, asyncio.Lock()
-        )
+        tenant_lock = request.app.state.tenant_locks.setdefault(principal.id, asyncio.Lock())
         async with tenant_lock:
             await request.app.state.db.acquire_tenant_transaction_lock(db, principal.id)
-            request_hash = hashlib.sha256(
-                b"imageclip-rgba\x00" + canonical_manifest
-            ).hexdigest()
+            request_hash = hashlib.sha256(b"imageclip-rgba\x00" + canonical_manifest).hexdigest()
             existing_key = await db.scalar(
                 select(BatchIdempotencyKey).where(
                     BatchIdempotencyKey.client_id == principal.id,
@@ -1968,6 +2098,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             staging = storage.create_batch_staging_layout(batch_id)
             root: Path | None = None
             try:
+
                 async def archive_chunks() -> AsyncIterator[bytes]:
                     while chunk := await archive.read(1024 * 1024):
                         yield chunk
@@ -2244,9 +2375,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             .with_for_update()
         )
         if batch is None:
-            raise HTTPException(
-                404, detail={"code": "BATCH_NOT_FOUND", "message": "批次不存在"}
-            )
+            raise HTTPException(404, detail={"code": "BATCH_NOT_FOUND", "message": "批次不存在"})
         expected_key = f"{batch.external_batch_id}:cancel"
         if idempotency_key != expected_key:
             raise HTTPException(
@@ -2316,9 +2445,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         db.add(operation)
         batch.cancel_requested = True
         if batch.status != BatchStatus.CANCELLING.value:
-            await transition_batch(
-                db, batch, BatchStatus.CANCELLING, "batch.cancel_requested"
-            )
+            await transition_batch(db, batch, BatchStatus.CANCELLING, "batch.cancel_requested")
         await audit(
             db,
             request,
@@ -2347,9 +2474,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 )
             )
             if replay is None or replay.batch_id != batch_id:
-                raise HTTPException(
-                    409, detail={"code": "IDEMPOTENCY_CONFLICT"}
-                ) from exc
+                raise HTTPException(409, detail={"code": "IDEMPOTENCY_CONFLICT"}) from exc
             replay_batch = await owned_batch(batch_id, principal, db)
             return await cancel_response_payload(replay_batch, db)
         await _notify(
@@ -2554,9 +2679,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         today = now.replace(hour=0, minute=0, second=0, microsecond=0)
         scoped_client_ids = select(ApiClient.id).where(ApiClient.role == "client")
         if client_kind != "all":
-            scoped_client_ids = scoped_client_ids.where(
-                ApiClient.client_kind == client_kind
-            )
+            scoped_client_ids = scoped_client_ids.where(ApiClient.client_kind == client_kind)
         rows = (
             await db.execute(
                 select(Job.status, func.count(Job.id))
@@ -2623,17 +2746,15 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             )
         )
         oldest_batch = await db.scalar(
-                select(func.min(JobBatch.created_at)).where(
-                    JobBatch.status.in_(
-                        [BatchStatus.VALIDATING.value, BatchStatus.QUEUED.value]
-                    ),
-                    JobBatch.tenant_id.in_(scoped_client_ids),
-                )
+            select(func.min(JobBatch.created_at)).where(
+                JobBatch.status.in_([BatchStatus.VALIDATING.value, BatchStatus.QUEUED.value]),
+                JobBatch.tenant_id.in_(scoped_client_ids),
+            )
         )
         if oldest_batch is not None and (
-            oldest is None or oldest_batch.replace(tzinfo=oldest_batch.tzinfo or UTC) < oldest.replace(
-                tzinfo=oldest.tzinfo or UTC
-            )
+            oldest is None
+            or oldest_batch.replace(tzinfo=oldest_batch.tzinfo or UTC)
+            < oldest.replace(tzinfo=oldest.tzinfo or UTC)
         ):
             oldest = oldest_batch
         if oldest is not None and oldest.tzinfo is None:
@@ -2682,9 +2803,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         )
         nodes = (await db.scalars(select(Node).order_by(Node.pool, Node.id))).all()
         workers = sum(
-            node.mode == NodeMode.ACTIVE.value
-            and node.health == "ONLINE"
-            for node in nodes
+            node.mode == NodeMode.ACTIVE.value and node.health == "ONLINE" for node in nodes
         )
         average_duration = sum(duration_values) / len(duration_values) if duration_values else 0
         estimated_clear_seconds = (
@@ -2773,9 +2892,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         bounded_limit = min(max(limit, 1), 500)
         scoped_client_ids = select(ApiClient.id).where(ApiClient.role == "client")
         if client_kind != "all":
-            scoped_client_ids = scoped_client_ids.where(
-                ApiClient.client_kind == client_kind
-            )
+            scoped_client_ids = scoped_client_ids.where(ApiClient.client_kind == client_kind)
         query = (
             select(Job)
             .where(
@@ -2797,16 +2914,12 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         if status:
             batch_query = batch_query.where(JobBatch.status == status)
         batch_rows = list((await db.scalars(batch_query)).all())
-        tenant_ids = {row.tenant_id for row in job_rows} | {
-            row.tenant_id for row in batch_rows
-        }
-        clients = list(
-            (
-                await db.scalars(
-                    select(ApiClient).where(ApiClient.id.in_(tenant_ids))
-                )
-            ).all()
-        ) if tenant_ids else []
+        tenant_ids = {row.tenant_id for row in job_rows} | {row.tenant_id for row in batch_rows}
+        clients = (
+            list((await db.scalars(select(ApiClient).where(ApiClient.id.in_(tenant_ids)))).all())
+            if tenant_ids
+            else []
+        )
         client_by_id = {row.id: row for row in clients}
         rows: list[dict[str, Any]] = []
         for job in job_rows:
@@ -2854,9 +2967,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         """Expose the Blender queue without mixing it into GPU jobs."""
         bounded_limit = min(max(limit, 1), 500)
         now = datetime.now(UTC)
-        heartbeat_cutoff = now - timedelta(
-            seconds=cfg.asset_worker_heartbeat_timeout_seconds
-        )
+        heartbeat_cutoff = now - timedelta(seconds=cfg.asset_worker_heartbeat_timeout_seconds)
 
         def utc_value(value: datetime | None) -> datetime | None:
             if value is None:
@@ -2876,15 +2987,12 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             }
             ended = utc_value(job.finished_at or job.last_progress_at) if terminal else now
             return max(0, int(((ended or now) - started).total_seconds()))
-        workers = list(
-            (await db.scalars(select(AssetWorker).order_by(AssetWorker.id))).all()
-        )
+
+        workers = list((await db.scalars(select(AssetWorker).order_by(AssetWorker.id))).all())
         jobs = list(
             (
                 await db.scalars(
-                    select(AssetJob)
-                    .order_by(AssetJob.created_at.desc())
-                    .limit(bounded_limit)
+                    select(AssetJob).order_by(AssetJob.created_at.desc()).limit(bounded_limit)
                 )
             ).all()
         )
@@ -2919,9 +3027,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             )
         status_rows = (
             await db.execute(
-                select(AssetJob.status, func.count(AssetJob.id)).group_by(
-                    AssetJob.status
-                )
+                select(AssetJob.status, func.count(AssetJob.id)).group_by(AssetJob.status)
             )
         ).all()
         counts = {str(status): int(count) for status, count in status_rows}
@@ -3022,12 +3128,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                         else "retained"
                     ),
                     "created_at": job.created_at.isoformat(),
-                    "started_at": job.started_at.isoformat()
-                    if job.started_at
-                    else None,
-                    "finished_at": job.finished_at.isoformat()
-                    if job.finished_at
-                    else None,
+                    "started_at": job.started_at.isoformat() if job.started_at else None,
+                    "finished_at": job.finished_at.isoformat() if job.finished_at else None,
                     "artifacts": artifacts_by_job.get(job.id, []),
                 }
                 for job in jobs
@@ -3684,9 +3786,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             parent_batches = list(
                 (
                     await db.scalars(
-                        select(JobBatch)
-                        .where(JobBatch.id.in_(batch_ids))
-                        .with_for_update()
+                        select(JobBatch).where(JobBatch.id.in_(batch_ids)).with_for_update()
                     )
                 ).all()
             )
@@ -3709,9 +3809,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 or batch_id not in operation_batch_ids
             )
             if unsafe_batch_ids:
-                unsafe_job_ids = sorted(
-                    job.id for job in jobs if job.batch_id in unsafe_batch_ids
-                )
+                unsafe_job_ids = sorted(job.id for job in jobs if job.batch_id in unsafe_batch_ids)
                 await audit(
                     db,
                     request,
@@ -4009,11 +4107,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             raise HTTPException(409, detail={"code": "CLIENT_EXISTS"})
         if body.allowed_ips:
             clients = list((await db.scalars(select(ApiClient))).all())
-            used_ips = {
-                str(value)
-                for row in clients
-                for value in (row.allowed_ips or [])
-            }
+            used_ips = {str(value) for row in clients for value in (row.allowed_ips or [])}
             conflicts = sorted(set(body.allowed_ips) & used_ips)
             if conflicts:
                 raise HTTPException(

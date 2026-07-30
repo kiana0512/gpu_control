@@ -474,35 +474,39 @@ async def materialize_batch_item(
     except Exception:
         storage.remove_tree(staging)
         raise
-    now = datetime.now(UTC)
-    job = Job(
-        id=job_id,
-        tenant_id=batch.tenant_id,
-        workflow_key=batch.workflow_key,
-        workflow_version=batch.workflow_version,
-        status=JobStatus.RECEIVED.value,
-        priority=Priority.BATCH.value,
-        parameters=parameters,
-        request_hash=hashlib.sha256(
-            f"{batch.request_hash}:{item.ordinal}:{item.input_sha256}".encode()
-        ).hexdigest(),
-        request_id=batch.request_id,
-        trace_id=batch.trace_id,
-        job_dir=str(root),
-        batch_id=batch.id,
-        batch_item_id=item.id,
-        max_attempts=settings.job_max_attempts,
-        created_at=now,
-    )
-    session.add(job)
-    await session.flush()
-    item.job_id = job.id
-    item.status = BatchItemStatus.QUEUED.value
-    item.updated_at = now
-    batch.last_materialized_at = now
-    await transition_job(session, job, JobStatus.VALIDATING, "batch.item_validated")
-    await transition_job(session, job, JobStatus.QUEUED, "batch.item_queued")
-    return job
+    try:
+        now = datetime.now(UTC)
+        job = Job(
+            id=job_id,
+            tenant_id=batch.tenant_id,
+            workflow_key=batch.workflow_key,
+            workflow_version=batch.workflow_version,
+            status=JobStatus.RECEIVED.value,
+            priority=Priority.BATCH.value,
+            parameters=parameters,
+            request_hash=hashlib.sha256(
+                f"{batch.request_hash}:{item.ordinal}:{item.input_sha256}".encode()
+            ).hexdigest(),
+            request_id=batch.request_id,
+            trace_id=batch.trace_id,
+            job_dir=str(root),
+            batch_id=batch.id,
+            batch_item_id=item.id,
+            max_attempts=settings.job_max_attempts,
+            created_at=now,
+        )
+        session.add(job)
+        await session.flush()
+        item.job_id = job.id
+        item.status = BatchItemStatus.QUEUED.value
+        item.updated_at = now
+        batch.last_materialized_at = now
+        await transition_job(session, job, JobStatus.VALIDATING, "batch.item_validated")
+        await transition_job(session, job, JobStatus.QUEUED, "batch.item_queued")
+        return job
+    except BaseException:
+        storage.remove_tree(root)
+        raise
 
 
 def build_result_archive(

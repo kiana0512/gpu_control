@@ -46,6 +46,12 @@ OCI_MANIFEST_MEDIA_TYPES = frozenset(
 ATTESTATION_REFERENCE_TYPE = "attestation-manifest"
 SPLIT_SIZE = 128 * 1024 * 1024
 MINIMUM_FREE_BYTES = 2 * 1024 * 1024 * 1024
+SUBPROCESS_STDERR_LIMIT = 4096
+ANSI_ESCAPE_PATTERN = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+SENSITIVE_DIAGNOSTIC_PATTERNS = (
+    re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic)\s+)\S+"),
+    re.compile(r"(?i)\b(token|password|secret|api[_-]?key)=([^\s&]+)"),
+)
 
 
 class ReleasePackagingError(ValueError):
@@ -115,19 +121,59 @@ class Attestation:
     raw: bytes
 
 
+@dataclass(frozen=True)
+class OfflineOciEvidence:
+    attestations: dict[str, Attestation]
+    index_digest: str
+    image_manifest_digest: str
+    config_digest: str
+
+
 def _run(
     command: list[str],
     *,
     cwd: Path | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(  # noqa: S603 -- argv uses fixed git/docker binaries; no shell
+    completed = subprocess.run(  # noqa: S603 -- argv uses fixed git/docker binaries; no shell
         command,
         cwd=cwd,
-        check=check,
+        check=False,
         capture_output=True,
         text=True,
     )
+    if check and completed.returncode != 0:
+        executable = Path(command[0]).name if command else "subprocess"
+        operation = " ".join(command[1:3]) if len(command) > 1 else ""
+        label = f"{executable} {operation}".strip()
+        diagnostic = _safe_subprocess_stderr(completed.stderr)
+        raise ReleasePackagingError(
+            f"subprocess failed ({label}, exit {completed.returncode}); stderr: {diagnostic}"
+        )
+    return completed
+
+
+def _safe_subprocess_stderr(value: str) -> str:
+    """Return a bounded, control-free, credential-redacted subprocess diagnostic."""
+
+    cleaned = ANSI_ESCAPE_PATTERN.sub("", value or "")
+    cleaned = "".join(
+        character if character in {"\n", "\t"} or character.isprintable() else "�"
+        for character in cleaned
+    )
+    for pattern in SENSITIVE_DIAGNOSTIC_PATTERNS:
+        if "authorization" in pattern.pattern.lower():
+            cleaned = pattern.sub(r"\1<redacted>", cleaned)
+        else:
+            cleaned = pattern.sub(r"\1=<redacted>", cleaned)
+    cleaned = cleaned.strip()
+    if not cleaned:
+        return "<empty>"
+    if len(cleaned) > SUBPROCESS_STDERR_LIMIT:
+        omitted = len(cleaned) - SUBPROCESS_STDERR_LIMIT
+        cleaned = cleaned[-SUBPROCESS_STDERR_LIMIT:]
+        return f"<truncated {omitted} chars> {cleaned}"
+    return cleaned
 
 
 def _output(command: list[str], *, cwd: Path | None = None) -> str:
@@ -170,8 +216,7 @@ def select_repo_digest(reference: str, repo_digests: list[str]) -> str:
     matches = [
         value
         for value in repo_digests
-        if DIGEST_REFERENCE_PATTERN.fullmatch(value)
-        and value.split("@", 1)[0] == repository
+        if DIGEST_REFERENCE_PATTERN.fullmatch(value) and value.split("@", 1)[0] == repository
     ]
     if len(matches) != 1:
         raise ReleasePackagingError(
@@ -253,7 +298,9 @@ def _ensure_repository_child(repository: Path, path: Path) -> Path:
     try:
         return path.relative_to(repository)
     except ValueError as exc:
-        raise ReleasePackagingError(f"Git LFS output must be inside the repository: {path}") from exc
+        raise ReleasePackagingError(
+            f"Git LFS output must be inside the repository: {path}"
+        ) from exc
 
 
 def preflight(
@@ -360,17 +407,13 @@ def preflight(
     }
 
 
-def build_command(
+def _build_command_prefix(
     repository: Path,
     component: Component,
     version: str,
     revision: str,
     builder: str,
     base_images: dict[str, str],
-    docker_tar: Path,
-    oci_tar: Path,
-    metadata_path: Path,
-    sbom_generator: str | None,
 ) -> list[str]:
     command = [
         DOCKER_EXECUTABLE,
@@ -380,7 +423,6 @@ def build_command(
         builder,
         "--progress=plain",
         "--platform=linux/amd64",
-        "--provenance=mode=max",
         "--file",
         str(repository / component.dockerfile),
         "--tag",
@@ -392,13 +434,70 @@ def build_command(
     ]
     for argument in component.base_arguments:
         command.extend(["--build-arg", f"{argument}={base_images[argument]}"])
+    return command
+
+
+def oci_build_command(
+    repository: Path,
+    component: Component,
+    version: str,
+    revision: str,
+    builder: str,
+    base_images: dict[str, str],
+    oci_tar: Path,
+    metadata_path: Path,
+    cache_dir: Path,
+    sbom_generator: str | None,
+) -> list[str]:
+    """Create the attested OCI export and populate a reusable local build cache."""
+
+    command = _build_command_prefix(
+        repository,
+        component,
+        version,
+        revision,
+        builder,
+        base_images,
+    )
+    command.append("--provenance=mode=max")
     if sbom_generator is not None:
         command.append(f"--attest=type=sbom,generator={sbom_generator}")
     command.extend(
         [
             f"--metadata-file={metadata_path}",
-            f"--output=type=docker,dest={docker_tar}",
+            f"--cache-to=type=local,dest={cache_dir},mode=max",
             f"--output=type=oci,dest={oci_tar}",
+            str(repository / component.context),
+        ]
+    )
+    return command
+
+
+def docker_build_command(
+    repository: Path,
+    component: Component,
+    version: str,
+    revision: str,
+    builder: str,
+    base_images: dict[str, str],
+    docker_tar: Path,
+    cache_dir: Path,
+) -> list[str]:
+    """Create a Docker-loadable tar without an attestation manifest list."""
+
+    command = _build_command_prefix(
+        repository,
+        component,
+        version,
+        revision,
+        builder,
+        base_images,
+    )
+    command.extend(
+        [
+            "--provenance=false",
+            f"--cache-from=type=local,src={cache_dir}",
+            f"--output=type=docker,dest={docker_tar}",
             str(repository / component.context),
         ]
     )
@@ -441,23 +540,37 @@ def extract_offline_attestations(
     oci_path: Path,
     *,
     require_sbom: bool,
-) -> tuple[dict[str, Attestation], str]:
+) -> OfflineOciEvidence:
     with tarfile.open(oci_path, mode="r:*") as archive:
         index_raw = _tar_member_bytes(archive, "index.json")
         index = json.loads(index_raw)
         descriptors = index.get("manifests") if isinstance(index, dict) else None
         if not isinstance(descriptors, list):
             raise ReleasePackagingError("OCI index does not contain manifests")
-        image_digests = {
-            str(descriptor.get("digest"))
+        image_descriptors = [
+            descriptor
             for descriptor in descriptors
             if isinstance(descriptor, dict)
             and str(descriptor.get("mediaType")) in OCI_MANIFEST_MEDIA_TYPES
             and dict(descriptor.get("annotations") or {}).get("vnd.docker.reference.type")
             != ATTESTATION_REFERENCE_TYPE
-        }
-        if not image_digests:
-            raise ReleasePackagingError("OCI index has no image manifest")
+        ]
+        if len(image_descriptors) != 1:
+            raise ReleasePackagingError(
+                "OCI index must contain exactly one non-attestation image manifest"
+            )
+        image_manifest_digest = str(image_descriptors[0].get("digest") or "")
+        image_manifest_raw = _oci_blob(archive, image_manifest_digest)
+        image_manifest = json.loads(image_manifest_raw)
+        config_descriptor = (
+            image_manifest.get("config") if isinstance(image_manifest, dict) else None
+        )
+        if not isinstance(config_descriptor, dict):
+            raise ReleasePackagingError("OCI image manifest does not contain a config descriptor")
+        config_digest = str(config_descriptor.get("digest") or "")
+        config_raw = _oci_blob(archive, config_digest)
+        if not isinstance(json.loads(config_raw), dict):
+            raise ReleasePackagingError("OCI image config is not a JSON object")
         results: dict[str, Attestation] = {}
         for descriptor in descriptors:
             if not isinstance(descriptor, dict):
@@ -466,7 +579,7 @@ def extract_offline_attestations(
             if annotations.get("vnd.docker.reference.type") != ATTESTATION_REFERENCE_TYPE:
                 continue
             subject_digest = str(annotations.get("vnd.docker.reference.digest") or "")
-            if subject_digest not in image_digests:
+            if subject_digest != image_manifest_digest:
                 raise ReleasePackagingError("attestation does not reference an OCI image manifest")
             manifest_raw = _oci_blob(archive, str(descriptor.get("digest") or ""))
             manifest = json.loads(manifest_raw)
@@ -505,7 +618,12 @@ def extract_offline_attestations(
             raise ReleasePackagingError("OCI archive is missing provenance")
         if require_sbom and "sbom" not in results:
             raise ReleasePackagingError("OCI archive is missing the requested SBOM")
-        return results, f"sha256:{_sha256_bytes(index_raw)}"
+        return OfflineOciEvidence(
+            attestations=results,
+            index_digest=f"sha256:{_sha256_bytes(index_raw)}",
+            image_manifest_digest=image_manifest_digest,
+            config_digest=config_digest,
+        )
 
 
 def _validate_image(
@@ -528,7 +646,11 @@ def _validate_image(
             raise ReleasePackagingError(
                 f"{reference} label {key} is {labels.get(key)!r}, expected {expected!r}"
             )
-    environment = {value.split("=", 1)[0]: value.split("=", 1)[1] for value in config.get("Env") or [] if "=" in value}
+    environment = {
+        value.split("=", 1)[0]: value.split("=", 1)[1]
+        for value in config.get("Env") or []
+        if "=" in value
+    }
     if component.key != "web":
         if environment.get("GPU_CONTROL_BUILD_VERSION") != version:
             raise ReleasePackagingError(f"{reference} runtime build version is not aligned")
@@ -551,9 +673,25 @@ def _validate_image(
     }
 
 
+def validate_docker_oci_config_identity(
+    reference: str,
+    local_image_id: str,
+    oci_config_digest: str,
+) -> None:
+    """Fail unless the Docker-loadable export and attested OCI export share one config."""
+
+    if local_image_id != oci_config_digest:
+        raise ReleasePackagingError(
+            f"{reference} Docker image ID does not match OCI config digest: "
+            f"{local_image_id} != {oci_config_digest}"
+        )
+
+
 def _gzip_file(source: Path, destination: Path) -> None:
     with source.open("rb") as incoming, destination.open("wb") as outgoing:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=outgoing, compresslevel=6, mtime=0) as zipped:
+        with gzip.GzipFile(
+            filename="", mode="wb", fileobj=outgoing, compresslevel=6, mtime=0
+        ) as zipped:
             shutil.copyfileobj(incoming, zipped, length=1024 * 1024)
     with gzip.open(destination, "rb") as stream:
         while stream.read(1024 * 1024):
@@ -595,11 +733,11 @@ def _release_readme(evidence: dict[str, Any]) -> str:
         for part in evidence["archive"]["parts"]
     )
     sbom_status = evidence["attestations"]["sbom_status"]
-    return f"""# GPU Control control-plane {evidence['version']} candidate archive
+    return f"""# GPU Control control-plane {evidence["version"]} candidate archive
 
 > Status: **CANDIDATE_ARCHIVE_ONLY / NOT DEPLOYED / NOT PRODUCTION ACCEPTED**
 >
-> Source revision: `{evidence['revision']}`. Registry manifest digests and strict
+> Source revision: `{evidence["revision"]}`. Registry manifest digests and strict
 > `verify_release_identity.py` acceptance remain `PENDING_REGISTRY_PUSH`.
 
 ## Images
@@ -608,10 +746,12 @@ def _release_readme(evidence: dict[str, Any]) -> str:
 |---|---|---|
 {images}
 
-All four images were built from the same clean, pushed full Git SHA. OCI labels and the Python
-runtime build-version environment were checked before the combined `docker image save` archive was
-created. No Compose command, service restart, production migration, registry push, or Git LFS push
-is performed by the packager.
+All four images were built from the same clean, pushed full Git SHA. Each component uses one
+attested OCI solve followed by a Docker-loadable solve that imports the first solve's local cache.
+The loaded Docker image ID must equal the OCI manifest's config digest; a mismatch fails closed.
+OCI labels and the Python runtime build-version environment were checked before the combined
+`docker image save` archive was created. No Compose command, service restart, production migration,
+registry push, or Git LFS push is performed by the packager.
 
 ## Offline attestation state
 
@@ -625,16 +765,16 @@ and must never be copied into the registry fields in the V4.1 receipt.
 ## Reassemble
 
 ```bash
-cat gpu-control-control-plane-{evidence['version']}-images.tar.gz.part-* \\
-  > gpu-control-control-plane-{evidence['version']}-images.tar.gz
+cat gpu-control-control-plane-{evidence["version"]}-images.tar.gz.part-* \\
+  > gpu-control-control-plane-{evidence["version"]}-images.tar.gz
 sha256sum -c SHA256SUMS.txt
-gzip -t gpu-control-control-plane-{evidence['version']}-images.tar.gz
-docker image load --input gpu-control-control-plane-{evidence['version']}-images.tar.gz
+gzip -t gpu-control-control-plane-{evidence["version"]}-images.tar.gz
+docker image load --input gpu-control-control-plane-{evidence["version"]}-images.tar.gz
 ```
 
-Combined archive: `{evidence['archive']['filename']}`
-SHA-256: `{evidence['archive']['sha256']}`
-Size: `{evidence['archive']['size']}` bytes
+Combined archive: `{evidence["archive"]["filename"]}`
+SHA-256: `{evidence["archive"]["sha256"]}`
+Size: `{evidence["archive"]["size"]}` bytes
 
 ## Git LFS candidate parts
 
@@ -668,7 +808,32 @@ def execute_package(
             docker_tar = staging / f"{component.key}.docker.tar"
             oci_tar = staging / f"{component.key}.oci.tar"
             metadata_path = staging / f"{component.key}.build-metadata.json"
-            command = build_command(
+            cache_dir = staging / f"{component.key}.build-cache"
+            oci_command = oci_build_command(
+                repository,
+                component,
+                version,
+                revision,
+                builder,
+                base_images,
+                oci_tar,
+                metadata_path,
+                cache_dir,
+                sbom_generator,
+            )
+            _run(oci_command, cwd=repository)
+            for path in (oci_tar, metadata_path):
+                if not path.is_file() or path.stat().st_size < 1:
+                    raise ReleasePackagingError(f"Buildx did not create {path.name}")
+            if not cache_dir.is_dir() or not (cache_dir / "index.json").is_file():
+                raise ReleasePackagingError(
+                    f"Buildx did not create the reusable cache for {component.key}"
+                )
+            offline_oci = extract_offline_attestations(
+                oci_tar,
+                require_sbom=sbom_generator is not None,
+            )
+            docker_command = docker_build_command(
                 repository,
                 component,
                 version,
@@ -676,33 +841,31 @@ def execute_package(
                 builder,
                 base_images,
                 docker_tar,
-                oci_tar,
-                metadata_path,
-                sbom_generator,
+                cache_dir,
             )
-            _run(command, cwd=repository)
-            for path in (docker_tar, oci_tar, metadata_path):
-                if not path.is_file() or path.stat().st_size < 1:
-                    raise ReleasePackagingError(f"Buildx did not create {path.name}")
-            attestations, oci_index_digest = extract_offline_attestations(
-                oci_tar,
-                require_sbom=sbom_generator is not None,
-            )
+            _run(docker_command, cwd=repository)
+            if not docker_tar.is_file() or docker_tar.stat().st_size < 1:
+                raise ReleasePackagingError(f"Buildx did not create {docker_tar.name}")
             component_evidence[component.key] = {
                 "build_metadata_sha256": _sha256_file(metadata_path),
                 "oci_export_sha256": _sha256_file(oci_tar),
-                "offline_oci_index_digest": oci_index_digest,
+                "docker_export_sha256": _sha256_file(docker_tar),
+                "offline_oci_index_digest": offline_oci.index_digest,
+                "oci_image_manifest_digest": offline_oci.image_manifest_digest,
+                "oci_config_digest": offline_oci.config_digest,
                 "offline_oci_digest_is_registry_digest": False,
+                "solve_strategy": "SPLIT_OCI_ATTESTED_AND_DOCKER_SHARED_CACHE",
+                "docker_oci_config_match": False,
                 "attestations": {
                     key: {
                         "predicate_type": value.predicate_type,
                         "subject_digest": value.subject_digest,
                         "sha256": _sha256_bytes(value.raw),
                     }
-                    for key, value in sorted(attestations.items())
+                    for key, value in sorted(offline_oci.attestations.items())
                 },
                 "_metadata_path": metadata_path,
-                "_attestations": attestations,
+                "_attestations": offline_oci.attestations,
             }
             docker_tars.append(docker_tar)
         for docker_tar in docker_tars:
@@ -714,9 +877,22 @@ def execute_package(
             reference = component.image_reference(version)
             inspected = _inspect_image(reference)
             validated = _validate_image(component, reference, inspected, version, revision)
+            component_details = component_evidence[component.key]
+            oci_config_digest = str(component_details["oci_config_digest"])
+            validate_docker_oci_config_identity(
+                reference,
+                str(validated["local_image_id"]),
+                oci_config_digest,
+            )
             if validated["local_image_id"] in image_ids:
-                raise ReleasePackagingError("multiple components resolved to the same local image ID")
+                raise ReleasePackagingError(
+                    "multiple components resolved to the same local image ID"
+                )
             image_ids.add(validated["local_image_id"])
+            validated["oci_image_manifest_digest"] = component_details["oci_image_manifest_digest"]
+            validated["oci_config_digest"] = oci_config_digest
+            validated["docker_oci_config_match"] = True
+            component_details["docker_oci_config_match"] = True
             image_evidence[component.key] = validated
             inspect_payloads[component.key] = _json_bytes(inspected)
         archive_parent_staging = Path(
@@ -732,10 +908,14 @@ def execute_package(
                     inspect_payloads[component.key]
                 )
                 metadata_path = details.pop("_metadata_path")
-                shutil.copyfile(metadata_path, evidence_dir / f"{component.key}.build-metadata.json")
+                shutil.copyfile(
+                    metadata_path, evidence_dir / f"{component.key}.build-metadata.json"
+                )
                 attestations = details.pop("_attestations")
                 for kind, statement in attestations.items():
-                    (evidence_dir / f"{component.key}.{kind}.intoto.json").write_bytes(statement.raw)
+                    (evidence_dir / f"{component.key}.{kind}.intoto.json").write_bytes(
+                        statement.raw
+                    )
             uncompressed = staging / f"gpu-control-control-plane-{version}-images.tar"
             archive_name = f"gpu-control-control-plane-{version}-images.tar.gz"
             combined_archive = archive_parent_staging / archive_name
@@ -755,7 +935,7 @@ def execute_package(
             archive_sha256 = _sha256_file(combined_archive)
             parts = _split_archive(combined_archive, lfs_parent_staging)
             evidence: dict[str, Any] = {
-                "schema_version": "gpu-control-release-candidate.v1",
+                "schema_version": "gpu-control-release-candidate.v2",
                 "release_status": "CANDIDATE_ARCHIVE_ONLY",
                 "production_accepted": False,
                 "deployed": False,
@@ -837,23 +1017,38 @@ def plan(
     builder: str,
     sbom_generator: str | None,
 ) -> dict[str, Any]:
-    placeholder_bases = {key: f"<{tag}-resolved-to-name@sha256>" for key, tag in BASE_IMAGE_TAGS.items()}
-    commands = {}
+    placeholder_bases = {
+        key: f"<{tag}-resolved-to-name@sha256>" for key, tag in BASE_IMAGE_TAGS.items()
+    }
+    commands: dict[str, dict[str, list[str]]] = {}
     for component in COMPONENTS:
-        commands[component.key] = build_command(
-            repository,
-            component,
-            version,
-            revision,
-            builder,
-            placeholder_bases,
-            Path(f"<temporary>/{component.key}.docker.tar"),
-            Path(f"<temporary>/{component.key}.oci.tar"),
-            Path(f"<temporary>/{component.key}.build-metadata.json"),
-            sbom_generator,
-        )
+        cache_dir = Path(f"<temporary>/{component.key}.build-cache")
+        commands[component.key] = {
+            "oci_attested": oci_build_command(
+                repository,
+                component,
+                version,
+                revision,
+                builder,
+                placeholder_bases,
+                Path(f"<temporary>/{component.key}.oci.tar"),
+                Path(f"<temporary>/{component.key}.build-metadata.json"),
+                cache_dir,
+                sbom_generator,
+            ),
+            "docker_loadable": docker_build_command(
+                repository,
+                component,
+                version,
+                revision,
+                builder,
+                placeholder_bases,
+                Path(f"<temporary>/{component.key}.docker.tar"),
+                cache_dir,
+            ),
+        }
     return {
-        "schema_version": "gpu-control-release-packaging-plan.v1",
+        "schema_version": "gpu-control-release-packaging-plan.v2",
         "mode": "PLAN_ONLY_NO_MUTATIONS",
         "version": version,
         "revision": revision,
@@ -865,8 +1060,10 @@ def plan(
         "build_commands": commands,
         "post_build_actions": [
             "validate OCI provenance and optional SBOM subjects",
+            "extract the OCI image config digest",
             "load four candidate image tars without starting containers",
-            "validate image IDs, OCI labels, and build-version metadata",
+            "require every Docker image ID to equal its OCI config digest",
+            "validate OCI labels and build-version metadata",
             "docker image save four images, deterministic gzip, split into 128 MiB parts",
             "write SHA256SUMS, evidence, README, and Git LFS candidate paths",
         ],
@@ -909,13 +1106,10 @@ def main() -> int:
     archive_dir = (
         args.archive_dir.resolve()
         if args.archive_dir
-        else Path(tempfile.gettempdir())
-        / f"gpu-control-control-plane-{args.version}-candidate"
+        else Path(tempfile.gettempdir()) / f"gpu-control-control-plane-{args.version}-candidate"
     )
     lfs_dir = (
-        args.lfs_dir.resolve()
-        if args.lfs_dir
-        else default_lfs_directory(repository, args.version)
+        args.lfs_dir.resolve() if args.lfs_dir else default_lfs_directory(repository, args.version)
     )
     try:
         if not args.preflight and not args.execute:

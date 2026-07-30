@@ -16,8 +16,9 @@ from urllib.parse import urlparse
 import httpx
 from prometheus_client import Counter, Gauge, Histogram, Info, start_http_server
 from redis.asyncio import Redis
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import Select
 
 from packages.comfy_client import ComfyClient, ComfyError
 from packages.gpu_control_core.batches import (
@@ -35,6 +36,7 @@ from packages.gpu_control_core.enums import (
     BatchStatus,
     JobStatus,
     NodeHealth,
+    NodeMode,
 )
 from packages.gpu_control_core.logging import bind_context, configure_logging, logger, reset_context
 from packages.gpu_control_core.models import (
@@ -103,6 +105,7 @@ FAIL_CLOSED_SUBMISSION_ERRORS = frozenset(
         "COMFY_SUBMISSION_RECONCILE_FAILED",
     }
 )
+MAX_BATCH_MATERIALIZATIONS_PER_TICK = 32
 
 
 def runtime_version_metadata() -> dict[str, Any]:
@@ -256,6 +259,160 @@ def monotonic_batch_progress(
         (terminal_items + max(0.0, active_progress)) / max(total_items, 1) * 100.0,
     )
     return max(current, computed)
+
+
+async def latest_output_artifacts(
+    session: AsyncSession,
+    job_ids: list[str],
+) -> dict[str, JobArtifact]:
+    """Load the newest output artifact for every requested job in one query."""
+
+    unique_job_ids = list(dict.fromkeys(job_ids))
+    if not unique_job_ids:
+        return {}
+    ranked = (
+        select(
+            JobArtifact.id.label("artifact_id"),
+            func.row_number()
+            .over(
+                partition_by=JobArtifact.job_id,
+                order_by=(JobArtifact.created_at.desc(), JobArtifact.id.desc()),
+            )
+            .label("artifact_rank"),
+        )
+        .where(
+            JobArtifact.job_id.in_(unique_job_ids),
+            JobArtifact.kind == "output",
+        )
+        .subquery()
+    )
+    artifacts = list(
+        (
+            await session.scalars(
+                select(JobArtifact)
+                .join(ranked, ranked.c.artifact_id == JobArtifact.id)
+                .where(ranked.c.artifact_rank == 1)
+            )
+        ).all()
+    )
+    return {artifact.job_id: artifact for artifact in artifacts}
+
+
+async def queued_job_counts(session: AsyncSession) -> tuple[int, dict[str, int]]:
+    rows = (
+        await session.execute(
+            select(Job.tenant_id, func.count(Job.id))
+            .where(Job.status == JobStatus.QUEUED.value)
+            .group_by(Job.tenant_id)
+        )
+    ).all()
+    by_tenant = {str(tenant_id): int(count) for tenant_id, count in rows}
+    return sum(by_tenant.values()), by_tenant
+
+
+async def batch_in_window_counts(
+    session: AsyncSession,
+    batch_ids: list[str],
+) -> dict[str, int]:
+    if not batch_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(JobBatchItem.batch_id, func.count(JobBatchItem.id))
+            .where(
+                JobBatchItem.batch_id.in_(batch_ids),
+                JobBatchItem.status.in_(
+                    [
+                        BatchItemStatus.QUEUED.value,
+                        BatchItemStatus.RUNNING.value,
+                    ]
+                ),
+            )
+            .group_by(JobBatchItem.batch_id)
+        )
+    ).all()
+    return {str(batch_id): int(count) for batch_id, count in rows}
+
+
+def materialization_tick_budget(
+    system_remaining: int,
+    batch_feed_window: int,
+    active_node_count: int,
+) -> int:
+    """Bound synchronous file preparation while keeping one feed window per active node."""
+
+    topology_budget = batch_feed_window * max(1, active_node_count)
+    return max(
+        0,
+        min(system_remaining, topology_budget, MAX_BATCH_MATERIALIZATIONS_PER_TICK),
+    )
+
+
+def round_robin_feed_allocations(
+    batch_order: list[tuple[str, str]],
+    batch_capacities: dict[str, int],
+    tenant_remaining: dict[str, int],
+    total_budget: int,
+) -> dict[str, int]:
+    """Allocate an exact bounded feed budget without letting one batch monopolize it."""
+
+    remaining_by_tenant = dict(tenant_remaining)
+    allocations = {batch_id: 0 for batch_id, _tenant_id in batch_order}
+    remaining_total = max(0, total_budget)
+    while remaining_total > 0:
+        allocated_in_pass = False
+        for batch_id, tenant_id in batch_order:
+            if remaining_total == 0:
+                break
+            if allocations[batch_id] >= max(0, batch_capacities.get(batch_id, 0)):
+                continue
+            if remaining_by_tenant.get(tenant_id, 0) <= 0:
+                continue
+            allocations[batch_id] += 1
+            remaining_by_tenant[tenant_id] -= 1
+            remaining_total -= 1
+            allocated_in_pass = True
+        if not allocated_in_pass:
+            break
+    return {batch_id: count for batch_id, count in allocations.items() if count > 0}
+
+
+def bounded_pending_items_statement(
+    allocations: dict[str, int],
+) -> Select[tuple[JobBatchItem]]:
+    """Lock no more pending rows per batch than the exact round-robin allocation."""
+
+    if not allocations:
+        raise ValueError("pending allocations must not be empty")
+    ranked_pending = (
+        select(
+            JobBatchItem.id.label("item_id"),
+            JobBatchItem.batch_id.label("batch_id"),
+            func.row_number()
+            .over(
+                partition_by=JobBatchItem.batch_id,
+                order_by=JobBatchItem.ordinal,
+            )
+            .label("item_rank"),
+        )
+        .where(
+            JobBatchItem.batch_id.in_(allocations),
+            JobBatchItem.status == BatchItemStatus.PENDING.value,
+        )
+        .subquery()
+    )
+    per_batch_limit = case(
+        allocations,
+        value=ranked_pending.c.batch_id,
+        else_=0,
+    )
+    return (
+        select(JobBatchItem)
+        .join(ranked_pending, ranked_pending.c.item_id == JobBatchItem.id)
+        .where(ranked_pending.c.item_rank <= per_batch_limit)
+        .order_by(JobBatchItem.batch_id, JobBatchItem.ordinal)
+        .with_for_update(skip_locked=True, of=JobBatchItem)
+    )
 
 
 class Scheduler:
@@ -850,6 +1007,10 @@ class Scheduler:
                 ).all()
             ) if job_ids else []
             jobs_by_id = {job.id: job for job in jobs}
+            artifacts_by_job = await latest_output_artifacts(
+                session,
+                [job.id for job in jobs if job.status == JobStatus.SUCCEEDED.value],
+            )
             failure_item: JobBatchItem | None = None
             active_progress = 0.0
             for item in items:
@@ -866,11 +1027,7 @@ class Scheduler:
                 item.attempts = job.attempt_count
                 item.updated_at = datetime.now(UTC)
                 if job.status == JobStatus.SUCCEEDED.value:
-                    artifact = await session.scalar(
-                        select(JobArtifact)
-                        .where(JobArtifact.job_id == job.id, JobArtifact.kind == "output")
-                        .order_by(JobArtifact.created_at.desc())
-                    )
+                    artifact = artifacts_by_job.get(job.id)
                     if artifact is None:
                         item.status = BatchItemStatus.FAILED.value
                         item.error_code = "OUTPUT_MISSING"
@@ -1118,15 +1275,64 @@ class Scheduler:
             return False
 
     async def feed_batch_items(self) -> None:
-        async with self.db.session() as session:
-            system_queued = int(
-                await session.scalar(
-                    select(func.count(Job.id)).where(Job.status == JobStatus.QUEUED.value)
+        materialized_jobs: list[tuple[str, Path]] = []
+        try:
+            await self._feed_batch_items_transaction(materialized_jobs)
+        except BaseException:
+            try:
+                await self._reconcile_materialized_job_roots(materialized_jobs)
+            except BaseException:
+                logger().warning(
+                    "batch.materialization_cleanup_deferred",
+                    reason="persistence_check_interrupted",
+                    job_ids=[job_id for job_id, _root in materialized_jobs],
                 )
-                or 0
+            raise
+
+    async def _reconcile_materialized_job_roots(
+        self,
+        materialized_jobs: list[tuple[str, Path]],
+    ) -> None:
+        if not materialized_jobs:
+            return
+        job_ids = [job_id for job_id, _root in materialized_jobs]
+        try:
+            async with self.db.session() as session:
+                persisted_ids = set(
+                    (
+                        await session.scalars(select(Job.id).where(Job.id.in_(job_ids)))
+                    ).all()
+                )
+        except Exception:
+            logger().warning(
+                "batch.materialization_cleanup_deferred",
+                reason="persistence_check_failed",
+                job_ids=job_ids,
             )
-            if system_queued >= self.settings.system_max_queued:
-                return
+            return
+        if persisted_ids:
+            logger().warning(
+                "batch.materialization_cleanup_deferred",
+                reason="jobs_may_have_committed",
+                job_ids=job_ids,
+                persisted_job_ids=sorted(persisted_ids),
+            )
+            return
+        for _job_id, job_root in materialized_jobs:
+            self.storage.remove_tree(job_root)
+        logger().warning(
+            "batch.materialization_rollback_cleaned",
+            job_ids=job_ids,
+        )
+
+    async def _feed_batch_items_transaction(
+        self,
+        materialized_jobs: list[tuple[str, Path]],
+    ) -> None:
+        async with self.db.session() as session:
+            # Discovery intentionally does not lock every active batch.  Exact
+            # allocations are calculated first, then only those batch rows are
+            # locked and revalidated below.
             batches = list(
                 (
                     await session.scalars(
@@ -1141,70 +1347,205 @@ class Scheduler:
                         .order_by(
                             JobBatch.last_materialized_at.asc().nullsfirst(),
                             JobBatch.created_at,
+                            JobBatch.id,
                         )
-                        .with_for_update(skip_locked=True)
                     )
                 ).all()
             )
-            for batch in batches:
-                if system_queued >= self.settings.system_max_queued:
-                    break
-                client = await session.get(ApiClient, batch.tenant_id)
-                tenant_queued = int(
-                    await session.scalar(
-                        select(func.count(Job.id)).where(
-                            Job.tenant_id == batch.tenant_id,
-                            Job.status == JobStatus.QUEUED.value,
-                        )
+            if not batches:
+                return
+
+            await self.db.acquire_global_admission_transaction_lock(session)
+
+            queued_count, tenant_queued = await queued_job_counts(session)
+            system_remaining = max(0, self.settings.system_max_queued - queued_count)
+            if system_remaining == 0:
+                return
+
+            tenant_ids = sorted({batch.tenant_id for batch in batches})
+            clients = list(
+                (await session.scalars(select(ApiClient).where(ApiClient.id.in_(tenant_ids)))).all()
+            )
+            clients_by_id = {client.id: client for client in clients}
+            batch_ids = [batch.id for batch in batches]
+            in_window_by_batch = await batch_in_window_counts(session, batch_ids)
+            active_node_count = int(
+                await session.scalar(
+                    select(func.count(Node.id)).where(
+                        Node.health == NodeHealth.ONLINE.value,
+                        Node.mode == NodeMode.ACTIVE.value,
                     )
-                    or 0
                 )
-                tenant_queue_limit = (
+                or 0
+            )
+
+            tenant_remaining: dict[str, int] = {}
+            for tenant_id in tenant_ids:
+                client = clients_by_id.get(tenant_id)
+                queue_limit = (
                     client.max_queued
                     if client is not None
                     else self.settings.default_tenant_max_queued
                 )
-                if tenant_queued >= tenant_queue_limit:
-                    continue
-                in_window = int(
-                    await session.scalar(
-                        select(func.count(JobBatchItem.id)).where(
-                            JobBatchItem.batch_id == batch.id,
-                            JobBatchItem.status.in_(
-                                [
-                                    BatchItemStatus.QUEUED.value,
-                                    BatchItemStatus.RUNNING.value,
-                                ]
+                tenant_remaining[tenant_id] = max(
+                    0,
+                    queue_limit - tenant_queued.get(tenant_id, 0),
+                )
+
+            preliminary_capacities: dict[str, int] = {}
+            for batch in batches:
+                preliminary_capacities[batch.id] = min(
+                    max(0, batch.pending_items),
+                    max(
+                        0,
+                        self.settings.batch_feed_window
+                        - in_window_by_batch.get(batch.id, 0),
+                    ),
+                )
+            tick_budget = materialization_tick_budget(
+                system_remaining,
+                self.settings.batch_feed_window,
+                active_node_count,
+            )
+            preliminary_allocations = round_robin_feed_allocations(
+                [(batch.id, batch.tenant_id) for batch in batches],
+                preliminary_capacities,
+                tenant_remaining,
+                tick_budget,
+            )
+            if not preliminary_allocations:
+                return
+
+            batch_by_id = {batch.id: batch for batch in batches}
+            locked_tenant_ids = sorted(
+                {
+                    batch_by_id[batch_id].tenant_id
+                    for batch_id in preliminary_allocations
+                }
+            )
+            for tenant_id in locked_tenant_ids:
+                await self.db.acquire_tenant_transaction_lock(session, tenant_id)
+
+            # Re-count only after the global and sorted tenant locks are held;
+            # the preliminary read is never used as an admission decision.
+            queued_count, tenant_queued = await queued_job_counts(session)
+            system_remaining = max(0, self.settings.system_max_queued - queued_count)
+            if system_remaining == 0:
+                return
+            clients = list(
+                (
+                    await session.scalars(
+                        select(ApiClient)
+                        .where(ApiClient.id.in_(locked_tenant_ids))
+                        .execution_options(populate_existing=True)
+                    )
+                ).all()
+            )
+            clients_by_id = {client.id: client for client in clients}
+            tenant_remaining = {}
+            for tenant_id in locked_tenant_ids:
+                client = clients_by_id.get(tenant_id)
+                queue_limit = (
+                    client.max_queued
+                    if client is not None
+                    else self.settings.default_tenant_max_queued
+                )
+                tenant_remaining[tenant_id] = max(
+                    0,
+                    queue_limit - tenant_queued.get(tenant_id, 0),
+                )
+
+            candidate_ids = list(preliminary_allocations)
+            in_window_by_batch = await batch_in_window_counts(session, candidate_ids)
+            candidate_order = [
+                (batch.id, batch.tenant_id)
+                for batch in batches
+                if batch.id in preliminary_allocations
+            ]
+            candidate_capacities = {
+                batch_id: min(
+                    max(0, batch_by_id[batch_id].pending_items),
+                    max(
+                        0,
+                        self.settings.batch_feed_window
+                        - in_window_by_batch.get(batch_id, 0),
+                    ),
+                )
+                for batch_id in candidate_ids
+            }
+            candidate_allocations = round_robin_feed_allocations(
+                candidate_order,
+                candidate_capacities,
+                tenant_remaining,
+                materialization_tick_budget(
+                    system_remaining,
+                    self.settings.batch_feed_window,
+                    active_node_count,
+                ),
+            )
+            if not candidate_allocations:
+                return
+
+            locked_batches = list(
+                (
+                    await session.scalars(
+                        select(JobBatch)
+                        .where(
+                            JobBatch.id.in_(candidate_allocations),
+                            JobBatch.status.in_(
+                                [BatchStatus.QUEUED.value, BatchStatus.RUNNING.value]
                             ),
+                            JobBatch.cancel_requested.is_(False),
+                            JobBatch.pending_items > 0,
+                        )
+                        .order_by(
+                            JobBatch.last_materialized_at.asc().nullsfirst(),
+                            JobBatch.created_at,
+                            JobBatch.id,
+                        )
+                        .with_for_update(skip_locked=True)
+                        .execution_options(populate_existing=True)
+                    )
+                ).all()
+            )
+            if not locked_batches:
+                return
+
+            locked_batch_ids = [batch.id for batch in locked_batches]
+            in_window_by_batch = await batch_in_window_counts(session, locked_batch_ids)
+            workflow_keys = list(
+                {
+                    (batch.workflow_key, batch.workflow_version)
+                    for batch in locked_batches
+                }
+            )
+            workflows = list(
+                (
+                    await session.scalars(
+                        select(WorkflowVersion).where(
+                            tuple_(
+                                WorkflowVersion.workflow_key,
+                                WorkflowVersion.version,
+                            ).in_(workflow_keys),
+                            WorkflowVersion.enabled.is_(True),
                         )
                     )
-                    or 0
-                )
-                if in_window >= self.settings.batch_feed_window:
-                    continue
-                item = await session.scalar(
-                    select(JobBatchItem)
-                    .where(
-                        JobBatchItem.batch_id == batch.id,
-                        JobBatchItem.status == BatchItemStatus.PENDING.value,
+                ).all()
+            )
+            workflows_by_key = {
+                (workflow.workflow_key, workflow.version): workflow for workflow in workflows
+            }
+
+            eligible_batches: list[JobBatch] = []
+            workflows_by_batch: dict[str, WorkflowVersion] = {}
+            for batch in locked_batches:
+                workflow = workflows_by_key.get((batch.workflow_key, batch.workflow_version))
+                if workflow is None:
+                    batch.error_code = "WORKFLOW_NOT_FOUND"
+                    batch.error_message = "批次固定的工作流版本已停用或删除"
+                    await transition_batch(
+                        session, batch, BatchStatus.FAILED, "batch.workflow_missing"
                     )
-                    .order_by(JobBatchItem.ordinal)
-                    .with_for_update(skip_locked=True)
-                    .limit(1)
-                )
-                workflow = await session.scalar(
-                    select(WorkflowVersion).where(
-                        WorkflowVersion.workflow_key == batch.workflow_key,
-                        WorkflowVersion.version == batch.workflow_version,
-                    )
-                )
-                if item is None or workflow is None:
-                    if workflow is None:
-                        batch.error_code = "WORKFLOW_NOT_FOUND"
-                        batch.error_message = "批次固定的工作流版本已停用或删除"
-                        await transition_batch(
-                            session, batch, BatchStatus.FAILED, "batch.workflow_missing"
-                        )
                     continue
                 try:
                     current_identity = workflow_identity_from_row(workflow)
@@ -1241,13 +1582,89 @@ class Scheduler:
                         },
                     )
                     continue
-                await materialize_batch_item(
-                    session, self.storage, self.settings, batch, item, workflow
+                eligible_batches.append(batch)
+                workflows_by_batch[batch.id] = workflow
+
+            final_capacities = {
+                batch.id: min(
+                    max(0, batch.pending_items),
+                    max(
+                        0,
+                        self.settings.batch_feed_window
+                        - in_window_by_batch.get(batch.id, 0),
+                    ),
                 )
-                batch.pending_items = max(0, batch.pending_items - 1)
-                batch.queued_items += 1
-                system_queued += 1
+                for batch in eligible_batches
+            }
+            final_allocations = round_robin_feed_allocations(
+                [(batch.id, batch.tenant_id) for batch in eligible_batches],
+                final_capacities,
+                tenant_remaining,
+                materialization_tick_budget(
+                    system_remaining,
+                    self.settings.batch_feed_window,
+                    active_node_count,
+                ),
+            )
+            if not final_allocations:
+                # Persist any fail-closed workflow transitions made above.
+                await session.commit()
+                return
+
+            pending_by_batch: dict[str, list[JobBatchItem]] = {
+                batch.id: [] for batch in eligible_batches if batch.id in final_allocations
+            }
+            pending_items = list(
+                (
+                    await session.scalars(
+                        bounded_pending_items_statement(final_allocations)
+                    )
+                ).all()
+            )
+            for item in pending_items:
+                pending_by_batch[item.batch_id].append(item)
+
+            batch_remaining = {
+                batch_id: len(items) for batch_id, items in pending_by_batch.items()
+            }
+
+            # The persisted ordering rotates batches across scheduler loops.
+            # Within this loop, repeated passes grant each eligible batch at
+            # most one frame before any batch receives its next frame.
+            item_offsets = {batch.id: 0 for batch in eligible_batches}
+            while system_remaining > 0:
+                materialized_in_pass = False
+                for batch in eligible_batches:
+                    if system_remaining == 0:
+                        break
+                    if batch.id not in final_allocations:
+                        continue
+                    if batch_remaining[batch.id] <= 0:
+                        continue
+                    if tenant_remaining.get(batch.tenant_id, 0) <= 0:
+                        continue
+                    offset = item_offsets[batch.id]
+                    item = pending_by_batch[batch.id][offset]
+                    job = await materialize_batch_item(
+                        session,
+                        self.storage,
+                        self.settings,
+                        batch,
+                        item,
+                        workflows_by_batch[batch.id],
+                    )
+                    materialized_jobs.append((job.id, Path(job.job_dir)))
+                    item_offsets[batch.id] = offset + 1
+                    batch_remaining[batch.id] -= 1
+                    tenant_remaining[batch.tenant_id] -= 1
+                    system_remaining -= 1
+                    batch.pending_items = max(0, batch.pending_items - 1)
+                    batch.queued_items += 1
+                    materialized_in_pass = True
+                if not materialized_in_pass:
+                    break
             await session.commit()
+            materialized_jobs.clear()
 
     async def assemble_batch(self, batch_id: str) -> None:
         async with self.db.session() as session:
@@ -1268,16 +1685,18 @@ class Scheduler:
             )
             if len(items) != batch.total_items:
                 return
+            if any(not item.job_id or not item.output_sha256 for item in items):
+                return
+            job_ids = [str(item.job_id) for item in items]
+            jobs = list((await session.scalars(select(Job).where(Job.id.in_(job_ids)))).all())
+            jobs_by_id = {job.id: job for job in jobs}
+            artifacts_by_job = await latest_output_artifacts(session, job_ids)
             frames: list[ArchiveFrame] = []
             for item in items:
-                if not item.job_id or not item.output_sha256:
-                    return
-                job = await session.get(Job, item.job_id)
-                artifact = await session.scalar(
-                    select(JobArtifact)
-                    .where(JobArtifact.job_id == item.job_id, JobArtifact.kind == "output")
-                    .order_by(JobArtifact.created_at.desc())
-                )
+                assert item.job_id is not None
+                assert item.output_sha256 is not None
+                job = jobs_by_id.get(item.job_id)
+                artifact = artifacts_by_job.get(item.job_id)
                 if job is None or artifact is None:
                     return
                 frames.append(

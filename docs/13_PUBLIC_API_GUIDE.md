@@ -92,6 +92,27 @@ POST /api/v1/batches/{batch_id}/cancel
 创建请求为严格 manifest 1.0 + `ZIP_STORED`；一个业务批次只显示一个父任务，GPU Control 在内部
 把帧动态分配给三台 GPU。只有每帧都成功且输出 PNG/Alpha/SHA 完整校验后才提供结果 ZIP。
 
+父状态的 `performance.nodes[]` 只序列化服务端持久证据，关键字段口径如下：
+
+| 字段 | 权威口径 |
+|---|---|
+| `gpu_model` | 可选遥测：Node Agent 通过 `nvidia-smi --query-gpu=name` 上报并经长度/字符校验后保存；查询失败时省略且定期重试，UUID/IP/pipeline 心跳不受影响；旧 Agent 未上报时为 `null` |
+| `frames_assigned` | 该节点持久 `JobAttempt` 涉及的唯一 child job 数；一次帧从 A 改派到 B 会在 A、B 各计一次 |
+| `frames_final_assignment` | 当前/最终 `JobBatchItem.node_id` 指向该节点的帧数，用于与 `frames_assigned` 区分 |
+| `node_started_at` | 该节点真实 attempt 中最早的 `gpu_started_at` |
+| `node_finished_at` | 仅当该节点所有出现 GPU 起止证据的 attempt 都有合法成对时间时，返回最晚 `gpu_finished_at`；否则为 `null` |
+| `reassignments_in/out` | 同一 child job 相邻 attempt 的节点发生变化时，新节点 `in + 1`、原节点 `out + 1` |
+| `max_concurrent_prompts` | 节点表中 Scheduler 当前使用的 `max_concurrency` 槽位上限；不是前端估算的历史峰值 |
+| `gpu_service_ms`、`frame_ms_p50/p95` | 只聚合具有合法 `gpu_started_at → gpu_finished_at` 的真实 attempt；覆盖是否完整见 `gpu_service_measurements_complete` |
+
+父级 `straggler_ratio` 严格按联合合同定义为
+`(最晚 node_finished_at - 各参与节点 node_finished_at 的中位数) / parent_gpu_wall`，其中
+`parent_gpu_wall = execution_finished_at - started_at`。只有批次已进入终态、至少两个参与节点、所有参与
+节点均有权威 `node_finished_at`、节点完成时间位于父 GPU wall 内且父 GPU wall 为正数时才返回数值；时间
+缺失、负数或越界时返回 `null`。该字段不使用各节点累计 `gpu_service_ms` 计算。每个成功帧还必须在其最终分配节点上至少有一条完整 GPU 样本，否则父级
+`gpu_service_measurements_complete=false`，吞吐和拖尾均为 `null`。`scheduler_restarts` 在没有批次绑定
+的持久重启证据前固定返回 `null`，不得推测。
+
 动画管家不得根据早期草案自行增加 callback、best_effort 或 retry-failed 字段。完整字段、幂等、
 路径、错误码、结果校验和真实联调清单以
 [`38_GPU_CONTROL_MATTING_HANDOFF_V2.md`](38_GPU_CONTROL_MATTING_HANDOFF_V2.md) 为准。

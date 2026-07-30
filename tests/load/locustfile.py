@@ -35,11 +35,16 @@ from packages.gpu_control_core.load_testing import (
     LOAD_SUCCESS_STATUSES,
     LoadTestConfigurationError,
     RuntimeSettings,
+    evaluate_load_lifecycle,
     file_sha256,
     load_fixture_manifest,
+    load_queue_start,
+    load_response_is_retryable,
     load_scenario,
     summarize_records,
     summarize_telemetry,
+    validate_asset_worker_roles,
+    validate_test_client_capacities,
     write_result_manifest,
 )
 
@@ -146,8 +151,6 @@ ACTIVE_STATUSES = {
     "CANCELLING",
     "RETRY_WAIT",
 }
-TRANSIENT_HTTP_STATUSES = {429, 500, 502, 503, 504}
-SUBSTANCE_WORKER_MARKER = "3090-b-windows"
 TELEMETRY_INTERVAL_SECONDS = 5.0
 
 _operation_counter = itertools.count(1)
@@ -313,7 +316,7 @@ class SessionRegistry:
                     (time.monotonic() - float(record["created_monotonic"])) * 1000
                 )
                 record["queue_ms"] = duration_ms(
-                    payload.get("created_at") or payload.get("queued_at"),
+                    load_queue_start(payload),
                     payload.get("started_at"),
                 )
                 error = payload.get("error")
@@ -339,6 +342,20 @@ class SessionRegistry:
             if record:
                 record["artifact_count"] = int(record.get("artifact_count", 0)) + 1
                 record["artifact_bytes"] = int(record.get("artifact_bytes", 0)) + size_bytes
+
+    def mark_poll_timeout(self, identifier: str) -> None:
+        with self._lock:
+            record = self._records.get(identifier)
+            if record:
+                record["poll_timed_out"] = True
+                record["error_code"] = "CLIENT_POLL_TIMEOUT"
+
+    def mark_artifact_contract_failure(self, identifier: str, reason: str) -> None:
+        with self._lock:
+            record = self._records.get(identifier)
+            if record:
+                record["artifact_contract_failed"] = True
+                record["artifact_contract_failure_reason"] = reason
 
     def records(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -431,14 +448,21 @@ def preflight_json(
 
 
 def perform_preflight() -> dict[str, Any]:
-    api_headers = {"X-API-Key": RUNTIME.api_keys[0]}
     admin_headers = {"Authorization": f"Bearer {RUNTIME.admin_bearer_token}"}
     with httpx.Client(
         base_url=RUNTIME.target,
         verify=httpx_verify(),
         follow_redirects=False,
     ) as client:
-        capacity = preflight_json(client, "/api/v1/scheduler/capacity", api_headers)
+        client_capacities = [
+            preflight_json(
+                client,
+                "/api/v1/scheduler/capacity",
+                {"X-API-Key": api_key},
+            )
+            for api_key in RUNTIME.api_keys
+        ]
+        api_headers = {"X-API-Key": RUNTIME.api_keys[0]}
         asset_capacity = preflight_json(client, "/api/v1/assets/capacity", api_headers)
         public_workflows = preflight_json(client, "/api/v1/workflows", api_headers)
         workflows = preflight_json(client, "/admin/workflows", admin_headers)
@@ -450,19 +474,21 @@ def perform_preflight() -> dict[str, Any]:
             client, "/admin/asset-processing?limit=500", admin_headers
         )
 
-    if not isinstance(capacity, dict) or not isinstance(asset_capacity, dict):
+    if not all(isinstance(item, dict) for item in client_capacities) or not isinstance(
+        asset_capacity, dict
+    ):
         raise LoadTestConfigurationError("capacity preflight returned the wrong shape")
+    capacity_rows = [item for item in client_capacities if isinstance(item, dict)]
+    client_checks = validate_test_client_capacities(
+        capacity_rows, expected_count=len(RUNTIME.api_keys)
+    )
+    capacity = capacity_rows[0]
     if not isinstance(public_workflows, list) or not isinstance(workflows, list):
         raise LoadTestConfigurationError("workflow preflight returned the wrong shape")
     if not isinstance(nodes, list) or not isinstance(gpu_jobs, list):
         raise LoadTestConfigurationError("admin preflight returned the wrong shape")
     if not isinstance(asset_overview, dict):
         raise LoadTestConfigurationError("asset preflight returned the wrong shape")
-    if (capacity.get("client") or {}).get("kind") != "test":
-        raise LoadTestConfigurationError("load API key must belong to client_kind=test")
-    if capacity.get("accepting_batches") is not True:
-        raise LoadTestConfigurationError("GPU batch admission is not accepting")
-
     public_versions = {
         (str(item.get("workflow_key")), str(item.get("version")))
         for item in public_workflows
@@ -516,16 +542,16 @@ def perform_preflight() -> dict[str, Any]:
     active_assets = [item for item in asset_jobs if item.get("status") in ACTIVE_STATUSES]
     if len(active_assets) > SCENARIO.preflight["maximum_preexisting_asset_jobs"]:
         raise LoadTestConfigurationError("pre-existing asset work exceeds the scenario limit")
-    online_workers = [item for item in workers if item.get("status") == "ONLINE"]
-    if len(online_workers) < SCENARIO.preflight["minimum_online_asset_workers"]:
-        raise LoadTestConfigurationError("not enough online asset workers")
-    substance_slots = sum(
-        max(0, int(item.get("max_concurrency", 0)) - int(item.get("current_jobs", 0)))
-        for item in online_workers
-        if SUBSTANCE_WORKER_MARKER in str(item.get("id", "")).lower()
+    worker_roles = validate_asset_worker_roles(
+        workers,
+        minimum_cpu_workers=SCENARIO.preflight["minimum_online_asset_workers"],
+        minimum_cpu_slots=SCENARIO.preflight["minimum_cpu_slots"],
+        minimum_substance_slots=SCENARIO.preflight["minimum_substance_slots"],
     )
-    if substance_slots < SCENARIO.preflight["minimum_substance_slots"]:
-        raise LoadTestConfigurationError("no approved Substance worker capacity")
+    online_workers = list(worker_roles["online_workers"])
+    cpu_workers = list(worker_roles["cpu_workers"])
+    substance_workers = list(worker_roles["substance_workers"])
+    substance_slots = int(worker_roles["substance_available_slots"])
 
     contracts = asset_overview.get("contracts")
     if not isinstance(contracts, dict):
@@ -577,6 +603,7 @@ def perform_preflight() -> dict[str, Any]:
         "session_id": RUNTIME.session_id,
         "target": RUNTIME.target,
         "client_kind": "test",
+        "api_key_checks": client_checks,
         "gpu_capacity": capacity,
         "asset_capacity": asset_capacity,
         "approved_workflows": SCENARIO.approved_workflows,
@@ -601,6 +628,9 @@ def perform_preflight() -> dict[str, Any]:
             }
             for item in online_workers
         ],
+        "online_cpu_asset_worker_ids": [item.get("id") for item in cpu_workers],
+        "online_substance_worker_ids": [item.get("id") for item in substance_workers],
+        "cpu_available_slots": worker_roles["cpu_available_slots"],
         "preexisting": {"gpu": len(active_gpu), "asset": len(active_assets)},
         "substance_available_slots": substance_slots,
         "secrets_recorded": False,
@@ -932,19 +962,28 @@ class SixApiUser(HttpUser):
                 catch_response=True,
                 **kwargs,
             ) as response:
-                if response.status_code not in TRANSIENT_HTTP_STATUSES:
-                    if response.status_code >= 400:
+                status_code = int(response.status_code or 0)
+                transport_error = getattr(response, "error", None)
+                if not load_response_is_retryable(
+                    status_code, has_transport_error=transport_error is not None
+                ):
+                    if status_code >= 400:
                         response.failure(
-                            f"HTTP {response.status_code}: {response.text[:200]}"
+                            f"HTTP {status_code}: {response.text[:200]}"
                         )
                     else:
                         response.success()
                     return response, retries
-                response.failure(f"transient HTTP {response.status_code}")
+                failure_label = (
+                    f"transport failure: {type(transport_error).__name__}"
+                    if transport_error is not None or status_code <= 0
+                    else f"transient HTTP {status_code}"
+                )
+                response.failure(failure_label)
                 if retries >= SCENARIO.max_retries:
                     return response, retries
                 retries += 1
-                REGISTRY.retry(api_name, operation, response.status_code)
+                REGISTRY.retry(api_name, operation, status_code)
             gevent.sleep(min(8.0, 0.25 * (2**retries)))
 
     def post_multipart(
@@ -969,20 +1008,29 @@ class SixApiUser(HttpUser):
                     timeout=timeout,
                     catch_response=True,
                 ) as response:
-                    REGISTRY.admission(api_name, response.status_code)
-                    if response.status_code not in TRANSIENT_HTTP_STATUSES:
-                        if response.status_code not in {200, 202}:
+                    status_code = int(response.status_code or 0)
+                    transport_error = getattr(response, "error", None)
+                    REGISTRY.admission(api_name, status_code)
+                    if not load_response_is_retryable(
+                        status_code, has_transport_error=transport_error is not None
+                    ):
+                        if status_code not in {200, 202}:
                             response.failure(
-                                f"HTTP {response.status_code}: {response.text[:200]}"
+                                f"HTTP {status_code}: {response.text[:200]}"
                             )
                         else:
                             response.success()
                         return response, retries
-                    response.failure(f"transient HTTP {response.status_code}")
+                    failure_label = (
+                        f"transport failure: {type(transport_error).__name__}"
+                        if transport_error is not None or status_code <= 0
+                        else f"transient HTTP {status_code}"
+                    )
+                    response.failure(failure_label)
                     if retries >= SCENARIO.max_retries:
                         return response, retries
                     retries += 1
-                    REGISTRY.retry(api_name, "submit", response.status_code)
+                    REGISTRY.retry(api_name, "submit", status_code)
             gevent.sleep(min(8.0, 0.25 * (2**retries)))
 
     def submit_async_asset(
@@ -1080,7 +1128,13 @@ class SixApiUser(HttpUser):
         REGISTRY.add_retries(identifier, poll_retries)
         final_status = str(final_payload.get("status"))
         if not final_payload or final_status not in TERMINAL_STATUSES:
+            REGISTRY.mark_poll_timeout(identifier)
             REGISTRY.event("task.poll_timeout", api=api_name, task_id=identifier)
+            self.validation_failure(
+                api_name,
+                "poll-timeout",
+                "task did not reach a terminal state before its operation timeout",
+            )
             return
         if API_CONTRACTS[api_name]["resource"] in {"CPU", "GPU_FENCED_ASSET"}:
             artifacts = final_payload.get("artifacts")
@@ -1088,20 +1142,46 @@ class SixApiUser(HttpUser):
                 for artifact in artifacts:
                     if isinstance(artifact, dict):
                         self.download_artifact(identifier, api_name, artifact, headers)
+                    else:
+                        REGISTRY.mark_artifact_contract_failure(
+                            identifier, "asset artifact entry is not an object"
+                        )
+                        self.validation_failure(
+                            api_name,
+                            "artifact-contract",
+                            "asset artifact entry is not an object",
+                        )
             if final_status in LOAD_SUCCESS_STATUSES and not artifacts:
+                REGISTRY.mark_artifact_contract_failure(
+                    identifier, "successful asset job returned no artifacts"
+                )
                 self.validation_failure(
                     api_name,
                     "artifact-contract",
                     "successful asset job returned no artifacts",
                 )
+            if final_status not in LOAD_SUCCESS_STATUSES:
+                self.validation_failure(
+                    api_name,
+                    "business-terminal",
+                    f"task ended in unsuccessful business status {final_status}",
+                )
             return
-        if final_status != "SUCCEEDED":
+        if final_status not in LOAD_SUCCESS_STATUSES:
+            self.validation_failure(
+                api_name,
+                "business-terminal",
+                f"task ended in unsuccessful business status {final_status}",
+            )
             return
         if api_name == "imageclip_batch":
             artifact = final_payload.get("artifact")
             if isinstance(artifact, dict):
                 self.download_artifact(identifier, api_name, artifact, headers)
             else:
+                REGISTRY.mark_artifact_contract_failure(
+                    identifier, "successful ImageClip batch returned no final artifact"
+                )
                 self.validation_failure(
                     api_name,
                     "artifact-contract",
@@ -1142,6 +1222,9 @@ class SixApiUser(HttpUser):
         url = str(artifact.get("download_url") or "")
         expected_sha = str(artifact.get("sha256") or "")
         if not url or len(expected_sha) != 64:
+            REGISTRY.mark_artifact_contract_failure(
+                identifier, "artifact URL or SHA-256 is missing"
+            )
             REGISTRY.event(
                 "artifact.invalid_contract", api=api_name, task_id=identifier
             )
@@ -1152,6 +1235,9 @@ class SixApiUser(HttpUser):
             )
             return
         if not url.startswith("/") or url.startswith("//"):
+            REGISTRY.mark_artifact_contract_failure(
+                identifier, "artifact URL is not a same-origin relative path"
+            )
             self.validation_failure(
                 api_name,
                 "artifact-origin",
@@ -1168,10 +1254,16 @@ class SixApiUser(HttpUser):
         )
         REGISTRY.add_retries(identifier, retries)
         if response.status_code != 200:
+            REGISTRY.mark_artifact_contract_failure(
+                identifier, f"artifact download returned HTTP {response.status_code}"
+            )
             return
         actual_sha = hashlib.sha256(response.content).hexdigest()
         header_sha = response.headers.get("X-Artifact-SHA256")
         if actual_sha != expected_sha or (header_sha and header_sha != expected_sha):
+            REGISTRY.mark_artifact_contract_failure(
+                identifier, "artifact SHA-256 mismatch"
+            )
             self.validation_failure(
                 api_name,
                 "artifact-sha256",
@@ -1634,6 +1726,7 @@ def finalize_results(environment: Any, **_: Any) -> None:
         "accepted": sum(item["cancelled"] for item in teardown),
         "scope": "session_registry_only",
     }
+    summary["lifecycle_evaluation"] = evaluate_load_lifecycle(records, teardown)
     (RESULT_DIR / "records.json").write_text(
         json.dumps(records, ensure_ascii=False, indent=2, sort_keys=True, default=str)
         + "\n",
@@ -1650,6 +1743,7 @@ def finalize_results(environment: Any, **_: Any) -> None:
     if (
         not summary["threshold_evaluation"]["passed"]
         or not summary["six_api_coverage"]["passed"]
+        or not summary["lifecycle_evaluation"]["passed"]
         or not telemetry["evidence_complete"]
         or not telemetry["gpu_saturation_objective"]["passed"]
     ):

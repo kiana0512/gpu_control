@@ -67,7 +67,9 @@ preflight:
   maximum_preexisting_gpu_jobs: 0
   maximum_preexisting_asset_jobs: 0
   minimum_healthy_gpu_nodes: 3
+  # CPU Asset Worker and fenced Windows Substance capacity are independent.
   minimum_online_asset_workers: 3
+  minimum_cpu_slots: 1
   minimum_substance_slots: 1
 
 thresholds:

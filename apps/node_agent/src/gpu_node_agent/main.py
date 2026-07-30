@@ -132,6 +132,30 @@ async def _gpu_uuid() -> str:
     return value
 
 
+def _validated_gpu_model(value: str) -> str:
+    normalized = " ".join(value.strip().split())
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._+()/:,\-]{0,127}", normalized):
+        raise RuntimeError("invalid GPU product name")
+    return normalized
+
+
+async def _gpu_model() -> str:
+    process = await asyncio.create_subprocess_exec(
+        _nvidia_smi_path(),
+        "--query-gpu=name",
+        "--format=csv,noheader",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        raise RuntimeError(stderr.decode(errors="replace").strip() or "nvidia-smi failed")
+    lines = stdout.decode(errors="replace").splitlines()
+    if not lines:
+        raise RuntimeError("invalid nvidia-smi product name response")
+    return _validated_gpu_model(lines[0])
+
+
 async def _gpu_metrics() -> dict[str, int]:
     process = await asyncio.create_subprocess_exec(
         _nvidia_smi_path(),
@@ -207,9 +231,7 @@ def _git_head(repository: Path) -> str:
         if loose.is_file():
             head = loose.read_text(encoding="utf-8").strip()
         else:
-            packed = (repository / ".git" / "packed-refs").read_text(
-                encoding="utf-8"
-            )
+            packed = (repository / ".git" / "packed-refs").read_text(encoding="utf-8")
             head = next(
                 line.split(" ", 1)[0]
                 for line in packed.splitlines()
@@ -244,9 +266,7 @@ def _post_heartbeat(
     body = json.dumps(identity, separators=(",", ":"), sort_keys=True).encode()
     timestamp = str(int(time.time()))
     nonce = secrets.token_hex(16)
-    signature = sign_agent_request(
-        "POST", path, body, timestamp, nonce, cfg.node_agent_hmac_secret
-    )
+    signature = sign_agent_request("POST", path, body, timestamp, nonce, cfg.node_agent_hmac_secret)
     heartbeat_request = urllib_request.Request(  # noqa: S310
         f"https://{cfg.control_host}{path}",
         data=body,
@@ -271,6 +291,8 @@ async def _heartbeat_loop(app: FastAPI, cfg: NodeAgentSettings) -> None:
     # starts this service. Keep identity discovery inside the retry loop so one
     # transient startup race cannot permanently stop node heartbeats.
     gpu_uuid: str | None = None
+    gpu_model: str | None = None
+    gpu_model_next_check = 0.0
     mac: str | None = None
     last_ip = ""
     first_success = True
@@ -281,6 +303,20 @@ async def _heartbeat_loop(app: FastAPI, cfg: NodeAgentSettings) -> None:
         try:
             if gpu_uuid is None:
                 gpu_uuid = await _gpu_uuid()
+            if gpu_model is None and time.monotonic() >= gpu_model_next_check:
+                try:
+                    gpu_model = await _gpu_model()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # Product name is optional telemetry. A missing/unsupported
+                    # nvidia-smi query must never suppress the identity heartbeat.
+                    gpu_model_next_check = time.monotonic() + 60
+                    logger().warning(
+                        "node.gpu_model_unavailable",
+                        node_id=cfg.node_id,
+                        error_type=type(exc).__name__,
+                    )
             if mac is None:
                 mac = _mac_address(cfg.node_mac_address)
             imageclip_commit, imageclip_pipeline_sha256 = await asyncio.to_thread(
@@ -303,6 +339,8 @@ async def _heartbeat_loop(app: FastAPI, cfg: NodeAgentSettings) -> None:
                 "node_agent_version": node_agent_version,
                 **codex_health,
             }
+            if gpu_model is not None:
+                identity["gpu_model"] = gpu_model
             if re.fullmatch(r"[0-9a-f]{40}", source_revision):
                 identity["source_revision"] = source_revision
             result = await asyncio.to_thread(_post_heartbeat, cfg, identity)
@@ -437,7 +475,8 @@ def create_app(settings: Settings | NodeAgentSettings | None = None) -> FastAPI:
             except TimeoutError as exc:
                 if os.name == "posix":
                     getattr(os, "killpg")(  # noqa: B009
-                        process.pid, getattr(signal, "SIGKILL")  # noqa: B009
+                        process.pid,
+                        getattr(signal, "SIGKILL"),  # noqa: B009
                     )
                 else:
                     process.kill()

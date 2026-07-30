@@ -1,5 +1,6 @@
 import io
 import json
+import subprocess
 import tarfile
 from pathlib import Path
 
@@ -9,11 +10,15 @@ from scripts.package_control_plane_release import (
     COMPONENTS,
     ReleasePackagingError,
     _assert_empty_destination,
-    build_command,
+    _run,
     confirmation_token,
     default_lfs_directory,
+    docker_build_command,
     extract_offline_attestations,
+    oci_build_command,
+    plan,
     select_repo_digest,
+    validate_docker_oci_config_identity,
 )
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -33,8 +38,18 @@ def _add_tar_file(archive: tarfile.TarFile, name: str, raw: bytes) -> None:
     archive.addfile(member, io.BytesIO(raw))
 
 
-def _oci_fixture(path: Path, *, valid_subject: bool = True) -> None:
-    image_digest, image_manifest = _blob({"schemaVersion": 2, "layers": []})
+def _oci_fixture(path: Path, *, valid_subject: bool = True) -> tuple[str, str]:
+    config_digest, image_config = _blob({"architecture": "amd64", "rootfs": {"diff_ids": []}})
+    image_digest, image_manifest = _blob(
+        {
+            "schemaVersion": 2,
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": config_digest,
+            },
+            "layers": [],
+        }
+    )
     subject_digest = image_digest if valid_subject else f"sha256:{'f' * 64}"
     sbom_digest, sbom = _blob(
         {
@@ -81,12 +96,14 @@ def _oci_fixture(path: Path, *, valid_subject: bool = True) -> None:
     with tarfile.open(path, "w") as archive:
         _add_tar_file(archive, "index.json", json.dumps(index).encode())
         for digest, raw in (
+            (config_digest, image_config),
             (image_digest, image_manifest),
             (attestation_digest, attestation_manifest),
             (sbom_digest, sbom),
             (provenance_digest, provenance),
         ):
             _add_tar_file(archive, f"blobs/sha256/{digest[7:]}", raw)
+    return image_digest, config_digest
 
 
 def test_confirmation_token_binds_version_and_full_revision() -> None:
@@ -102,7 +119,7 @@ def test_base_image_resolution_requires_one_matching_digest() -> None:
         select_repo_digest("python:3.11", [f"other@sha256:{digest}"])
 
 
-def test_build_commands_are_source_bound_and_never_deploy_or_push(tmp_path: Path) -> None:
+def test_split_build_commands_are_source_bound_and_never_deploy_or_push(tmp_path: Path) -> None:
     bases = {
         "PYTHON_BASE_IMAGE": f"python@sha256:{'1' * 64}",
         "NODE_BASE_IMAGE": f"node@sha256:{'2' * 64}",
@@ -110,7 +127,20 @@ def test_build_commands_are_source_bound_and_never_deploy_or_push(tmp_path: Path
     }
     generator = f"example/sbom-generator@sha256:{'4' * 64}"
     for component in COMPONENTS:
-        command = build_command(
+        cache_dir = tmp_path / f"{component.key}.cache"
+        oci_command = oci_build_command(
+            REPOSITORY,
+            component,
+            "1.5.5",
+            REVISION,
+            "default",
+            bases,
+            tmp_path / f"{component.key}.oci.tar",
+            tmp_path / f"{component.key}.json",
+            cache_dir,
+            generator,
+        )
+        docker_command = docker_build_command(
             REPOSITORY,
             component,
             "1.5.5",
@@ -118,29 +148,43 @@ def test_build_commands_are_source_bound_and_never_deploy_or_push(tmp_path: Path
             "default",
             bases,
             tmp_path / f"{component.key}.docker.tar",
-            tmp_path / f"{component.key}.oci.tar",
-            tmp_path / f"{component.key}.json",
-            generator,
+            cache_dir,
         )
-        joined = " ".join(command)
-        assert command[:3] == ["/usr/bin/docker", "buildx", "build"]
-        assert "GPU_CONTROL_VERSION=1.5.5" in command
-        assert f"GPU_CONTROL_REVISION={REVISION}" in command
-        assert "--provenance=mode=max" in command
-        assert f"--attest=type=sbom,generator={generator}" in command
-        assert "--output=type=docker" in joined
-        assert "--output=type=oci" in joined
-        for forbidden in (" compose ", " up ", " restart ", "--push", " lfs "):
-            assert forbidden not in f" {joined} "
+        for command in (oci_command, docker_command):
+            joined = " ".join(command)
+            assert command[:3] == ["/usr/bin/docker", "buildx", "build"]
+            assert "GPU_CONTROL_VERSION=1.5.5" in command
+            assert f"GPU_CONTROL_REVISION={REVISION}" in command
+            for forbidden in (" compose ", " up ", " restart ", "--push", " lfs "):
+                assert forbidden not in f" {joined} "
+
+        oci_joined = " ".join(oci_command)
+        assert "--provenance=mode=max" in oci_command
+        assert f"--attest=type=sbom,generator={generator}" in oci_command
+        assert "--output=type=oci" in oci_joined
+        assert "--output=type=docker" not in oci_joined
+        assert f"--cache-to=type=local,dest={cache_dir},mode=max" in oci_command
+
+        docker_joined = " ".join(docker_command)
+        assert "--provenance=false" in docker_command
+        assert not any(value.startswith("--attest=") for value in docker_command)
+        assert "--output=type=docker" in docker_joined
+        assert "--output=type=oci" not in docker_joined
+        assert f"--cache-from=type=local,src={cache_dir}" in docker_command
 
 
 def test_offline_attestations_are_bound_to_oci_manifest(tmp_path: Path) -> None:
     path = tmp_path / "candidate.oci.tar"
-    _oci_fixture(path)
-    attestations, index_digest = extract_offline_attestations(path, require_sbom=True)
-    assert set(attestations) == {"provenance", "sbom"}
-    assert attestations["sbom"].subject_digest == attestations["provenance"].subject_digest
-    assert index_digest.startswith("sha256:")
+    image_digest, config_digest = _oci_fixture(path)
+    evidence = extract_offline_attestations(path, require_sbom=True)
+    assert set(evidence.attestations) == {"provenance", "sbom"}
+    assert (
+        evidence.attestations["sbom"].subject_digest
+        == evidence.attestations["provenance"].subject_digest
+    )
+    assert evidence.index_digest.startswith("sha256:")
+    assert evidence.image_manifest_digest == image_digest
+    assert evidence.config_digest == config_digest
 
 
 def test_offline_attestation_subject_mismatch_fails_closed(tmp_path: Path) -> None:
@@ -148,6 +192,68 @@ def test_offline_attestation_subject_mismatch_fails_closed(tmp_path: Path) -> No
     _oci_fixture(path, valid_subject=False)
     with pytest.raises(ReleasePackagingError, match="subject is not bound"):
         extract_offline_attestations(path, require_sbom=True)
+
+
+def test_docker_image_id_must_equal_oci_config_digest() -> None:
+    digest = f"sha256:{'1' * 64}"
+    validate_docker_oci_config_identity("gpu-control-api:1.5.5", digest, digest)
+    with pytest.raises(ReleasePackagingError, match="does not match OCI config digest"):
+        validate_docker_oci_config_identity(
+            "gpu-control-api:1.5.5",
+            digest,
+            f"sha256:{'2' * 64}",
+        )
+
+
+def test_plan_exposes_two_safe_solves_per_component(tmp_path: Path) -> None:
+    payload = plan(
+        REPOSITORY,
+        "1.5.5",
+        REVISION,
+        tmp_path / "archive",
+        tmp_path / "lfs",
+        "default",
+        None,
+    )
+    assert payload["schema_version"] == "gpu-control-release-packaging-plan.v2"
+    assert payload["mode"] == "PLAN_ONLY_NO_MUTATIONS"
+    for commands in payload["build_commands"].values():
+        assert set(commands) == {"oci_attested", "docker_loadable"}
+        oci_joined = " ".join(commands["oci_attested"])
+        docker_joined = " ".join(commands["docker_loadable"])
+        assert "--output=type=oci" in oci_joined
+        assert "--output=type=docker" not in oci_joined
+        assert "--output=type=docker" in docker_joined
+        assert "--output=type=oci" not in docker_joined
+    assert "registry push" in payload["never_performed"]
+    assert "container start" in payload["never_performed"]
+
+
+def test_subprocess_failure_reports_redacted_bounded_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stderr = (
+        "x" * 5000
+        + "\nAuthorization: Bearer top-secret-token"
+        + "\napi_key=second-secret"
+        + "\n\x1b[31museful-tail\x1b[0m"
+    )
+
+    def fail(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 17, stdout="", stderr=stderr)
+
+    monkeypatch.setattr("scripts.package_control_plane_release.subprocess.run", fail)
+    with pytest.raises(ReleasePackagingError) as captured:
+        _run(["/usr/bin/docker", "buildx", "build"])
+    message = str(captured.value)
+    assert "docker buildx build, exit 17" in message
+    assert "<truncated " in message
+    assert "<redacted>" in message
+    assert "top-secret-token" not in message
+    assert "second-secret" not in message
+    assert "\x1b" not in message
+    assert "useful-tail" in message
+    assert len(message) < 4300
 
 
 def test_release_dockerfiles_allow_digest_pinned_base_images() -> None:

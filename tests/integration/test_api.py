@@ -5,7 +5,7 @@ import json
 import time
 import uuid
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -28,7 +28,9 @@ from packages.gpu_control_core.models import (
     BatchIdempotencyKey,
     Job,
     JobArtifact,
+    JobAttempt,
     JobBatch,
+    JobBatchItem,
     JobEvent,
     Node,
     Workflow,
@@ -44,9 +46,7 @@ def test_modelview_prompt_form_field_merges_without_ambiguity() -> None:
         "prompt": "修复左侧边缘"
     }
     assert json.loads(
-        _merge_service_parameter(
-            '{"prompt":"修复左侧边缘"}', "prompt", "修复左侧边缘"
-        )
+        _merge_service_parameter('{"prompt":"修复左侧边缘"}', "prompt", "修复左侧边缘")
     ) == {"prompt": "修复左侧边缘"}
     try:
         _merge_service_parameter('{"prompt":"A"}', "prompt", "B")
@@ -251,6 +251,49 @@ async def test_api_key_rbac_validation_and_idempotency(tmp_path: Path) -> None:
         ).status_code == 422
 
 
+async def test_job_create_acquires_global_admission_before_tenant_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        lock_calls: list[str] = []
+
+        async def record_global_lock(
+            _session: object,
+            calls: list[str] = lock_calls,
+        ) -> None:
+            calls.append("global")
+
+        async def record_tenant_lock(
+            _session: object,
+            tenant_id: str,
+            calls: list[str] = lock_calls,
+        ) -> None:
+            calls.append(f"tenant:{tenant_id}")
+
+        monkeypatch.setattr(
+            app.state.db,
+            "acquire_global_admission_transaction_lock",
+            record_global_lock,
+        )
+        monkeypatch.setattr(
+            app.state.db,
+            "acquire_tenant_transaction_lock",
+            record_tenant_lock,
+        )
+        response = await client.post(
+            "/api/v1/jobs",
+            headers={"X-API-Key": "gpc_abcd1234_secret"},
+            files={
+                "workflow_key": (None, "fake"),
+                "workflow_version": (None, "1"),
+                "parameters": (None, '{"steps":20}'),
+            },
+        )
+        assert response.status_code == 202, response.text
+        assert lock_calls == ["global", "tenant:tenant"]
+
+
 async def test_batch_api_idempotency_isolation_and_parent_only_admin_list(
     tmp_path: Path,
 ) -> None:
@@ -388,9 +431,7 @@ async def test_batch_api_idempotency_isolation_and_parent_only_admin_list(
             f"/api/v1/batches/{batch_id}/manifest",
             headers={"X-API-Key": "gpc_abcd1234_secret"},
         )
-        assert {
-            key: manifest_status.json()[key] for key in expected_identity
-        } == expected_identity
+        assert {key: manifest_status.json()[key] for key in expected_identity} == expected_identity
         async with app.state.db.session() as session:
             workflow_row = await session.scalar(
                 select(WorkflowVersion).where(
@@ -458,9 +499,7 @@ async def test_batch_api_idempotency_isolation_and_parent_only_admin_list(
             f"/api/v1/batches/{batch_id}",
             headers={"X-API-Key": "gpc_abcd1234_secret"},
         )
-        assert {
-            key: immutable_status.json()[key] for key in expected_identity
-        } == expected_identity
+        assert {key: immutable_status.json()[key] for key in expected_identity} == expected_identity
         replay_after_workflow_switch = await client.post(
             "/api/v1/batches/imageclip-rgba",
             headers=headers,
@@ -582,14 +621,10 @@ async def test_batch_api_idempotency_isolation_and_parent_only_admin_list(
             key: public_detail.json()["artifact"][key] for key in expected_identity
         } == expected_identity
         assert public_url.startswith(f"/api/v1/batches/{batch_id}/artifacts/")
-        full_download = await client.get(
-            public_url, headers={"X-API-Key": "gpc_abcd1234_secret"}
-        )
+        full_download = await client.get(public_url, headers={"X-API-Key": "gpc_abcd1234_secret"})
         assert full_download.content == b"result"
         assert full_download.headers["accept-ranges"] == "bytes"
-        assert full_download.headers["x-artifact-sha256"] == hashlib.sha256(
-            b"result"
-        ).hexdigest()
+        assert full_download.headers["x-artifact-sha256"] == hashlib.sha256(b"result").hexdigest()
         ranged_download = await client.get(
             public_url,
             headers={
@@ -603,16 +638,341 @@ async def test_batch_api_idempotency_isolation_and_parent_only_admin_list(
         assert ranged_download.headers["content-range"] == "bytes 2-5/6"
         assert ranged_download.headers["content-length"] == "4"
         assert ranged_download.headers["x-request-id"] == "assetclaw-range-test"
-        assert ranged_download.headers["x-artifact-sha256"] == hashlib.sha256(
-            b"result"
-        ).hexdigest()
+        assert ranged_download.headers["x-artifact-sha256"] == hashlib.sha256(b"result").hexdigest()
         assert (
-            await client.get(
-                public_url, headers={"X-API-Key": "gpc_tenantb1_secret-b"}
-            )
+            await client.get(public_url, headers={"X-API-Key": "gpc_tenantb1_secret-b"})
         ).status_code == 404
         async with app.state.db.session() as session:
             assert await session.get(JobBatch, batch_id) is not None
+
+
+async def test_batch_performance_serializes_authoritative_node_attempts(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        batch_id = str(uuid.uuid4())
+        first_job_id = str(uuid.uuid4())
+        second_job_id = str(uuid.uuid4())
+        started = datetime(2026, 7, 30, 8, 0, tzinfo=UTC)
+        async with app.state.db.session() as session:
+            node_a = await session.get(Node, "worker-3090-a")
+            node_b = await session.get(Node, "worker-3090-b")
+            assert node_a is not None and node_b is not None
+            node_a.max_concurrency = 2
+            node_b.max_concurrency = 3
+            node_a.labels = {
+                **node_a.labels,
+                "gpu_model": "NVIDIA GeForce RTX 3090",
+                "node_agent_version": "1.5.5",
+            }
+            node_b.labels = {
+                **node_b.labels,
+                "gpu_model": "NVIDIA GeForce RTX 4090",
+                "node_agent_version": "1.5.5",
+            }
+            session.add(
+                JobBatch(
+                    id=batch_id,
+                    tenant_id="tenant",
+                    external_batch_id="assetclaw:performance:g1",
+                    workflow_key="imageclip-rgba",
+                    workflow_version="test-1",
+                    pipeline_commit="7" * 40,
+                    pipeline_sha256="8" * 64,
+                    output_node="SaveImage #9",
+                    status="SUCCEEDED",
+                    failure_policy="all_or_nothing",
+                    output_naming="preserve_stem_png",
+                    parameters={},
+                    request_hash="batch-performance-hash",
+                    request_id="batch-performance-request",
+                    trace_id="batch-performance-trace",
+                    batch_dir=str(tmp_path / "batch-performance"),
+                    manifest_sha256="1" * 64,
+                    archive_sha256="2" * 64,
+                    archive_size_bytes=2,
+                    total_items=2,
+                    pending_items=0,
+                    succeeded_items=2,
+                    progress=100,
+                    validated_at=started - timedelta(seconds=2),
+                    queued_at=started - timedelta(seconds=1),
+                    started_at=started,
+                    execution_finished_at=started + timedelta(seconds=32),
+                    assembling_at=started + timedelta(seconds=33),
+                    artifact_ready_at=started + timedelta(seconds=34),
+                    finished_at=started + timedelta(seconds=35),
+                    created_at=started - timedelta(seconds=3),
+                    updated_at=started + timedelta(seconds=35),
+                )
+            )
+            jobs = [
+                Job(
+                    id=first_job_id,
+                    tenant_id="tenant",
+                    workflow_key="imageclip-rgba",
+                    workflow_version="test-1",
+                    status="SUCCEEDED",
+                    priority="batch",
+                    parameters={},
+                    request_hash="child-performance-1",
+                    request_id="child-performance-request-1",
+                    trace_id="child-performance-trace-1",
+                    job_dir=str(tmp_path / "child-performance-1"),
+                    batch_id=batch_id,
+                    node_id="worker-3090-b",
+                    attempt_count=2,
+                ),
+                Job(
+                    id=second_job_id,
+                    tenant_id="tenant",
+                    workflow_key="imageclip-rgba",
+                    workflow_version="test-1",
+                    status="SUCCEEDED",
+                    priority="batch",
+                    parameters={},
+                    request_hash="child-performance-2",
+                    request_id="child-performance-request-2",
+                    trace_id="child-performance-trace-2",
+                    job_dir=str(tmp_path / "child-performance-2"),
+                    batch_id=batch_id,
+                    node_id="worker-3090-a",
+                    attempt_count=1,
+                ),
+            ]
+            session.add_all(jobs)
+            session.add_all(
+                [
+                    JobBatchItem(
+                        id=str(uuid.uuid4()),
+                        batch_id=batch_id,
+                        ordinal=0,
+                        input_relative_path="0000.png",
+                        output_relative_path="0000.png",
+                        input_size_bytes=1,
+                        input_sha256="3" * 64,
+                        width=10,
+                        height=20,
+                        image_format="PNG",
+                        status="SUCCEEDED",
+                        job_id=first_job_id,
+                        node_id="worker-3090-b",
+                        attempts=2,
+                    ),
+                    JobBatchItem(
+                        id=str(uuid.uuid4()),
+                        batch_id=batch_id,
+                        ordinal=1,
+                        input_relative_path="0001.png",
+                        output_relative_path="0001.png",
+                        input_size_bytes=1,
+                        input_sha256="4" * 64,
+                        width=10,
+                        height=20,
+                        image_format="PNG",
+                        status="SUCCEEDED",
+                        job_id=second_job_id,
+                        node_id="worker-3090-a",
+                        attempts=1,
+                    ),
+                ]
+            )
+            session.add_all(
+                [
+                    JobAttempt(
+                        job_id=first_job_id,
+                        attempt=1,
+                        node_id="worker-3090-a",
+                        lease_token="lease-child-a-1",
+                        status="FAILED",
+                        upload_attempts=1,
+                        prompt_attempts=1,
+                        gpu_started_at=started,
+                        gpu_finished_at=started + timedelta(seconds=10),
+                        finished_at=started + timedelta(seconds=10),
+                    ),
+                    JobAttempt(
+                        job_id=first_job_id,
+                        attempt=2,
+                        node_id="worker-3090-b",
+                        lease_token="lease-child-a-2",
+                        status="SUCCEEDED",
+                        upload_attempts=1,
+                        prompt_attempts=1,
+                        gpu_started_at=started + timedelta(seconds=11),
+                        gpu_finished_at=started + timedelta(seconds=31),
+                        finished_at=started + timedelta(seconds=31),
+                    ),
+                    JobAttempt(
+                        job_id=second_job_id,
+                        attempt=1,
+                        node_id="worker-3090-a",
+                        lease_token="lease-child-b-1",
+                        status="SUCCEEDED",
+                        upload_attempts=1,
+                        prompt_attempts=1,
+                        gpu_started_at=started + timedelta(seconds=2),
+                        gpu_finished_at=started + timedelta(seconds=32),
+                        finished_at=started + timedelta(seconds=32),
+                    ),
+                ]
+            )
+            await session.commit()
+
+        response = await client.get(
+            f"/api/v1/batches/{batch_id}",
+            headers={"X-API-Key": "gpc_abcd1234_secret"},
+        )
+        assert response.status_code == 200, response.text
+        performance = response.json()["performance"]
+        assert performance["gpu_service_ms_total"] == 60_000
+        assert performance["gpu_service_measurements_complete"] is True
+        assert performance["reassignments"] == 1
+        assert performance["scheduler_restarts"] is None
+        assert performance["straggler_ratio"] == 0.015625
+        nodes = {node["node_id"]: node for node in performance["nodes"]}
+        assert nodes["worker-3090-a"] == {
+            **nodes["worker-3090-a"],
+            "gpu_model": "NVIDIA GeForce RTX 3090",
+            "frames_assigned": 2,
+            "frames_final_assignment": 1,
+            "frames_succeeded": 1,
+            "frames_failed": 0,
+            "gpu_service_ms": 40_000,
+            "gpu_service_measurements_complete": True,
+            "frame_ms_p50": 10_000,
+            "frame_ms_p95": 30_000,
+            "node_started_at": started.isoformat(),
+            "node_finished_at": (started + timedelta(seconds=32)).isoformat(),
+            "reassignments_in": 0,
+            "reassignments_out": 1,
+            "max_concurrent_prompts": 2,
+        }
+        assert nodes["worker-3090-b"]["frames_assigned"] == 1
+        assert nodes["worker-3090-b"]["frames_final_assignment"] == 1
+        assert nodes["worker-3090-b"]["reassignments_in"] == 1
+        assert nodes["worker-3090-b"]["reassignments_out"] == 0
+        assert nodes["worker-3090-b"]["max_concurrent_prompts"] == 3
+        assert (
+            nodes["worker-3090-b"]["node_started_at"]
+            == (started + timedelta(seconds=11)).isoformat()
+        )
+        assert (
+            nodes["worker-3090-b"]["node_finished_at"]
+            == (started + timedelta(seconds=31)).isoformat()
+        )
+
+        async with app.state.db.session() as session:
+            incomplete = await session.scalar(
+                select(JobAttempt).where(JobAttempt.lease_token == "lease-child-a-2")
+            )
+            assert incomplete is not None
+            incomplete.gpu_finished_at = None
+            await session.commit()
+        incomplete_response = await client.get(
+            f"/api/v1/batches/{batch_id}",
+            headers={"X-API-Key": "gpc_abcd1234_secret"},
+        )
+        incomplete_performance = incomplete_response.json()["performance"]
+        assert incomplete_performance["gpu_service_measurements_complete"] is False
+        assert incomplete_performance["frames_per_gpu_minute"] is None
+        assert incomplete_performance["megapixels_per_gpu_second"] is None
+        assert incomplete_performance["straggler_ratio"] is None
+        incomplete_nodes = {node["node_id"]: node for node in incomplete_performance["nodes"]}
+        assert incomplete_nodes["worker-3090-b"]["gpu_service_measurements_complete"] is False
+        assert incomplete_nodes["worker-3090-b"]["node_finished_at"] is None
+
+        async with app.state.db.session() as session:
+            missing = await session.scalar(
+                select(JobAttempt).where(JobAttempt.lease_token == "lease-child-a-2")
+            )
+            assert missing is not None
+            missing.gpu_started_at = None
+            await session.commit()
+        missing_response = await client.get(
+            f"/api/v1/batches/{batch_id}",
+            headers={"X-API-Key": "gpc_abcd1234_secret"},
+        )
+        missing_performance = missing_response.json()["performance"]
+        assert missing_performance["gpu_service_measurements_complete"] is False
+        assert missing_performance["frames_per_gpu_minute"] is None
+        assert missing_performance["straggler_ratio"] is None
+        missing_nodes = {node["node_id"]: node for node in missing_performance["nodes"]}
+        assert missing_nodes["worker-3090-b"]["gpu_service_measurements_complete"] is False
+        assert missing_nodes["worker-3090-b"]["node_finished_at"] is None
+
+        async with app.state.db.session() as session:
+            negative = await session.scalar(
+                select(JobAttempt).where(JobAttempt.lease_token == "lease-child-a-2")
+            )
+            assert negative is not None
+            negative.gpu_started_at = started + timedelta(seconds=40)
+            negative.gpu_finished_at = started + timedelta(seconds=31)
+            await session.commit()
+        negative_response = await client.get(
+            f"/api/v1/batches/{batch_id}",
+            headers={"X-API-Key": "gpc_abcd1234_secret"},
+        )
+        assert negative_response.json()["performance"]["straggler_ratio"] is None
+
+        async with app.state.db.session() as session:
+            restored = await session.scalar(
+                select(JobAttempt).where(JobAttempt.lease_token == "lease-child-a-2")
+            )
+            batch = await session.get(JobBatch, batch_id)
+            assert restored is not None and batch is not None
+            restored.gpu_started_at = started + timedelta(seconds=11)
+            restored.gpu_finished_at = started + timedelta(seconds=31)
+            batch.execution_finished_at = started - timedelta(seconds=1)
+            await session.commit()
+        negative_parent_response = await client.get(
+            f"/api/v1/batches/{batch_id}",
+            headers={"X-API-Key": "gpc_abcd1234_secret"},
+        )
+        assert negative_parent_response.json()["performance"]["straggler_ratio"] is None
+
+        async with app.state.db.session() as session:
+            batch = await session.get(JobBatch, batch_id)
+            assert batch is not None
+            batch.execution_finished_at = started + timedelta(seconds=32)
+            batch.status = "RUNNING"
+            await session.commit()
+        nonterminal_response = await client.get(
+            f"/api/v1/batches/{batch_id}",
+            headers={"X-API-Key": "gpc_abcd1234_secret"},
+        )
+        assert nonterminal_response.json()["performance"]["straggler_ratio"] is None
+
+        async with app.state.db.session() as session:
+            batch = await session.get(JobBatch, batch_id)
+            moved_attempt = await session.scalar(
+                select(JobAttempt).where(JobAttempt.lease_token == "lease-child-a-2")
+            )
+            moved_item = await session.scalar(
+                select(JobBatchItem).where(
+                    JobBatchItem.batch_id == batch_id,
+                    JobBatchItem.ordinal == 0,
+                )
+            )
+            moved_job = await session.get(Job, first_job_id)
+            assert (
+                batch is not None
+                and moved_attempt is not None
+                and moved_item is not None
+                and moved_job is not None
+            )
+            batch.status = "SUCCEEDED"
+            moved_attempt.node_id = "worker-3090-a"
+            moved_item.node_id = "worker-3090-a"
+            moved_job.node_id = "worker-3090-a"
+            await session.commit()
+        single_node_response = await client.get(
+            f"/api/v1/batches/{batch_id}",
+            headers={"X-API-Key": "gpc_abcd1234_secret"},
+        )
+        single_node_performance = single_node_response.json()["performance"]
+        assert len(single_node_performance["nodes"]) == 1
+        assert single_node_performance["straggler_ratio"] is None
 
 
 async def test_batch_cancel_operation_child_guards_and_audit(tmp_path: Path) -> None:
@@ -703,9 +1063,7 @@ async def test_batch_cancel_operation_child_guards_and_audit(tmp_path: Path) -> 
             await session.commit()
 
         api_headers = {"X-API-Key": "gpc_abcd1234_secret"}
-        child_list = await client.get(
-            f"/api/v1/jobs/{child_id}/artifacts", headers=api_headers
-        )
+        child_list = await client.get(f"/api/v1/jobs/{child_id}/artifacts", headers=api_headers)
         assert child_list.status_code == 409
         assert child_list.json()["detail"]["code"] == "ARTIFACT_NOT_READY"
         child_download = await client.get(
@@ -741,9 +1099,7 @@ async def test_batch_cancel_operation_child_guards_and_audit(tmp_path: Path) -> 
             guarded_batch.status = "QUEUED"
             await session.commit()
 
-        rejected_public = await client.post(
-            f"/api/v1/jobs/{child_id}/cancel", headers=api_headers
-        )
+        rejected_public = await client.post(f"/api/v1/jobs/{child_id}/cancel", headers=api_headers)
         assert rejected_public.status_code == 409
         assert rejected_public.json()["detail"]["code"] == "BATCH_CHILD_CANCEL_FORBIDDEN"
 
@@ -758,10 +1114,7 @@ async def test_batch_cancel_operation_child_guards_and_audit(tmp_path: Path) -> 
             json={"reason": "operator interrupt test", "confirm": True},
         )
         assert rejected_node_interrupt.status_code == 409
-        assert (
-            rejected_node_interrupt.json()["detail"]["code"]
-            == "BATCH_CHILD_INTERRUPT_FORBIDDEN"
-        )
+        assert rejected_node_interrupt.json()["detail"]["code"] == "BATCH_CHILD_INTERRUPT_FORBIDDEN"
         async with app.state.db.session() as session:
             guarded_child = await session.get(Job, child_id)
             guarded_node = await session.get(Node, "worker-3090-a")
@@ -819,9 +1172,7 @@ async def test_batch_cancel_operation_child_guards_and_audit(tmp_path: Path) -> 
         async with app.state.db.session() as session:
             batch = await session.get(JobBatch, batch_id)
             operation = await session.scalar(
-                select(BatchCancelOperation).where(
-                    BatchCancelOperation.batch_id == batch_id
-                )
+                select(BatchCancelOperation).where(BatchCancelOperation.batch_id == batch_id)
             )
             assert batch is not None and operation is not None
             batch.status = "CANCELLED"
@@ -836,9 +1187,9 @@ async def test_batch_cancel_operation_child_guards_and_audit(tmp_path: Path) -> 
             f"/api/v1/batches/{batch_id}/cancel", headers=cancel_headers
         )
         assert terminal_replay.status_code == 200
-        assert terminal_replay.json()["cancel_operation_id"] == cancel_payload[
-            "cancel_operation_id"
-        ]
+        assert (
+            terminal_replay.json()["cancel_operation_id"] == cancel_payload["cancel_operation_id"]
+        )
         wrong_cancel_key = await client.post(
             f"/api/v1/batches/{batch_id}/cancel",
             headers={**api_headers, "Idempotency-Key": f"{cancel_key}:other"},
@@ -893,9 +1244,7 @@ async def test_batch_cancel_operation_child_guards_and_audit(tmp_path: Path) -> 
         assert illegal_terminal_cancel.json()["detail"]["code"] == "BATCH_NOT_CANCELLABLE"
 
         async with app.state.db.session() as session:
-            assert int(
-                await session.scalar(select(func.count(BatchCancelOperation.id))) or 0
-            ) == 1
+            assert int(await session.scalar(select(func.count(BatchCancelOperation.id))) or 0) == 1
             rejected_audits = int(
                 await session.scalar(
                     select(func.count(AuditLog.id)).where(
@@ -981,9 +1330,7 @@ async def test_admin_parent_cancel_uses_public_acknowledgement_state(tmp_path: P
         async with app.state.db.session() as session:
             batch = await session.get(JobBatch, batch_id)
             operation = await session.scalar(
-                select(BatchCancelOperation).where(
-                    BatchCancelOperation.batch_id == batch_id
-                )
+                select(BatchCancelOperation).where(BatchCancelOperation.batch_id == batch_id)
             )
             assert batch is not None and operation is not None
             assert batch.status == BatchStatus.CANCELLING.value
@@ -1200,9 +1547,7 @@ async def test_admin_views_separate_production_and_test_traffic(tmp_path: Path) 
         assert [row["job_id"] for row in production_jobs.json()] == ["production-job"]
         assert production_jobs.json()[0]["client_kind"] == "production"
 
-        test_jobs = await client.get(
-            "/admin/jobs?client_kind=test", headers=auth
-        )
+        test_jobs = await client.get("/admin/jobs?client_kind=test", headers=auth)
         assert test_jobs.status_code == 200
         assert [row["job_id"] for row in test_jobs.json()] == ["test-job"]
         assert test_jobs.json()[0]["client_kind"] == "test"
@@ -1214,9 +1559,7 @@ async def test_admin_views_separate_production_and_test_traffic(tmp_path: Path) 
         }
 
         production_dashboard = await client.get("/admin/dashboard", headers=auth)
-        test_dashboard = await client.get(
-            "/admin/dashboard?client_kind=test", headers=auth
-        )
+        test_dashboard = await client.get("/admin/dashboard?client_kind=test", headers=auth)
         assert production_dashboard.json()["client_kind"] == "production"
         assert test_dashboard.json()["client_kind"] == "test"
         assert production_dashboard.json()["jobs"]["SUCCEEDED"] == 1
@@ -1283,9 +1626,7 @@ async def test_admin_retry_clears_previous_execution_and_keeps_error_audit(
             assert job.submission_client_id is None and job.submission_intent_at is None
             assert job.cancel_requested is False
             event = await db.scalar(
-                select(JobEvent).where(
-                    JobEvent.job_id == job_id, JobEvent.event == "admin.retry"
-                )
+                select(JobEvent).where(JobEvent.job_id == job_id, JobEvent.event == "admin.retry")
             )
             assert event is not None
             assert event.details["previous_error"] == {
@@ -1611,6 +1952,7 @@ async def test_signed_node_heartbeat_updates_address_and_dynamic_monitoring(
     async for app, client in prepared_app(tmp_path):
         payload = {
             "gpu_uuid": "GPU-9f116ee8-a845-c3a3-b10d-fdd6a9f8cc6c",
+            "gpu_model": "NVIDIA GeForce RTX 3090",
             "hostname": "gpu-worker-a",
             "node_agent_version": "1.5.5",
             "source_revision": "9" * 40,
@@ -1637,21 +1979,38 @@ async def test_signed_node_heartbeat_updates_address_and_dynamic_monitoring(
             ),
             "x-real-ip": "10.0.0.99",
         }
-        response = await client.post(
-            "/api/v1/nodes/heartbeat", content=body, headers=headers
-        )
+        response = await client.post("/api/v1/nodes/heartbeat", content=body, headers=headers)
         assert response.status_code == 200, response.text
         assert response.json()["base_url"] == "http://10.0.0.99:8188"
-        replay = await client.post(
-            "/api/v1/nodes/heartbeat", content=body, headers=headers
-        )
+        replay = await client.post("/api/v1/nodes/heartbeat", content=body, headers=headers)
         assert replay.status_code == 409
+        legacy_payload = dict(payload)
+        legacy_payload.pop("gpu_model")
+        legacy_body = json.dumps(legacy_payload, separators=(",", ":"), sort_keys=True).encode()
+        legacy_nonce = "heartbeat-legacy-agent"
+        legacy_headers = {
+            **headers,
+            "x-gpu-nonce": legacy_nonce,
+            "x-gpu-signature": sign_agent_request(
+                "POST",
+                "/api/v1/nodes/heartbeat",
+                legacy_body,
+                timestamp,
+                legacy_nonce,
+                app.state.settings.node_agent_secret("worker-3090-a"),
+            ),
+        }
+        legacy = await client.post(
+            "/api/v1/nodes/heartbeat", content=legacy_body, headers=legacy_headers
+        )
+        assert legacy.status_code == 200, legacy.text
         async with app.state.db.session() as db:
             node = await db.get(Node, "worker-3090-a")
             assert node is not None
             assert node.agent_url == "http://10.0.0.99:9201"
             assert node.labels["mac"] == "18:c0:4d:9f:13:13"
             assert node.labels["gpu_uuid"] == payload["gpu_uuid"]
+            assert node.labels["gpu_model"] == "NVIDIA GeForce RTX 3090"
             assert node.labels["imageclip_commit"] == "7" * 40
             assert node.labels["imageclip_pipeline_sha256"] == "8" * 64
             assert node.labels["node_agent_version"] == "1.5.5"
@@ -1659,6 +2018,4 @@ async def test_signed_node_heartbeat_updates_address_and_dynamic_monitoring(
             assert node.custom_nodes_version == "imageclip:777777777777:888888888888"
         targets = await client.get("/internal/prometheus/workers")
         assert targets.status_code == 200
-        assert any(
-            group["targets"] == ["10.0.0.99:9400"] for group in targets.json()
-        )
+        assert any(group["targets"] == ["10.0.0.99:9400"] for group in targets.json())

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import (
 from .settings import Settings
 
 SCHEDULER_LOCK_ID = 0x47504354
+ADMISSION_LOCK_ID = 0x47504341444D4954
 
 
 class Database:
@@ -36,6 +37,15 @@ class Database:
             await session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext(:tenant_id))"),
                 {"tenant_id": tenant_id},
+            )
+
+    async def acquire_global_admission_transaction_lock(self, session: AsyncSession) -> None:
+        """Serialize global admission before tenant locks with a distinct 64-bit key."""
+
+        if session.bind is not None and session.bind.dialect.name == "postgresql":
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_id)"),
+                {"lock_id": ADMISSION_LOCK_ID},
             )
 
     async def acquire_scheduler_lock(self, session: AsyncSession) -> bool:

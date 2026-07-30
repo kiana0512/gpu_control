@@ -66,13 +66,13 @@ SHA-256，仍记录为 contract failure。
    都拒绝，例如目标为 `https://staging.example:8443` 时 allowlist 必须包含这一完整值；
 4. `LOAD_TEST_SESSION_ID` 唯一且只含安全 ASCII 字符；
 5. `LOAD_TEST_CONFIRMATION_TOKEN` 与当前环境域、session 和 target 精确绑定；
-6. `LOAD_TEST_API_KEYS` 至少一个，且预检确认首个 key 的 `client.kind=test`；
+6. `LOAD_TEST_API_KEYS` 至少一个，且预检逐个确认所有轮转 key 的 `client.kind=test` 与 admission 可用；
 7. `LOAD_TEST_ADMIN_BEARER_TOKEN` 可调用只读 admin 预检；
 8. HTTPS 使用可读的 `LOAD_TEST_CA_FILE`，不能用关闭 TLS 校验代替；
 9. `LOAD_TEST_RESULT_DIR` 是显式指定且尚不存在的新目录；
 10. scenario 含六个正权重、完整阈值、至少一个 100+ VU stage，且
-    `weights_confirmed: true`；集群门禁不可降到三台健康 GPU、三台在线 Asset Worker 以下，且必须
-    至少有一个 Substance slot；
+    `weights_confirmed: true`；集群门禁不可降到三台健康 GPU、三台在线 CPU Asset Worker 以下，
+    CPU slot 与 Windows Substance slot 分别校验且均不得为 0；
 11. fixture manifest 的所有素材存在、非空并位于仓库外，元数据和 SHA 合同全部通过。
 
 确认令牌是“精确执行意图绑定值”，不是 API 密钥。plan 会给出当前配置对应的
@@ -109,6 +109,9 @@ SHA-256，仍记录为 contract failure。
 payload 摘要。`CREATED_UTC` 必须早于批准窗口，且距窗口开始不超过 scenario 的
 `max_backup_age_hours`（示例 24h）；所有顶层备份文件的最新 mtime 也必须早于窗口，防止在窗口开启
 后重新生成清单或修改 payload；同一父目录若存在更新的 complete full 备份，也会拒绝旧目录。
+此外必须存在 `database.dump`、PostgreSQL roles、Git bundle/worktree、repository config、敏感配置、
+host data、Docker/Git 清单和前后两份 quiesce gate；数据库必须是 `PGDMP` custom format、Git bundle
+必须有合法 bundle header，前后 gate 的五项计数都必须为 0。只有 `MODE=full` 标签的空壳目录会拒绝。
 
 这些变量只使 Locust 有资格进入只读预检，不表示预检一定通过，也不授权重启、部署、断开节点、
 修改业务工作流或清理其他任务。
@@ -180,7 +183,9 @@ substance_bake: 5
 
 结果同时提供 P50/P90/P95/P99、闭环吞吐、terminal status、admission status、重试、恢复、错误、
 node/worker 分布、batch node distribution、artifact 数量/字节和 Locust 每 route 统计。缺失阈值测量
-也判定不通过，而不是当成 0。
+也判定不通过，而不是当成 0。最终成功还要求每条已登记任务均进入成功业务终态且至少有一份校验
+通过的产物；poll timeout、失败/取消/拒绝终态、artifact 合同失败或 test-stop teardown 取消过任务，
+都会把本轮判为不完整/失败，不能只凭 HTTP 2xx 得到通过结论。
 
 测试期间每 5 秒额外只读采样 `/admin/nodes`、`/admin/asset-processing?limit=1`、scheduler capacity
 和 asset capacity，写入脱敏的 `telemetry.jsonl`：

@@ -98,10 +98,217 @@ COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 CHANGE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 DEFAULT_PRODUCTION_HOSTS = frozenset({"10.3.34.11"})
 NON_PRODUCTION_ENVIRONMENTS = frozenset({"test", "staging", "development"})
+TRANSIENT_LOAD_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+SUBSTANCE_LOAD_WORKER_MARKER = "3090-b-windows"
+REQUIRED_FULL_BACKUP_PAYLOADS = frozenset(
+    {
+        "BACKUP_MANIFEST",
+        "database.dump",
+        "postgres-globals.sql",
+        "repository-config.tar.gz",
+        "repository.bundle",
+        "git-status.txt",
+        "git-worktree.patch",
+        "git-index.patch",
+        "git-head.txt",
+        "git-remotes.txt",
+        "git-lfs-files.txt",
+        "docker-containers.txt",
+        "docker-images.txt",
+        "docker-volumes.txt",
+        "repository-worktree-files.list",
+        "repository-worktree.tar",
+        "sensitive-config.tar.gz",
+        "host-data.tar",
+        "quiesce-gate-pre.txt",
+        "quiesce-gate-post.txt",
+    }
+)
+NONEMPTY_FULL_BACKUP_PAYLOADS = REQUIRED_FULL_BACKUP_PAYLOADS - {
+    "git-status.txt",
+    "git-worktree.patch",
+    "git-index.patch",
+    "git-lfs-files.txt",
+}
 
 
 class LoadTestConfigurationError(ValueError):
     """Raised when a plan, fixture manifest, or safety gate is invalid."""
+
+
+def load_response_is_retryable(
+    status_code: int | None, *, has_transport_error: bool = False
+) -> bool:
+    """Return whether a load-harness HTTP response is safe to retry.
+
+    Locust represents connection failures and request timeouts as synthetic
+    responses with status ``0``.  Treating those responses as ordinary
+    ``<400`` successes would both suppress the failure and strand an
+    idempotently-created server task, so they are always retryable.
+    """
+
+    return (
+        has_transport_error
+        or status_code is None
+        or status_code <= 0
+        or status_code in TRANSIENT_LOAD_HTTP_STATUSES
+    )
+
+
+def load_queue_start(payload: Mapping[str, Any]) -> object:
+    """Use the authoritative queued timestamp, with legacy create fallback."""
+
+    return payload.get("queued_at") or payload.get("created_at")
+
+
+def validate_test_client_capacities(
+    capacities: Sequence[Mapping[str, Any]], *, expected_count: int
+) -> list[dict[str, Any]]:
+    """Validate every rotating load identity without retaining its secret."""
+
+    if expected_count < 1 or len(capacities) != expected_count:
+        raise LoadTestConfigurationError(
+            "every LOAD_TEST_API_KEYS identity must have one capacity preflight"
+        )
+    checks: list[dict[str, Any]] = []
+    for index, capacity in enumerate(capacities):
+        client = capacity.get("client")
+        if not isinstance(client, Mapping) or client.get("kind") != "test":
+            raise LoadTestConfigurationError(
+                f"load API key index {index} must belong to client_kind=test"
+            )
+        if capacity.get("accepting_batches") is not True:
+            raise LoadTestConfigurationError(
+                f"load API key index {index} is not accepting GPU batches"
+            )
+        checks.append(
+            {
+                "api_key_index": index,
+                "client_kind": "test",
+                "accepting_batches": True,
+            }
+        )
+    return checks
+
+
+def validate_asset_worker_roles(
+    workers: Sequence[Mapping[str, Any]],
+    *,
+    minimum_cpu_workers: int,
+    minimum_cpu_slots: int,
+    minimum_substance_slots: int,
+) -> dict[str, Any]:
+    """Require independent CPU and fenced-Substance capacity."""
+
+    online: list[Mapping[str, Any]] = [
+        worker for worker in workers if worker.get("status") == "ONLINE"
+    ]
+    substance = [
+        worker
+        for worker in online
+        if SUBSTANCE_LOAD_WORKER_MARKER in str(worker.get("id", "")).lower()
+    ]
+    cpu = [worker for worker in online if worker not in substance]
+
+    def available_slots(rows: Sequence[Mapping[str, Any]]) -> int:
+        total = 0
+        for worker in rows:
+            maximum = worker.get("max_concurrency")
+            current = worker.get("current_jobs")
+            if (
+                isinstance(maximum, bool)
+                or not isinstance(maximum, int)
+                or maximum < 1
+                or isinstance(current, bool)
+                or not isinstance(current, int)
+                or current < 0
+                or current > maximum
+            ):
+                raise LoadTestConfigurationError(
+                    "asset worker returned invalid current/max concurrency"
+                )
+            total += maximum - current
+        return total
+
+    cpu_slots = available_slots(cpu)
+    substance_slots = available_slots(substance)
+    if len(cpu) < minimum_cpu_workers:
+        raise LoadTestConfigurationError("not enough online CPU asset workers")
+    if cpu_slots < minimum_cpu_slots:
+        raise LoadTestConfigurationError("no approved CPU asset worker capacity")
+    if substance_slots < minimum_substance_slots:
+        raise LoadTestConfigurationError("no approved Substance worker capacity")
+    return {
+        "online_workers": online,
+        "cpu_workers": cpu,
+        "substance_workers": substance,
+        "cpu_available_slots": cpu_slots,
+        "substance_available_slots": substance_slots,
+    }
+
+
+def evaluate_load_lifecycle(
+    records: Sequence[Mapping[str, Any]],
+    teardown: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Fail closed on unfinished, unsuccessful, or artifact-incomplete work."""
+
+    incomplete = [
+        str(record.get("id")) for record in records if not record.get("terminal_status")
+    ]
+    unsuccessful = [
+        {
+            "id": str(record.get("id")),
+            "status": str(record.get("terminal_status")),
+        }
+        for record in records
+        if record.get("terminal_status")
+        and record.get("terminal_status") not in LOAD_SUCCESS_STATUSES
+    ]
+    missing_artifacts = [
+        str(record.get("id"))
+        for record in records
+        if record.get("terminal_status") in LOAD_SUCCESS_STATUSES
+        and int(record.get("artifact_count") or 0) < 1
+    ]
+    artifact_contract_failures = [
+        str(record.get("id"))
+        for record in records
+        if record.get("artifact_contract_failed") is True
+    ]
+    poll_timeouts = [
+        str(record.get("id")) for record in records if record.get("poll_timed_out") is True
+    ]
+    teardown_failed = [
+        str(outcome.get("task_id"))
+        for outcome in teardown
+        if outcome.get("cancelled") is not True
+    ]
+    passed = bool(records) and not any(
+        (
+            incomplete,
+            unsuccessful,
+            missing_artifacts,
+            artifact_contract_failures,
+            poll_timeouts,
+            teardown,
+        )
+    )
+    return {
+        "passed": passed,
+        "registered": len(records),
+        "successful": sum(
+            record.get("terminal_status") in LOAD_SUCCESS_STATUSES for record in records
+        ),
+        "incomplete_task_ids": incomplete,
+        "unsuccessful_tasks": unsuccessful,
+        "missing_artifact_task_ids": missing_artifacts,
+        "artifact_contract_failure_task_ids": artifact_contract_failures,
+        "poll_timeout_task_ids": poll_timeouts,
+        "teardown_attempted": len(teardown),
+        "teardown_failed_task_ids": teardown_failed,
+        "policy": "all registered tasks must end successfully with a verified artifact; teardown means the run is incomplete",
+    }
 
 
 @dataclass(frozen=True)
@@ -521,6 +728,7 @@ def load_scenario(path: Path) -> LoadScenario:
         "maximum_preexisting_asset_jobs": 0,
         "minimum_healthy_gpu_nodes": 1,
         "minimum_online_asset_workers": 1,
+        "minimum_cpu_slots": 1,
         "minimum_substance_slots": 1,
     }
     raw_preflight = _mapping(payload.get("preflight", {}), "preflight")
@@ -539,7 +747,11 @@ def load_scenario(path: Path) -> LoadScenario:
         )
     if preflight["minimum_online_asset_workers"] < 3:
         raise LoadTestConfigurationError(
-            "six-API cluster load requires at least three online asset workers"
+            "six-API cluster load requires at least three online CPU asset workers"
+        )
+    if preflight["minimum_cpu_slots"] < 1:
+        raise LoadTestConfigurationError(
+            "six-API cluster load requires at least one CPU asset slot"
         )
     if preflight["minimum_substance_slots"] < 1:
         raise LoadTestConfigurationError(
@@ -772,6 +984,34 @@ def _backup_timestamp(raw: str) -> datetime:
         raise LoadTestConfigurationError("backup CREATED_UTC is invalid") from exc
 
 
+def _validate_zero_quiesce_gate(path: Path) -> None:
+    expected = {
+        "active_jobs",
+        "active_batches",
+        "active_asset_jobs",
+        "busy_nodes",
+        "accepting_online_nodes",
+    }
+    values: dict[str, int] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise LoadTestConfigurationError(
+            f"cannot read production {path.name}"
+        ) from exc
+    for line in lines:
+        if "=" not in line:
+            raise LoadTestConfigurationError(f"production {path.name} is invalid")
+        key, raw_value = line.split("=", 1)
+        if key not in expected or key in values or not raw_value.isdigit():
+            raise LoadTestConfigurationError(f"production {path.name} is invalid")
+        values[key] = int(raw_value)
+    if set(values) != expected or any(values.values()):
+        raise LoadTestConfigurationError(
+            f"production {path.name} must prove every quiesce counter was zero"
+        )
+
+
 def _validate_production_backup(
     backup_dir: Path,
     *,
@@ -805,8 +1045,23 @@ def _validate_production_backup(
             raise LoadTestConfigurationError("production backup file mode must be 0600")
 
     required = {"BACKUP_COMPLETE", "BACKUP_MANIFEST", "SHA256SUMS"}
-    if not required.issubset({entry.name for entry in entries}):
+    entry_by_name = {entry.name: entry for entry in entries}
+    if not required.issubset(entry_by_name):
         raise LoadTestConfigurationError("production backup control files are incomplete")
+    missing_payloads = sorted(REQUIRED_FULL_BACKUP_PAYLOADS - set(entry_by_name))
+    if missing_payloads:
+        raise LoadTestConfigurationError(
+            f"production full backup is missing required payloads: {missing_payloads}"
+        )
+    empty_payloads = sorted(
+        name
+        for name in NONEMPTY_FULL_BACKUP_PAYLOADS
+        if entry_by_name[name].stat().st_size < 1
+    )
+    if empty_payloads:
+        raise LoadTestConfigurationError(
+            f"production full backup has empty required payloads: {empty_payloads}"
+        )
     complete = _backup_key_values(root / "BACKUP_COMPLETE")
     manifest = _backup_key_values(root / "BACKUP_MANIFEST")
     if complete.get("STATUS") != "COMPLETE" or complete.get("MODE") != "full":
@@ -819,6 +1074,44 @@ def _validate_production_backup(
         raise LoadTestConfigurationError(
             "BACKUP_MANIFEST must be format 2 full with enforced pre/post quiesce"
         )
+    manifest_required = {
+        "REPOSITORY_ROOT",
+        "GIT_HEAD",
+        "POSTGRES_CONTAINER",
+        "POSTGRES_USER",
+        "POSTGRES_DB",
+    }
+    if any(not manifest.get(key) for key in manifest_required):
+        raise LoadTestConfigurationError(
+            "BACKUP_MANIFEST is missing required full-backup identity fields"
+        )
+    if not Path(manifest["REPOSITORY_ROOT"]).is_absolute():
+        raise LoadTestConfigurationError("BACKUP_MANIFEST REPOSITORY_ROOT must be absolute")
+    if not COMMIT_PATTERN.fullmatch(manifest["GIT_HEAD"]):
+        raise LoadTestConfigurationError("BACKUP_MANIFEST GIT_HEAD is invalid")
+    try:
+        recorded_git_head = (root / "git-head.txt").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise LoadTestConfigurationError("cannot read production git-head.txt") from exc
+    if recorded_git_head != manifest["GIT_HEAD"]:
+        raise LoadTestConfigurationError(
+            "BACKUP_MANIFEST GIT_HEAD does not match git-head.txt"
+        )
+    try:
+        with (root / "database.dump").open("rb") as database_file:
+            database_header = database_file.read(5)
+        with (root / "repository.bundle").open("rb") as bundle_file:
+            bundle_header = bundle_file.read(32)
+    except OSError as exc:
+        raise LoadTestConfigurationError("cannot read critical full-backup payload") from exc
+    if database_header != b"PGDMP":
+        raise LoadTestConfigurationError(
+            "production database.dump is not a PostgreSQL custom-format dump"
+        )
+    if not bundle_header.startswith((b"# v2 git bundle", b"# v3 git bundle")):
+        raise LoadTestConfigurationError("production repository.bundle header is invalid")
+    _validate_zero_quiesce_gate(root / "quiesce-gate-pre.txt")
+    _validate_zero_quiesce_gate(root / "quiesce-gate-post.txt")
     created_raw = complete.get("CREATED_UTC", "")
     if manifest.get("CREATED_UTC") != created_raw:
         raise LoadTestConfigurationError("backup marker and manifest timestamps differ")
