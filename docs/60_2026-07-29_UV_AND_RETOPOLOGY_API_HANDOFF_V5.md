@@ -216,7 +216,16 @@ curl --fail-with-body --show-error \
 
 ### 4.5 交付内容
 
-普通客户端只需要显示并下载最终 BLEND/FBX；调度中心同时保留 process report、baseline/final audit、manifest、Agent prompt/plan/events 和高模/参考低模/结果的正侧顶透视对照图，供审计和故障定位。
+普通客户端只需要显示并下载最终 BLEND/FBX。服务端在 `strict` 通过或 `advisory` 接受交付后，
+把 Worker 上传的不可变候选字节发布为以下正式 artifact 合同：
+
+- `kind=blend`、`filename=retopology_final.blend`；
+- `kind=fbx`、`filename=retopology_final.fbx`。
+
+底层文件 SHA-256 不因发布别名改变。只有 `strict` 失败的诊断任务继续返回
+`candidate_blend/candidate_fbx`，客户端不得把诊断候选当作正式交付。调度中心同时保留 process
+report、baseline/final audit、manifest、Agent prompt/plan/events 和高模/参考低模/结果的正侧顶透视
+对照图，供审计和故障定位。
 
 ## 5. Python 通用提交、轮询和 SHA 校验
 

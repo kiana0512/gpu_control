@@ -1079,6 +1079,14 @@ async def test_retopology_process_accepts_reference_views_and_publishes_review_s
         assert status.json()["stage"] == "SUCCEEDED"
         assert status.json()["delivery_ready"] is True
         assert len(status.json()["artifacts"]) == 23
+        assert {
+            artifact["kind"]: artifact["filename"]
+            for artifact in status.json()["artifacts"]
+            if artifact["kind"] in {"blend", "fbx"}
+        } == {
+            "blend": "retopology_final.blend",
+            "fbx": "retopology_final.fbx",
+        }
 
 
 def retopology_process_metadata(external_asset_id: str) -> dict[str, object]:
@@ -1316,6 +1324,10 @@ async def test_retopology_strict_qa_failure_keeps_diagnostics_downloadable(
         assert payload["delivery_ready"] is False
         assert payload["artifacts_role"] == "diagnostic"
         assert len(payload["artifacts"]) == 22
+        assert {artifact["kind"] for artifact in payload["artifacts"]} >= {
+            "candidate_blend",
+            "candidate_fbx",
+        }
         artifact = payload["artifacts"][0]
         downloaded = await client.get(
             artifact["download_url"],
@@ -1355,6 +1367,29 @@ async def test_retopology_advisory_qa_delivers_with_persisted_warning(
         assert payload["artifacts_role"] == "delivery"
         assert payload["error"] is None
         assert len(payload["artifacts"]) == 22
+        final_models = {
+            artifact["kind"]: artifact
+            for artifact in payload["artifacts"]
+            if artifact["kind"] in {"blend", "fbx"}
+        }
+        assert {
+            kind: artifact["filename"] for kind, artifact in final_models.items()
+        } == {
+            "blend": "retopology_final.blend",
+            "fbx": "retopology_final.fbx",
+        }
+        assert not {
+            artifact["kind"]
+            for artifact in payload["artifacts"]
+            if artifact["kind"] in {"candidate_blend", "candidate_fbx"}
+        }
+        for artifact in final_models.values():
+            downloaded = await client.get(
+                artifact["download_url"],
+                headers={"X-API-Key": "gpc_assetkey_secret"},
+            )
+            assert downloaded.status_code == 200
+            assert downloaded.headers["X-Artifact-SHA256"] == artifact["sha256"]
         warning = payload["options"]["qa_warning"]
         assert warning["code"] == "RETOPOLOGY_QUALITY_GATE_WARNING"
         assert warning["enforcement"] == "advisory"

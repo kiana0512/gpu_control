@@ -137,6 +137,10 @@ RETOPOLOGY_PROCESS_OPTIONAL_ARTIFACTS = {
     kind: (filename, content_type)
     for filename, (kind, content_type) in RETOPOLOGY_PROCESS_OPTIONAL_FILENAMES.items()
 }
+RETOPOLOGY_FINAL_MODEL_ARTIFACTS = {
+    "candidate_blend": ("blend", "retopology_final.blend"),
+    "candidate_fbx": ("fbx", "retopology_final.fbx"),
+}
 RETOPOLOGY_DIAGNOSTIC_ERROR_CODES = frozenset(
     {"RETOPOLOGY_AUDIT_FAILED", "RETOPOLOGY_QUALITY_GATE_FAILED"}
 )
@@ -2042,6 +2046,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 cfg.retopology_qa_enforcement == "advisory" and not quality_passed
             )
             delivery_allowed = quality_passed or advisory_warning
+            if delivery_allowed:
+                # The worker deliberately uploads versioned candidates. Once
+                # the server accepts delivery (strict pass or advisory), expose
+                # those exact immutable bytes under the established V5 final
+                # model kinds. Keeping candidate_* here makes clients classify
+                # usable BLEND/FBX files as diagnostics and report zero final
+                # deliverables even though the job succeeded.
+                for artifact in created:
+                    promoted = RETOPOLOGY_FINAL_MODEL_ARTIFACTS.get(artifact.kind)
+                    if promoted is not None:
+                        artifact.kind, artifact.filename = promoted
             if advisory_warning:
                 job.options = {
                     **job.options,
