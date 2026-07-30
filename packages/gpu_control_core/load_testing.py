@@ -33,6 +33,21 @@ API_NAMES = (
     "substance_bake",
 )
 LOAD_SUCCESS_STATUSES = frozenset({"SUCCEEDED", "WAITING_REVIEW"})
+LOAD_ACTIVE_STATUSES = frozenset(
+    {
+        "RECEIVED",
+        "VALIDATING",
+        "QUEUED",
+        "CLAIMED",
+        "UPLOADING",
+        "SUBMITTED",
+        "RUNNING",
+        "DOWNLOADING",
+        "ASSEMBLING",
+        "CANCELLING",
+        "RETRY_WAIT",
+    }
+)
 METRIC_THRESHOLD_NAMES = frozenset(
     {
         "http_failure_rate_percent",
@@ -247,6 +262,64 @@ def validate_asset_worker_roles(
     }
 
 
+def identify_foreign_active_work(
+    gpu_jobs: Sequence[Mapping[str, Any]],
+    asset_jobs: Sequence[Mapping[str, Any]],
+    *,
+    test_tenant_ids: Sequence[str],
+) -> dict[str, Any]:
+    """Return minimal evidence for active work outside this load session.
+
+    Asset admin rows do not expose ``client_kind``, so their ``client_id`` is
+    classified against the exact tenant allowlist bound to the approved load
+    plan. GPU rows prefer their authoritative ``client_kind`` and use the
+    tenant allowlist as a fallback and second session boundary. Missing or
+    unknown ownership fails closed. Business payloads are never returned.
+    """
+
+    approved_tenants = {str(value) for value in test_tenant_ids if str(value)}
+    if not approved_tenants or len(approved_tenants) != len(test_tenant_ids):
+        raise LoadTestConfigurationError(
+            "production watchdog requires unique LOAD_TEST_TENANT_IDS"
+        )
+    conflicts: list[dict[str, str]] = []
+    for plane, rows in (("gpu", gpu_jobs), ("asset", asset_jobs)):
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise LoadTestConfigurationError(
+                    f"{plane} production watchdog received a non-object job"
+                )
+            status = str(row.get("status") or "")
+            if status not in LOAD_ACTIVE_STATUSES:
+                continue
+            owner_field = "tenant_id" if plane == "gpu" else "client_id"
+            owner = str(row.get(owner_field) or "")
+            raw_client_kind = row.get("client_kind")
+            client_kind = str(raw_client_kind) if raw_client_kind else "production"
+            owner_is_current_session = owner in approved_tenants
+            if plane == "gpu" and raw_client_kind is not None:
+                belongs_to_session = client_kind == "test" and owner_is_current_session
+            else:
+                belongs_to_session = owner_is_current_session
+            if belongs_to_session:
+                continue
+            identifier = row.get("job_id") or row.get("batch_id") or "unknown"
+            conflict = {
+                "plane": plane,
+                "job_id": str(identifier),
+                "status": status,
+                "client_kind": client_kind,
+            }
+            if owner:
+                conflict["owner_id"] = owner
+            conflicts.append(conflict)
+    return {
+        "detected": bool(conflicts),
+        "count": len(conflicts),
+        "jobs": conflicts,
+    }
+
+
 def evaluate_load_lifecycle(
     records: Sequence[Mapping[str, Any]],
     teardown: Sequence[Mapping[str, Any]],
@@ -417,9 +490,11 @@ class RuntimeSettings:
         if not api_keys and source.get("LOAD_TEST_API_KEY", "").strip():
             api_keys = (source["LOAD_TEST_API_KEY"].strip(),)
         tenant_ids = _split_nonempty(source.get("LOAD_TEST_TENANT_IDS", ""))
-        if tenant_ids and len(tenant_ids) != len(api_keys):
+        if tenant_ids and (
+            len(tenant_ids) != len(api_keys) or len(set(tenant_ids)) != len(tenant_ids)
+        ):
             raise LoadTestConfigurationError(
-                "LOAD_TEST_TENANT_IDS must be empty or match LOAD_TEST_API_KEYS"
+                "LOAD_TEST_TENANT_IDS must uniquely match LOAD_TEST_API_KEYS one-to-one"
             )
         ca_value = source.get("LOAD_TEST_CA_FILE", "").strip()
         result_value = source.get("LOAD_TEST_RESULT_DIR", "").strip()
@@ -462,17 +537,18 @@ class RuntimeSettings:
 
     @property
     def expected_confirmation_token(self) -> str:
+        tenant_binding = hashlib.sha256(",".join(self.tenant_ids).encode()).hexdigest()
         if self.is_production_target():
             material = (
                 "gpu-control-six-api:production:"
                 f"{self.change_id}:{self.window_start}:{self.window_end}:"
                 f"{self.backup_dir or ''}:"
-                f"{self.session_id}:{self.target}:execute"
+                f"{self.session_id}:{self.target}:{tenant_binding}:execute"
             ).encode()
         else:
             material = (
                 "gpu-control-six-api:nonproduction:"
-                f"{self.session_id}:{self.target}:execute"
+                f"{self.session_id}:{self.target}:{tenant_binding}:execute"
             ).encode()
         return hashlib.sha256(material).hexdigest()
 
@@ -568,6 +644,10 @@ class RuntimeSettings:
             blockers.append("LOAD_TEST_CONFIRMATION_TOKEN does not match this session and target")
         if not self.api_keys:
             blockers.append("LOAD_TEST_API_KEYS must be supplied from the environment")
+        if not self.tenant_ids or len(self.tenant_ids) != len(self.api_keys):
+            blockers.append(
+                "LOAD_TEST_TENANT_IDS must uniquely match LOAD_TEST_API_KEYS one-to-one"
+            )
         if not self.admin_bearer_token:
             blockers.append("LOAD_TEST_ADMIN_BEARER_TOKEN is required for read-only preflight")
         if not scenario.weights_confirmed:

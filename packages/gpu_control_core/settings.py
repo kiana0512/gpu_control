@@ -1,6 +1,7 @@
 from datetime import time
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -61,6 +62,7 @@ class Settings(BaseSettings):
     asset_worker_max_load_per_cpu: float = Field(0.85, ge=0.1, le=4.0)
     asset_worker_min_available_memory_mb: int = Field(8192, ge=1024, le=1_048_576)
     asset_job_max_attempts: int = Field(2, ge=1, le=10)
+    retopology_qa_enforcement: Literal["strict", "advisory"] = "strict"
 
     @field_validator(
         "jwt_secret",

@@ -916,6 +916,10 @@
   color: #58dbb1;
   background: rgba(45, 207, 154, 0.1);
 }
+.asset-delivery-policy.warning {
+  color: #f0bd69;
+  background: rgba(240, 174, 67, 0.14);
+}
 .asset-delivery-policy.blocked {
   color: #eab96c;
   background: rgba(232, 169, 71, 0.1);

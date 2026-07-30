@@ -3,14 +3,16 @@ import io
 import json
 import time
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 import httpx
 import pytest
 from gpu_control_asset_api.main import create_app
 from PIL import Image
 
-from packages.gpu_control_core.models import ApiClient, ApiKey, Base, Node
+from packages.gpu_control_core.models import ApiClient, ApiKey, AssetJob, Base, Node
 from packages.gpu_control_core.security import hash_api_secret, sign_agent_request
 from packages.gpu_control_core.settings import Settings
 
@@ -36,7 +38,11 @@ async def test_asset_api_version_exposes_aligned_immutable_provenance(
         }
 
 
-async def prepared_asset_app(tmp_path: Path):
+async def prepared_asset_app(
+    tmp_path: Path,
+    *,
+    retopology_qa_enforcement: Literal["strict", "advisory"] = "strict",
+):
     settings = Settings(
         environment="test",
         database_url=f"sqlite+aiosqlite:///{(tmp_path / 'asset.db').as_posix()}",
@@ -49,6 +55,7 @@ async def prepared_asset_app(tmp_path: Path):
         asset_worker_hmac_secret="asset-worker-secret-that-is-long-enough",
         alertmanager_webhook_token="test-alert-token",
         asset_worker_min_available_memory_mb=1024,
+        retopology_qa_enforcement=retopology_qa_enforcement,
     )
     app = create_app(settings)
     async with app.router.lifespan_context(app):
@@ -515,6 +522,174 @@ async def claim_asset_job(
     return job
 
 
+def queued_asset_job(
+    job_id: str,
+    *,
+    client_id: str,
+    job_type: str,
+    created_at: datetime,
+) -> AssetJob:
+    return AssetJob(
+        id=job_id,
+        client_id=client_id,
+        external_asset_id=f"queue-priority:{job_id}",
+        job_type=job_type,
+        status="QUEUED",
+        source_filename=f"{job_id}.fbx",
+        input_path=f"/tmp/{job_id}.fbx",
+        input_sha256="a" * 64,
+        input_size_bytes=1,
+        options={},
+        request_hash=hashlib.sha256(job_id.encode()).hexdigest(),
+        request_id=f"priority-{job_id}",
+        created_at=created_at,
+    )
+
+
+async def test_cpu_asset_claim_prioritizes_production_and_keeps_pool_fifo(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        now = datetime.now(UTC)
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            db.add(
+                ApiClient(
+                    id="load-test-client",
+                    name="Load Test Client",
+                    role="client",
+                    client_kind="test",
+                    max_queued=50,
+                    max_running=10,
+                )
+            )
+            db.add_all(
+                [
+                    queued_asset_job(
+                        "cpu-test-older",
+                        client_id="load-test-client",
+                        job_type="UV_PROCESS_V2",
+                        created_at=now - timedelta(minutes=4),
+                    ),
+                    queued_asset_job(
+                        "cpu-test-newer",
+                        client_id="load-test-client",
+                        job_type="RETOPOLOGY_AUDIT",
+                        created_at=now - timedelta(minutes=3),
+                    ),
+                    queued_asset_job(
+                        "cpu-production-older",
+                        client_id="asset-client",
+                        job_type="UV_PROCESS_V2",
+                        created_at=now - timedelta(minutes=2),
+                    ),
+                    queued_asset_job(
+                        "cpu-production-newer",
+                        client_id="asset-client",
+                        job_type="RETOPOLOGY_PROCESS_V1",
+                        created_at=now - timedelta(minutes=1),
+                    ),
+                ]
+            )
+            await db.commit()
+
+        await register_asset_worker(client, settings)
+        claimed = [str((await claim_asset_job(client, settings))["job_id"]) for _ in range(4)]
+        assert claimed == [
+            "cpu-production-older",
+            "cpu-production-newer",
+            "cpu-test-older",
+            "cpu-test-newer",
+        ]
+
+
+async def test_substance_claim_prioritizes_production_and_keeps_pool_fifo(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        now = datetime.now(UTC)
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            db.add(
+                ApiClient(
+                    id="load-test-client",
+                    name="Load Test Client",
+                    role="client",
+                    client_kind="test",
+                    max_queued=50,
+                    max_running=10,
+                )
+            )
+            db.add_all(
+                [
+                    queued_asset_job(
+                        "bake-test-older",
+                        client_id="load-test-client",
+                        job_type="SUBSTANCE_BAKE_V1",
+                        created_at=now - timedelta(minutes=4),
+                    ),
+                    queued_asset_job(
+                        "bake-test-newer",
+                        client_id="load-test-client",
+                        job_type="SUBSTANCE_BAKE_V1",
+                        created_at=now - timedelta(minutes=3),
+                    ),
+                    queued_asset_job(
+                        "bake-production-older",
+                        client_id="asset-client",
+                        job_type="SUBSTANCE_BAKE_V1",
+                        created_at=now - timedelta(minutes=2),
+                    ),
+                    queued_asset_job(
+                        "bake-production-newer",
+                        client_id="asset-client",
+                        job_type="SUBSTANCE_BAKE_V1",
+                        created_at=now - timedelta(minutes=1),
+                    ),
+                ]
+            )
+            await db.commit()
+
+        claimed: list[str] = []
+        for index in range(4):
+            worker_id = f"asset-worker-3090-b-windows-{index:02d}"
+            heartbeat = await signed_post(
+                client,
+                settings,
+                "/internal/v1/assets/workers/heartbeat",
+                {
+                    "worker_id": worker_id,
+                    "node_id": "worker-3090-b",
+                    "display_name": f"3090-B Windows Substance Baker #{index}",
+                    "hostname": "LILITHGAMES3",
+                    "blender_version": "substance-15.1.0",
+                    "skill_version": "substance-baker-2026.07.29-v1",
+                    "cpu_count": 128,
+                    "max_concurrency": 1,
+                    "current_jobs": 0,
+                    "load_1m": 0,
+                    "available_memory_mb": 100000,
+                },
+            )
+            assert heartbeat.json()["status"] == "ONLINE"
+            response = await signed_post(
+                client,
+                settings,
+                "/internal/v1/assets/jobs/claim",
+                {
+                    "worker_id": worker_id,
+                    "load_1m": 0,
+                    "available_memory_mb": 100000,
+                },
+            )
+            claimed.append(str(response.json()["job"]["job_id"]))
+
+        assert claimed == [
+            "bake-production-older",
+            "bake-production-newer",
+            "bake-test-older",
+            "bake-test-newer",
+        ]
+
+
 async def test_uv_process_v2_preserves_stem_and_publishes_five_verified_artifacts(
     tmp_path: Path,
 ) -> None:
@@ -904,3 +1079,326 @@ async def test_retopology_process_accepts_reference_views_and_publishes_review_s
         assert status.json()["stage"] == "SUCCEEDED"
         assert status.json()["delivery_ready"] is True
         assert len(status.json()["artifacts"]) == 23
+
+
+def retopology_process_metadata(external_asset_id: str) -> dict[str, object]:
+    return {
+        "external_asset_id": external_asset_id,
+        "options": {
+            "high_object": "crate_high",
+            "reference_object": "crate_reference_low",
+            "low_object": "crate_current_low",
+            "generated_low_object": "crate_generated_v001",
+            "algorithm": "agent",
+            "target_faces": 2400,
+            "preserve_sharp": True,
+            "preserve_boundary": True,
+            "render_resolution": 256,
+            "max_repair_rounds": 1,
+            "require_closed": False,
+        },
+        "reference_views": [],
+        "user_request": "保持箱体轮廓，先生成可用候选。",
+    }
+
+
+def retopology_process_completion_files(
+    job: dict[str, object],
+    png: bytes,
+    *,
+    quality_passed: bool,
+    source_preserved: bool = True,
+) -> dict[str, tuple[str, bytes, str]]:
+    job_id = str(job["job_id"])
+    objects = {
+        "high": "crate_high",
+        "reference": "crate_reference_low",
+        "current": "crate_current_low",
+        "generated": "crate_generated_v001",
+    }
+    failures = [] if quality_passed else ["low contains N-gons"]
+    audit = {
+        "schema_version": 2,
+        "audit_passed": quality_passed and source_preserved,
+        "failures": failures,
+        "preservation": {
+            "high": source_preserved,
+            "reference": source_preserved,
+        },
+        "objects": {
+            "low": {
+                "topology": {
+                    "faces": 2400,
+                    "triangles": 0,
+                    "quads": 2399 if not quality_passed else 2400,
+                    "ngons": 1 if not quality_passed else 0,
+                    "nonmanifold_edges": 0,
+                    "loose_edges": 0,
+                    "loose_vertices": 0,
+                    "duplicate_vertices": 0,
+                    "duplicate_faces": 0,
+                    "zero_area_faces": 0,
+                    "inconsistent_orientation_edges": 0,
+                }
+            }
+        },
+        "comparison": {
+            "dimension_relative_error": [0.01, 0.01, 0.01],
+            "normalized_center_offset": 0.002,
+        },
+    }
+    quality_gate = {
+        "schema_version": "retopology_quality_gate.v2",
+        "passed": quality_passed,
+        "failures": [] if quality_passed else ["SIGNED_AUDIT_FAILED", "NGONS=1"],
+        "limits": {},
+        "measurements": {},
+    }
+    agent_plan = {"recommended_algorithm": "quadriflow", "target_faces": 2400}
+    manifest = {
+        "schema_version": "retopology_process_manifest.v1",
+        "job_id": job_id,
+        "job_type": "RETOPOLOGY_PROCESS_V1",
+        "input_sha256": job["input_sha256"],
+        "objects": objects,
+        "source_preserved": source_preserved,
+        "automatic_final_promotion_allowed": quality_passed and source_preserved,
+        "quality_gate": quality_gate,
+        "visual_evidence": {
+            "required": True,
+            "views": ["front", "side", "top", "perspective"],
+            "roles": ["high", "reference", "generated"],
+            "manual_review_required": False,
+        },
+        "agent_plan": {
+            "required": True,
+            "recommended_algorithm": "quadriflow",
+            "recommended_target_faces": 2400,
+        },
+    }
+    files: dict[str, tuple[str, bytes, str]] = {
+        "candidate_blend": (
+            "retopology_candidate.blend",
+            b"blend",
+            "application/octet-stream",
+        ),
+        "candidate_fbx": (
+            "retopology_candidate.fbx",
+            b"fbx",
+            "application/octet-stream",
+        ),
+        "process_report": (
+            "retopology_process_report.json",
+            json.dumps(
+                {
+                    "schema_version": "retopology_process_report.v1",
+                    "source_preserved": source_preserved,
+                    "topology_goal_met": quality_passed,
+                    "quality_gate": quality_gate,
+                    "source_topology": {
+                        "high": {"face_components": 1},
+                        "reference": {"face_components": 1},
+                        "current": {"face_components": 1},
+                    },
+                    "candidate_topology": {
+                        "faces": 2400,
+                        "triangles": 0,
+                        "quads": 2399 if not quality_passed else 2400,
+                        "ngons": 1 if not quality_passed else 0,
+                        "quad_ratio": 0.999583 if not quality_passed else 1.0,
+                        "face_components": 1,
+                    },
+                }
+            ).encode(),
+            "application/json",
+        ),
+        "baseline_audit": (
+            "retopology_baseline_audit.json",
+            json.dumps({**audit, "audit_passed": True, "failures": []}).encode(),
+            "application/json",
+        ),
+        "audit": (
+            "retopology_final_audit.json",
+            json.dumps(audit).encode(),
+            "application/json",
+        ),
+        "manifest": (
+            "retopology_manifest.json",
+            json.dumps(manifest).encode(),
+            "application/json",
+        ),
+        "comparison": ("retopology_comparison.png", png, "image/png"),
+        "agent_plan": (
+            "retopology_agent_plan.json",
+            json.dumps(agent_plan).encode(),
+            "application/json",
+        ),
+        "agent_prompt": (
+            "retopology_agent_prompt.txt",
+            b"planning prompt",
+            "text/plain",
+        ),
+        "agent_events": (
+            "retopology_agent_events.jsonl",
+            b"{}\n",
+            "application/x-ndjson",
+        ),
+    }
+    for role in ("high", "reference", "generated"):
+        for view in ("front", "side", "top", "perspective"):
+            files[f"view_{role}_{view}"] = (
+                f"{role}_{view}.png",
+                png,
+                "image/png",
+            )
+    return files
+
+
+async def create_and_claim_retopology_process(
+    client: httpx.AsyncClient,
+    settings: Settings,
+    external_asset_id: str,
+) -> dict[str, object]:
+    created = await client.post(
+        "/api/v1/assets/retopology/process",
+        headers={
+            "X-API-Key": "gpc_assetkey_secret",
+            "Idempotency-Key": external_asset_id,
+        },
+        files={
+            "project": (
+                "crate.blend",
+                b"real-blend-placeholder",
+                "application/octet-stream",
+            ),
+            "metadata": (
+                None,
+                json.dumps(retopology_process_metadata(external_asset_id)),
+                "application/json",
+            ),
+        },
+    )
+    assert created.status_code == 202, created.text
+    await register_asset_worker(client, settings)
+    claimed = await claim_asset_job(client, settings)
+    assert claimed["job_id"] == created.json()["job_id"]
+    return claimed
+
+
+async def test_retopology_strict_qa_failure_keeps_diagnostics_downloadable(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path, retopology_qa_enforcement="strict"):
+        job = await create_and_claim_retopology_process(
+            client, settings, "asset:crate:retopo:strict-failure"
+        )
+        completed = await client.post(
+            f"/internal/v1/assets/jobs/{job['job_id']}/retopology-process-complete",
+            headers={"X-Asset-Lease": str(job["lease_token"])},
+            files=retopology_process_completion_files(job, png_bytes(16), quality_passed=False),
+        )
+        assert completed.status_code == 200, completed.text
+        assert completed.json() == {
+            "accepted": True,
+            "status": "FAILED",
+            "review_required": False,
+            "audit_passed": False,
+            "quality_gate_passed": False,
+            "qa_enforcement": "strict",
+            "delivered_with_warnings": False,
+        }
+        status = await client.get(
+            f"/api/v1/assets/jobs/{job['job_id']}",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        payload = status.json()
+        assert payload["error"]["code"] == "RETOPOLOGY_QUALITY_GATE_FAILED"
+        assert payload["delivery_ready"] is False
+        assert payload["artifacts_role"] == "diagnostic"
+        assert len(payload["artifacts"]) == 22
+        artifact = payload["artifacts"][0]
+        downloaded = await client.get(
+            artifact["download_url"],
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert downloaded.status_code == 200
+        assert downloaded.headers["X-Artifact-SHA256"] == artifact["sha256"]
+
+
+async def test_retopology_advisory_qa_delivers_with_persisted_warning(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(
+        tmp_path, retopology_qa_enforcement="advisory"
+    ):
+        job = await create_and_claim_retopology_process(
+            client, settings, "asset:crate:retopo:advisory-warning"
+        )
+        completed = await client.post(
+            f"/internal/v1/assets/jobs/{job['job_id']}/retopology-process-complete",
+            headers={"X-Asset-Lease": str(job["lease_token"])},
+            files=retopology_process_completion_files(job, png_bytes(16), quality_passed=False),
+        )
+        assert completed.status_code == 200, completed.text
+        assert completed.json()["status"] == "SUCCEEDED"
+        assert completed.json()["quality_gate_passed"] is False
+        assert completed.json()["qa_enforcement"] == "advisory"
+        assert completed.json()["delivered_with_warnings"] is True
+
+        status = await client.get(
+            f"/api/v1/assets/jobs/{job['job_id']}",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        payload = status.json()
+        assert payload["status"] == "SUCCEEDED"
+        assert payload["delivery_ready"] is True
+        assert payload["artifacts_role"] == "delivery"
+        assert payload["error"] is None
+        assert len(payload["artifacts"]) == 22
+        warning = payload["options"]["qa_warning"]
+        assert warning["code"] == "RETOPOLOGY_QUALITY_GATE_WARNING"
+        assert warning["enforcement"] == "advisory"
+        assert warning["failures"] == [
+            "low contains N-gons",
+            "SIGNED_AUDIT_FAILED",
+            "NGONS=1",
+            "topology_goal_met=false: target face/topology requirement was not met",
+            "automatic_final_promotion_allowed=false: candidate is not deliverable",
+        ]
+        events = await client.get(
+            f"/api/v1/assets/jobs/{job['job_id']}/events",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert events.status_code == 200
+        assert "asset.succeeded_with_warnings" in events.text
+        assert "RETOPOLOGY_QUALITY_GATE_WARNING" in events.text
+        assert "NGONS=1" in events.text
+
+
+async def test_retopology_advisory_keeps_source_protection_hard(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(
+        tmp_path, retopology_qa_enforcement="advisory"
+    ):
+        job = await create_and_claim_retopology_process(
+            client, settings, "asset:crate:retopo:source-protection"
+        )
+        completed = await client.post(
+            f"/internal/v1/assets/jobs/{job['job_id']}/retopology-process-complete",
+            headers={"X-Asset-Lease": str(job["lease_token"])},
+            files=retopology_process_completion_files(
+                job,
+                png_bytes(16),
+                quality_passed=False,
+                source_preserved=False,
+            ),
+        )
+        assert completed.status_code == 422, completed.text
+        assert completed.json()["detail"]["code"] == ("RETOPOLOGY_SOURCE_PROTECTION_FAILED")
+        status = await client.get(
+            f"/api/v1/assets/jobs/{job['job_id']}",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert status.json()["delivery_ready"] is False
+        assert status.json()["artifacts"] == []

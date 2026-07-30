@@ -65,6 +65,7 @@ services:
     environment:
       TMPDIR: /srv/gpu-control/assets
       ASSET_ROOT: ${ASSET_ROOT:-/srv/gpu-control/assets}
+      RETOPOLOGY_QA_ENFORCEMENT: ${RETOPOLOGY_QA_ENFORCEMENT:-strict}
     volumes:
       - ${ASSET_ROOT:-/srv/gpu-control/assets}:/srv/gpu-control/assets
     depends_on:

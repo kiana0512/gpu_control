@@ -5,6 +5,7 @@ import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 import yaml
 
 from packages.gpu_control_core.load_testing import (
@@ -14,6 +15,7 @@ from packages.gpu_control_core.load_testing import (
     RuntimeSettings,
     build_plan,
     evaluate_load_lifecycle,
+    identify_foreign_active_work,
     load_fixture_manifest,
     load_queue_start,
     load_response_is_retryable,
@@ -366,6 +368,70 @@ def test_cpu_and_substance_worker_capacity_are_independent() -> None:
         assert "CPU asset workers" in str(exc)
     else:
         raise AssertionError("Substance slots must not satisfy the CPU worker gate")
+
+
+def test_watchdog_uses_exact_tenant_allowlist_and_fails_closed() -> None:
+    result = identify_foreign_active_work(
+        [
+            {
+                "job_id": "own-gpu",
+                "status": "RUNNING",
+                "client_kind": "test",
+                "tenant_id": "load-tenant",
+            },
+            {
+                "job_id": "production-gpu",
+                "status": "QUEUED",
+                "client_kind": "production",
+                "tenant_id": "business-tenant",
+            },
+            {
+                "job_id": "finished-production",
+                "status": "SUCCEEDED",
+                "client_kind": "production",
+                "tenant_id": "business-tenant",
+            },
+        ],
+        [
+            {"job_id": "own-asset", "status": "CLAIMED", "client_id": "load-tenant"},
+            {"job_id": "foreign-asset", "status": "RUNNING", "client_id": "business"},
+        ],
+        test_tenant_ids=("load-tenant",),
+    )
+    assert [item["job_id"] for item in result["jobs"]] == [
+        "production-gpu",
+        "foreign-asset",
+    ]
+    assert result["detected"] is True
+
+    fallback = identify_foreign_active_work(
+        [{"job_id": "own-legacy-gpu", "status": "RUNNING", "tenant_id": "load-tenant"}],
+        [],
+        test_tenant_ids=("load-tenant",),
+    )
+    assert fallback["detected"] is False
+    with pytest.raises(LoadTestConfigurationError, match="non-object"):
+        identify_foreign_active_work(
+            [], ["bad-row"], test_tenant_ids=("load-tenant",)  # type: ignore[list-item]
+        )
+
+
+def test_execution_requires_unique_tenant_id_for_every_load_key(tmp_path: Path) -> None:
+    scenario = load_scenario(write_yaml(tmp_path / "scenario.yaml", scenario_payload()))
+    fixtures = load_fixture_manifest(fixture_manifest(tmp_path))
+    environment = allowed_environment(tmp_path)
+    environment.pop("LOAD_TEST_TENANT_IDS")
+    provisional = RuntimeSettings.from_environment(environment)
+    environment["LOAD_TEST_CONFIRMATION_TOKEN"] = provisional.expected_confirmation_token
+    runtime = RuntimeSettings.from_environment(environment)
+    blockers = runtime.execution_blockers(
+        scenario, fixtures, repository_root=Path("/opt/gpu-control")
+    )
+    assert any("LOAD_TEST_TENANT_IDS" in blocker for blocker in blockers)
+
+    environment["LOAD_TEST_TENANT_IDS"] = "duplicate,duplicate"
+    with pytest.raises(LoadTestConfigurationError, match="one-to-one"):
+        RuntimeSettings.from_environment(environment)
 
 
 def test_lifecycle_gate_rejects_failures_timeouts_artifacts_and_teardown() -> None:

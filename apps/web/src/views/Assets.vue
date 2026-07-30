@@ -7,6 +7,7 @@ import type {
   AssetProcessingOverview,
   AssetWorkerInfo,
 } from "../types";
+import { assetDeliveryPolicy } from "../assetPresentation";
 import { useAutoRefresh } from "../composables/useAutoRefresh";
 
 const overview = ref<AssetProcessingOverview | null>(null);
@@ -829,15 +830,9 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <p>{{ selectedJob.stage_message }}</p>
             <span
               class="asset-delivery-policy"
-              :class="selectedJob.delivery_ready ? 'ready' : 'blocked'"
+              :class="assetDeliveryPolicy(selectedJob).className"
             >
-              {{
-                selectedJob.delivery_ready
-                  ? "质量检查通过"
-                  : selectedJob.artifacts_role === "diagnostic"
-                    ? "质量检查未通过"
-                    : "正在生成交付"
-              }}
+              {{ assetDeliveryPolicy(selectedJob).label }}
             </span>
           </section>
           <section v-if="selectedJob.error" class="asset-failure-summary">

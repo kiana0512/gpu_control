@@ -37,6 +37,7 @@ from packages.gpu_control_core.load_testing import (
     RuntimeSettings,
     evaluate_load_lifecycle,
     file_sha256,
+    identify_foreign_active_work,
     load_fixture_manifest,
     load_queue_start,
     load_response_is_retryable,
@@ -157,6 +158,7 @@ _operation_counter = itertools.count(1)
 _user_counter = itertools.count(0)
 _telemetry_greenlet: Any | None = None
 _telemetry_stop = False
+_production_watchdog_triggered = False
 _expected_gpu_node_ids: tuple[str, ...] = ()
 _expected_asset_worker_ids: tuple[str, ...] = ()
 
@@ -647,17 +649,30 @@ def collect_telemetry(client: httpx.Client) -> dict[str, Any]:
     admin_headers = {"Authorization": f"Bearer {RUNTIME.admin_bearer_token}"}
     nodes = preflight_json(client, "/admin/nodes", admin_headers)
     asset_overview = preflight_json(
-        client, "/admin/asset-processing?limit=1", admin_headers
+        client, "/admin/asset-processing?limit=500", admin_headers
+    )
+    gpu_jobs = preflight_json(
+        client, "/admin/jobs?client_kind=all&limit=500", admin_headers
     )
     capacity = preflight_json(client, "/api/v1/scheduler/capacity", api_headers)
     asset_capacity = preflight_json(client, "/api/v1/assets/capacity", api_headers)
-    if not isinstance(nodes, list):
+    if not isinstance(nodes, list) or not isinstance(gpu_jobs, list):
         raise LoadTestConfigurationError("telemetry nodes response has the wrong shape")
     if not isinstance(asset_overview, dict):
         raise LoadTestConfigurationError("telemetry asset response has the wrong shape")
     workers = asset_overview.get("workers")
+    asset_jobs = asset_overview.get("jobs")
     if not isinstance(workers, list):
         raise LoadTestConfigurationError("telemetry asset response omitted workers")
+    if not isinstance(asset_jobs, list):
+        raise LoadTestConfigurationError("telemetry asset response omitted jobs")
+    if len(gpu_jobs) >= 500 or len(asset_jobs) >= 500:
+        raise LoadTestConfigurationError("production watchdog audit window is saturated")
+    foreign_work = identify_foreign_active_work(
+        gpu_jobs,
+        asset_jobs,
+        test_tenant_ids=RUNTIME.tenant_ids,
+    )
     if not isinstance(capacity, dict) or not isinstance(asset_capacity, dict):
         raise LoadTestConfigurationError("telemetry capacity response has the wrong shape")
     cluster = capacity.get("cluster")
@@ -781,6 +796,7 @@ def collect_telemetry(client: httpx.Client) -> dict[str, Any]:
             "used_slots": asset_capacity.get("used_slots"),
             "available_slots": asset_capacity.get("available_slots"),
         },
+        "production_watchdog": foreign_work,
         "privacy": {
             "addresses_recorded": False,
             "credentials_recorded": False,
@@ -790,7 +806,7 @@ def collect_telemetry(client: httpx.Client) -> dict[str, Any]:
 
 
 def telemetry_loop(environment: Any) -> None:
-    global _telemetry_stop
+    global _production_watchdog_triggered, _telemetry_stop
 
     sequence = 0
     loop_started = time.monotonic()
@@ -828,6 +844,21 @@ def telemetry_loop(environment: Any) -> None:
                     handle.write(
                         json.dumps(sample, ensure_ascii=False, sort_keys=True) + "\n"
                     )
+                watchdog = sample.get("production_watchdog")
+                if isinstance(watchdog, dict) and watchdog.get("detected") is True:
+                    _production_watchdog_triggered = True
+                    REGISTRY.event(
+                        "safety.foreign_work_detected",
+                        count=watchdog.get("count"),
+                        jobs=watchdog.get("jobs"),
+                        action="stop_spawn_and_quit",
+                    )
+                    environment.process_exit_code = 2
+                    if environment.runner is not None:
+                        # test_stop invokes teardown_session_tasks(), whose only
+                        # cancellation source is this session's registry.
+                        environment.runner.quit()
+                    return
             except Exception as exc:
                 error_sample = {
                     "schema_version": "gpu-control-six-api-telemetry-error.v1",
@@ -1726,6 +1757,11 @@ def finalize_results(environment: Any, **_: Any) -> None:
         "accepted": sum(item["cancelled"] for item in teardown),
         "scope": "session_registry_only",
     }
+    summary["production_watchdog"] = {
+        "triggered": _production_watchdog_triggered,
+        "action": "stop_spawn_and_quit" if _production_watchdog_triggered else None,
+        "running_test_work_is_non_preemptive": True,
+    }
     summary["lifecycle_evaluation"] = evaluate_load_lifecycle(records, teardown)
     (RESULT_DIR / "records.json").write_text(
         json.dumps(records, ensure_ascii=False, indent=2, sort_keys=True, default=str)
@@ -1746,6 +1782,7 @@ def finalize_results(environment: Any, **_: Any) -> None:
         or not summary["lifecycle_evaluation"]["passed"]
         or not telemetry["evidence_complete"]
         or not telemetry["gpu_saturation_objective"]["passed"]
+        or _production_watchdog_triggered
     ):
         environment.process_exit_code = environment.process_exit_code or 1
     write_result_manifest(RESULT_DIR, session_id=RUNTIME.session_id)

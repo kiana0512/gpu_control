@@ -5,14 +5,19 @@
 控制面版本：`GPU Control Asset/Web 1.5.4`
 适用对象：Li3D 资产客户端、动画管家及公司局域网调用方
 
+> 1.5.5 候选新增服务端 `RETOPOLOGY_QA_ENFORCEMENT=strict|advisory`
+> 开关。默认仍为 `strict`；只有运维显式启用 `advisory` 时，重拓扑生成任务的
+> 几何质量门才降级为告警。该开关不是客户端参数，不修改外部 Skill 或算法。
+
 ## 1. 当前生产合同
 
 - UV 与重拓扑均为异步资产任务，和 ComfyUI GPU 推理队列完全隔离。
 - 公司局域网来源默认无需 API Key、无需配置 IP 白名单；系统按 TCP 真实来源 IP 自动建档、限流、审计和隔离任务。
 - 正式调用必须信任 `GPU_CONTROL_LAN_CA.crt`；`-k/--insecure` 只能排障。
 - 每次业务尝试必须发送稳定且唯一的 `Idempotency-Key`；网络重试复用原值。
-- 服务端执行自动严格 QA。全部门禁通过后直接原子交付；不再进入人工复核状态，也没有管理员批准/驳回步骤。
-- 任一硬门禁失败，任务终态为 `FAILED`，错误码为结构化错误；诊断文件可以保留，但不可用候选模型不会进入最终交付。
+- 服务端始终执行完整 QA 并保留原始报告。默认 `strict` 模式下，全部门禁通过后直接原子交付；不再进入人工复核状态，也没有管理员批准/驳回步骤。
+- 重拓扑生成可由运维临时切到 `advisory`：几何质量阈值未通过时仍交付候选，并在 `options.qa_warning`、SSE 事件和 QA 制品中保留告警。UV 与独立重拓扑审计不受此开关影响。
+- 制品缺失/空文件、JSON 或 manifest 不合法、任务/输入/对象身份不一致、源对象指纹变化、非法预览图等完整性与源保护错误始终硬拒绝，`advisory` 不能绕过。
 - 输入文件只读，所有输出写入独立 Job 目录，不覆盖用户源文件。
 
 ## 2. 连接与通用状态接口
@@ -152,9 +157,9 @@ curl --fail-with-body --show-error \
 - 多组件、开放边界或非流形高模不会盲目使用不适用的 QuadriFlow；Worker 会确定性回退并把原因写入 manifest。
 - 平面区域允许大幅合并冗余边；曲面、轮廓、孔洞、硬边和组件边界必须保留必要密度。
 
-### 4.4 必须满足的自动交付门
+### 4.4 质量评估与可回滚交付策略
 
-只有以下条件全部满足才允许 `SUCCEEDED`：
+以下质量项始终测量并写入 process report、final audit、manifest 和事件：
 
 - `audit_passed=true`；
 - `topology_goal_met=true`；
@@ -165,7 +170,14 @@ curl --fail-with-body --show-error \
 - 报告真实返回 face/triangle/quad/N-gon 数量，不用三角面数冒充目标面数；
 - 四边面为主、三角面只用于平面隐藏区/收口/过渡，不允许扭曲四边面。
 
-任意一项失败，返回：
+服务端策略：
+
+| `RETOPOLOGY_QA_ENFORCEMENT` | 质量项未通过时 | 完整性或源保护失败时 |
+|---|---|---|
+| `strict`（默认） | `FAILED`，候选作为诊断制品可下载 | 硬拒绝 |
+| `advisory` | `SUCCEEDED`，正常交付 BLEND/FBX，同时携带 QA 告警 | 硬拒绝 |
+
+`strict` 模式失败返回：
 
 ```json
 {
@@ -176,6 +188,31 @@ curl --fail-with-body --show-error \
   }
 }
 ```
+
+`advisory` 模式不会伪造 QA 通过。任务成功交付，但状态中的原始判断和失败项仍然存在：
+
+```json
+{
+  "status": "SUCCEEDED",
+  "delivery_ready": true,
+  "stage_message": "候选已生成并交付；严格 QA 未通过，告警与完整报告已保留",
+  "options": {
+    "qa_warning": {
+      "code": "RETOPOLOGY_QUALITY_GATE_WARNING",
+      "enforcement": "advisory",
+      "audit_passed": false,
+      "topology_goal_met": false,
+      "automatic_final_promotion_allowed": false,
+      "failures": ["SIGNED_AUDIT_FAILED", "NGONS=1"]
+    }
+  }
+}
+```
+
+对应终态 SSE 事件的 `details.event` 为
+`asset.succeeded_with_warnings`，并包含 `quality_gate_passed=false`、
+`quality_failures` 和 `warning_code=RETOPOLOGY_QUALITY_GATE_WARNING`。恢复严格门只需由
+运维将环境变量改回 `strict` 并安全滚动 Asset API；Worker、外部 Skill 和算法无需修改。
 
 ### 4.5 交付内容
 
@@ -243,7 +280,7 @@ for artifact in job["artifacts"]:
 ## 6. 客户端必须遵循
 
 1. 只将 `SUCCEEDED` 视为成功；`95%`、候选生成或诊断制品都不是最终交付。
-2. 不实现人工批准/驳回；服务端自动 QA 通过即交付，失败即返回结构化原因。
+2. 不实现人工批准/驳回；只把 `SUCCEEDED` 视为可交付。若存在 `options.qa_warning`，界面必须明确显示“已交付但 QA 有告警”，并保留 QA 报告下载入口。
 3. 下载后验证 `SHA256(body) == artifact.sha256 == X-Artifact-SHA256`。
 4. 网络重试复用原幂等键，不能用新键制造重复任务。
 5. 不把 SSE 断线、Worker 临时离线或单步错误解释成用户取消。
@@ -256,4 +293,4 @@ for artifact in job["artifacts"]:
 - 三台 Worker 的 Blender、技能脚本和 RetopoFlow 探针已纳入心跳与 WebUI。
 - UV 已执行失败样本修复后的并发实测，成功任务全部一次执行并完成五件套原子交付。
 - 重拓扑已执行多 Worker、多视图真实任务；服务端保留候选、四视图、审计、Agent 证据与 SHA。
-- 本 V5 合同进一步冻结强质量门：不能再把丢组件、尺寸/中心明显偏移、轮廓不可用或拓扑目标未达到的候选标记为成功。
+- 生产 1.5.4 仍使用严格质量门。1.5.5 候选提供受控、可回滚的 `advisory` 模式，供 Skill/算法迭代期先交付候选；它不改变 QA 测量结果，也不放松完整性和源保护。

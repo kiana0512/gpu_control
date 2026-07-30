@@ -65,25 +65,29 @@ SHA-256，仍记录为 contract failure。
 3. `LOAD_TEST_TARGET_ALLOWLIST` 含完全相同的 origin。仅 hostname、通配符、不同 scheme 或不同 port
    都拒绝，例如目标为 `https://staging.example:8443` 时 allowlist 必须包含这一完整值；
 4. `LOAD_TEST_SESSION_ID` 唯一且只含安全 ASCII 字符；
-5. `LOAD_TEST_CONFIRMATION_TOKEN` 与当前环境域、session 和 target 精确绑定；
+5. `LOAD_TEST_CONFIRMATION_TOKEN` 与当前环境域、session、target 和 test tenant 清单精确绑定；
 6. `LOAD_TEST_API_KEYS` 至少一个，且预检逐个确认所有轮转 key 的 `client.kind=test` 与 admission 可用；
-7. `LOAD_TEST_ADMIN_BEARER_TOKEN` 可调用只读 admin 预检；
-8. HTTPS 使用可读的 `LOAD_TEST_CA_FILE`，不能用关闭 TLS 校验代替；
-9. `LOAD_TEST_RESULT_DIR` 是显式指定且尚不存在的新目录；
-10. scenario 含六个正权重、完整阈值、至少一个 100+ VU stage，且
+7. `LOAD_TEST_TENANT_IDS` 必填、不可重复，按相同顺序与 `LOAD_TEST_API_KEYS` 一一对应；该精确清单也是
+   运行期 watchdog 判断资产任务是否属于本 session 的安全边界；
+8. `LOAD_TEST_ADMIN_BEARER_TOKEN` 可调用只读 admin 预检；
+9. HTTPS 使用可读的 `LOAD_TEST_CA_FILE`，不能用关闭 TLS 校验代替；
+10. `LOAD_TEST_RESULT_DIR` 是显式指定且尚不存在的新目录；
+11. scenario 含六个正权重、完整阈值、至少一个 100+ VU stage，且
     `weights_confirmed: true`；集群门禁不可降到三台健康 GPU、三台在线 CPU Asset Worker 以下，
     CPU slot 与 Windows Substance slot 分别校验且均不得为 0；
-11. fixture manifest 的所有素材存在、非空并位于仓库外，元数据和 SHA 合同全部通过。
+12. fixture manifest 的所有素材存在、非空并位于仓库外，元数据和 SHA 合同全部通过。
 
 确认令牌是“精确执行意图绑定值”，不是 API 密钥。plan 会给出当前配置对应的
 `expected_confirmation_token`，值的域如下：
 
 ```text
-非生产：SHA-256("gpu-control-six-api:nonproduction:<session>:<target>:execute")
-生产：  SHA-256("gpu-control-six-api:production:<change>:<start>:<end>:<backup-dir>:<session>:<target>:execute")
+tenant-binding = SHA-256("<tenant-1>,<tenant-2>,...")
+非生产：SHA-256("gpu-control-six-api:nonproduction:<session>:<target>:<tenant-binding>:execute")
+生产：  SHA-256("gpu-control-six-api:production:<change>:<start>:<end>:<backup-dir>:<session>:<target>:<tenant-binding>:execute")
 ```
 
-因此非生产令牌不能复用于生产；生产窗口、变更单、session 或 target 任一改变都必须重新确认。
+因此非生产令牌不能复用于生产；生产窗口、变更单、session、target 或 tenant 清单任一改变都必须
+重新确认。
 
 ### 3.2 非生产环境
 
@@ -101,7 +105,7 @@ SHA-256，仍记录为 contract failure。
 - 从当前时刻计算，scenario 的全部 stage 必须能在窗口结束前完成；
 - `LOAD_TEST_BACKUP_DIR` 指向 `scripts/backup.sh --mode full` 在本窗口前创建的最新完整恢复点；
 - scenario 的 `maximum_preexisting_gpu_jobs` 和 `maximum_preexisting_asset_jobs` 必须均为 `0`；
-- 生产域确认令牌完全匹配上述 change/window/backup/session/target。
+- 生产域确认令牌完全匹配上述 change/window/backup/session/target/tenant 清单。
 
 备份门禁完全离线读取并逐文件校验：目录/文件权限与 owner、`BACKUP_COMPLETE` 的
 `STATUS=COMPLETE`/`MODE=full`、`BACKUP_MANIFEST` 的 `BACKUP_FORMAT=2`/`MODE=full`/
@@ -187,8 +191,9 @@ node/worker 分布、batch node distribution、artifact 数量/字节和 Locust 
 通过的产物；poll timeout、失败/取消/拒绝终态、artifact 合同失败或 test-stop teardown 取消过任务，
 都会把本轮判为不完整/失败，不能只凭 HTTP 2xx 得到通过结论。
 
-测试期间每 5 秒额外只读采样 `/admin/nodes`、`/admin/asset-processing?limit=1`、scheduler capacity
-和 asset capacity，写入脱敏的 `telemetry.jsonl`：
+测试期间每 5 秒额外只读采样 `/admin/nodes`、`/admin/jobs?client_kind=all&limit=500`、
+`/admin/asset-processing?limit=500`、scheduler capacity 和 asset capacity，写入脱敏的
+`telemetry.jsonl`：
 
 - 每个 GPU：`gpu_util_percent`、free/total VRAM、current/max jobs、mode、health；
 - 每个 Asset Worker：status、current/max jobs；后端没有权威 CPU%，因此只报告
@@ -200,10 +205,16 @@ node/worker 分布、batch node distribution、artifact 数量/字节和 Locust 
 - `six_api_coverage` 必须显示六项各至少形成一条服务端任务记录；随机权重恰好漏掉某项时，本轮
   即使 HTTP 指标良好也不算完整六接口证据。
 
-采样只保留 node/worker ID 和上述数值，不写 hostname、IP/agent URL、labels、Codex task、文件名、
-job body、header 或凭据。任何采样 shape/数值/容量不变量错误、超时或单次采集超过 5 秒都会写一条
-脱敏 error sample 并停止测试。Node Agent 的 GPU 源指标可能每 10 秒更新，因此 5 秒样本是时间加权
-观察，不应伪称每个样本都是一次新的硬件测量。
+同一次采样也执行生产让路 watchdog。Asset admin 目前不提供 `client_kind`，所以只有 `client_id` 精确
+命中本次 `LOAD_TEST_TENANT_IDS` 的活动任务才视为本 session；其他活动资产任务一律 fail closed。GPU
+任务优先使用 admin 返回的 `client_kind`，并用 `tenant_id` 精确清单限定本 session；字段缺失时同样按
+tenant 清单兜底。首次发现非本 session 活动任务即停止继续 spawn、退出 Locust，并由 `test_stop` 只
+取消内存 registry 中本 session 已登记的任务。500 条审计窗口饱和或返回 shape 漂移也立即停止。
+
+采样只保留 node/worker ID、watchdog 冲突任务 ID/owner ID 和上述数值，不写 hostname、IP/agent
+URL、labels、Codex task、文件名、job body、header 或凭据。任何采样 shape/数值/容量不变量错误、
+超时或单次采集超过 5 秒都会写一条脱敏 error sample 并停止测试。Node Agent 的 GPU 源指标可能每
+10 秒更新，因此 5 秒样本是时间加权观察，不应伪称每个样本都是一次新的硬件测量。
 
 ## 6. 外部 fixture 合同
 
@@ -261,7 +272,7 @@ API key、tenant 标识、admin bearer 只通过受控环境或 secret manager �
 
 ```bash
 export LOAD_TEST_API_KEYS=<comma-separated-test-client-keys>
-export LOAD_TEST_TENANT_IDS=<optional-matching-tenant-labels>
+export LOAD_TEST_TENANT_IDS=<required-unique-tenant-ids-matching-keys-one-to-one>
 export LOAD_TEST_ADMIN_BEARER_TOKEN=<read-only-admin-token>
 export LOAD_TEST_CA_FILE=/path/to/approved-ca.pem
 export ALLOW_LOAD_TEST=true
@@ -303,6 +314,12 @@ wrapper 会拒绝已存在的结果目录，建立 plan/configuration 后启动�
 - 三台 GPU 的 health、模式、显存、温度、功耗、OOM、ComfyUI queue/history 和节点分布；
 - CPU worker load/memory/heartbeat、3090-B Substance fence/槽位；
 - `loadtest:<session>` 的 request/trace/external IDs，确认没有混入非本 session 任务。
+
+watchdog 是自动二次保险，不替代生产 zero-work 门禁和独占测试窗口。当前调度不抢占已经 `RUNNING`
+的 test job；停止 Locust 与发出本 session cancel 也不是同步强杀，真实任务可能仍需等待该测试任务在
+安全点退出。因此生产环境仍默认要求开始前 GPU/asset 全部为 0，并在窗口内冻结普通业务提交。Asset
+与 Substance 的下一次空闲 claim 会先选 production、再选 test，且两类各自保持 FIFO；这只能保护
+尚未 claim 的任务，不能宣称运行中任务能瞬时让路。
 
 遇到以下任一情况立即停止升压并终止 Locust：
 

@@ -21,7 +21,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import UploadFile as StarletteUploadFile
@@ -137,6 +137,9 @@ RETOPOLOGY_PROCESS_OPTIONAL_ARTIFACTS = {
     kind: (filename, content_type)
     for filename, (kind, content_type) in RETOPOLOGY_PROCESS_OPTIONAL_FILENAMES.items()
 }
+RETOPOLOGY_DIAGNOSTIC_ERROR_CODES = frozenset(
+    {"RETOPOLOGY_AUDIT_FAILED", "RETOPOLOGY_QUALITY_GATE_FAILED"}
+)
 
 
 def as_utc(value: datetime) -> datetime:
@@ -431,6 +434,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "自动重拓扑候选未通过严格交付 QA；诊断制品已保留，"
                 "未发布为最终结果。"
             ),
+            "RETOPOLOGY_QUALITY_GATE_FAILED": (
+                "自动重拓扑候选未通过严格交付 QA；诊断制品已保留，"
+                "未发布为最终结果。"
+            ),
             "BLENDER_EXECUTION_FAILED": (
                 "Blender 资产处理执行失败；系统已保留任务诊断，"
                 "请联系服务端管理员处理后重试。"
@@ -542,7 +549,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def artifacts_are_downloadable(job: AssetJob) -> bool:
         return job.status in DOWNLOADABLE_ASSET_STATUSES or (
-            job.status == "FAILED" and job.error_code == "RETOPOLOGY_AUDIT_FAILED"
+            job.status == "FAILED" and job.error_code in RETOPOLOGY_DIAGNOSTIC_ERROR_CODES
         )
 
     async def job_payload(job: AssetJob, db: AsyncSession) -> dict[str, Any]:
@@ -584,7 +591,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "artifacts_role": (
                 "diagnostic"
                 if job.status == "FAILED"
-                and job.error_code == "RETOPOLOGY_AUDIT_FAILED"
+                and job.error_code in RETOPOLOGY_DIAGNOSTIC_ERROR_CODES
                 else "delivery"
                 if job.status == "SUCCEEDED"
                 else "retained"
@@ -1465,8 +1472,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ):
                 return JSONResponse({"job": None}, 200)
 
-        claim_query = select(AssetJob).where(
-            AssetJob.status == "QUEUED", AssetJob.cancel_requested.is_(False)
+        claim_query = (
+            select(AssetJob)
+            .join(ApiClient, ApiClient.id == AssetJob.client_id)
+            .where(
+                AssetJob.status == "QUEUED",
+                AssetJob.cancel_requested.is_(False),
+            )
         )
         if is_substance_worker_id(worker.id):
             claim_query = claim_query.where(AssetJob.job_type == "SUBSTANCE_BAKE_V1")
@@ -1474,8 +1486,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             claim_query = claim_query.where(AssetJob.job_type != "SUBSTANCE_BAKE_V1")
         job = await db.scalar(
             claim_query
-            .order_by(AssetJob.created_at)
-            .with_for_update(skip_locked=True)
+            # Production always wins the next free slot.  This is deliberately
+            # evaluated before queue age so an old load-test job cannot delay a
+            # real caller.  FIFO remains stable inside each client-kind pool.
+            .order_by(
+                case((ApiClient.client_kind == "test", 1), else_=0),
+                AssetJob.created_at,
+                AssetJob.id,
+            ).with_for_update(skip_locked=True)
         )
         if job is None:
             return JSONResponse({"job": None}, 200)
@@ -2015,19 +2033,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 quality_failures.append(
                     "automatic_final_promotion_allowed=false: candidate is not deliverable"
                 )
-            job.status = "SUCCEEDED" if quality_passed else "FAILED"
-            job.progress = 100
-            job.stage = "SUCCEEDED" if quality_passed else "FAILED"
-            job.stage_message = (
-                "候选已通过严格 QA 与三组四视图生成，自动发布交付"
-                if quality_passed
-                else "候选未满足拓扑目标或硬性 QA；仅保留诊断制品，不可交付"
+            # Keep the measured QA result authoritative even when operations
+            # temporarily make it advisory.  Advisory mode changes delivery
+            # disposition only: artifact integrity, manifest identity and
+            # source-fingerprint protection above remain hard failures.
+            quality_failures = list(dict.fromkeys(quality_failures))
+            advisory_warning = (
+                cfg.retopology_qa_enforcement == "advisory" and not quality_passed
             )
+            delivery_allowed = quality_passed or advisory_warning
+            if advisory_warning:
+                job.options = {
+                    **job.options,
+                    "qa_warning": {
+                        "code": "RETOPOLOGY_QUALITY_GATE_WARNING",
+                        "enforcement": cfg.retopology_qa_enforcement,
+                        "audit_passed": audit_passed,
+                        "topology_goal_met": report_promotable,
+                        "automatic_final_promotion_allowed": manifest_promotable,
+                        "failures": quality_failures,
+                    },
+                }
+            job.status = "SUCCEEDED" if delivery_allowed else "FAILED"
+            job.progress = 100
+            job.stage = "SUCCEEDED" if delivery_allowed else "FAILED"
+            if quality_passed:
+                job.stage_message = (
+                    "候选已通过严格 QA 与三组四视图生成，自动发布交付"
+                )
+                completion_event = "asset.succeeded"
+            elif advisory_warning:
+                job.stage_message = (
+                    "候选已生成并交付；严格 QA 未通过，告警与完整报告已保留"
+                )
+                completion_event = "asset.succeeded_with_warnings"
+            else:
+                job.stage_message = (
+                    "候选未满足拓扑目标或硬性 QA；仅保留诊断制品，不可交付"
+                )
+                completion_event = "asset.qa_failed"
             job.estimated_remaining_seconds = 0
             job.last_progress_at = datetime.now(UTC)
             job.finished_at = job.last_progress_at
             job.error_code = (
-                None if quality_passed else "RETOPOLOGY_QUALITY_GATE_FAILED"
+                None if delivery_allowed else "RETOPOLOGY_QUALITY_GATE_FAILED"
             )
             job.error_message = (
                 None
@@ -2044,7 +2093,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 db,
                 job,
                 details={
-                    "event": "asset.succeeded" if quality_passed else "asset.qa_failed",
+                    "event": completion_event,
+                    "warning_code": (
+                        "RETOPOLOGY_QUALITY_GATE_WARNING"
+                        if advisory_warning
+                        else None
+                    ),
+                    "qa_enforcement": cfg.retopology_qa_enforcement,
+                    "quality_gate_passed": quality_passed,
+                    "quality_failures": quality_failures,
                     "audit_passed": audit_passed,
                     "topology_goal_met": report_promotable,
                     "automatic_final_promotion_allowed": manifest_promotable,
@@ -2057,6 +2114,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "review_required": False,
                 "audit_passed": audit_passed,
                 "quality_gate_passed": quality_passed,
+                "qa_enforcement": cfg.retopology_qa_enforcement,
+                "delivered_with_warnings": advisory_warning,
             }
         finally:
             if staging.exists():
