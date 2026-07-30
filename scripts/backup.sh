@@ -208,7 +208,7 @@ SELECT 'busy_nodes=' || count(*)
  WHERE current_jobs <> 0;
 SELECT 'accepting_online_nodes=' || count(*)
   FROM nodes
- WHERE status::text = 'ONLINE' AND mode::text <> 'DRAINING';
+ WHERE health::text = 'ONLINE' AND mode::text <> 'DRAINING';
 SQL
 )
 
