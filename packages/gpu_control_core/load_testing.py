@@ -151,6 +151,59 @@ class LoadTestConfigurationError(ValueError):
     """Raised when a plan, fixture manifest, or safety gate is invalid."""
 
 
+def normalize_scheduler_capacity_v1(payload: object) -> dict[str, Any]:
+    """Canonicalize only the two documented scheduler-capacity v1 aliases.
+
+    Older v1.0 deployments expose ``accepting`` and
+    ``cluster.queued_jobs``; newer deployments also expose
+    ``accepting_batches`` and top-level ``queue_depth``. Both spellings are
+    populated in the result so preflight and telemetry share one contract.
+    Unknown shapes and conflicting aliases fail closed.
+    """
+
+    if not isinstance(payload, Mapping):
+        raise LoadTestConfigurationError("scheduler capacity must be an object")
+    if payload.get("schema_version") != "1.0":
+        raise LoadTestConfigurationError("scheduler capacity schema_version must be 1.0")
+    raw_cluster = payload.get("cluster")
+    if not isinstance(raw_cluster, Mapping):
+        raise LoadTestConfigurationError("scheduler capacity cluster must be an object")
+
+    accepting_values = [
+        payload[key] for key in ("accepting_batches", "accepting") if key in payload
+    ]
+    if not accepting_values or any(not isinstance(value, bool) for value in accepting_values):
+        raise LoadTestConfigurationError("scheduler capacity accepting flag must be boolean")
+    if len(set(accepting_values)) != 1:
+        raise LoadTestConfigurationError("scheduler capacity accepting aliases conflict")
+
+    queue_values = [
+        value
+        for value in (payload.get("queue_depth"), raw_cluster.get("queued_jobs"))
+        if value is not None
+    ]
+    if not queue_values or any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in queue_values
+    ):
+        raise LoadTestConfigurationError(
+            "scheduler capacity queue depth must be a non-negative integer"
+        )
+    if len(set(queue_values)) != 1:
+        raise LoadTestConfigurationError("scheduler capacity queue aliases conflict")
+
+    accepting = accepting_values[0]
+    queue_depth = queue_values[0]
+    normalized = dict(payload)
+    normalized_cluster = dict(raw_cluster)
+    normalized["accepting"] = accepting
+    normalized["accepting_batches"] = accepting
+    normalized["queue_depth"] = queue_depth
+    normalized_cluster["queued_jobs"] = queue_depth
+    normalized["cluster"] = normalized_cluster
+    return normalized
+
+
 def load_response_is_retryable(
     status_code: int | None, *, has_transport_error: bool = False
 ) -> bool:

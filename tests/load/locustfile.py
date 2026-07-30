@@ -42,6 +42,7 @@ from packages.gpu_control_core.load_testing import (
     load_queue_start,
     load_response_is_retryable,
     load_scenario,
+    normalize_scheduler_capacity_v1,
     summarize_records,
     summarize_telemetry,
     validate_asset_worker_roles,
@@ -457,10 +458,12 @@ def perform_preflight() -> dict[str, Any]:
         follow_redirects=False,
     ) as client:
         client_capacities = [
-            preflight_json(
-                client,
-                "/api/v1/scheduler/capacity",
-                {"X-API-Key": api_key},
+            normalize_scheduler_capacity_v1(
+                preflight_json(
+                    client,
+                    "/api/v1/scheduler/capacity",
+                    {"X-API-Key": api_key},
+                )
             )
             for api_key in RUNTIME.api_keys
         ]
@@ -654,7 +657,9 @@ def collect_telemetry(client: httpx.Client) -> dict[str, Any]:
     gpu_jobs = preflight_json(
         client, "/admin/jobs?client_kind=all&limit=500", admin_headers
     )
-    capacity = preflight_json(client, "/api/v1/scheduler/capacity", api_headers)
+    capacity = normalize_scheduler_capacity_v1(
+        preflight_json(client, "/api/v1/scheduler/capacity", api_headers)
+    )
     asset_capacity = preflight_json(client, "/api/v1/assets/capacity", api_headers)
     if not isinstance(nodes, list) or not isinstance(gpu_jobs, list):
         raise LoadTestConfigurationError("telemetry nodes response has the wrong shape")

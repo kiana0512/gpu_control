@@ -20,6 +20,7 @@ from packages.gpu_control_core.load_testing import (
     load_queue_start,
     load_response_is_retryable,
     load_scenario,
+    normalize_scheduler_capacity_v1,
     summarize_records,
     summarize_telemetry,
     validate_asset_worker_roles,
@@ -273,6 +274,70 @@ def test_default_runtime_is_plan_only_and_has_no_credentials() -> None:
     assert runtime.allow_load_test is False
     assert runtime.api_keys == ()
     assert runtime.environment == "plan"
+
+
+def test_scheduler_capacity_v1_normalizes_new_and_legacy_aliases() -> None:
+    legacy = normalize_scheduler_capacity_v1(
+        {
+            "schema_version": "1.0",
+            "accepting": True,
+            "cluster": {"queued_jobs": 3},
+        }
+    )
+    assert legacy["accepting_batches"] is True
+    assert legacy["queue_depth"] == 3
+
+    current = normalize_scheduler_capacity_v1(
+        {
+            "schema_version": "1.0",
+            "accepting_batches": False,
+            "queue_depth": 4,
+            "cluster": {},
+        }
+    )
+    assert current["accepting"] is False
+    assert current["cluster"]["queued_jobs"] == 4
+
+    dual = normalize_scheduler_capacity_v1(
+        {
+            "schema_version": "1.0",
+            "accepting": True,
+            "accepting_batches": True,
+            "queue_depth": 2,
+            "cluster": {"queued_jobs": 2},
+        }
+    )
+    assert dual["queue_depth"] == 2
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"schema_version": "2.0", "accepting": True, "cluster": {"queued_jobs": 0}},
+        {"schema_version": "1.0", "accepting": True, "cluster": []},
+        {"schema_version": "1.0", "accepting": 1, "cluster": {"queued_jobs": 0}},
+        {"schema_version": "1.0", "accepting": True, "cluster": {}},
+        {"schema_version": "1.0", "accepting": True, "cluster": {"queued_jobs": False}},
+        {
+            "schema_version": "1.0",
+            "accepting": True,
+            "accepting_batches": False,
+            "cluster": {"queued_jobs": 0},
+        },
+        {
+            "schema_version": "1.0",
+            "accepting": True,
+            "queue_depth": 1,
+            "cluster": {"queued_jobs": 2},
+        },
+    ],
+)
+def test_scheduler_capacity_v1_rejects_invalid_or_conflicting_shapes(
+    payload: object,
+) -> None:
+    with pytest.raises(LoadTestConfigurationError):
+        normalize_scheduler_capacity_v1(payload)
 
 
 def test_transport_failures_are_retryable_and_queue_prefers_queued_at() -> None:
