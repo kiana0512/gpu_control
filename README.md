@@ -5,9 +5,17 @@
 面向两台 RTX 3090 工作节点和一台 RTX 4090 控制中心的统一任务调度、运维与可观测平台；GPU
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
-生产在线版本：`1.5.4`，最后核验的生产数据库修订为 `20260729_0010`；当前工作树中的 V4.1 对齐候选版本为 `1.5.5`，对应候选迁移 `20260730_0011`（未部署、未执行生产迁移、未联合验收）；三机 ComfyUI 固定镜像：`projects-0.2.3`。GPU 推理平面继续提供三机图片 API 与分布式序列帧调度；独立 CPU Asset 平面提供 Blender PBR UV、AI 重拓扑和 Windows Substance 烘焙 API，支持并发 Worker、轮询与可续传 SSE 进度、动态 ETA、多视角参考、严格 QA 自动发布和逐产物 SHA-256 校验。生产链路没有人工发布门；任一严格 QA 失败均拒绝发布。两个平面使用独立队列与租约，资产任务不会占用或阻塞 GPU 推理槽。
+生产在线版本：`1.5.5`，最后核验的生产数据库修订为 `20260730_0011`；当前源码候选为
+`1.5.6`（已完成离线回归，尚未热更新、尚未联合验收）。三机 ComfyUI 固定镜像仍为
+`projects-0.2.3`。GPU 推理平面继续提供三机图片 API 与分布式序列帧调度；独立 CPU Asset
+平面提供 Blender PBR UV、AI 重拓扑和 Windows Substance 烘焙 API。当前生产配置
+`RETOPOLOGY_QA_ENFORCEMENT=advisory`：几何质量不达标会保留告警和诊断报告，但通过输入身份、
+manifest、文件完整性与 SHA 硬门禁的 BLEND/FBX 仍以正式 `blend`/`fbx` 交付；源文件保护与
+完整性失败仍拒绝交付。两个平面使用独立队列与租约，生产任务优先于测试任务。
 
-1.5.5 的候选镜像与离线归档只允许按 `docs/68_2026-07-30_CONTROL_PLANE_1_5_5_REPRODUCIBLE_PACKAGING.md` 执行；默认命令仅生成计划，缺少已推送干净提交、固定 SBOM generator、精确确认令牌或 registry 证据时不得写成正式发布。
+1.5.5 的归档规则见 `docs/68_2026-07-30_CONTROL_PLANE_1_5_5_REPRODUCIBLE_PACKAGING.md`；
+1.5.6 继续使用同一 fail-closed 打包器。默认命令仅生成计划，缺少已推送干净提交、固定 SBOM
+generator、精确确认令牌或 registry 证据时不得写成正式发布或生产验收。
 
 ```mermaid
 flowchart LR
@@ -101,3 +109,4 @@ make verify
 - [三节点发布与恢复闭环](docs/63_2026-07-30_THREE_NODE_RELEASE_AND_RECOVERY_CLOSURE.md) · [动画管家 V4.1 首轮事实回执](docs/64_2026-07-30_ASSETCLAW_GPU_CONTROL_V4_1_RECEIPT.md) · [动画管家优化后第二轮对齐回执](docs/65_2026-07-30_ASSETCLAW_POST_OPTIMIZATION_ALIGNMENT_RECEIPT.md)
 - [WebUI 运行中心重构](docs/66_2026-07-30_WEBUI_OPERATIONS_REDESIGN.md) · [六 API 综合压测手册](docs/67_2026-07-30_SIX_API_MIXED_LOAD_TEST_RUNBOOK.md)
 - [1.5.5 可复现打包门禁](docs/68_2026-07-30_CONTROL_PLANE_1_5_5_REPRODUCIBLE_PACKAGING.md) · [动画管家 1.5.5 速度稳定性联测前回执](docs/69_2026-07-30_ASSETCLAW_1_5_5_SPEED_STABILITY_PREJOINT_RECEIPT.md)
+- [Retopology QA Advisory 热修复](docs/70_2026-07-30_RETOPOLOGY_QA_ADVISORY_HOTFIX_AND_LOAD_READINESS.md) · [Nginx 容量与控制流隔离](docs/71_2026-07-30_NGINX_GATEWAY_CAPACITY_AND_CONTROL_ISOLATION.md) · [取消与压测恢复](docs/72_2026-07-30_INTERRUPTED_CANCEL_AND_LOAD_HARNESS_RECOVERY.md) · [六 API 120 VU 压测结果](docs/73_2026-07-30_SIX_API_120VU_LOAD_RESULT.md) · [Scheduler/Substance 稳定性热修复](docs/74_2026-07-30_SCHEDULER_AND_SUBSTANCE_STABILITY_HOTFIX.md)

@@ -1,8 +1,17 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from packages.gpu_control_core.scheduling import OverflowGuard, QueueSnapshot, choose_node
+from packages.gpu_control_core.scheduling import (
+    SUBSTANCE_DRAIN_OWNER,
+    SUBSTANCE_DRAIN_OWNER_LABEL,
+    SUBSTANCE_FENCE_LABEL,
+    SUBSTANCE_PENDING_RESERVATION_LABEL,
+    SUBSTANCE_RECOVERY_REQUIRED_LABEL,
+    OverflowGuard,
+    QueueSnapshot,
+    choose_node,
+)
 from packages.gpu_control_core.settings import Settings
 
 
@@ -21,6 +30,7 @@ class FakeNode:
     free_vram_mb: int = 24000
     last_heartbeat_at: datetime | None = None
     last_assigned_at: datetime | None = None
+    labels: dict[str, object] = field(default_factory=dict)
 
 
 def guard(tmp_path: Path, enabled: bool = True) -> OverflowGuard:
@@ -119,6 +129,121 @@ def test_drain_foreign_queue_and_expired_heartbeat_block_node(tmp_path: Path) ->
         "3090-b": "foreign_comfy_queue",
         "4090": "heartbeat_expired",
     }
+
+
+def test_pending_substance_reservation_blocks_until_its_deadline(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    available = nodes(now)
+    reserved = available[0]
+    reserved.mode = "DRAINING"
+    reserved.labels = {
+        SUBSTANCE_DRAIN_OWNER_LABEL: SUBSTANCE_DRAIN_OWNER,
+        SUBSTANCE_PENDING_RESERVATION_LABEL: {
+            "job_ids": ["production-bake"],
+            "expires_at": (now + timedelta(seconds=30)).isoformat(),
+        },
+    }
+
+    chosen, excluded = choose_node(
+        available[:1], QueueSnapshot(1, 0), guard(tmp_path), 60, now
+    )
+    assert chosen is None
+    assert excluded[reserved.id] == "substance_reserved"
+
+    chosen, excluded = choose_node(
+        available[:1],
+        QueueSnapshot(1, 0),
+        guard(tmp_path),
+        60,
+        now + timedelta(seconds=31),
+    )
+    assert chosen is reserved
+    assert excluded == {}
+
+
+def test_active_substance_fence_never_expires_with_pending_reservation(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(UTC)
+    reserved = nodes(now)[0]
+    reserved.mode = "DRAINING"
+    reserved.labels = {
+        SUBSTANCE_DRAIN_OWNER_LABEL: SUBSTANCE_DRAIN_OWNER,
+        SUBSTANCE_FENCE_LABEL: ["running-bake"],
+        SUBSTANCE_PENDING_RESERVATION_LABEL: {
+            "job_ids": ["expired-pending-bake"],
+            "expires_at": (now - timedelta(seconds=1)).isoformat(),
+        },
+    }
+
+    chosen, excluded = choose_node(
+        [reserved], QueueSnapshot(1, 0), guard(tmp_path), 20, now
+    )
+    assert chosen is None
+    assert excluded[reserved.id] == "substance_fenced"
+
+
+def test_substance_lease_recovery_interlock_never_expires(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    reserved = nodes(now)[0]
+    reserved.mode = "DRAINING"
+    reserved.labels = {
+        SUBSTANCE_DRAIN_OWNER_LABEL: SUBSTANCE_DRAIN_OWNER,
+        SUBSTANCE_RECOVERY_REQUIRED_LABEL: [
+            {
+                "job_id": "ambiguous-bake",
+                "worker_id": "asset-worker-3090-b-windows-01",
+                "lease_expired_at": (now - timedelta(days=1)).isoformat(),
+            }
+        ],
+    }
+
+    chosen, excluded = choose_node(
+        [reserved],
+        QueueSnapshot(1, 0),
+        guard(tmp_path),
+        20,
+        now + timedelta(days=30),
+    )
+    assert chosen is None
+    assert excluded[reserved.id] == "substance_recovery_required"
+
+
+def test_substance_interlocks_cannot_be_bypassed_by_active_mode(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    cases = (
+        (
+            {
+                SUBSTANCE_PENDING_RESERVATION_LABEL: {
+                    "job_ids": ["queued-bake"],
+                    "expires_at": (now + timedelta(minutes=5)).isoformat(),
+                }
+            },
+            "substance_reserved",
+        ),
+        ({SUBSTANCE_FENCE_LABEL: ["running-bake"]}, "substance_fenced"),
+        (
+            {
+                SUBSTANCE_RECOVERY_REQUIRED_LABEL: [
+                    {
+                        "job_id": "ambiguous-bake",
+                        "worker_id": "asset-worker-3090-b-windows-01",
+                        "lease_expired_at": now.isoformat(),
+                    }
+                ]
+            },
+            "substance_recovery_required",
+        ),
+    )
+    for labels, expected in cases:
+        node = nodes(now)[0]
+        node.mode = "ACTIVE"
+        node.labels = labels
+        chosen, excluded = choose_node(
+            [node], QueueSnapshot(1, 0), guard(tmp_path), 60, now
+        )
+        assert chosen is None
+        assert excluded[node.id] == expected
 
 
 def test_overflow_allowed_windows_parse_overnight() -> None:

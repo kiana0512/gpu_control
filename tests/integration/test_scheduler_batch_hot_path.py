@@ -1,5 +1,7 @@
+import asyncio
 import hashlib
 import re
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -335,6 +337,7 @@ async def test_sync_and_assembly_bulk_read_latest_artifacts_in_ordinal_order(
             ]
 
         captured_ordinals: list[int] = []
+        expected_archive_sha = hashlib.sha256(b"archive").hexdigest()
 
         def fake_archive(
             _batch_id: str,
@@ -342,12 +345,16 @@ async def test_sync_and_assembly_bulk_read_latest_artifacts_in_ordinal_order(
             batch_dir: Path,
             frames: list[batch_module.ArchiveFrame],
             _workflow_identity: dict[str, str | None],
+            staging_path: Path,
+            _cancel_event: threading.Event,
         ) -> BuiltBatchArchive:
             captured_ordinals.extend(frame.ordinal for frame in frames)
+            staging_path.parent.mkdir(parents=True, exist_ok=True)
+            staging_path.write_bytes(b"archive")
             return BuiltBatchArchive(
-                path=batch_dir / "output" / "result.zip",
-                size_bytes=123,
-                sha256="f" * 64,
+                path=staging_path,
+                size_bytes=len(b"archive"),
+                sha256=expected_archive_sha,
                 manifest={},
             )
 
@@ -367,9 +374,98 @@ async def test_sync_and_assembly_bulk_read_latest_artifacts_in_ordinal_order(
                 select(BatchArtifact).where(BatchArtifact.batch_id == "batch-completed")
             )
             assert batch is not None and batch.status == BatchStatus.SUCCEEDED.value
-            assert artifact is not None and artifact.sha256 == "f" * 64
+            assert artifact is not None and artifact.sha256 == expected_archive_sha
     finally:
         event.remove(scheduler.db.engine.sync_engine, "before_cursor_execute", recorder)
+        await close_scheduler(scheduler)
+
+
+async def test_cancelled_old_archive_thread_cannot_overwrite_new_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = await make_scheduler(tmp_path)
+    await add_completed_batch(scheduler, "batch-race", 1)
+    assert await scheduler.sync_batch_state("batch-race") is True
+    old_started = threading.Event()
+    release_old = threading.Event()
+    old_finished = threading.Event()
+    staging_paths: list[Path] = []
+    invocation_lock = threading.Lock()
+    invocation = 0
+    new_payload = b"new-leader-archive"
+    old_payload = b"stale-old-leader-archive"
+
+    def racing_archive(
+        _batch_id: str,
+        _external_batch_id: str,
+        _batch_dir: Path,
+        _frames: list[batch_module.ArchiveFrame],
+        _workflow_identity: dict[str, str | None],
+        staging_path: Path,
+        _cancel_event: threading.Event,
+    ) -> BuiltBatchArchive:
+        nonlocal invocation
+        with invocation_lock:
+            invocation += 1
+            call = invocation
+        staging_paths.append(staging_path)
+        staging_path.parent.mkdir(parents=True, exist_ok=True)
+        if call == 1:
+            staging_path.write_bytes(old_payload)
+            old_started.set()
+            assert release_old.wait(timeout=5)
+            old_finished.set()
+            payload = old_payload
+        else:
+            staging_path.write_bytes(new_payload)
+            payload = new_payload
+        return BuiltBatchArchive(
+            path=staging_path,
+            size_bytes=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            manifest={},
+        )
+
+    async def no_publish(_payload: dict[str, Any]) -> None:
+        return None
+
+    monkeypatch.setattr(scheduler_main, "build_result_archive", racing_archive)
+    monkeypatch.setattr(scheduler_main, "ARCHIVE_BUILD_CANCEL_GRACE_SECONDS", 0.01)
+    scheduler.publish = no_publish  # type: ignore[method-assign]
+    try:
+        old_task = asyncio.create_task(scheduler.assemble_batch("batch-race"))
+        assert await asyncio.to_thread(old_started.wait, 2)
+        old_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await old_task
+
+        await scheduler.assemble_batch("batch-race")
+        release_old.set()
+        assert await asyncio.to_thread(old_finished.wait, 2)
+
+        final_path = (
+            tmp_path
+            / "jobs"
+            / "batch-fixtures"
+            / "batch-race"
+            / "output"
+            / "batch-race-rgba.zip"
+        )
+        assert final_path.read_bytes() == new_payload
+        assert len(staging_paths) == 2
+        assert staging_paths[0] != staging_paths[1]
+        assert all(path != final_path for path in staging_paths)
+        assert staging_paths[0].read_bytes() == old_payload
+        async with scheduler.db.session() as session:
+            artifact = await session.scalar(
+                select(BatchArtifact).where(BatchArtifact.batch_id == "batch-race")
+            )
+            assert artifact is not None
+            assert artifact.sha256 == hashlib.sha256(new_payload).hexdigest()
+            assert artifact.sha256 == hashlib.sha256(final_path.read_bytes()).hexdigest()
+    finally:
+        release_old.set()
         await close_scheduler(scheduler)
 
 

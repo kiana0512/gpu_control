@@ -44,7 +44,13 @@ ALLOWED_TRANSITIONS: Mapping[JobStatus, frozenset[JobStatus]] = {
         }
     ),
     JobStatus.DOWNLOADING: frozenset(
-        {JobStatus.SUCCEEDED, JobStatus.RETRY_WAIT, JobStatus.TIMED_OUT, JobStatus.FAILED}
+        {
+            JobStatus.SUCCEEDED,
+            JobStatus.CANCELLING,
+            JobStatus.RETRY_WAIT,
+            JobStatus.TIMED_OUT,
+            JobStatus.FAILED,
+        }
     ),
     JobStatus.RETRY_WAIT: frozenset({JobStatus.QUEUED, JobStatus.CANCELLED, JobStatus.FAILED}),
     JobStatus.CANCELLING: frozenset({JobStatus.CANCELLED, JobStatus.TIMED_OUT, JobStatus.FAILED}),

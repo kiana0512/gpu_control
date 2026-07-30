@@ -81,7 +81,7 @@ backup/restore 安全回归。
 4. 验证健康、版本、三台 Asset Worker 心跳以及新的严格模式失败/诊断下载合同；
 5. 不重启 GPU API、Scheduler、GPU Worker 或外部 Retopology Skill。
 
-## 6. 当前交付与待补最终证据
+## 6. 当前交付与后续证据
 
 - 首个生产 advisory 任务 `0554fcf1-50ae-40de-bc15-fdbcdd3805d7` 已以 `SUCCEEDED` 完成，
   `qa_warning=RETOPOLOGY_QUALITY_GATE_WARNING`；随后发现动画管家按 V5 正式 kind 过滤，旧响应中的
@@ -92,5 +92,7 @@ backup/restore 安全回归。
   `8d254b5f3aaea5f13b73b2b2f1bf9b2ed2147e6fac7f6bc0c69f014ab81058f7`）。永久实现会在
   strict 通过或 advisory 接受时自动发布这两个正式 kind；strict 失败仍保留 candidate 诊断语义。
   该永久实现已随本记录中的 `7fc7efd` 镜像上线并通过健康检查；
-- 六 API 最大压测原始报告、阈值判定、节点利用率、调度分布及故障/修复闭环；
+- 六 API r5 已完成到 120 VU，控制面窗口内稳定，但生命周期、同步 Roughness submit 口径和
+  遥测完整性三项门禁 fail closed；原始报告摘要、节点利用率、正式 FBX/BLEND 验证、清场和
+  未部署修复边界见 `73_2026-07-30_SIX_API_120VU_LOAD_RESULT.md`；
 - 测试 client 禁用与压测后完整备份/恢复点。

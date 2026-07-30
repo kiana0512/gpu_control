@@ -1,10 +1,14 @@
 # 六业务 API、100+ VU、GPU+CPU 混合负载测试手册
 
-> 状态：`TOOLING IMPLEMENTED / OFFLINE TESTING ONLY / LOAD NOT EXECUTED / RUNTIME UNCHANGED`
+> 状态：`TOOLING IMPLEMENTED / R5 LOAD COMPLETED / CONTROL PLANE STABLE / ACCEPTANCE GATES PARTIAL`
 > 日期：`2026-07-30`
 > 适用范围：GPU Control 自有 API、admission、排队、调度、传输、产物和可观测性。
 > 边界：没有修改 ImageClip 或 ModelViewCreator 的工作流、模型、参数、提示词、图拓扑或输出语义；
 > 本手册和配套代码不会自动备份、部署、重启节点或更改生产配置。
+
+2026-07-30 的生产 r5 已完整执行到 120 VU；权威数字、三项 fail-closed 原因和清场记录见
+`73_2026-07-30_SIX_API_120VU_LOAD_RESULT.md`。本文件继续作为执行手册，不以手册内容替代
+某次运行的原始结果和 SHA-256 证据。
 
 ## 1. 结论与入口
 
@@ -37,7 +41,7 @@
 | 名称 | 资源 | 创建接口 | 状态/产物闭环 | 取消 |
 |---|---|---|---|---|
 | `imageclip_batch` | 三节点 GPU | `POST /api/v1/batches/imageclip-rgba` | 父批次 GET 至终态，下载最终 ZIP 并校验 body/header SHA-256 | 父批次 cancel；使用独立稳定 cancel 幂等键 |
-| `modelview_roughness` | GPU | `POST /api/v1/services/modelview-roughness` | 先校验同步最终图片与 `X-Job-ID`，再 GET job 至终态并读取 artifact 合同 | job cancel |
+| `modelview_roughness` | GPU | `POST /api/v1/services/modelview-roughness` | 同步等待并返回最终图片与 `X-Job-ID`，计入 `sync-e2e`；再 GET job 至终态并读取 artifact 合同 | job cancel |
 | `uv_process` | CPU Asset Worker | `POST /api/v1/assets/uv/process` | GET asset job 至终态，下载全部最终产物并校验 SHA-256 | asset job cancel |
 | `retopology_audit` | CPU Asset Worker | `POST /api/v1/assets/retopology/audit` | GET asset job；终态诊断/交付产物均按返回合同下载 | asset job cancel |
 | `retopology_process` | CPU Asset Worker | `POST /api/v1/assets/retopology/process` | GET asset job，校验最终 QA/交付产物 | asset job cancel |
@@ -122,14 +126,16 @@ host data、Docker/Git 清单和前后两份 quiesce gate；数据库必须是 `
 
 ## 4. 只读 HTTP 预检
 
-预检在任何 VU spawn 之前执行。任何请求失败、返回 shape 不符、500 条审计窗口饱和或字段缺失，
+预检在任何 VU spawn 之前执行。任何请求失败、返回 shape 不符、任一 active status/Asset 的 500 条
+审计窗口饱和或字段缺失，
 均停止测试。读取项包括：
 
 - `/api/v1/scheduler/capacity`：测试 client、batch admission、queue/running/slot 计数；
 - `/api/v1/assets/capacity`：在线 worker 和 slot 计数；
 - `/api/v1/workflows` 与 `/admin/workflows`：批准版本已启用且 template SHA-256 精确匹配；
 - `/admin/nodes`：健康、模式、外部忙碌、ImageClip commit 和 pipeline SHA；
-- `/admin/jobs?client_kind=all&limit=500`：活动 GPU work；
+- `/admin/jobs?client_kind=all&status=<active>&limit=500`：逐 active status 拼接 GPU work，避免历史总数
+  达到 500 后误判；
 - `/admin/asset-processing?limit=500`：活动 asset work、worker、Substance 槽位和五个 asset route 合同。
 
 普通非生产按 scenario 中的最大既有任务数判断。生产额外要求以下权威计数全部等于 0：
@@ -179,19 +185,23 @@ substance_bake: 5
 | 阈值 | 计算 |
 |---|---|
 | `http_failure_rate_percent` | Locust 所有 HTTP/contract validation 的失败比例 |
-| `submit_p95_ms` | 六接口 submit 中最差 P95 |
+| `submit_p95_ms` | 五个异步创建接口 submit 中最差 P95；不混入同步推理时间 |
+| `sync_e2e_p95_ms` | 可选；`modelview_roughness` 从上传到最终图片响应的同步端到端 P95 |
 | `poll_p95_ms` | 状态 poll 中最差 P95 |
 | `artifact_p95_ms` | artifact download 中最差 P95 |
 | `queue_p95_ms` | 服务端 created/queued → started 的业务 P95 |
 | `retry_rate_percent` | 全部记录到的 retry 次数 / 已创建业务任务数 |
 
-结果同时提供 P50/P90/P95/P99、闭环吞吐、terminal status、admission status、重试、恢复、错误、
+`sync_e2e_p95_ms` 为向后兼容的可选阈值；未配置时仍会在 `threshold_evaluation.observed` 单列观测值，
+不会拿同步最终结果接口误判通用异步 submit SLA。结果同时提供 P50/P90/P95/P99、闭环吞吐、terminal status、admission status、重试、恢复、错误、
 node/worker 分布、batch node distribution、artifact 数量/字节和 Locust 每 route 统计。缺失阈值测量
-也判定不通过，而不是当成 0。最终成功还要求每条已登记任务均进入成功业务终态且至少有一份校验
-通过的产物；poll timeout、失败/取消/拒绝终态、artifact 合同失败或 test-stop teardown 取消过任务，
-都会把本轮判为不完整/失败，不能只凭 HTTP 2xx 得到通过结论。
+也判定不通过，而不是当成 0。联合验收默认使用 `lifecycle_mode: all_complete`，要求每条已登记任务
+均进入成功业务终态且至少有一份校验通过的产物。最大压力场景可显式使用
+`lifecycle_mode: bounded_stress`：必须已有校验成功子集，且停止时所有残留任务都经严格范围恢复、
+取消或到达终态并再次观察到收敛；业务失败、poll timeout、artifact 合同失败和清场遗漏仍判失败。
 
-测试期间每 5 秒额外只读采样 `/admin/nodes`、`/admin/jobs?client_kind=all&limit=500`、
+测试期间每 5 秒额外只读采样 `/admin/nodes`、按每个 active status 查询的
+`/admin/jobs?client_kind=all&status=...&limit=500`、
 `/admin/asset-processing?limit=500`、scheduler capacity 和 asset capacity，写入脱敏的
 `telemetry.jsonl`：
 
@@ -204,12 +214,14 @@ node/worker 分布、batch node distribution、artifact 数量/字节和 Locust 
   目标，不能用其中一台的高利用率掩盖另一台空闲；
 - `six_api_coverage` 必须显示六项各至少形成一条服务端任务记录；随机权重恰好漏掉某项时，本轮
   即使 HTTP 指标良好也不算完整六接口证据。
+- sampler 停止后额外采一条 `final_sample=true` 尾样本；完整性按实际采样窗口的连续 sequence、
+  最大间隔、首样本和显式尾样本判断，不再用 Locust 总耗时倒推一个会受预检/清场影响的理论条数。
 
 同一次采样也执行生产让路 watchdog。Asset admin 目前不提供 `client_kind`，所以只有 `client_id` 精确
 命中本次 `LOAD_TEST_TENANT_IDS` 的活动任务才视为本 session；其他活动资产任务一律 fail closed。GPU
 任务优先使用 admin 返回的 `client_kind`，并用 `tenant_id` 精确清单限定本 session；字段缺失时同样按
-tenant 清单兜底。首次发现非本 session 活动任务即停止继续 spawn、退出 Locust，并由 `test_stop` 只
-取消内存 registry 中本 session 已登记的任务。500 条审计窗口饱和或返回 shape 漂移也立即停止。
+tenant 清单兜底。首次发现非本 session 活动任务即停止继续 spawn、退出 Locust，并由 `test_stop`
+执行严格范围清场。任一 active status/Asset 的 500 条审计窗口饱和或返回 shape 漂移也立即停止。
 
 采样只保留 node/worker ID、watchdog 冲突任务 ID/owner ID 和上述数值，不写 hostname、IP/agent
 URL、labels、Codex task、文件名、job body、header 或凭据。任何采样 shape/数值/容量不变量错误、
@@ -335,18 +347,24 @@ watchdog 是自动二次保险，不替代生产 zero-work 门禁和独占测试
 
 ## 9. 停止与清理
 
-正常停止会遍历内存 session registry，只对仍无终态的服务端 ID 调用已知 cancel URL：
+正常停止先遍历内存 session registry，再做一次严格限定的只读 admin recovery scan，只对仍无终态且
+可证明属于本轮的服务端 ID 调用已知 cancel URL：
 
 - 使用创建该任务的 API key index；
 - batch cancel 使用 `<external_batch_id>:cancel`；
-- 记录每个 cancel 的 status code 到 `teardown.json`；
-- 不查询并取消“看起来像压测”的其他任务，不删除 job 或 artifact。
+- Asset 与 ImageClip 必须同时匹配独占测试 tenant、本轮 `started_at` 之后和
+  `loadtest:<session_id>:` external ID；
+- 同步 Roughness 没有 external ID，只允许匹配独占测试 tenant、本轮开始时间和固定
+  `workflow_key=modelview-roughness`；
+- 同一测试 tenant 中出现任何无法证明归属的活动行时 recovery scan fail closed，不猜测、不取消；
+- 记录每个 cancel 的 status code，并持续 GET 到终态或清场超时；结果写入 `teardown.json`；
+- 任一 GPU active status 或 Asset 审计窗口达到 500、owner/created_at/类型缺失或 tenant-key 映射异常
+  均判清场证据失败；GPU 历史总数达到 500 不再误伤 active scan。不删除 job 或 artifact，也绝不触碰
+  production/非 allowlist tenant。
 
-已知边界：同步 Roughness 在服务端已创建 job、但客户端尚未收到 `X-Job-ID` 时若进程被强杀，
-本地 registry 无法安全推断该 ID。此时不要批量取消；应通过 `events.jsonl` 中的 session/request/trace
-标识做只读 admin 对账，确认精确 ID 和 owner 后按变更流程处理。`kill -9`、主机掉电也可能来不及写
-最终 `records.json`；可从 append-only `events.jsonl` 的 `task.created` 重建候选清单，但每个 ID 仍须
-人工核对 session 所有权。
+这使“服务端已创建同步 Roughness job、客户端尚未收到 `X-Job-ID` 就被正常停止”的窗口可自动收敛。
+`kill -9` 或主机掉电仍可能跳过整个 `test_stop`；这种情况必须按变更流程以相同三重范围做人工对账，
+不能改成全租户批量取消。
 
 ## 10. 执行后（After）
 
@@ -416,12 +434,11 @@ restore。若压测暴露真实数据/系统损坏，先冻结现场并保存故
 python3 -m compileall -q packages/gpu_control_core/load_testing.py scripts/run_six_api_load.py tests/load/locustfile.py tests/unit/test_load_testing.py
 ```
 
-这些命令均不启动 Locust、不访问目标、不重启服务。断电恢复后的禁网 Python 3.11 隔离验证会把
-JUnit 和元数据写入
-`artifacts/control-plane/1.5.5/evidence/tests/load-harness.junit.xml` 与同目录
-`load-harness.junit.meta.json`；元数据记录起止 UTC、退出码、JUnit SHA-256 和受测源码 SHA-256。
-本候选的离线结果为 `13 passed / 0 failed`，JUnit SHA-256 为
-`1ef4e720586c064a02cfb319021c32361b9c52885b2a1954907713fb91e514d9`；目标 Ruff、核心门禁模块
-mypy、禁网 compileall 和默认 plan-only 均通过，未授权 `--execute` 在 Locust 启动前拒绝。
-当前文档发布时，真实六接口负载、生产预检和 100/120 VU 运行均保持 `NOT EXECUTED`；不得把工具
-存在或离线单测通过写成容量验收通过。
+这些命令均不启动 Locust、不访问目标、不重启服务。1.5.6 最终源码的 load harness 回归为
+`41 passed / 0 failed`；完整禁网仓库回归为 `272 passed / 5 skipped / 0 failed`，Ruff 与全项目 mypy
+也通过。生产 r5 已实际完成 1→10→25→50→100→120 VU，权威结果和清场证据见 73 号文档，不能再写成
+`NOT EXECUTED`。
+
+修正版 r6 已完成离线计划和 82GB 完整备份复验，状态为 `EXECUTION_ELIGIBLE`、六接口素材齐全、
+无 blocker；在本段记录时尚未发送 r6 流量。只有 r6 结果目录、manifest/checksums、终态清场与本文阈值
+全部通过后，才能将 r6 写成容量通过。

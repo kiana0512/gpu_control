@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .enums import TERMINAL_JOB_STATUSES, JobStatus, Priority
+from .enums import TERMINAL_JOB_STATUSES, JobStatus, NodeMode, Priority
 from .models import (
     ApiClient,
     Job,
@@ -18,7 +18,17 @@ from .models import (
     WorkflowNodeCompatibility,
     WorkflowVersion,
 )
-from .scheduling import OverflowGuard, QueueSnapshot, base_exclusion, overflow_exclusion
+from .scheduling import (
+    SUBSTANCE_DRAIN_OWNER_LABEL,
+    SUBSTANCE_FENCE_LABEL,
+    SUBSTANCE_LEGACY_FENCE_LABEL,
+    SUBSTANCE_PENDING_RESERVATION_LABEL,
+    OverflowGuard,
+    QueueSnapshot,
+    base_exclusion,
+    overflow_exclusion,
+    substance_owned_drain_is_expired,
+)
 from .state_machine import require_transition
 
 ACTIVE_STATUSES = (
@@ -181,7 +191,22 @@ async def claim_next_job(
 ) -> tuple[Job, NodeLease] | None:
     now = datetime.now(UTC)
     node = await session.scalar(select(Node).where(Node.id == node_id).with_for_update())
-    if node is None or node.current_jobs >= node.max_concurrency:
+    if node is None:
+        return None
+    # A pending Asset API reservation is bounded. Once it expires without an
+    # active Baker fence, remove its durable labels while holding the same node
+    # row lock used for GPU assignment. This makes the timeout cleanup and the
+    # next ComfyUI claim one atomic transaction.
+    if substance_owned_drain_is_expired(node, now):
+        labels = dict(node.labels or {})
+        labels.pop(SUBSTANCE_PENDING_RESERVATION_LABEL, None)
+        labels.pop(SUBSTANCE_DRAIN_OWNER_LABEL, None)
+        labels.pop(SUBSTANCE_FENCE_LABEL, None)
+        labels.pop(SUBSTANCE_LEGACY_FENCE_LABEL, None)
+        node.labels = labels
+        if node.mode == NodeMode.DRAINING.value and not node.manual_reserved:
+            node.mode = NodeMode.ACTIVE.value
+    if node.current_jobs >= node.max_concurrency:
         return None
     if queue_snapshot is not None:
         reason = base_exclusion(node, now, heartbeat_timeout_seconds)

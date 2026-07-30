@@ -125,6 +125,8 @@ def test_result_archive_preserves_paths_order_hashes_and_alpha(tmp_path: Path) -
         },
     )
     assert built.sha256 == hashlib.sha256(built.path.read_bytes()).hexdigest()
+    assert built.path.parent.name == ".assembly"
+    assert not (tmp_path / "batch" / "output" / "batch-id-rgba.zip").exists()
     with zipfile.ZipFile(built.path) as archive:
         assert archive.namelist() == ["manifest.json", "results/scene/0001.png"]
         result_manifest = json.loads(archive.read("manifest.json"))

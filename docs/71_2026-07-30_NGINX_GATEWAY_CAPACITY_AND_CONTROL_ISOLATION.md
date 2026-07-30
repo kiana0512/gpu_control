@@ -25,7 +25,9 @@ request/connection budget，因此同一出口 IP 的业务流量可以让控制
 - 数据库 migration：`20260730_0011`
 - 上线后网关窗口：`429=0`、`5xx=0`
 - GPU 节点：`3/3 ACTIVE/ONLINE`
-- 六 API r5 阶梯压测：`进行中`；本文不预告或编造尚未生成的压测结果。
+- 六 API r5 阶梯压测：已完成；控制面窗口内稳定，但整体验收门禁仅部分通过。权威数字、
+  三项 fail-closed 原因和清场记录见
+  `73_2026-07-30_SIX_API_120VU_LOAD_RESULT.md`。
 
 ## 固定预算
 
@@ -83,8 +85,8 @@ nginx: configuration file /etc/nginx/nginx.conf test is successful
 
 ## 后续验收门禁
 
-当前仅能标记为 `DEPLOYED_NOT_ACCEPTED`。六 API r5 阶梯压测和联合验收尚未结束；在原始
-报告、故障注入、持续观察与双方回执完成前，不得标记为 `FROZEN` 或
-`PRODUCTION_ACCEPTED`。压测期间必须继续观察网关 429、API/Asset API 延迟、数据库连接池
-和三个控制端点的连续可用性。若出现持续 5xx、心跳丢失或数据库饱和，按既有回滚流程
-恢复旧配置。
+当前仍只能标记为 `DEPLOYED_NOT_ACCEPTED`。r5 已完整跑到 120 VU，40,021 次 HTTP 请求为
+0 failure，观测窗口内 Nginx 429/5xx 为 0；但生命周期、同步 Roughness submit 指标口径和
+遥测完整性三项门禁 fail closed。详见
+`73_2026-07-30_SIX_API_120VU_LOAD_RESULT.md`。在修复后复测、故障注入、固定 B97 A/B、
+持续观察与双方回执完成前，不得标记为 `FROZEN` 或 `PRODUCTION_ACCEPTED`。

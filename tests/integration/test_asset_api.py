@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import io
 import json
@@ -9,10 +10,21 @@ from typing import Literal
 
 import httpx
 import pytest
-from gpu_control_asset_api.main import create_app
+from gpu_control_asset_api import main as asset_api_main
+from gpu_control_asset_api.main import as_utc, create_app
 from PIL import Image
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from packages.gpu_control_core.models import ApiClient, ApiKey, AssetJob, Base, Node
+from packages.gpu_control_core.models import (
+    ApiClient,
+    ApiKey,
+    AssetJob,
+    AssetWorker,
+    Base,
+    Job,
+    JobBatch,
+    Node,
+)
 from packages.gpu_control_core.security import hash_api_secret, sign_agent_request
 from packages.gpu_control_core.settings import Settings
 
@@ -135,6 +147,81 @@ async def signed_post(
 ) -> httpx.Response:
     body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return await client.post(path, content=body, headers=worker_headers(settings, path, body))
+
+
+async def create_minimal_substance_job(
+    client: httpx.AsyncClient,
+    external_asset_id: str,
+    *,
+    api_key: str = "gpc_assetkey_secret",
+) -> httpx.Response:
+    return await client.post(
+        "/api/v1/assets/bake/process",
+        headers={
+            "X-API-Key": api_key,
+            "Idempotency-Key": external_asset_id,
+        },
+        files={
+            "low_mesh": ("asset_low.fbx", b"low-fbx", "application/octet-stream"),
+            "metadata": (
+                None,
+                json.dumps(
+                    {
+                        "external_asset_id": external_asset_id,
+                        "options": {
+                            "profile": "ao-self-v1",
+                            "resolution": 256,
+                            "texture_cache_mb": 8192,
+                        },
+                    }
+                ),
+            ),
+        },
+    )
+
+
+async def register_substance_worker(
+    client: httpx.AsyncClient,
+    settings: Settings,
+    worker_id: str,
+) -> None:
+    response = await signed_post(
+        client,
+        settings,
+        "/internal/v1/assets/workers/heartbeat",
+        {
+            "worker_id": worker_id,
+            "node_id": "worker-3090-b",
+            "display_name": worker_id,
+            "hostname": "LILITHGAMES3",
+            "blender_version": "substance-15.1.0",
+            "skill_version": "substance-baker-2026.07.29-v1",
+            "cpu_count": 128,
+            "max_concurrency": 1,
+            "current_jobs": 0,
+            "load_1m": 0,
+            "available_memory_mb": 100000,
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "ONLINE"
+
+
+async def claim_substance_job(
+    client: httpx.AsyncClient,
+    settings: Settings,
+    worker_id: str,
+) -> httpx.Response:
+    return await signed_post(
+        client,
+        settings,
+        "/internal/v1/assets/jobs/claim",
+        {
+            "worker_id": worker_id,
+            "load_1m": 0,
+            "available_memory_mb": 100000,
+        },
+    )
 
 
 def png_bytes(size: int) -> bytes:
@@ -298,6 +385,483 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
             assert node is not None
             assert node.mode == "ACTIVE"
             assert "substance_bake_fence_job_ids" not in node.labels
+
+
+async def test_substance_completion_honors_cancel_before_artifact_publication(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        worker_id = "asset-worker-3090-b-windows-01"
+        await register_substance_worker(client, settings, worker_id)
+        created = await create_minimal_substance_job(
+            client, "cancel-at-substance-publish-safe-point"
+        )
+        assert created.status_code == 202, created.text
+        job_id = created.json()["job_id"]
+        claimed = await claim_substance_job(client, settings, worker_id)
+        assert claimed.json()["job"]["job_id"] == job_id
+        lease = claimed.json()["job"]["lease_token"]
+
+        cancelled = await client.post(
+            f"/api/v1/assets/jobs/{job_id}/cancel",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["status"] == "CANCELLING"
+
+        baked = png_bytes(256)
+        baked_sha = hashlib.sha256(baked).hexdigest()
+        result = json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": job_id,
+                "status": "SUCCEEDED",
+                "profile": "ao-self-v1",
+                "tool": {
+                    "version": "15.1.0",
+                    "exe_sha256": (
+                        "7B920FC6EE6005FAAB072C9280B1772F03D694FF04AA91C5A4DB516F7C9FEC6D"
+                    ),
+                },
+                "execution": {"exit_code": 0},
+                "output_sha256": {"ao": baked_sha},
+            }
+        ).encode()
+        completion = await client.post(
+            f"/internal/v1/assets/jobs/{job_id}/substance-complete",
+            headers={"X-Asset-Lease": lease},
+            files={
+                "ao": ("asset_ao.png", baked, "image/png"),
+                "result": ("baker_result.json", result, "application/json"),
+                "log": (
+                    "baker.log",
+                    b"Bake finished successfully\n",
+                    "text/plain",
+                ),
+            },
+        )
+        assert completion.status_code == 200, completion.text
+        assert completion.json() == {
+            "accepted": False,
+            "status": "CANCELLED",
+            "cancel_requested": True,
+        }
+        status = await client.get(
+            f"/api/v1/assets/jobs/{job_id}",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert status.json()["status"] == "CANCELLED"
+        assert status.json()["artifacts"] == []
+        assert not (settings.asset_root / job_id / "output").exists()
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            job = await db.get(AssetJob, job_id)
+            node = await db.get(Node, "worker-3090-b")
+            assert job is not None and node is not None
+            assert job.lease_token_hash is None
+            assert job.lease_expires_at is None
+            assert node.mode == "ACTIVE"
+            assert "substance_bake_fence_job_ids" not in node.labels
+
+
+async def test_production_substance_queue_reserves_next_gpu_turn_and_cancel_releases(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        worker_id = "asset-worker-3090-b-windows-01"
+        await register_substance_worker(client, settings, worker_id)
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            node.current_jobs = 1
+            await db.commit()
+
+        created = await create_minimal_substance_job(client, "production-bake-reservation")
+        assert created.status_code == 202, created.text
+        job_id = created.json()["job_id"]
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "DRAINING"
+            assert node.labels["substance_bake_pending_reservation"]["job_ids"] == [
+                job_id
+            ]
+            assert "substance_bake_fence_job_ids" not in node.labels
+
+        blocked = await claim_substance_job(client, settings, worker_id)
+        assert blocked.status_code == 200, blocked.text
+        assert blocked.json()["job"] is None
+
+        cancelled = await client.post(
+            f"/api/v1/assets/jobs/{job_id}/cancel",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["status"] == "CANCELLED"
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "ACTIVE"
+            assert "substance_bake_pending_reservation" not in node.labels
+            assert "substance_bake_drain_owner" not in node.labels
+
+
+async def test_substance_pending_reservation_requires_fresh_available_baker(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        first = await create_minimal_substance_job(client, "no-baker-no-drain")
+        assert first.status_code == 202, first.text
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "ACTIVE"
+            assert "substance_bake_pending_reservation" not in node.labels
+
+        await register_substance_worker(
+            client, settings, "asset-worker-3090-b-windows-01"
+        )
+        for index in range(3):
+            created = await create_minimal_substance_job(
+                client, f"one-baker-capacity-{index}"
+            )
+            assert created.status_code == 202, created.text
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            pending = node.labels["substance_bake_pending_reservation"]
+            assert len(pending["job_ids"]) == 1
+            assert pending["worker_ids"] == [
+                "asset-worker-3090-b-windows-01"
+            ]
+
+            worker = await db.get(
+                AssetWorker,
+                "asset-worker-3090-b-windows-01",
+                with_for_update=True,
+            )
+            assert worker is not None
+            worker.last_heartbeat_at = datetime.now(UTC) - timedelta(minutes=5)
+            await db.commit()
+
+        created = await create_minimal_substance_job(
+            client,
+            "stale-baker-releases-drain",
+        )
+        assert created.status_code == 202, created.text
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "ACTIVE"
+            assert "substance_bake_pending_reservation" not in node.labels
+            assert "substance_bake_drain_owner" not in node.labels
+
+
+@pytest.mark.parametrize(
+    ("mode", "existing_owner"),
+    [
+        ("DISABLED", None),
+        ("RESERVED", None),
+        ("DRAINING", "operator-maintenance"),
+    ],
+)
+async def test_substance_reservation_never_steals_administrative_mode_ownership(
+    tmp_path: Path,
+    mode: str,
+    existing_owner: str | None,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        await register_substance_worker(
+            client, settings, "asset-worker-3090-b-windows-01"
+        )
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            node.mode = mode
+            node.labels = {"maintenance_marker": "preserve-me"}
+            if existing_owner is not None:
+                node.labels = {
+                    **node.labels,
+                    "substance_bake_drain_owner": existing_owner,
+                }
+            await db.commit()
+
+        created = await create_minimal_substance_job(
+            client, f"mode-ownership-{mode.lower()}"
+        )
+        assert created.status_code == 202, created.text
+        job_id = created.json()["job_id"]
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == mode
+            assert node.labels["maintenance_marker"] == "preserve-me"
+            assert "substance_bake_pending_reservation" not in node.labels
+            assert node.labels.get("substance_bake_drain_owner") == existing_owner
+
+        cancelled = await client.post(
+            f"/api/v1/assets/jobs/{job_id}/cancel",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == mode
+            assert node.labels["maintenance_marker"] == "preserve-me"
+            assert node.labels.get("substance_bake_drain_owner") == existing_owner
+
+
+async def test_test_substance_submission_never_installs_pending_gpu_reservation(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            db.add(
+                ApiClient(
+                    id="load-test-client",
+                    name="Load Test Client",
+                    role="client",
+                    client_kind="test",
+                    max_queued=50,
+                    max_running=10,
+                )
+            )
+            db.add(
+                ApiKey(
+                    id=str(uuid.uuid4()),
+                    client_id="load-test-client",
+                    prefix="loadtest",
+                    secret_hash=hash_api_secret("secret", settings.api_key_pepper),
+                )
+            )
+            await db.commit()
+
+        created = await create_minimal_substance_job(
+            client,
+            "test-bake-no-reservation",
+            api_key="gpc_loadtest_secret",
+        )
+        assert created.status_code == 202, created.text
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "ACTIVE"
+            assert "substance_bake_pending_reservation" not in node.labels
+
+
+async def test_test_substance_claim_waits_for_production_gpu_jobs_and_batches(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            db.add(
+                ApiClient(
+                    id="load-test-client",
+                    name="Load Test Client",
+                    role="client",
+                    client_kind="test",
+                    max_queued=50,
+                    max_running=10,
+                )
+            )
+            db.add(
+                ApiKey(
+                    id=str(uuid.uuid4()),
+                    client_id="load-test-client",
+                    prefix="loadtest",
+                    secret_hash=hash_api_secret("secret", settings.api_key_pepper),
+                )
+            )
+            db.add(
+                Job(
+                    id="production-gpu-job",
+                    tenant_id="asset-client",
+                    workflow_key="imageclip-rgba",
+                    workflow_version="test",
+                    status="QUEUED",
+                    parameters={},
+                    request_hash="production-gpu-job",
+                    request_id="production-gpu-job",
+                    trace_id="production-gpu-job",
+                    job_dir=str(tmp_path / "production-gpu-job"),
+                )
+            )
+            await db.commit()
+
+        await register_substance_worker(
+            client, settings, "asset-worker-3090-b-windows-01"
+        )
+        created = await create_minimal_substance_job(
+            client,
+            "test-bake-yields-to-gpu",
+            api_key="gpc_loadtest_secret",
+        )
+        assert created.status_code == 202, created.text
+        blocked_by_job = await claim_substance_job(
+            client, settings, "asset-worker-3090-b-windows-01"
+        )
+        assert blocked_by_job.json()["job"] is None
+
+        now = datetime.now(UTC)
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            gpu_job = await db.get(Job, "production-gpu-job")
+            assert gpu_job is not None
+            gpu_job.status = "SUCCEEDED"
+            db.add(
+                JobBatch(
+                    id="production-gpu-batch",
+                    tenant_id="asset-client",
+                    external_batch_id="production-gpu-batch",
+                    workflow_key="imageclip-rgba",
+                    workflow_version="test",
+                    status="RUNNING",
+                    parameters={},
+                    request_hash="production-gpu-batch",
+                    request_id="production-gpu-batch",
+                    trace_id="production-gpu-batch",
+                    batch_dir=str(tmp_path / "production-gpu-batch"),
+                    manifest_sha256="a" * 64,
+                    archive_sha256="b" * 64,
+                    archive_size_bytes=1,
+                    total_items=1,
+                    started_at=now,
+                )
+            )
+            await db.commit()
+
+        blocked_by_batch = await claim_substance_job(
+            client, settings, "asset-worker-3090-b-windows-01"
+        )
+        assert blocked_by_batch.json()["job"] is None
+
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            batch = await db.get(JobBatch, "production-gpu-batch")
+            assert batch is not None
+            batch.status = "SUCCEEDED"
+            batch.finished_at = datetime.now(UTC)
+            await db.commit()
+        claimed = await claim_substance_job(
+            client, settings, "asset-worker-3090-b-windows-01"
+        )
+        assert claimed.json()["job"]["job_id"] == created.json()["job_id"]
+
+
+async def test_expired_substance_lease_blocks_reclaim_until_explicit_health_evidence(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        created = await create_minimal_substance_job(client, "lease-expiry-release")
+        assert created.status_code == 202, created.text
+        job_id = created.json()["job_id"]
+        first_worker = "asset-worker-3090-b-windows-01"
+        second_worker = "asset-worker-3090-b-windows-02"
+        await register_substance_worker(client, settings, first_worker)
+        claimed = await claim_substance_job(client, settings, first_worker)
+        assert claimed.status_code == 200, claimed.text
+        assert claimed.json()["job"]["job_id"] == job_id
+        queued_after = await create_minimal_substance_job(
+            client, "lease-expiry-follow-up"
+        )
+        assert queued_after.status_code == 202, queued_after.text
+        follow_up_job_id = queued_after.json()["job_id"]
+
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            job = await db.get(AssetJob, job_id)
+            assert job is not None
+            assert job.attempt_count < settings.asset_job_max_attempts
+            job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            await db.commit()
+
+        await register_substance_worker(client, settings, second_worker)
+        swept = await claim_substance_job(client, settings, second_worker)
+        assert swept.status_code == 200, swept.text
+        assert swept.json()["job"] is None
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            job = await db.get(AssetJob, job_id)
+            follow_up = await db.get(AssetJob, follow_up_job_id)
+            node = await db.get(Node, "worker-3090-b")
+            assert job is not None and follow_up is not None and node is not None
+            assert job.status == "FAILED"
+            assert job.stage == "RECOVERY_REQUIRED"
+            assert job.error_code == "SUBSTANCE_LEASE_EXPIRED_RECOVERY_REQUIRED"
+            assert node.mode == "DRAINING"
+            assert "substance_bake_fence_job_ids" not in node.labels
+            recovery_entries = node.labels["substance_bake_recovery_required"]
+            assert len(recovery_entries) == 1
+            assert recovery_entries[0]["job_id"] == job_id
+            assert recovery_entries[0]["worker_id"] == first_worker
+            assert recovery_entries[0]["lease_expired_at"]
+            assert follow_up.status == "QUEUED"
+            assert follow_up.attempt_count == 0
+
+        still_blocked = await claim_substance_job(client, settings, second_worker)
+        assert still_blocked.status_code == 200, still_blocked.text
+        assert still_blocked.json()["job"] is None
+
+        # Even a fresh ONLINE heartbeat newer than lease expiry is insufficient
+        # when it predates the original worker's first observed-idle evidence.
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            node.last_heartbeat_at = datetime.now(UTC)
+            await db.commit()
+        await register_substance_worker(client, settings, first_worker)
+        no_comfy_evidence = await claim_substance_job(client, settings, second_worker)
+        assert no_comfy_evidence.status_code == 200, no_comfy_evidence.text
+        assert no_comfy_evidence.json()["job"] is None
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            recovery_entry = node.labels["substance_bake_recovery_required"][0]
+            assert recovery_entry["idle_observed_at"]
+            assert as_utc(node.last_heartbeat_at) < datetime.fromisoformat(
+                recovery_entry["idle_observed_at"]
+            )
+            # A heartbeat newer than idle evidence but outside the configured
+            # freshness window must also remain fail-closed.
+            old_idle = datetime.now(UTC) - timedelta(
+                seconds=settings.node_heartbeat_timeout_seconds * 2
+            )
+            labels = dict(node.labels)
+            entries = list(labels["substance_bake_recovery_required"])
+            entries[0] = {
+                **entries[0],
+                "lease_expired_at": (old_idle - timedelta(seconds=1)).isoformat(),
+                "idle_observed_at": old_idle.isoformat(),
+            }
+            labels["substance_bake_recovery_required"] = entries
+            node.labels = labels
+            node.last_heartbeat_at = datetime.now(UTC) - timedelta(
+                seconds=settings.node_heartbeat_timeout_seconds + 1
+            )
+            await db.commit()
+
+        await register_substance_worker(client, settings, first_worker)
+        stale_comfy_evidence = await claim_substance_job(
+            client, settings, second_worker
+        )
+        assert stale_comfy_evidence.json()["job"] is None
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert "substance_bake_recovery_required" in node.labels
+            node.last_heartbeat_at = datetime.now(UTC)
+            await db.commit()
+
+        # A fresh idle heartbeat from the same Worker plus the post-idle
+        # ComfyUI heartbeat releases the recovery interlock.
+        await register_substance_worker(client, settings, first_worker)
+        recovered = await claim_substance_job(client, settings, second_worker)
+        assert recovered.status_code == 200, recovered.text
+        assert recovered.json()["job"]["job_id"] == follow_up_job_id
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "DRAINING"
+            assert "substance_bake_recovery_required" not in node.labels
+            assert node.labels["substance_bake_fence_job_ids"] == [
+                follow_up_job_id
+            ]
 
 
 async def test_uv_asset_job_contract_worker_concurrency_and_atomic_artifacts(
@@ -546,6 +1110,79 @@ def queued_asset_job(
     )
 
 
+async def test_substance_queue_timing_excludes_stale_online_workers(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        now = datetime.now(UTC)
+        timeout = settings.asset_worker_heartbeat_timeout_seconds
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            db.add_all(
+                [
+                    queued_asset_job(
+                        f"substance-queue-{position}",
+                        client_id="asset-client",
+                        job_type="SUBSTANCE_BAKE_V1",
+                        created_at=now - timedelta(seconds=4 - position),
+                    )
+                    for position in range(1, 4)
+                ]
+                + [
+                    AssetWorker(
+                        id="asset-worker-3090-b-windows-01",
+                        display_name="Fresh Substance Worker",
+                        node_id="worker-3090-b",
+                        hostname="LILITHGAMES3",
+                        status="ONLINE",
+                        blender_version="substance-15.1.0",
+                        skill_version="substance-baker-v1",
+                        max_concurrency=1,
+                        current_jobs=0,
+                        last_heartbeat_at=now,
+                    ),
+                    AssetWorker(
+                        id="asset-worker-3090-b-windows-02",
+                        display_name="Stale Substance Worker",
+                        node_id="worker-3090-b",
+                        hostname="LILITHGAMES3",
+                        status="ONLINE",
+                        blender_version="substance-15.1.0",
+                        skill_version="substance-baker-v1",
+                        max_concurrency=1,
+                        current_jobs=0,
+                        last_heartbeat_at=now - timedelta(seconds=timeout + 1),
+                    ),
+                ]
+            )
+            await db.commit()
+
+        stale_excluded = await client.get(
+            "/api/v1/assets/jobs/substance-queue-3",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert stale_excluded.status_code == 200, stale_excluded.text
+        assert stale_excluded.json()["timing"] == {
+            "queue_position": 3,
+            "estimated_start_seconds": 1200,
+            "elapsed_seconds": 0,
+            "estimated_remaining_seconds": None,
+            "last_progress_at": None,
+        }
+
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            stale_worker = await db.get(AssetWorker, "asset-worker-3090-b-windows-02")
+            assert stale_worker is not None
+            stale_worker.last_heartbeat_at = datetime.now(UTC)
+            await db.commit()
+
+        fresh_included = await client.get(
+            "/api/v1/assets/jobs/substance-queue-3",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert fresh_included.status_code == 200, fresh_included.text
+        assert fresh_included.json()["timing"]["estimated_start_seconds"] == 600
+
+
 async def test_cpu_asset_claim_prioritizes_production_and_keeps_pool_fifo(
     tmp_path: Path,
 ) -> None:
@@ -644,6 +1281,12 @@ async def test_substance_claim_prioritizes_production_and_keeps_pool_fifo(
                         job_type="SUBSTANCE_BAKE_V1",
                         created_at=now - timedelta(minutes=1),
                     ),
+                    queued_asset_job(
+                        "bake-test-fifth",
+                        client_id="load-test-client",
+                        job_type="SUBSTANCE_BAKE_V1",
+                        created_at=now,
+                    ),
                 ]
             )
             await db.commit()
@@ -688,6 +1331,15 @@ async def test_substance_claim_prioritizes_production_and_keeps_pool_fifo(
             "bake-test-older",
             "bake-test-newer",
         ]
+        fifth_worker = "asset-worker-3090-b-windows-04"
+        await register_substance_worker(client, settings, fifth_worker)
+        fifth = await claim_substance_job(client, settings, fifth_worker)
+        assert fifth.status_code == 200, fifth.text
+        assert fifth.json()["job"] is None
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert len(node.labels["substance_bake_fence_job_ids"]) == 4
 
 
 async def test_uv_process_v2_preserves_stem_and_publishes_five_verified_artifacts(
@@ -1291,6 +1943,298 @@ async def create_and_claim_retopology_process(
     claimed = await claim_asset_job(client, settings)
     assert claimed["job_id"] == created.json()["job_id"]
     return claimed
+
+
+def pause_first_completion_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[asyncio.Event, asyncio.Event]:
+    """Pause after private staging proves completion no longer holds DB locks."""
+
+    staged = asyncio.Event()
+    resume = asyncio.Event()
+    original = asset_api_main.persist_completion_upload
+    first = True
+
+    async def paused(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal first
+        result = await original(*args, **kwargs)
+        if first:
+            first = False
+            staged.set()
+            await resume.wait()
+        return result
+
+    monkeypatch.setattr(asset_api_main, "persist_completion_upload", paused)
+    return staged, resume
+
+
+async def assert_cancelled_without_publication(
+    client: httpx.AsyncClient,
+    settings: Settings,
+    job_id: str,
+) -> None:
+    status = await client.get(
+        f"/api/v1/assets/jobs/{job_id}",
+        headers={"X-API-Key": "gpc_assetkey_secret"},
+    )
+    assert status.status_code == 200, status.text
+    assert status.json()["status"] == "CANCELLED"
+    assert status.json()["artifacts"] == []
+    assert not (settings.asset_root / job_id / "output").exists()
+
+
+async def test_uv_completion_upload_does_not_block_cancel_or_publish_after_cancel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staged, resume = pause_first_completion_upload(monkeypatch)
+    metadata = {
+        "external_asset_id": "asset:uv:completion-cancel-race",
+        "options": {
+            "resolution": 2048,
+            "padding_px": 10,
+            "hard_edge_angle_degrees": 75,
+            "hidden_axis": "y+",
+            "texel_density_mode": "uniform",
+            "qa_profile": "pbr-v1",
+        },
+    }
+    async for settings, client in prepared_asset_app(tmp_path):
+        created = await client.post(
+            "/api/v1/assets/uv/unwrap",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "asset:uv:completion-cancel-race",
+            },
+            files={
+                "asset": ("race.fbx", b"fbx", "application/octet-stream"),
+                "metadata": (None, json.dumps(metadata)),
+            },
+        )
+        assert created.status_code == 202, created.text
+        await register_asset_worker(client, settings)
+        job = await claim_asset_job(client, settings)
+        job_id = str(job["job_id"])
+        completion = asyncio.create_task(
+            client.post(
+                f"/internal/v1/assets/jobs/{job_id}/complete",
+                headers={"X-Asset-Lease": str(job["lease_token"])},
+                files={
+                    "blend": ("model_PBR_UV.blend", b"blend", "application/octet-stream"),
+                    "fbx": ("model_PBR_UV.fbx", b"fbx", "application/octet-stream"),
+                    "report": ("model_report.json", b"{}", "application/json"),
+                    "qa": (
+                        "model_QA.json",
+                        json.dumps({"hard_failures": []}).encode(),
+                        "application/json",
+                    ),
+                },
+            )
+        )
+        await asyncio.wait_for(staged.wait(), 2)
+        cancelled = await asyncio.wait_for(
+            client.post(
+                f"/api/v1/assets/jobs/{job_id}/cancel",
+                headers={"X-API-Key": "gpc_assetkey_secret"},
+            ),
+            2,
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["status"] == "CANCELLING"
+        resume.set()
+        completed = await completion
+        assert completed.status_code == 200, completed.text
+        assert completed.json()["status"] == "CANCELLED"
+        await assert_cancelled_without_publication(client, settings, job_id)
+
+
+async def test_completion_commit_failure_leaves_no_blocking_final_and_can_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metadata = {
+        "external_asset_id": "asset:uv:completion-commit-retry",
+        "options": {
+            "resolution": 2048,
+            "padding_px": 10,
+            "hard_edge_angle_degrees": 75,
+            "hidden_axis": "y+",
+            "texel_density_mode": "uniform",
+            "qa_profile": "pbr-v1",
+        },
+    }
+    async for settings, client in prepared_asset_app(tmp_path):
+        created = await client.post(
+            "/api/v1/assets/uv/unwrap",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "asset:uv:completion-commit-retry",
+            },
+            files={
+                "asset": ("retry.fbx", b"fbx", "application/octet-stream"),
+                "metadata": (None, json.dumps(metadata)),
+            },
+        )
+        assert created.status_code == 202, created.text
+        await register_asset_worker(client, settings)
+        job = await claim_asset_job(client, settings)
+        job_id = str(job["job_id"])
+        lease_headers = {"X-Asset-Lease": str(job["lease_token"])}
+        files = {
+            "blend": ("model_PBR_UV.blend", b"blend", "application/octet-stream"),
+            "fbx": ("model_PBR_UV.fbx", b"fbx", "application/octet-stream"),
+            "report": ("model_report.json", b"{}", "application/json"),
+            "qa": (
+                "model_QA.json",
+                json.dumps({"hard_failures": []}).encode(),
+                "application/json",
+            ),
+        }
+        original_commit = AsyncSession.commit
+        commit_calls = 0
+
+        async def fail_final_commit(
+            session: AsyncSession,
+            original=original_commit,
+        ) -> None:
+            nonlocal commit_calls
+            commit_calls += 1
+            if commit_calls == 2:
+                raise RuntimeError("injected final commit failure")
+            await original(session)
+
+        monkeypatch.setattr(AsyncSession, "commit", fail_final_commit)
+        with pytest.raises(RuntimeError, match="injected final commit failure"):
+            await client.post(
+                f"/internal/v1/assets/jobs/{job_id}/complete",
+                headers=lease_headers,
+                files=files,
+            )
+        monkeypatch.setattr(AsyncSession, "commit", original_commit)
+        assert not (settings.asset_root / job_id / "output").exists()
+        assert list((settings.asset_root / job_id).glob(".outputs-*")) == []
+
+        retried = await client.post(
+            f"/internal/v1/assets/jobs/{job_id}/complete",
+            headers=lease_headers,
+            files=files,
+        )
+        assert retried.status_code == 200, retried.text
+        status = await client.get(
+            f"/api/v1/assets/jobs/{job_id}",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert status.json()["status"] == "SUCCEEDED"
+        assert {artifact["kind"] for artifact in status.json()["artifacts"]} == {
+            "blend",
+            "fbx",
+            "report",
+            "qa",
+        }
+        assert len(list((settings.asset_root / job_id).glob(".outputs-*"))) == 1
+
+
+async def test_retopology_advisory_completion_cancel_wins_before_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staged, resume = pause_first_completion_upload(monkeypatch)
+    async for settings, client in prepared_asset_app(
+        tmp_path, retopology_qa_enforcement="advisory"
+    ):
+        job = await create_and_claim_retopology_process(
+            client, settings, "asset:retopo:completion-cancel-race"
+        )
+        job_id = str(job["job_id"])
+        completion = asyncio.create_task(
+            client.post(
+                f"/internal/v1/assets/jobs/{job_id}/retopology-process-complete",
+                headers={"X-Asset-Lease": str(job["lease_token"])},
+                files=retopology_process_completion_files(
+                    job, png_bytes(16), quality_passed=False
+                ),
+            )
+        )
+        await asyncio.wait_for(staged.wait(), 2)
+        cancelled = await asyncio.wait_for(
+            client.post(
+                f"/api/v1/assets/jobs/{job_id}/cancel",
+                headers={"X-API-Key": "gpc_assetkey_secret"},
+            ),
+            2,
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["status"] == "CANCELLING"
+        resume.set()
+        completed = await completion
+        assert completed.status_code == 200, completed.text
+        assert completed.json()["status"] == "CANCELLED"
+        await assert_cancelled_without_publication(client, settings, job_id)
+
+
+async def test_substance_completion_staging_does_not_hold_gpu_node_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staged, resume = pause_first_completion_upload(monkeypatch)
+    async for settings, client in prepared_asset_app(tmp_path):
+        worker_id = "asset-worker-3090-b-windows-race"
+        await register_substance_worker(client, settings, worker_id)
+        created = await create_minimal_substance_job(
+            client, "substance-completion-cancel-race"
+        )
+        assert created.status_code == 202, created.text
+        job_id = created.json()["job_id"]
+        claimed = await claim_substance_job(client, settings, worker_id)
+        lease = claimed.json()["job"]["lease_token"]
+        baked = png_bytes(256)
+        baked_sha = hashlib.sha256(baked).hexdigest()
+        result = json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": job_id,
+                "status": "SUCCEEDED",
+                "profile": "ao-self-v1",
+                "tool": {
+                    "version": "15.1.0",
+                    "exe_sha256": (
+                        "7B920FC6EE6005FAAB072C9280B1772F03D694FF04AA91C5A4DB516F7C9FEC6D"
+                    ),
+                },
+                "execution": {"exit_code": 0},
+                "output_sha256": {"ao": baked_sha},
+            }
+        ).encode()
+        completion = asyncio.create_task(
+            client.post(
+                f"/internal/v1/assets/jobs/{job_id}/substance-complete",
+                headers={"X-Asset-Lease": lease},
+                files={
+                    "ao": ("asset_ao.png", baked, "image/png"),
+                    "result": ("baker_result.json", result, "application/json"),
+                    "log": (
+                        "baker.log",
+                        b"Bake finished successfully\n",
+                        "text/plain",
+                    ),
+                },
+            )
+        )
+        await asyncio.wait_for(staged.wait(), 2)
+        cancelled = await asyncio.wait_for(
+            client.post(
+                f"/api/v1/assets/jobs/{job_id}/cancel",
+                headers={"X-API-Key": "gpc_assetkey_secret"},
+            ),
+            2,
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["status"] == "CANCELLING"
+        resume.set()
+        completed = await completion
+        assert completed.status_code == 200, completed.text
+        assert completed.json()["status"] == "CANCELLED"
+        await assert_cancelled_without_publication(client, settings, job_id)
 
 
 async def test_retopology_strict_qa_failure_keeps_diagnostics_downloadable(

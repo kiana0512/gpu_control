@@ -9,9 +9,9 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 
 def test_source_release_versions_are_aligned() -> None:
     assert source_versions(REPOSITORY) == {
-        "python": "1.5.5",
-        "web": "1.5.5",
-        "web_lock": "1.5.5",
+        "python": "1.5.6",
+        "web": "1.5.6",
+        "web_lock": "1.5.6",
     }
 
 

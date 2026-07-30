@@ -38,7 +38,10 @@ from packages.gpu_control_core.load_testing import (
     RuntimeSettings,
     approved_load_tls_verify,
     configure_locust_client_tls,
+    discover_scoped_teardown_tasks,
     evaluate_load_lifecycle,
+    evaluate_load_thresholds,
+    evaluate_telemetry_evidence,
     execute_bounded_teardown_cancel,
     file_sha256,
     identify_foreign_active_work,
@@ -158,17 +161,35 @@ ACTIVE_STATUSES = {
     "CANCELLING",
     "RETRY_WAIT",
 }
+ACTIVE_STATUS_QUERY_ORDER = (
+    "RECEIVED",
+    "VALIDATING",
+    "RETRY_WAIT",
+    "QUEUED",
+    "CLAIMED",
+    "UPLOADING",
+    "SUBMITTED",
+    "RUNNING",
+    "DOWNLOADING",
+    "ASSEMBLING",
+    "CANCELLING",
+)
 TELEMETRY_INTERVAL_SECONDS = 5.0
 TEARDOWN_CANCEL_MAX_ATTEMPTS = 3
 TEARDOWN_CANCEL_INITIAL_BACKOFF_SECONDS = 0.25
 TEARDOWN_CANCEL_MAXIMUM_BACKOFF_SECONDS = 1.0
 TEARDOWN_CANCEL_THROTTLE_SECONDS = 0.1
 TEARDOWN_CANCEL_TIMEOUT_SECONDS = 5.0
+TEARDOWN_SETTLE_TIMEOUT_SECONDS = 300
+TEARDOWN_SETTLE_POLL_INTERVAL_SECONDS = 1.0
 
 _operation_counter = itertools.count(1)
 _user_counter = itertools.count(0)
 _telemetry_greenlet: Any | None = None
 _telemetry_stop = False
+_telemetry_started_monotonic: float | None = None
+_telemetry_sequence = 0
+_telemetry_final_sample_written = False
 _production_watchdog_triggered = False
 _shape_stop_signal = LoadShapeStopSignal()
 _expected_gpu_node_ids: tuple[str, ...] = ()
@@ -461,6 +482,50 @@ def preflight_json(
     return payload
 
 
+def active_gpu_admin_jobs(
+    client: httpx.Client,
+    headers: Mapping[str, str],
+    *,
+    client_kind: str,
+    passes: int = 1,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    if client_kind not in {"all", "test"} or passes < 1 or passes > 2:
+        raise LoadTestConfigurationError("invalid active GPU admin query scope")
+    jobs_by_id: dict[str, dict[str, Any]] = {}
+    rows_scanned = 0
+    for _ in range(passes):
+        for status in ACTIVE_STATUS_QUERY_ORDER:
+            response = client.get(
+                f"/admin/jobs?client_kind={client_kind}&status={status}&limit=500",
+                headers=dict(headers),
+                timeout=30,
+            )
+            response.raise_for_status()
+            rows = response.json()
+            if not isinstance(rows, list):
+                raise LoadTestConfigurationError(
+                    "active GPU admin endpoint returned the wrong shape"
+                )
+            if len(rows) >= 500:
+                raise LoadTestConfigurationError(f"active GPU {status} audit window is saturated")
+            rows_scanned += len(rows)
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise LoadTestConfigurationError(
+                        "active GPU admin endpoint returned a non-object row"
+                    )
+                identifier = str(row.get("job_id") or row.get("batch_id") or "")
+                if not identifier or str(row.get("status") or "") != status:
+                    raise LoadTestConfigurationError(
+                        "active GPU admin endpoint returned an invalid scoped row"
+                    )
+                jobs_by_id[identifier] = row
+    return list(jobs_by_id.values()), {
+        "rows_scanned": rows_scanned,
+        "status_queries": len(ACTIVE_STATUS_QUERY_ORDER) * passes,
+    }
+
+
 def perform_preflight() -> dict[str, Any]:
     admin_headers = {"Authorization": f"Bearer {RUNTIME.admin_bearer_token}"}
     with httpx.Client(
@@ -483,12 +548,12 @@ def perform_preflight() -> dict[str, Any]:
         public_workflows = preflight_json(client, "/api/v1/workflows", api_headers)
         workflows = preflight_json(client, "/admin/workflows", admin_headers)
         nodes = preflight_json(client, "/admin/nodes", admin_headers)
-        gpu_jobs = preflight_json(
-            client, "/admin/jobs?client_kind=all&limit=500", admin_headers
+        gpu_jobs, gpu_audit = active_gpu_admin_jobs(
+            client,
+            admin_headers,
+            client_kind="all",
         )
-        asset_overview = preflight_json(
-            client, "/admin/asset-processing?limit=500", admin_headers
-        )
+        asset_overview = preflight_json(client, "/admin/asset-processing?limit=500", admin_headers)
 
     if not all(isinstance(item, dict) for item in client_capacities) or not isinstance(
         asset_capacity, dict
@@ -545,8 +610,6 @@ def perform_preflight() -> dict[str, Any]:
         raise LoadTestConfigurationError("not enough healthy nodes with approved ImageClip SHA")
 
     active_gpu = [item for item in gpu_jobs if item.get("status") in ACTIVE_STATUSES]
-    if len(gpu_jobs) >= 500:
-        raise LoadTestConfigurationError("GPU job audit window is saturated")
     if len(active_gpu) > SCENARIO.preflight["maximum_preexisting_gpu_jobs"]:
         raise LoadTestConfigurationError("pre-existing GPU work exceeds the scenario limit")
     asset_jobs = asset_overview.get("jobs")
@@ -648,6 +711,7 @@ def perform_preflight() -> dict[str, Any]:
         "online_substance_worker_ids": [item.get("id") for item in substance_workers],
         "cpu_available_slots": worker_roles["cpu_available_slots"],
         "preexisting": {"gpu": len(active_gpu), "asset": len(active_assets)},
+        "gpu_active_audit": gpu_audit,
         "substance_available_slots": substance_slots,
         "secrets_recorded": False,
     }
@@ -662,11 +726,11 @@ def collect_telemetry(client: httpx.Client) -> dict[str, Any]:
     api_headers = {"X-API-Key": RUNTIME.api_keys[0]}
     admin_headers = {"Authorization": f"Bearer {RUNTIME.admin_bearer_token}"}
     nodes = preflight_json(client, "/admin/nodes", admin_headers)
-    asset_overview = preflight_json(
-        client, "/admin/asset-processing?limit=500", admin_headers
-    )
-    gpu_jobs = preflight_json(
-        client, "/admin/jobs?client_kind=all&limit=500", admin_headers
+    asset_overview = preflight_json(client, "/admin/asset-processing?limit=500", admin_headers)
+    gpu_jobs, gpu_audit = active_gpu_admin_jobs(
+        client,
+        admin_headers,
+        client_kind="all",
     )
     capacity = normalize_scheduler_capacity_v1(
         preflight_json(client, "/api/v1/scheduler/capacity", api_headers)
@@ -682,7 +746,7 @@ def collect_telemetry(client: httpx.Client) -> dict[str, Any]:
         raise LoadTestConfigurationError("telemetry asset response omitted workers")
     if not isinstance(asset_jobs, list):
         raise LoadTestConfigurationError("telemetry asset response omitted jobs")
-    if len(gpu_jobs) >= 500 or len(asset_jobs) >= 500:
+    if len(asset_jobs) >= 500:
         raise LoadTestConfigurationError("production watchdog audit window is saturated")
     foreign_work = identify_foreign_active_work(
         gpu_jobs,
@@ -813,6 +877,7 @@ def collect_telemetry(client: httpx.Client) -> dict[str, Any]:
             "available_slots": asset_capacity.get("available_slots"),
         },
         "production_watchdog": foreign_work,
+        "gpu_active_audit": gpu_audit,
         "privacy": {
             "addresses_recorded": False,
             "credentials_recorded": False,
@@ -821,11 +886,83 @@ def collect_telemetry(client: httpx.Client) -> dict[str, Any]:
     }
 
 
-def telemetry_loop(environment: Any) -> None:
-    global _production_watchdog_triggered, _telemetry_stop
+def append_telemetry_payload(payload: Mapping[str, Any]) -> None:
+    with (RESULT_DIR / "telemetry.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
-    sequence = 0
-    loop_started = time.monotonic()
+
+def capture_telemetry_sample(client: httpx.Client, *, final_sample: bool) -> dict[str, Any]:
+    global _telemetry_sequence
+
+    cycle_started = time.monotonic()
+    sequence = _telemetry_sequence + 1
+    sample = collect_telemetry(client)
+    capture_span_ms = int((time.monotonic() - cycle_started) * 1000)
+    if capture_span_ms > int(TELEMETRY_INTERVAL_SECONDS * 1000):
+        raise LoadTestConfigurationError("telemetry capture exceeded its sampling interval")
+    telemetry_started = _telemetry_started_monotonic or cycle_started
+    actual_elapsed_ms = int((cycle_started - telemetry_started) * 1000)
+    sample.update(
+        {
+            "sequence": sequence,
+            "scheduled_elapsed_ms": (
+                actual_elapsed_ms
+                if final_sample
+                else int((sequence - 1) * TELEMETRY_INTERVAL_SECONDS * 1000)
+            ),
+            "actual_elapsed_ms": actual_elapsed_ms,
+            "capture_span_ms": capture_span_ms,
+            "final_sample": final_sample,
+        }
+    )
+    _telemetry_sequence = sequence
+    append_telemetry_payload(sample)
+    return sample
+
+
+def record_telemetry_failure(exc: Exception, *, final_sample: bool) -> int:
+    global _telemetry_sequence
+
+    _telemetry_sequence += 1
+    sequence = _telemetry_sequence
+    telemetry_started = _telemetry_started_monotonic or time.monotonic()
+    append_telemetry_payload(
+        {
+            "schema_version": "gpu-control-six-api-telemetry-error.v1",
+            "captured_at": utc_now(),
+            "session_id": RUNTIME.session_id,
+            "sequence": sequence,
+            "actual_elapsed_ms": int(max(0.0, time.monotonic() - telemetry_started) * 1000),
+            "final_sample": final_sample,
+            "valid": False,
+            "error_code": type(exc).__name__,
+        }
+    )
+    return sequence
+
+
+def handle_telemetry_watchdog(sample: Mapping[str, Any], environment: Any) -> bool:
+    global _production_watchdog_triggered
+
+    watchdog = sample.get("production_watchdog")
+    if not isinstance(watchdog, Mapping) or watchdog.get("detected") is not True:
+        return False
+    _production_watchdog_triggered = True
+    first_request = _shape_stop_signal.request("foreign_work_detected")
+    environment.process_exit_code = 2
+    if first_request:
+        REGISTRY.event(
+            "safety.foreign_work_detected",
+            count=watchdog.get("count"),
+            jobs=watchdog.get("jobs"),
+            action="shape_stop_requested",
+        )
+    return True
+
+
+def telemetry_loop(environment: Any) -> None:
+    global _telemetry_stop
+
     with httpx.Client(
         base_url=RUNTIME.target,
         verify=httpx_verify(),
@@ -834,61 +971,10 @@ def telemetry_loop(environment: Any) -> None:
     ) as client:
         while not _telemetry_stop:
             cycle_started = time.monotonic()
-            sequence += 1
             try:
-                sample = collect_telemetry(client)
-                capture_span_ms = int((time.monotonic() - cycle_started) * 1000)
-                if capture_span_ms > int(TELEMETRY_INTERVAL_SECONDS * 1000):
-                    raise LoadTestConfigurationError(
-                        "telemetry capture exceeded its sampling interval"
-                    )
-                sample.update(
-                    {
-                        "sequence": sequence,
-                        "scheduled_elapsed_ms": int(
-                            (sequence - 1) * TELEMETRY_INTERVAL_SECONDS * 1000
-                        ),
-                        "actual_elapsed_ms": int(
-                            (cycle_started - loop_started) * 1000
-                        ),
-                        "capture_span_ms": capture_span_ms,
-                    }
-                )
-                with (RESULT_DIR / "telemetry.jsonl").open(
-                    "a", encoding="utf-8"
-                ) as handle:
-                    handle.write(
-                        json.dumps(sample, ensure_ascii=False, sort_keys=True) + "\n"
-                    )
-                watchdog = sample.get("production_watchdog")
-                if isinstance(watchdog, dict) and watchdog.get("detected") is True:
-                    _production_watchdog_triggered = True
-                    first_request = _shape_stop_signal.request("foreign_work_detected")
-                    environment.process_exit_code = 2
-                    if first_request:
-                        REGISTRY.event(
-                            "safety.foreign_work_detected",
-                            count=watchdog.get("count"),
-                            jobs=watchdog.get("jobs"),
-                            action="shape_stop_requested",
-                        )
-                    return
+                sample = capture_telemetry_sample(client, final_sample=False)
             except Exception as exc:
-                error_sample = {
-                    "schema_version": "gpu-control-six-api-telemetry-error.v1",
-                    "captured_at": utc_now(),
-                    "session_id": RUNTIME.session_id,
-                    "sequence": sequence,
-                    "valid": False,
-                    "error_code": type(exc).__name__,
-                }
-                with (RESULT_DIR / "telemetry.jsonl").open(
-                    "a", encoding="utf-8"
-                ) as handle:
-                    handle.write(
-                        json.dumps(error_sample, ensure_ascii=False, sort_keys=True)
-                        + "\n"
-                    )
+                sequence = record_telemetry_failure(exc, final_sample=False)
                 first_request = _shape_stop_signal.request("telemetry_sample_failed")
                 environment.process_exit_code = 2
                 if first_request:
@@ -899,26 +985,55 @@ def telemetry_loop(environment: Any) -> None:
                         action="shape_stop_requested",
                     )
                 return
+            if handle_telemetry_watchdog(sample, environment):
+                return
             elapsed = time.monotonic() - cycle_started
             gevent.sleep(max(0.1, TELEMETRY_INTERVAL_SECONDS - elapsed))
 
 
 def start_telemetry(environment: Any) -> None:
-    global _telemetry_greenlet, _telemetry_stop
+    global _telemetry_final_sample_written, _telemetry_greenlet
+    global _telemetry_sequence, _telemetry_started_monotonic, _telemetry_stop
 
     _telemetry_stop = False
+    _telemetry_sequence = 0
+    _telemetry_started_monotonic = time.monotonic()
+    _telemetry_final_sample_written = False
     _telemetry_greenlet = gevent.spawn(telemetry_loop, environment)
 
 
 @events.test_stop.add_listener
-def stop_telemetry(**_: Any) -> None:
-    global _telemetry_greenlet, _telemetry_stop
+def stop_telemetry(environment: Any | None = None, **_: Any) -> None:
+    global _telemetry_final_sample_written, _telemetry_greenlet, _telemetry_stop
 
     _telemetry_stop = True
     greenlet = _telemetry_greenlet
     _telemetry_greenlet = None
     if greenlet is not None and greenlet is not gevent.getcurrent():
         greenlet.kill(block=True, timeout=5)
+    if _telemetry_started_monotonic is None or _telemetry_final_sample_written:
+        return
+    _telemetry_final_sample_written = True
+    try:
+        with httpx.Client(
+            base_url=RUNTIME.target,
+            verify=httpx_verify(),
+            follow_redirects=False,
+            timeout=30,
+        ) as client:
+            sample = capture_telemetry_sample(client, final_sample=True)
+    except Exception as exc:
+        sequence = record_telemetry_failure(exc, final_sample=True)
+        if environment is not None:
+            environment.process_exit_code = 2
+        REGISTRY.event(
+            "telemetry.final_sample_failed",
+            sequence=sequence,
+            error=type(exc).__name__,
+        )
+        return
+    if environment is not None:
+        handle_telemetry_watchdog(sample, environment)
 
 
 @events.test_start.add_listener
@@ -1039,6 +1154,7 @@ class SixApiUser(HttpUser):
         path: str,
         *,
         api_name: str,
+        operation: str = "submit",
         headers: Mapping[str, str],
         builder: Callable[[ExitStack], tuple[dict[str, str], list[tuple[str, Any]]]],
         timeout: float | tuple[float, float] = (15, 300),
@@ -1052,7 +1168,7 @@ class SixApiUser(HttpUser):
                     headers=dict(headers),
                     data=data,
                     files=files,
-                    name=f"{api_name}:submit",
+                    name=f"{api_name}:{operation}",
                     timeout=timeout,
                     catch_response=True,
                 ) as response:
@@ -1078,7 +1194,7 @@ class SixApiUser(HttpUser):
                     if retries >= SCENARIO.max_retries:
                         return response, retries
                     retries += 1
-                    REGISTRY.retry(api_name, "submit", status_code)
+                    REGISTRY.retry(api_name, operation, status_code)
             gevent.sleep(min(8.0, 0.25 * (2**retries)))
 
     def submit_async_asset(
@@ -1404,6 +1520,7 @@ class SixApiUser(HttpUser):
         response, retries = self.post_multipart(
             API_CONTRACTS[api_name]["submit"],
             api_name=api_name,
+            operation="sync-e2e",
             headers=headers,
             builder=builder,
             timeout=(15, SCENARIO.operation_timeout_seconds[api_name]),
@@ -1575,19 +1692,134 @@ def teardown_cancel_sender(
     return send_cancel
 
 
-def teardown_session_tasks() -> list[dict[str, Any]]:
+def discover_teardown_records(
+    client: httpx.Client,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    admin_headers = {"Authorization": f"Bearer {RUNTIME.admin_bearer_token}"}
+    gpu_jobs, gpu_audit = active_gpu_admin_jobs(
+        client,
+        admin_headers,
+        client_kind="test",
+        passes=2,
+    )
+    asset_response = client.get("/admin/asset-processing?limit=500", headers=admin_headers)
+    asset_response.raise_for_status()
+    asset_overview = asset_response.json()
+    if not isinstance(gpu_jobs, list) or not isinstance(asset_overview, dict):
+        raise LoadTestConfigurationError(
+            "teardown recovery admin endpoints returned the wrong shape"
+        )
+    asset_jobs = asset_overview.get("jobs")
+    if not isinstance(asset_jobs, list):
+        raise LoadTestConfigurationError("teardown recovery asset overview omitted jobs")
+    if len(asset_jobs) >= 500:
+        raise LoadTestConfigurationError("teardown recovery asset audit window is saturated")
+    candidates = discover_scoped_teardown_tasks(
+        gpu_jobs,
+        asset_jobs,
+        tenant_key_indices={tenant_id: index for index, tenant_id in enumerate(RUNTIME.tenant_ids)},
+        session_id=RUNTIME.session_id,
+        started_at=REGISTRY.started_at,
+    )
+    return candidates, {
+        "passed": True,
+        "scope": "exclusive_test_tenant+run_started_at+business_identity",
+        "gpu_rows_scanned": gpu_audit["rows_scanned"],
+        "gpu_status_queries": gpu_audit["status_queries"],
+        "asset_rows_scanned": len(asset_jobs),
+        "active_candidates": len(candidates),
+    }
+
+
+def settle_teardown_tasks(
+    client: httpx.Client,
+    tasks: Mapping[str, Mapping[str, Any]],
+    outcomes: list[dict[str, Any]],
+) -> None:
+    outcome_by_id = {str(item["task_id"]): item for item in outcomes}
+    pending = set(tasks)
+    deadline = time.monotonic() + TEARDOWN_SETTLE_TIMEOUT_SECONDS
+    while pending and time.monotonic() < deadline:
+        for identifier in list(pending):
+            record = tasks[identifier]
+            outcome = outcome_by_id[identifier]
+            key_index = int(record["api_key_index"])
+            headers = {
+                "X-API-Key": RUNTIME.api_keys[key_index],
+                "X-Request-ID": (f"lt:{RUNTIME.session_id}:settle:{identifier}"[:64]),
+            }
+            try:
+                response = client.get(str(record["status_url"]), headers=headers)
+                outcome["last_settle_http_status"] = response.status_code
+                if response.status_code != 200:
+                    continue
+                status = str(safe_json(response).get("status") or "")
+                outcome["last_observed_status"] = status
+                if status in TERMINAL_STATUSES:
+                    outcome["settled"] = True
+                    outcome["final_status"] = status
+                    outcome["cleanup_safe"] = (
+                        status in LOAD_SUCCESS_STATUSES or status == "CANCELLED"
+                    )
+                    pending.remove(identifier)
+            except httpx.HTTPError as exc:
+                outcome["settle_error"] = type(exc).__name__
+        if pending:
+            gevent.sleep(TEARDOWN_SETTLE_POLL_INTERVAL_SECONDS)
+    for identifier in pending:
+        outcome = outcome_by_id[identifier]
+        outcome["settled"] = False
+        outcome["cleanup_safe"] = False
+        outcome["settle_timeout_seconds"] = TEARDOWN_SETTLE_TIMEOUT_SECONDS
+
+
+def teardown_session_tasks() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     outcomes: list[dict[str, Any]] = []
-    active_records = REGISTRY.active()
-    if not active_records:
-        return outcomes
     with httpx.Client(
         base_url=RUNTIME.target,
         verify=httpx_verify(),
         follow_redirects=False,
         timeout=TEARDOWN_CANCEL_TIMEOUT_SECONDS,
     ) as client:
+        try:
+            discovered, recovery_scan = discover_teardown_records(client)
+        except (httpx.HTTPError, ValueError, LoadTestConfigurationError) as exc:
+            discovered = []
+            recovery_scan = {
+                "passed": False,
+                "scope": "exclusive_test_tenant+run_started_at+business_identity",
+                "error": type(exc).__name__,
+                "message": str(exc),
+            }
+            REGISTRY.event(
+                "teardown.recovery_scan_failed",
+                error=type(exc).__name__,
+                message=str(exc),
+            )
+        active_records = REGISTRY.active()
+        registered_ids = {str(record["id"]) for record in active_records}
+        recovered = [record for record in discovered if str(record["id"]) not in registered_ids]
+        recovery_scan["unregistered_recovered"] = len(recovered)
+        active_records.extend(recovered)
+        tasks = {str(record["id"]): record for record in active_records}
         for index, record in enumerate(active_records):
             key_index = int(record["api_key_index"])
+            if key_index < 0 or key_index >= len(RUNTIME.api_keys):
+                outcome = {
+                    "task_id": record["id"],
+                    "api": record["api"],
+                    "status_code": 0,
+                    "cancelled": False,
+                    "settled": False,
+                    "cleanup_safe": False,
+                    "error": "APIKeyIndexOutOfRange",
+                    "attempts": 0,
+                    "recovered_by_scope_scan": bool(record.get("recovery_source")),
+                }
+                outcomes.append(outcome)
+                REGISTRY.event("teardown.cancel", **outcome)
+                tasks.pop(str(record["id"]), None)
+                continue
             api_key = RUNTIME.api_keys[key_index]
             request_id = f"lt:{RUNTIME.session_id}:teardown:{record['id']}"[:64]
             headers = {
@@ -1618,6 +1850,9 @@ def teardown_session_tasks() -> list[dict[str, Any]]:
                     "status_code": status_code,
                     "cancelled": status_code == 200,
                     "attempts": attempts,
+                    "settled": False,
+                    "cleanup_safe": False,
+                    "recovered_by_scope_scan": bool(record.get("recovery_source")),
                 }
             except httpx.HTTPError as exc:
                 attempts = attempt_counter[0]
@@ -1626,14 +1861,28 @@ def teardown_session_tasks() -> list[dict[str, Any]]:
                     "api": record["api"],
                     "status_code": 0,
                     "cancelled": False,
+                    "settled": False,
+                    "cleanup_safe": False,
                     "error": type(exc).__name__,
                     "attempts": attempts,
+                    "recovered_by_scope_scan": bool(record.get("recovery_source")),
                 }
             outcomes.append(outcome)
             REGISTRY.event("teardown.cancel", **outcome)
             if index + 1 < len(active_records):
                 gevent.sleep(TEARDOWN_CANCEL_THROTTLE_SECONDS)
-    return outcomes
+        if tasks:
+            settle_teardown_tasks(client, tasks, outcomes)
+        for outcome in outcomes:
+            REGISTRY.event(
+                "teardown.settled",
+                task_id=outcome["task_id"],
+                api=outcome["api"],
+                settled=outcome.get("settled"),
+                final_status=outcome.get("final_status"),
+                cleanup_safe=outcome.get("cleanup_safe"),
+            )
+    return outcomes, recovery_scan
 
 
 def locust_stats(environment: Any) -> dict[str, Any]:
@@ -1677,63 +1926,15 @@ def read_telemetry_samples() -> list[dict[str, Any]]:
                 f"telemetry.jsonl line {line_number} is invalid"
             ) from exc
         if not isinstance(payload, dict):
-            raise LoadTestConfigurationError(
-                f"telemetry.jsonl line {line_number} is not an object"
-            )
+            raise LoadTestConfigurationError(f"telemetry.jsonl line {line_number} is not an object")
         samples.append(payload)
     return samples
 
 
-def evaluate_thresholds(summary: Mapping[str, Any]) -> dict[str, Any]:
-    http = summary.get("http") if isinstance(summary.get("http"), dict) else {}
-    total = http.get("total") if isinstance(http.get("total"), dict) else {}
-    entries = http.get("entries") if isinstance(http.get("entries"), dict) else {}
-
-    def maximum_p95(operation: str) -> float | None:
-        values = [
-            float(item["p95_ms"])
-            for name, item in entries.items()
-            if isinstance(item, dict)
-            and str(name).endswith(f":{operation}")
-            and item.get("p95_ms") is not None
-        ]
-        return max(values) if values else None
-
-    queue = summary.get("queue_ms") if isinstance(summary.get("queue_ms"), dict) else {}
-    created = int(summary.get("created") or 0)
-    retries = int(summary.get("http_retry_attempts") or 0)
-    observed: dict[str, float | None] = {
-        "http_failure_rate_percent": (
-            float(total["failure_rate"]) * 100
-            if total.get("failure_rate") is not None
-            else None
-        ),
-        "submit_p95_ms": maximum_p95("submit"),
-        "poll_p95_ms": maximum_p95("poll"),
-        "artifact_p95_ms": maximum_p95("artifact-download"),
-        "queue_p95_ms": float(queue["p95"]) if queue.get("p95") is not None else None,
-        "retry_rate_percent": (retries / created * 100) if created else None,
-    }
-    checks: dict[str, Any] = {}
-    for name, limit in SCENARIO.thresholds.items():
-        value = observed.get(name)
-        passed = value is not None and value <= limit
-        checks[name] = {
-            "observed": round(value, 6) if value is not None else None,
-            "maximum": limit,
-            "passed": passed,
-            "reason": None if passed else ("missing measurement" if value is None else "exceeded"),
-        }
-    return {
-        "passed": bool(checks) and all(item["passed"] for item in checks.values()),
-        "checks": checks,
-    }
-
-
 @events.test_stop.add_listener
 def finalize_results(environment: Any, **_: Any) -> None:
-    stop_telemetry()
-    teardown = teardown_session_tasks()
+    stop_telemetry(environment=environment)
+    teardown, recovery_scan = teardown_session_tasks()
     records = REGISTRY.records()
     summary = REGISTRY.summary()
     api_counts = summary.get("apis") if isinstance(summary.get("apis"), dict) else {}
@@ -1744,7 +1945,8 @@ def finalize_results(environment: Any, **_: Any) -> None:
         "passed": not missing_apis,
     }
     summary["http"] = locust_stats(environment)
-    summary["threshold_evaluation"] = evaluate_thresholds(summary)
+    summary["threshold_evaluation"] = evaluate_load_thresholds(summary, SCENARIO.thresholds)
+    telemetry_samples: list[dict[str, Any]] = []
     try:
         telemetry_samples = read_telemetry_samples()
         telemetry = summarize_telemetry(
@@ -1759,18 +1961,12 @@ def finalize_results(environment: Any, **_: Any) -> None:
             "evidence_complete": False,
             "error": type(exc).__name__,
         }
-    expected_minimum_samples = max(
-        1,
-        int(float(summary["elapsed_seconds"]) // TELEMETRY_INTERVAL_SECONDS),
-    )
     expected_resources = telemetry.get("expected_resources")
     resources = expected_resources if isinstance(expected_resources, dict) else {}
-    valid_sample_count = int(telemetry.get("valid_sample_count") or 0)
-    evidence_complete = (
-        valid_sample_count >= expected_minimum_samples
-        and int(telemetry.get("invalid_sample_count") or 0) == 0
-        and resources.get("all_gpu_samples_present") is True
-        and resources.get("all_worker_samples_present") is True
+    telemetry_evidence = evaluate_telemetry_evidence(
+        telemetry_samples,
+        expected_resources=resources,
+        sampling_interval_seconds=TELEMETRY_INTERVAL_SECONDS,
     )
     gpu_nodes = telemetry.get("gpu_nodes")
     gpu_node_metrics = gpu_nodes if isinstance(gpu_nodes, dict) else {}
@@ -1781,21 +1977,18 @@ def finalize_results(environment: Any, **_: Any) -> None:
         and gpu_node_metrics[node_id].get("saturation_ge_90_percent_ratio") is not None
         and float(gpu_node_metrics[node_id]["saturation_ge_90_percent_ratio"]) > 0
     ]
-    missing_saturated_gpu_ids = sorted(
-        set(_expected_gpu_node_ids) - set(saturated_gpu_ids)
-    )
+    missing_saturated_gpu_ids = sorted(set(_expected_gpu_node_ids) - set(saturated_gpu_ids))
     telemetry.update(
         {
             "sampling_interval_seconds": TELEMETRY_INTERVAL_SECONDS,
-            "expected_minimum_samples": expected_minimum_samples,
-            "evidence_complete": evidence_complete,
+            "sampling_evidence": telemetry_evidence,
+            "evidence_complete": telemetry_evidence["passed"],
             "gpu_saturation_objective": {
                 "required_gpu_ids": list(_expected_gpu_node_ids),
                 "observed_gpu_ids": sorted(saturated_gpu_ids),
                 "missing_gpu_ids": missing_saturated_gpu_ids,
                 "passed": (
-                    len(_expected_gpu_node_ids)
-                    >= SCENARIO.preflight["minimum_healthy_gpu_nodes"]
+                    len(_expected_gpu_node_ids) >= SCENARIO.preflight["minimum_healthy_gpu_nodes"]
                     and not missing_saturated_gpu_ids
                 ),
             },
@@ -1805,7 +1998,9 @@ def finalize_results(environment: Any, **_: Any) -> None:
     summary["teardown"] = {
         "attempted": len(teardown),
         "accepted": sum(item["cancelled"] for item in teardown),
-        "scope": "session_registry_only",
+        "settled": sum(item.get("settled") is True for item in teardown),
+        "scope": "registry_plus_scoped_admin_recovery",
+        "recovery_scan": recovery_scan,
     }
     summary["production_watchdog"] = {
         "triggered": _production_watchdog_triggered,
@@ -1816,10 +2011,14 @@ def finalize_results(environment: Any, **_: Any) -> None:
         "requested": _shape_stop_signal.requested,
         "reason": _shape_stop_signal.reason,
     }
-    summary["lifecycle_evaluation"] = evaluate_load_lifecycle(records, teardown)
+    summary["lifecycle_evaluation"] = evaluate_load_lifecycle(
+        records,
+        teardown,
+        mode=SCENARIO.lifecycle_mode,
+        recovery_scan_passed=recovery_scan.get("passed") is True,
+    )
     (RESULT_DIR / "records.json").write_text(
-        json.dumps(records, ensure_ascii=False, indent=2, sort_keys=True, default=str)
-        + "\n",
+        json.dumps(records, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n",
         encoding="utf-8",
     )
     (RESULT_DIR / "teardown.json").write_text(

@@ -2,10 +2,12 @@
 
 本页是仓库文档导航。今天部署时不要从 30 多份文档逐一翻找，按下面的“现场主线”执行即可；其余文档是遇到具体问题时的细节手册。
 
-最近一次已归档的生产基线：GPU Control `1.5.4`、数据库 `20260729_0010`、ComfyUI
-`projects-0.2.3`；归档时 3090-A/3090-B 为 `ONLINE/ACTIVE`，4090 为 `ONLINE/OVERFLOW`。
-断电或重启后必须重新执行只读健康检查，不能把本文档导航当作实时监控。Asset 任务通过严格 QA 后自动发布，
-不存在人工发布门；QA 未通过时必须拒绝交付。
+当前生产基线：GPU Control `1.5.5`、数据库 `20260730_0011`、ComfyUI
+`projects-0.2.3`；1.5.6 为已通过离线回归、尚未热更新的稳定性候选。最近只读检查时三个 GPU
+节点均为 `ONLINE/ACTIVE` 且空闲，具体状态仍必须以运行时 API/数据库为准。
+断电或重启后必须重新执行只读健康检查，不能把本文档导航当作实时监控。Retopology 当前为
+advisory 质量模式：质量不达标保留告警，但通过身份、manifest、完整性和 SHA 硬门禁的正式
+BLEND/FBX 仍交付；不存在人工发布门。
 
 ## 1. 当前现场主线
 
@@ -76,6 +78,7 @@
 | 六 API 综合压测 | `67_2026-07-30_SIX_API_MIXED_LOAD_TEST_RUNBOOK.md` | 100+ 用户真实请求组合、GPU/CPU/Windows 槽位遥测、生产双重授权和零活动任务门禁；当前仅准备、未执行 |
 | 1.5.5 候选打包 | `68_2026-07-30_CONTROL_PLANE_1_5_5_REPRODUCIBLE_PACKAGING.md` | 四镜像可复现候选、固定基础镜像、SBOM/provenance、离线归档和 LFS 的 fail-closed 门禁；当前仅准备、未执行 |
 | 动画管家 1.5.5 联测前回执 | `69_2026-07-30_ASSETCLAW_1_5_5_SPEED_STABILITY_PREJOINT_RECEIPT.md` | 本轮最终源码、性能稳定修复、WebUI、素材输入阻断和发布/压测未执行边界；联合测试前按此对账 |
+| Retopology / 六 API / 稳定性热修复 | `70_2026-07-30_RETOPOLOGY_QA_ADVISORY_HOTFIX_AND_LOAD_READINESS.md`、`73_2026-07-30_SIX_API_120VU_LOAD_RESULT.md`、`74_2026-07-30_SCHEDULER_AND_SUBSTANCE_STABILITY_HOTFIX.md` | 正式 BLEND/FBX advisory 交付、120 VU 首轮原始结果，以及 Scheduler/Substance 并发修复与旧版本回滚门禁 |
 | 分角色安装 | `03`—`11` | 网络、准备、4090、3090、镜像、模型、工作流、首次部署 |
 | 使用手册 | `12_WEB_ADMIN_GUIDE.md`、`13_PUBLIC_API_GUIDE.md` | 管理后台和业务 API |
 | 运维 | `15`—`22` | 日志、告警、备份、升级、故障、容量和 FAQ |

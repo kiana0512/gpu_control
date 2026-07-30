@@ -5,12 +5,14 @@ import re
 import shutil
 import stat
 import tempfile
+import time
 import unicodedata
 import uuid
 import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from threading import Event
 from typing import Any, Literal
 
 from PIL import Image, UnidentifiedImageError
@@ -127,6 +129,44 @@ class BuiltBatchArchive:
     size_bytes: int
     sha256: str
     manifest: dict[str, Any]
+
+
+def result_archive_staging_path(batch_dir: Path, batch_id: str) -> Path:
+    """Return a task-unique path that can never alias the public artifact."""
+
+    staging_root = batch_dir / "output" / ".assembly"
+    staging_root.mkdir(parents=True, exist_ok=True)
+    return staging_root / f"{batch_id}-{uuid.uuid4().hex}.zip"
+
+
+def result_archive_final_path(batch_dir: Path, batch_id: str) -> Path:
+    return batch_dir / "output" / f"{batch_id}-rgba.zip"
+
+
+def cleanup_result_archive_staging(
+    batch_dir: Path,
+    *,
+    older_than_seconds: float = 24 * 60 * 60,
+) -> int:
+    """Best-effort cleanup for abandoned, task-unique assembly files.
+
+    A generous age threshold prevents a new leader from unlinking a file that
+    an old executor thread is still finishing after cancellation.
+    """
+
+    staging_root = batch_dir / "output" / ".assembly"
+    if not staging_root.is_dir():
+        return 0
+    cutoff = time.time() - older_than_seconds
+    removed = 0
+    for candidate in staging_root.glob("*.zip"):
+        try:
+            if candidate.is_file() and candidate.stat().st_mtime <= cutoff:
+                candidate.unlink()
+                removed += 1
+        except FileNotFoundError:
+            continue
+    return removed
 
 
 _BATCH_TRANSITIONS: dict[BatchStatus, frozenset[BatchStatus]] = {
@@ -515,7 +555,15 @@ def build_result_archive(
     batch_dir: Path,
     frames: list[ArchiveFrame],
     workflow_identity: dict[str, str | None] | None = None,
+    staging_path: Path | None = None,
+    cancel_event: Event | None = None,
 ) -> BuiltBatchArchive:
+    """Build and hash a private archive without publishing the final path."""
+
+    def raise_if_cancelled() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError("batch archive build was cancelled")
+
     if workflow_identity is None:
         identity_path = batch_dir / "workflow.identity.json"
         if identity_path.is_file():
@@ -527,9 +575,11 @@ def build_result_archive(
                 }
     items: list[dict[str, Any]] = []
     for frame in sorted(frames, key=lambda value: value.ordinal):
+        raise_if_cancelled()
         digest = hashlib.sha256()
         with frame.output_path.open("rb") as handle:
             while chunk := handle.read(1024 * 1024):
+                raise_if_cancelled()
                 digest.update(chunk)
         if digest.hexdigest() != frame.expected_output_sha256:
             raise BatchContractError(
@@ -576,21 +626,38 @@ def build_result_archive(
         "total": len(items),
         "items": items,
     }
-    output_root = batch_dir / "output"
-    output_root.mkdir(parents=True, exist_ok=True)
-    destination = output_root / f"{batch_id}-rgba.zip"
-    descriptor, temporary = tempfile.mkstemp(prefix=".result-", suffix=".zip", dir=output_root)
+    assembly_root = batch_dir / "output" / ".assembly"
+    assembly_root.mkdir(parents=True, exist_ok=True)
+    destination = staging_path or result_archive_staging_path(batch_dir, batch_id)
+    if destination.parent.resolve() != assembly_root.resolve():
+        raise ValueError("result archive staging path must stay inside output/.assembly")
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{destination.stem}-",
+        suffix=".zip",
+        dir=assembly_root,
+    )
     os.close(descriptor)
     try:
+        raise_if_cancelled()
         with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_STORED) as archive:
             archive.writestr(
                 "manifest.json",
                 json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8"),
             )
             for frame in sorted(frames, key=lambda value: value.ordinal):
-                archive.write(frame.output_path, f"results/{frame.output_relative_path}")
+                raise_if_cancelled()
+                info = zipfile.ZipInfo.from_file(
+                    frame.output_path,
+                    arcname=f"results/{frame.output_relative_path}",
+                )
+                info.compress_type = zipfile.ZIP_STORED
+                with frame.output_path.open("rb") as source, archive.open(info, "w") as target:
+                    while chunk := source.read(1024 * 1024):
+                        raise_if_cancelled()
+                        target.write(chunk)
         with open(temporary, "rb") as handle:
             os.fsync(handle.fileno())
+        raise_if_cancelled()
         os.replace(temporary, destination)
     finally:
         if os.path.exists(temporary):
@@ -599,6 +666,7 @@ def build_result_archive(
     size = 0
     with destination.open("rb") as handle:
         while chunk := handle.read(1024 * 1024):
+            raise_if_cancelled()
             size += len(chunk)
             digest.update(chunk)
     return BuiltBatchArchive(destination, size, digest.hexdigest(), manifest)

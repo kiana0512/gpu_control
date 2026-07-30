@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock, MagicMock
+
 import httpx
 import pytest
 
@@ -66,3 +68,20 @@ async def test_missing_or_duplicate_submit_intent_fails_closed() -> None:
         assert len(state.prompts) == 2
     finally:
         await client.close()
+
+
+async def test_recovery_waits_for_inflight_submit_without_reposting() -> None:
+    client = MagicMock()
+    client.prompt_ids_for_client = AsyncMock(
+        side_effect=[[], [], ["accepted-after-takeover"]]
+    )
+
+    recovered = await reconcile_prompt_submission(
+        client,
+        "gpu-control-job-race-attempt-1",
+        settle_seconds=1,
+        poll_interval_seconds=0,
+    )
+
+    assert recovered == "accepted-after-takeover"
+    assert client.prompt_ids_for_client.await_count == 3

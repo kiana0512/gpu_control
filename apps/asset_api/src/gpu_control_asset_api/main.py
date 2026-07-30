@@ -13,6 +13,7 @@ import uuid
 import zipfile
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
@@ -43,6 +44,10 @@ from packages.gpu_control_core.assets import (
     validate_reference_image_filename,
 )
 from packages.gpu_control_core.database import Database
+from packages.gpu_control_core.enums import (
+    TERMINAL_BATCH_STATUSES,
+    TERMINAL_JOB_STATUSES,
+)
 from packages.gpu_control_core.models import (
     ApiClient,
     ApiKey,
@@ -51,7 +56,19 @@ from packages.gpu_control_core.models import (
     AssetJob,
     AssetJobEvent,
     AssetWorker,
+    Job,
+    JobBatch,
     Node,
+)
+from packages.gpu_control_core.scheduling import (
+    SUBSTANCE_DRAIN_OWNER,
+    SUBSTANCE_DRAIN_OWNER_LABEL,
+    SUBSTANCE_FENCE_LABEL,
+    SUBSTANCE_LEGACY_FENCE_LABEL,
+    SUBSTANCE_PENDING_RESERVATION_LABEL,
+    SUBSTANCE_RECOVERY_REQUIRED_LABEL,
+    substance_fence_job_ids,
+    substance_pending_reservation,
 )
 from packages.gpu_control_core.security import sign_agent_request, verify_api_key
 from packages.gpu_control_core.settings import Settings, get_settings
@@ -102,9 +119,52 @@ SUBSTANCE_BAKE_OUTPUTS = {
 SUBSTANCE_WORKER_ID = "asset-worker-3090-b-windows"
 SUBSTANCE_WORKER_ID_PREFIX = f"{SUBSTANCE_WORKER_ID}-"
 SUBSTANCE_GPU_NODE_ID = "worker-3090-b"
+
+
+@dataclass(frozen=True, slots=True)
+class AssetCompletionSnapshot:
+    """Immutable job contract used while completion files are validated off-lock."""
+
+    id: str
+    job_type: str
+    worker_id: str | None
+    source_filename: str
+    input_sha256: str
+    options: dict[str, Any]
+
+
+async def persist_completion_upload(
+    upload: UploadFile | StarletteUploadFile,
+    destination: Path,
+    *,
+    max_bytes: int | None = None,
+) -> tuple[str, int]:
+    """Write one private completion artifact without holding database locks."""
+
+    digest = hashlib.sha256()
+    size = 0
+    with destination.open("xb") as output:
+        while chunk := await upload.read(1024 * 1024):
+            size += len(chunk)
+            if max_bytes is not None and size > max_bytes:
+                raise HTTPException(413, detail={"code": "ASSET_TOO_LARGE"})
+            digest.update(chunk)
+            output.write(chunk)
+        output.flush()
+        os.fsync(output.fileno())
+    return digest.hexdigest(), size
+
+
+def fsync_completion_staging(staging: Path) -> None:
+    """Persist directory entries before DB rows make staged artifacts visible."""
+
+    descriptor = os.open(staging, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 SUBSTANCE_VERSION = "substance-15.1.0"
-SUBSTANCE_FENCE_LABEL = "substance_bake_fence_job_ids"
-SUBSTANCE_LEGACY_FENCE_LABEL = "substance_bake_fence_job_id"
+SUBSTANCE_MAX_PARALLEL = 4
 RETOPOLOGY_AUDIT_ARTIFACTS = {
     "audit": ("retopology_audit.json", "application/json"),
     "manifest": ("retopology_manifest.json", "application/json"),
@@ -169,23 +229,317 @@ def is_substance_worker_id(worker_id: str | None) -> bool:
     )
 
 
-def substance_fence_job_ids(labels: dict[str, Any]) -> list[str]:
-    raw = labels.get(SUBSTANCE_FENCE_LABEL, [])
-    job_ids = [str(value) for value in raw] if isinstance(raw, list) else []
-    legacy = labels.get(SUBSTANCE_LEGACY_FENCE_LABEL)
-    if legacy and str(legacy) not in job_ids:
-        job_ids.append(str(legacy))
-    return job_ids
+async def production_gpu_work_active(db: AsyncSession) -> bool:
+    """Return whether real GPU work must take precedence over load-test Baker work."""
+    terminal_jobs = [status.value for status in TERMINAL_JOB_STATUSES]
+    active_job = await db.scalar(
+        select(Job.id)
+        .join(ApiClient, ApiClient.id == Job.tenant_id)
+        .where(
+            ApiClient.client_kind != "test",
+            Job.status.not_in(terminal_jobs),
+        )
+        .limit(1)
+    )
+    if active_job is not None:
+        return True
+    terminal_batches = [status.value for status in TERMINAL_BATCH_STATUSES]
+    active_batch = await db.scalar(
+        select(JobBatch.id)
+        .join(ApiClient, ApiClient.id == JobBatch.tenant_id)
+        .where(
+            ApiClient.client_kind != "test",
+            JobBatch.status.not_in(terminal_batches),
+        )
+        .limit(1)
+    )
+    return active_batch is not None
+
+
+def expire_substance_pending_reservation(node: Node, now: datetime) -> None:
+    """Remove an expired pending reservation without touching an active fence."""
+    labels = dict(node.labels or {})
+    pending_ids, _ = substance_pending_reservation(labels, now)
+    if labels.get(SUBSTANCE_PENDING_RESERVATION_LABEL) is not None and not pending_ids:
+        labels.pop(SUBSTANCE_PENDING_RESERVATION_LABEL, None)
+    fenced_job_ids = substance_fence_job_ids(labels)
+    recovery_required = bool(labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL))
+    if not fenced_job_ids and not pending_ids and not recovery_required:
+        owned = labels.get(SUBSTANCE_DRAIN_OWNER_LABEL) == SUBSTANCE_DRAIN_OWNER
+        if owned:
+            labels.pop(SUBSTANCE_DRAIN_OWNER_LABEL, None)
+        labels.pop(SUBSTANCE_LEGACY_FENCE_LABEL, None)
+        labels.pop(SUBSTANCE_FENCE_LABEL, None)
+        if owned and node.mode == "DRAINING" and not node.manual_reserved:
+            node.mode = "ACTIVE"
+    node.labels = labels
+
+
+def ensure_substance_owned_drain(node: Node, labels: dict[str, Any]) -> bool:
+    """Acquire/retain only an Asset API-owned drain without stealing mode ownership."""
+    if node.mode == "ACTIVE" and not node.manual_reserved:
+        node.mode = "DRAINING"
+        labels[SUBSTANCE_DRAIN_OWNER_LABEL] = SUBSTANCE_DRAIN_OWNER
+        return True
+    return (
+        node.mode == "DRAINING"
+        and labels.get(SUBSTANCE_DRAIN_OWNER_LABEL) == SUBSTANCE_DRAIN_OWNER
+    )
+
+
+async def reconcile_substance_gpu_reservation(
+    db: AsyncSession,
+    node: Node,
+    reservation_seconds: int,
+    worker_heartbeat_timeout_seconds: int,
+    *,
+    now: datetime | None = None,
+) -> list[str]:
+    """Reserve the next four production bakes while holding the GPU node lock."""
+    current = now or datetime.now(UTC)
+    expire_substance_pending_reservation(node, current)
+    labels = dict(node.labels or {})
+    if labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL):
+        # A timed-out native Baker is an ambiguous execution, not idle
+        # capacity. Keep the physical node fail-closed until the same worker
+        # reports idle and the Scheduler has observed ComfyUI ONLINE again.
+        labels.pop(SUBSTANCE_PENDING_RESERVATION_LABEL, None)
+        ensure_substance_owned_drain(node, labels)
+        node.labels = labels
+        return []
+    fenced_job_ids = substance_fence_job_ids(labels)
+    available = max(0, SUBSTANCE_MAX_PARALLEL - len(fenced_job_ids))
+    pending_job_ids: list[str] = []
+    fresh_bakers = list(
+        (
+            await db.scalars(
+                select(AssetWorker)
+                .where(
+                    AssetWorker.id.like(f"{SUBSTANCE_WORKER_ID}%"),
+                    AssetWorker.status == "ONLINE",
+                    AssetWorker.last_heartbeat_at
+                    >= current - timedelta(seconds=worker_heartbeat_timeout_seconds),
+                    AssetWorker.current_jobs < AssetWorker.max_concurrency,
+                )
+                .order_by(AssetWorker.id)
+            )
+        ).all()
+    )
+    fresh_baker_slots = sum(
+        max(0, worker.max_concurrency - worker.current_jobs)
+        for worker in fresh_bakers
+    )
+    reservation_capacity = min(available, fresh_baker_slots)
+    if reservation_capacity:
+        pending_job_ids = list(
+            (
+                await db.scalars(
+                    select(AssetJob.id)
+                    .join(ApiClient, ApiClient.id == AssetJob.client_id)
+                    .where(
+                        AssetJob.job_type == "SUBSTANCE_BAKE_V1",
+                        AssetJob.status == "QUEUED",
+                        AssetJob.cancel_requested.is_(False),
+                        ApiClient.client_kind != "test",
+                    )
+                    .order_by(AssetJob.created_at, AssetJob.id)
+                    .limit(reservation_capacity)
+                    .with_for_update(skip_locked=True, of=AssetJob)
+                )
+            ).all()
+        )
+    if pending_job_ids and ensure_substance_owned_drain(node, labels):
+        labels[SUBSTANCE_PENDING_RESERVATION_LABEL] = {
+            "job_ids": pending_job_ids,
+            "worker_ids": [worker.id for worker in fresh_bakers][
+                : len(pending_job_ids)
+            ],
+            "expires_at": (
+                current + timedelta(seconds=reservation_seconds)
+            ).isoformat(),
+            "max_parallel": SUBSTANCE_MAX_PARALLEL,
+        }
+    else:
+        pending_job_ids = []
+        labels.pop(SUBSTANCE_PENDING_RESERVATION_LABEL, None)
+
+    if fenced_job_ids:
+        # The fence is a hard scheduling interlock, but it is not proof that
+        # Asset API owns an administrative DISABLED/RESERVED/non-owner drain.
+        ensure_substance_owned_drain(node, labels)
+    elif not pending_job_ids:
+        owned = labels.get(SUBSTANCE_DRAIN_OWNER_LABEL) == SUBSTANCE_DRAIN_OWNER
+        if owned:
+            labels.pop(SUBSTANCE_DRAIN_OWNER_LABEL, None)
+        labels.pop(SUBSTANCE_FENCE_LABEL, None)
+        labels.pop(SUBSTANCE_LEGACY_FENCE_LABEL, None)
+        if owned and node.mode == "DRAINING" and not node.manual_reserved:
+            node.mode = "ACTIVE"
+    node.labels = labels
+    return pending_job_ids
+
+
+def substance_recovery_entries(labels: dict[str, Any]) -> list[dict[str, str]]:
+    raw = labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL, [])
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    entries: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict) or not item.get("job_id") or not item.get("worker_id"):
+            continue
+        entries.append(
+            {
+                "job_id": str(item["job_id"]),
+                "worker_id": str(item["worker_id"]),
+                "lease_expired_at": str(item.get("lease_expired_at", "")),
+                "idle_observed_at": str(item.get("idle_observed_at", "")),
+            }
+        )
+    return entries
+
+
+async def mark_substance_gpu_recovery_required(
+    db: AsyncSession,
+    job: AssetJob,
+    worker_id: str,
+    now: datetime,
+    *,
+    locked_node: Node | None = None,
+) -> None:
+    """Fail closed after an ambiguous native Baker lease expiry."""
+    node = locked_node
+    if node is None:
+        node = await db.scalar(
+            select(Node).where(Node.id == SUBSTANCE_GPU_NODE_ID).with_for_update()
+        )
+    if node is None:
+        return
+    labels = dict(node.labels or {})
+    fenced_job_ids = [
+        fenced_job_id
+        for fenced_job_id in substance_fence_job_ids(labels)
+        if fenced_job_id != job.id
+    ]
+    if fenced_job_ids:
+        labels[SUBSTANCE_FENCE_LABEL] = fenced_job_ids
+    else:
+        labels.pop(SUBSTANCE_FENCE_LABEL, None)
+    labels.pop(SUBSTANCE_LEGACY_FENCE_LABEL, None)
+    labels.pop(SUBSTANCE_PENDING_RESERVATION_LABEL, None)
+    entries = [
+        entry for entry in substance_recovery_entries(labels) if entry["job_id"] != job.id
+    ]
+    entries.append(
+        {
+            "job_id": job.id,
+            "worker_id": worker_id,
+            "lease_expired_at": now.isoformat(),
+        }
+    )
+    labels[SUBSTANCE_RECOVERY_REQUIRED_LABEL] = entries
+    ensure_substance_owned_drain(node, labels)
+    node.labels = labels
+
+
+async def confirm_substance_gpu_recovery(
+    db: AsyncSession,
+    worker: AssetWorker,
+    reported_current_jobs: int,
+    reservation_seconds: int,
+    node_heartbeat_timeout_seconds: int,
+    worker_heartbeat_timeout_seconds: int,
+    *,
+    locked_node: Node | None = None,
+) -> bool:
+    """Release an expiry drain only after worker-idle and ComfyUI health evidence."""
+    node = locked_node
+    if node is None:
+        node = await db.scalar(
+            select(Node).where(Node.id == SUBSTANCE_GPU_NODE_ID).with_for_update()
+        )
+    if node is None:
+        return False
+    labels = dict(node.labels or {})
+    entries = substance_recovery_entries(labels)
+    matching = [entry for entry in entries if entry["worker_id"] == worker.id]
+    if not matching:
+        return False
+    try:
+        latest_lease_expiry = max(
+            as_utc(
+                datetime.fromisoformat(
+                    entry["lease_expired_at"].replace("Z", "+00:00")
+                )
+            )
+            for entry in matching
+        )
+    except (ValueError, TypeError):
+        return False
+    if (
+        reported_current_jobs != 0
+        or worker.status != "ONLINE"
+    ):
+        return False
+    observation_time = datetime.now(UTC)
+    if any(not entry.get("idle_observed_at") for entry in matching):
+        # Phase one: persist the exact original worker's idle observation.
+        # A Comfy heartbeat that predates this evidence is never sufficient.
+        for entry in entries:
+            if entry["worker_id"] == worker.id and not entry.get("idle_observed_at"):
+                entry["idle_observed_at"] = observation_time.isoformat()
+        labels[SUBSTANCE_RECOVERY_REQUIRED_LABEL] = entries
+        ensure_substance_owned_drain(node, labels)
+        node.labels = labels
+        return False
+    try:
+        latest_idle_observation = max(
+            as_utc(datetime.fromisoformat(entry["idle_observed_at"].replace("Z", "+00:00")))
+            for entry in matching
+        )
+    except (ValueError, TypeError):
+        return False
+    if latest_idle_observation < latest_lease_expiry:
+        return False
+    node_heartbeat = (
+        as_utc(node.last_heartbeat_at) if node.last_heartbeat_at is not None else None
+    )
+    if (
+        node.health != "ONLINE"
+        or node_heartbeat is None
+        or node_heartbeat <= latest_idle_observation
+        or (observation_time - node_heartbeat).total_seconds()
+        > node_heartbeat_timeout_seconds
+        or node.current_jobs != 0
+        or node.external_busy
+        or node.foreign_queue_detected
+    ):
+        return False
+    remaining = [entry for entry in entries if entry["worker_id"] != worker.id]
+    if remaining:
+        labels[SUBSTANCE_RECOVERY_REQUIRED_LABEL] = remaining
+        ensure_substance_owned_drain(node, labels)
+        node.labels = labels
+        return True
+    labels.pop(SUBSTANCE_RECOVERY_REQUIRED_LABEL, None)
+    node.labels = labels
+    await reconcile_substance_gpu_reservation(
+        db,
+        node,
+        reservation_seconds,
+        worker_heartbeat_timeout_seconds,
+    )
+    return True
 
 
 async def release_substance_gpu_fence(
-    db: AsyncSession, job: AssetJob, *, restore_active: bool = True
+    db: AsyncSession,
+    job: AssetJob,
+    reservation_seconds: int,
+    worker_heartbeat_timeout_seconds: int,
 ) -> None:
-    """Release only this Baker job's fence.
-
-    A stale lease is not proof that Windows restored the WSL ComfyUI container,
-    so that path deliberately keeps the physical node drained for recovery.
-    """
+    """Release one Baker fence and atomically reserve the next production work."""
     if job.job_type != "SUBSTANCE_BAKE_V1":
         return
     node = await db.scalar(
@@ -195,22 +549,25 @@ async def release_substance_gpu_fence(
         return
     labels = dict(node.labels or {})
     fenced_job_ids = substance_fence_job_ids(labels)
-    if job.id not in fenced_job_ids:
-        return
-    fenced_job_ids.remove(job.id)
+    fenced_job_ids = [job_id for job_id in fenced_job_ids if job_id != job.id]
     if fenced_job_ids:
         labels[SUBSTANCE_FENCE_LABEL] = fenced_job_ids
     else:
         labels.pop(SUBSTANCE_FENCE_LABEL, None)
     labels.pop(SUBSTANCE_LEGACY_FENCE_LABEL, None)
+    pending = labels.get(SUBSTANCE_PENDING_RESERVATION_LABEL)
+    if isinstance(pending, dict) and isinstance(pending.get("job_ids"), list):
+        pending["job_ids"] = [
+            str(job_id) for job_id in pending["job_ids"] if str(job_id) != job.id
+        ]
+        labels[SUBSTANCE_PENDING_RESERVATION_LABEL] = pending
     node.labels = labels
-    if (
-        restore_active
-        and not fenced_job_ids
-        and node.mode == "DRAINING"
-        and not node.manual_reserved
-    ):
-        node.mode = "ACTIVE"
+    await reconcile_substance_gpu_reservation(
+        db,
+        node,
+        reservation_seconds,
+        worker_heartbeat_timeout_seconds,
+    )
 
 
 class Principal(BaseModel):
@@ -453,6 +810,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "SUBSTANCE_RESULT_INVALID": (
                 "Substance 3D Baker 输出未通过完整性校验，未发布为最终贴图。"
             ),
+            "SUBSTANCE_LEASE_EXPIRED_RECOVERY_REQUIRED": (
+                "Substance 3D Baker 租约失效；为防止重复执行，3090-B 已保持恢复闭锁，"
+                "等待 Worker 空闲与 ComfyUI 恢复证据。"
+            ),
         }
         return {
             "code": job.error_code,
@@ -505,13 +866,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         queue_position: int | None = None
         estimated_start_seconds: int | None = None
         if job.status == "QUEUED":
+            heartbeat_cutoff = now - timedelta(
+                seconds=cfg.asset_worker_heartbeat_timeout_seconds
+            )
             queue_query = select(func.count(AssetJob.id)).where(
                 AssetJob.status == "QUEUED",
                 AssetJob.created_at <= job.created_at,
             )
             worker_query = select(
                 func.coalesce(func.sum(AssetWorker.max_concurrency - AssetWorker.current_jobs), 0)
-            ).where(AssetWorker.status == "ONLINE")
+            ).where(
+                AssetWorker.status == "ONLINE",
+                AssetWorker.last_heartbeat_at >= heartbeat_cutoff,
+            )
             if job.job_type == "SUBSTANCE_BAKE_V1":
                 queue_query = queue_query.where(AssetJob.job_type == "SUBSTANCE_BAKE_V1")
                 worker_query = worker_query.where(
@@ -608,6 +975,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if job is None or job.client_id != principal.id:
             raise HTTPException(404, detail={"code": "ASSET_JOB_NOT_FOUND"})
         return job
+
+    async def lock_substance_node_for_job(
+        job_id: str, db: AsyncSession
+    ) -> str | None:
+        """Establish the global Node -> AssetJob lock order for Baker mutations."""
+        job_type = await db.scalar(
+            select(AssetJob.job_type).where(AssetJob.id == job_id)
+        )
+        if job_type == "SUBSTANCE_BAKE_V1":
+            await db.scalar(
+                select(Node)
+                .where(Node.id == SUBSTANCE_GPU_NODE_ID)
+                .with_for_update()
+            )
+        return job_type
 
     async def persist_upload(
         upload: UploadFile,
@@ -908,8 +1290,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 request_hash=request_hash,
                 request_id=str(request.state.request_id),
             )
+            client = await db.get(ApiClient, principal.id)
+            substance_node: Node | None = None
+            if client is None or client.client_kind != "test":
+                # Lock the physical node before publishing the queued job. The
+                # Scheduler takes this same lock before a GPU assignment, so it
+                # cannot slip another ComfyUI job between queueing the
+                # production bake and installing its pending reservation.
+                substance_node = await db.scalar(
+                    select(Node)
+                    .where(Node.id == SUBSTANCE_GPU_NODE_ID)
+                    .with_for_update()
+                )
             db.add(job)
             await db.flush()
+            if substance_node is not None:
+                await reconcile_substance_gpu_reservation(
+                    db,
+                    substance_node,
+                    cfg.substance_pending_reservation_seconds,
+                    cfg.asset_worker_heartbeat_timeout_seconds,
+                )
             await append_asset_event(
                 db,
                 job,
@@ -1260,7 +1661,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         principal: Annotated[Principal, Depends(api_principal)],
         db: Annotated[AsyncSession, Depends(session)],
     ) -> dict[str, Any]:
-        job = await owned_job(job_id, principal, db)
+        owner_and_type = (
+            await db.execute(
+                select(AssetJob.client_id, AssetJob.job_type).where(
+                    AssetJob.id == job_id
+                )
+            )
+        ).one_or_none()
+        if owner_and_type is None or owner_and_type.client_id != principal.id:
+            raise HTTPException(404, detail={"code": "ASSET_JOB_NOT_FOUND"})
+        if owner_and_type.job_type == "SUBSTANCE_BAKE_V1":
+            # Every Baker mutation uses Node -> AssetJob. This serializes
+            # queued cancellation against claim/fence installation and keeps
+            # a claimed lease from losing its physical-GPU fence.
+            await db.scalar(
+                select(Node)
+                .where(Node.id == SUBSTANCE_GPU_NODE_ID)
+                .with_for_update()
+            )
+        job = await db.get(AssetJob, job_id, with_for_update=True)
+        if job is None or job.client_id != principal.id:
+            raise HTTPException(404, detail={"code": "ASSET_JOB_NOT_FOUND"})
         if job.status in TERMINAL_ASSET_STATUSES:
             return await job_payload(job, db)
         job.cancel_requested = True
@@ -1275,6 +1696,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.stage = "CANCELLING"
             job.stage_message = "取消请求已送达，等待当前安全点停止"
         job.last_progress_at = datetime.now(UTC)
+        if job.status == "CANCELLED":
+            await release_substance_gpu_fence(
+                db,
+                job,
+                cfg.substance_pending_reservation_seconds,
+                cfg.asset_worker_heartbeat_timeout_seconds,
+            )
         await append_asset_event(db, job, details={"event": "asset.cancel_requested"})
         await db.commit()
         return await job_payload(job, db)
@@ -1335,7 +1763,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Annotated[AsyncSession, Depends(session)],
     ) -> dict[str, Any]:
         await verify_worker(request, await request.body())
-        worker = await db.get(AssetWorker, body.worker_id)
+        substance_heartbeat_node: Node | None = None
+        if is_substance_worker_id(body.worker_id):
+            substance_heartbeat_node = await db.scalar(
+                select(Node)
+                .where(Node.id == SUBSTANCE_GPU_NODE_ID)
+                .with_for_update()
+            )
+        worker = await db.get(AssetWorker, body.worker_id, with_for_update=True)
         if worker is None:
             worker = AssetWorker(
                 id=body.worker_id,
@@ -1383,6 +1818,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else body.blender_version == "5.1.2"
         )
         worker.status = "ONLINE" if runtime_version_ok and resource_ok else "DRAINING"
+        if is_substance_worker_id(worker.id):
+            await confirm_substance_gpu_recovery(
+                db,
+                worker,
+                body.current_jobs,
+                cfg.substance_pending_reservation_seconds,
+                cfg.node_heartbeat_timeout_seconds,
+                cfg.asset_worker_heartbeat_timeout_seconds,
+                locked_node=substance_heartbeat_node,
+            )
         await db.commit()
         return {"accepted": True, "status": worker.status}
 
@@ -1393,28 +1838,88 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Annotated[AsyncSession, Depends(session)],
     ) -> JSONResponse:
         await verify_worker(request, await request.body())
-        expired = list(
+        expiry_cutoff = datetime.now(UTC)
+        substance_expiry_hint = await db.scalar(
+            select(AssetJob.id)
+            .where(
+                AssetJob.job_type == "SUBSTANCE_BAKE_V1",
+                AssetJob.status.in_(["CLAIMED", "RUNNING", "CANCELLING"]),
+                AssetJob.lease_expires_at < expiry_cutoff,
+            )
+            .limit(1)
+        )
+        substance_expiry_node: Node | None = None
+        expired_substance: list[AssetJob] = []
+        if substance_expiry_hint is not None:
+            # The hint is read-only. The authoritative recheck is performed
+            # only after taking the physical Node lock, then each AssetJob row
+            # is locked in the globally consistent Node -> Job order.
+            substance_expiry_node = await db.scalar(
+                select(Node)
+                .where(Node.id == SUBSTANCE_GPU_NODE_ID)
+                .with_for_update()
+            )
+            expired_substance = list(
+                (
+                    await db.scalars(
+                        select(AssetJob)
+                        .where(
+                            AssetJob.job_type == "SUBSTANCE_BAKE_V1",
+                            AssetJob.status.in_(
+                                ["CLAIMED", "RUNNING", "CANCELLING"]
+                            ),
+                            AssetJob.lease_expires_at < expiry_cutoff,
+                        )
+                        .with_for_update(skip_locked=True)
+                    )
+                ).all()
+            )
+        expired_non_substance = list(
             (
                 await db.scalars(
                     select(AssetJob)
                     .where(
+                        AssetJob.job_type != "SUBSTANCE_BAKE_V1",
                         AssetJob.status.in_(["CLAIMED", "RUNNING", "CANCELLING"]),
-                        AssetJob.lease_expires_at < datetime.now(UTC),
+                        AssetJob.lease_expires_at < expiry_cutoff,
                     )
                     .with_for_update(skip_locked=True)
                 )
             ).all()
         )
+        expired = [*expired_substance, *expired_non_substance]
         for stale in expired:
+            expired_at = datetime.now(UTC)
+            previous_worker_id = str(stale.worker_id or "unknown")
             previous_worker = await db.get(AssetWorker, stale.worker_id) if stale.worker_id else None
+            substance_expired = stale.job_type == "SUBSTANCE_BAKE_V1"
             if previous_worker is not None:
                 previous_worker.current_jobs = max(0, previous_worker.current_jobs - 1)
             if stale.cancel_requested:
                 stale.status = "CANCELLED"
                 stale.stage = "CANCELLED"
-                stale.stage_message = "Worker 租约失效后确认取消"
+                stale.stage_message = (
+                    "Substance Worker 租约失效；任务取消但 GPU 保持恢复闭锁"
+                    if substance_expired
+                    else "Worker 租约失效后确认取消"
+                )
                 stale.estimated_remaining_seconds = 0
-                stale.finished_at = datetime.now(UTC)
+                stale.finished_at = expired_at
+            elif substance_expired:
+                # A native Baker timeout cannot be retried safely: the old
+                # process may still be rendering. Keep this attempt terminal
+                # and require explicit recovery evidence before any new Baker
+                # or ComfyUI assignment can use the physical 3090-B.
+                stale.status = "FAILED"
+                stale.stage = "RECOVERY_REQUIRED"
+                stale.stage_message = "Substance Worker 租约失效；等待 Worker 与 ComfyUI 恢复确认"
+                stale.estimated_remaining_seconds = 0
+                stale.error_code = "SUBSTANCE_LEASE_EXPIRED_RECOVERY_REQUIRED"
+                stale.error_message = (
+                    "native Baker lease expired; automatic retry is blocked until "
+                    "worker-idle and ComfyUI-online evidence is observed"
+                )
+                stale.finished_at = expired_at
             elif stale.attempt_count < cfg.asset_job_max_attempts:
                 stale.status = "QUEUED"
                 stale.stage = "RETRY_QUEUED"
@@ -1430,13 +1935,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 stale.estimated_remaining_seconds = 0
                 stale.error_code = "ASSET_LEASE_EXPIRED"
                 stale.error_message = "worker lease expired after maximum attempts"
-                stale.finished_at = datetime.now(UTC)
+                stale.finished_at = expired_at
             stale.lease_token_hash = None
             stale.lease_expires_at = None
-            stale.last_progress_at = datetime.now(UTC)
-            await release_substance_gpu_fence(db, stale, restore_active=False)
+            stale.last_progress_at = expired_at
+            if substance_expired:
+                await mark_substance_gpu_recovery_required(
+                    db,
+                    stale,
+                    previous_worker_id,
+                    expired_at,
+                    locked_node=substance_expiry_node,
+                )
             await append_asset_event(
-                db, stale, details={"event": "asset.lease_expired"}
+                db,
+                stale,
+                details={
+                    "event": "asset.lease_expired",
+                    "recovery_required": substance_expired,
+                    "automatic_retry_blocked": substance_expired,
+                },
+            )
+        if expired:
+            # Lease reconciliation is an independent durable safety action.
+            # Every validation branch below may legitimately return no job;
+            # committing here prevents those early returns from rolling back a
+            # FAILED/recovery-required transition and its physical-GPU drain.
+            await db.commit()
+        substance_node: Node | None = None
+        if is_substance_worker_id(body.worker_id):
+            substance_node = await db.scalar(
+                select(Node)
+                .where(Node.id == SUBSTANCE_GPU_NODE_ID)
+                .with_for_update()
             )
         worker = await db.get(AssetWorker, body.worker_id, with_for_update=True)
         cutoff = datetime.now(UTC) - timedelta(seconds=cfg.asset_worker_heartbeat_timeout_seconds)
@@ -1450,26 +1981,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             or body.load_1m / max(worker.cpu_count, 1) > cfg.asset_worker_max_load_per_cpu
         ):
             return JSONResponse({"job": None}, 200)
-        substance_node: Node | None = None
+        pending_substance_job_ids: list[str] = []
         if is_substance_worker_id(worker.id):
             # Lock the physical GPU node before the asset job row.  The GPU
             # scheduler uses the same lock order, preventing a ComfyUI claim
             # from racing a native Windows Baker claim.
-            substance_node = await db.scalar(
-                select(Node)
-                .where(Node.id == SUBSTANCE_GPU_NODE_ID)
-                .with_for_update()
-            )
             labels = dict(substance_node.labels or {}) if substance_node else {}
             fenced_job_ids = substance_fence_job_ids(labels)
+            if substance_node is not None:
+                pending_substance_job_ids = await reconcile_substance_gpu_reservation(
+                    db,
+                    substance_node,
+                    cfg.substance_pending_reservation_seconds,
+                    cfg.asset_worker_heartbeat_timeout_seconds,
+                )
+                labels = dict(substance_node.labels or {})
+                fenced_job_ids = substance_fence_job_ids(labels)
+            recovery_required = bool(
+                labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL)
+            )
+            pending_owned = bool(pending_substance_job_ids) and (
+                labels.get(SUBSTANCE_DRAIN_OWNER_LABEL) == SUBSTANCE_DRAIN_OWNER
+            )
+            owned_drain = (
+                substance_node is not None
+                and substance_node.mode == "DRAINING"
+                and labels.get(SUBSTANCE_DRAIN_OWNER_LABEL) == SUBSTANCE_DRAIN_OWNER
+            )
             if (
                 substance_node is None
                 or (
                     substance_node.mode != "ACTIVE"
-                    and not (substance_node.mode == "DRAINING" and fenced_job_ids)
+                    and not (owned_drain and (fenced_job_ids or pending_owned))
                 )
                 or substance_node.health != "ONLINE"
                 or substance_node.current_jobs != 0
+                or recovery_required
+                or len(fenced_job_ids) >= SUBSTANCE_MAX_PARALLEL
                 or substance_node.manual_reserved
                 or substance_node.external_busy
                 or substance_node.foreign_queue_detected
@@ -1477,7 +2025,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return JSONResponse({"job": None}, 200)
 
         claim_query = (
-            select(AssetJob)
+            select(AssetJob, ApiClient.client_kind)
             .join(ApiClient, ApiClient.id == AssetJob.client_id)
             .where(
                 AssetJob.status == "QUEUED",
@@ -1486,10 +2034,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         if is_substance_worker_id(worker.id):
             claim_query = claim_query.where(AssetJob.job_type == "SUBSTANCE_BAKE_V1")
+            if pending_substance_job_ids:
+                claim_query = claim_query.where(
+                    AssetJob.id.in_(pending_substance_job_ids)
+                )
         else:
             claim_query = claim_query.where(AssetJob.job_type != "SUBSTANCE_BAKE_V1")
-        job = await db.scalar(
-            claim_query
+        claimed_row = (
+            await db.execute(
+                claim_query
             # Production always wins the next free slot.  This is deliberately
             # evaluated before queue age so an old load-test job cannot delay a
             # real caller.  FIFO remains stable inside each client-kind pool.
@@ -1497,19 +2050,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 case((ApiClient.client_kind == "test", 1), else_=0),
                 AssetJob.created_at,
                 AssetJob.id,
-            ).with_for_update(skip_locked=True)
-        )
-        if job is None:
+                ).with_for_update(skip_locked=True, of=AssetJob)
+            )
+        ).first()
+        if claimed_row is None:
+            return JSONResponse({"job": None}, 200)
+        job, client_kind = claimed_row
+        if (
+            is_substance_worker_id(worker.id)
+            and client_kind == "test"
+            and await production_gpu_work_active(db)
+        ):
+            # Load-test Baker traffic may use only truly idle GPU capacity.
+            # The physical Node row is already locked, so no GPU assignment
+            # can race between this check and installation of the Baker fence.
             return JSONResponse({"job": None}, 200)
         if substance_node is not None:
             labels = dict(substance_node.labels or {})
             fenced_job_ids = substance_fence_job_ids(labels)
+            if len(fenced_job_ids) >= SUBSTANCE_MAX_PARALLEL:
+                return JSONResponse({"job": None}, 200)
             if job.id not in fenced_job_ids:
                 fenced_job_ids.append(job.id)
             labels[SUBSTANCE_FENCE_LABEL] = fenced_job_ids
             labels.pop(SUBSTANCE_LEGACY_FENCE_LABEL, None)
+            if not ensure_substance_owned_drain(substance_node, labels):
+                return JSONResponse({"job": None}, 200)
+            pending = labels.get(SUBSTANCE_PENDING_RESERVATION_LABEL)
+            if isinstance(pending, dict) and isinstance(pending.get("job_ids"), list):
+                remaining_pending = [
+                    str(job_id)
+                    for job_id in pending["job_ids"]
+                    if str(job_id) != job.id
+                ]
+                if remaining_pending:
+                    pending["job_ids"] = remaining_pending
+                    labels[SUBSTANCE_PENDING_RESERVATION_LABEL] = pending
+                else:
+                    labels.pop(SUBSTANCE_PENDING_RESERVATION_LABEL, None)
             substance_node.labels = labels
-            substance_node.mode = "DRAINING"
         token = secrets.token_urlsafe(32)
         now = datetime.now(UTC)
         job.status = "CLAIMED"
@@ -1551,8 +2130,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             200,
         )
 
-    async def leased_job(job_id: str, token: str, db: AsyncSession) -> AssetJob:
-        job = await db.get(AssetJob, job_id, with_for_update=True)
+    async def leased_job(
+        job_id: str,
+        token: str,
+        db: AsyncSession,
+        *,
+        lock_substance_node: bool = False,
+    ) -> AssetJob:
+        if lock_substance_node:
+            await lock_substance_node_for_job(job_id, db)
+        job = await db.scalar(
+            select(AssetJob)
+            .where(AssetJob.id == job_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
         if (
             job is None
             or job.lease_token_hash is None
@@ -1562,6 +2154,103 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ):
             raise HTTPException(409, detail={"code": "ASSET_LEASE_INVALID"})
         return job
+
+    async def prepare_asset_completion(
+        job_id: str,
+        token: str,
+        db: AsyncSession,
+        expected_job_type: str,
+    ) -> AssetCompletionSnapshot:
+        """Validate and renew a completion lease, then release every DB lock.
+
+        Uploaded bytes are untrusted and may be large.  Completion endpoints
+        must never keep an AssetJob (or the shared Substance GPU Node) locked
+        while streaming or inspecting them.
+        """
+
+        job = await leased_job(
+            job_id,
+            token,
+            db,
+            lock_substance_node=expected_job_type == "SUBSTANCE_BAKE_V1",
+        )
+        if job.job_type != expected_job_type:
+            raise HTTPException(409, detail={"code": "ASSET_JOB_TYPE_MISMATCH"})
+        job.lease_expires_at = datetime.now(UTC) + timedelta(
+            seconds=cfg.asset_worker_lease_seconds
+        )
+        snapshot = AssetCompletionSnapshot(
+            id=job.id,
+            job_type=job.job_type,
+            worker_id=job.worker_id,
+            source_filename=job.source_filename,
+            input_sha256=job.input_sha256,
+            options=dict(job.options or {}),
+        )
+        await db.commit()
+        return snapshot
+
+    async def lock_asset_completion_for_publish(
+        snapshot: AssetCompletionSnapshot,
+        token: str,
+        db: AsyncSession,
+    ) -> tuple[AssetJob, AssetWorker | None]:
+        """Revalidate completion ownership in the global publication lock order."""
+
+        # Substance: Node -> Job -> Worker. Other asset work: Job -> Worker.
+        job = await leased_job(
+            snapshot.id,
+            token,
+            db,
+            lock_substance_node=snapshot.job_type == "SUBSTANCE_BAKE_V1",
+        )
+        if job.job_type != snapshot.job_type or job.worker_id != snapshot.worker_id:
+            raise HTTPException(409, detail={"code": "ASSET_LEASE_INVALID"})
+        worker = None
+        if job.worker_id:
+            worker = await db.scalar(
+                select(AssetWorker)
+                .where(AssetWorker.id == job.worker_id)
+                .with_for_update()
+            )
+        return job, worker
+
+    async def cancel_at_completion_safe_point(
+        db: AsyncSession,
+        job: AssetJob,
+        worker: AssetWorker | None,
+    ) -> dict[str, Any] | None:
+        """Finalize a requested cancellation before any artifact is published."""
+        if not job.cancel_requested:
+            return None
+        now = datetime.now(UTC)
+        job.status = "CANCELLED"
+        job.stage = "CANCELLED"
+        job.stage_message = "任务已在制品发布前的 Worker 安全点取消"
+        job.estimated_remaining_seconds = 0
+        job.last_progress_at = now
+        job.finished_at = now
+        job.lease_token_hash = None
+        job.lease_expires_at = None
+        if worker is not None:
+            worker.current_jobs = max(0, worker.current_jobs - 1)
+        await release_substance_gpu_fence(
+            db,
+            job,
+            cfg.substance_pending_reservation_seconds,
+            cfg.asset_worker_heartbeat_timeout_seconds,
+        )
+        await append_asset_event(
+            db,
+            job,
+            details={"event": "asset.cancelled", "safe_point": "before_publish"},
+        )
+        await db.commit()
+        return {
+            "accepted": False,
+            "status": "CANCELLED",
+            "cancel_requested": True,
+        }
 
     @app.get("/internal/v1/assets/jobs/{job_id}/input")
     async def worker_download_input(
@@ -1607,35 +2296,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         report: Annotated[UploadFile, File()],
         qa: Annotated[UploadFile, File()],
     ) -> dict[str, Any]:
-        job = await leased_job(job_id, lease, db)
+        snapshot = await prepare_asset_completion(job_id, lease, db, "UV_UNWRAP")
         uploads = {"blend": blend, "fbx": fbx, "report": report, "qa": qa}
-        staging = cfg.asset_root / job.id / f".outputs-{uuid.uuid4().hex}"
-        final = cfg.asset_root / job.id / "output"
+        staging = cfg.asset_root / snapshot.id / f".outputs-{uuid.uuid4().hex}"
         staging.mkdir(parents=True, exist_ok=False)
         created: list[AssetArtifact] = []
+        committed = False
         try:
             for kind, upload in uploads.items():
                 filename, content_type = UV_REQUIRED_ARTIFACTS[kind]
                 path = staging / filename
-                digest = hashlib.sha256()
-                size = 0
-                with path.open("xb") as destination:
-                    while chunk := await upload.read(1024 * 1024):
-                        size += len(chunk)
-                        digest.update(chunk)
-                        destination.write(chunk)
+                digest, size = await persist_completion_upload(upload, path)
                 if size == 0:
                     raise HTTPException(422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind})
                 created.append(
                     AssetArtifact(
                         id=str(uuid.uuid4()),
-                        job_id=job.id,
+                        job_id=snapshot.id,
                         kind=kind,
                         filename=filename,
-                        path=str(final / filename),
+                        path=str(staging / filename),
                         content_type=content_type,
                         size_bytes=size,
-                        sha256=digest.hexdigest(),
+                        sha256=digest,
                     )
                 )
             try:
@@ -1645,9 +2328,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             hard_failures = qa_payload.get("hard_failures")
             if not isinstance(hard_failures, list) or hard_failures:
                 raise HTTPException(422, detail={"code": "ASSET_QA_FAILED"})
-            if final.exists():
-                raise HTTPException(409, detail={"code": "ASSET_OUTPUT_ALREADY_EXISTS"})
-            staging.rename(final)
+            fsync_completion_staging(staging)
+            job, worker = await lock_asset_completion_for_publish(snapshot, lease, db)
+            cancelled = await cancel_at_completion_safe_point(db, job, worker)
+            if cancelled is not None:
+                return cancelled
             db.add_all(created)
             job.status = "SUCCEEDED"
             job.progress = 100
@@ -1658,14 +2343,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.finished_at = datetime.now(UTC)
             job.lease_expires_at = None
             job.lease_token_hash = None
-            worker = await db.get(AssetWorker, job.worker_id) if job.worker_id else None
             if worker is not None:
                 worker.current_jobs = max(0, worker.current_jobs - 1)
             await append_asset_event(db, job, details={"event": "asset.succeeded"})
             await db.commit()
+            committed = True
             return {"accepted": True}
         finally:
-            if staging.exists():
+            if not committed and staging.exists():
                 shutil.rmtree(staging)
 
     @app.post("/internal/v1/assets/jobs/{job_id}/retopology-complete")
@@ -1676,25 +2361,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         audit: Annotated[UploadFile, File()],
         manifest: Annotated[UploadFile, File()],
     ) -> dict[str, Any]:
-        job = await leased_job(job_id, lease, db)
-        if job.job_type != "RETOPOLOGY_AUDIT":
-            raise HTTPException(409, detail={"code": "ASSET_JOB_TYPE_MISMATCH"})
+        snapshot = await prepare_asset_completion(
+            job_id, lease, db, "RETOPOLOGY_AUDIT"
+        )
         uploads = {"audit": audit, "manifest": manifest}
-        staging = cfg.asset_root / job.id / f".outputs-{uuid.uuid4().hex}"
-        final = cfg.asset_root / job.id / "output"
+        staging = cfg.asset_root / snapshot.id / f".outputs-{uuid.uuid4().hex}"
         staging.mkdir(parents=True, exist_ok=False)
         created: list[AssetArtifact] = []
+        committed = False
         try:
             for kind, upload in uploads.items():
                 filename, content_type = RETOPOLOGY_AUDIT_ARTIFACTS[kind]
                 path = staging / filename
-                digest = hashlib.sha256()
-                size = 0
-                with path.open("xb") as destination:
-                    while chunk := await upload.read(1024 * 1024):
-                        size += len(chunk)
-                        digest.update(chunk)
-                        destination.write(chunk)
+                digest, size = await persist_completion_upload(upload, path)
                 if size == 0:
                     raise HTTPException(
                         422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind}
@@ -1702,13 +2381,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 created.append(
                     AssetArtifact(
                         id=str(uuid.uuid4()),
-                        job_id=job.id,
+                        job_id=snapshot.id,
                         kind=kind,
                         filename=filename,
-                        path=str(final / filename),
+                        path=str(staging / filename),
                         content_type=content_type,
                         size_bytes=size,
-                        sha256=digest.hexdigest(),
+                        sha256=digest,
                     )
                 )
             try:
@@ -1744,16 +2423,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     422, detail={"code": "RETOPOLOGY_VISUAL_REVIEW_MISSING"}
                 )
             if (
-                manifest_payload.get("job_id") != job.id
-                or manifest_payload.get("input_sha256") != job.input_sha256
-                or manifest_payload.get("job_type") != job.job_type
+                manifest_payload.get("job_id") != snapshot.id
+                or manifest_payload.get("input_sha256") != snapshot.input_sha256
+                or manifest_payload.get("job_type") != snapshot.job_type
             ):
                 raise HTTPException(
                     422, detail={"code": "RETOPOLOGY_MANIFEST_MISMATCH"}
                 )
-            if final.exists():
-                raise HTTPException(409, detail={"code": "ASSET_OUTPUT_ALREADY_EXISTS"})
-            staging.rename(final)
+            fsync_completion_staging(staging)
+            job, worker = await lock_asset_completion_for_publish(snapshot, lease, db)
+            cancelled = await cancel_at_completion_safe_point(db, job, worker)
+            if cancelled is not None:
+                return cancelled
             db.add_all(created)
             audit_passed = audit_payload.get("audit_passed") is True
             job.status = "SUCCEEDED" if audit_passed else "FAILED"
@@ -1776,10 +2457,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             job.lease_expires_at = None
             job.lease_token_hash = None
-            worker = await db.get(AssetWorker, job.worker_id) if job.worker_id else None
             if worker is not None:
                 worker.current_jobs = max(0, worker.current_jobs - 1)
-            await release_substance_gpu_fence(db, job)
+            await release_substance_gpu_fence(
+                db,
+                job,
+                cfg.substance_pending_reservation_seconds,
+                cfg.asset_worker_heartbeat_timeout_seconds,
+            )
             await append_asset_event(
                 db,
                 job,
@@ -1789,6 +2474,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 },
             )
             await db.commit()
+            committed = True
             return {
                 "accepted": True,
                 "status": job.status,
@@ -1796,7 +2482,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "audit_passed": audit_passed,
             }
         finally:
-            if staging.exists():
+            if not committed and staging.exists():
                 shutil.rmtree(staging)
 
     @app.post("/internal/v1/assets/jobs/{job_id}/retopology-process-complete")
@@ -1806,12 +2492,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Annotated[AsyncSession, Depends(session)],
         lease: Annotated[str, Header(alias="X-Asset-Lease")],
     ) -> dict[str, Any]:
-        job = await leased_job(job_id, lease, db)
-        if job.job_type != "RETOPOLOGY_PROCESS_V1":
-            raise HTTPException(409, detail={"code": "ASSET_JOB_TYPE_MISMATCH"})
+        snapshot = await prepare_asset_completion(
+            job_id, lease, db, "RETOPOLOGY_PROCESS_V1"
+        )
         form = await request.form()
         expected = dict(RETOPOLOGY_PROCESS_REQUIRED_ARTIFACTS)
-        if job.options.get("reference_views"):
+        if snapshot.options.get("reference_views"):
             expected.update(RETOPOLOGY_PROCESS_OPTIONAL_ARTIFACTS)
         uploads: dict[str, StarletteUploadFile] = {}
         for kind in expected:
@@ -1829,10 +2515,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail={"code": "ASSET_ARTIFACT_UNEXPECTED", "kinds": sorted(unknown)},
             )
 
-        staging = cfg.asset_root / job.id / f".outputs-{uuid.uuid4().hex}"
-        final = cfg.asset_root / job.id / "output"
+        staging = cfg.asset_root / snapshot.id / f".outputs-{uuid.uuid4().hex}"
         staging.mkdir(parents=True, exist_ok=False)
         created: list[AssetArtifact] = []
+        committed = False
         try:
             for kind, upload in uploads.items():
                 filename, content_type = expected[kind]
@@ -1845,13 +2531,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         },
                     )
                 path = staging / filename
-                digest = hashlib.sha256()
-                size = 0
-                with path.open("xb") as destination:
-                    while chunk := await upload.read(1024 * 1024):
-                        size += len(chunk)
-                        digest.update(chunk)
-                        destination.write(chunk)
+                digest, size = await persist_completion_upload(upload, path)
                 if size == 0:
                     raise HTTPException(
                         422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind}
@@ -1859,13 +2539,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 created.append(
                     AssetArtifact(
                         id=str(uuid.uuid4()),
-                        job_id=job.id,
+                        job_id=snapshot.id,
                         kind=kind,
                         filename=filename,
-                        path=str(final / filename),
+                        path=str(staging / filename),
                         content_type=content_type,
                         size_bytes=size,
-                        sha256=digest.hexdigest(),
+                        sha256=digest,
                     )
                 )
             try:
@@ -1919,18 +2599,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if (
                 manifest_payload.get("schema_version")
                 != "retopology_process_manifest.v1"
-                or manifest_payload.get("job_id") != job.id
-                or manifest_payload.get("job_type") != job.job_type
-                or manifest_payload.get("input_sha256") != job.input_sha256
+                or manifest_payload.get("job_id") != snapshot.id
+                or manifest_payload.get("job_type") != snapshot.job_type
+                or manifest_payload.get("input_sha256") != snapshot.input_sha256
             ):
                 raise HTTPException(
                     422, detail={"code": "RETOPOLOGY_MANIFEST_MISMATCH"}
                 )
             expected_objects = {
-                "high": job.options["high_object"],
-                "reference": job.options["reference_object"],
-                "current": job.options["low_object"],
-                "generated": job.options["generated_low_object"],
+                "high": snapshot.options["high_object"],
+                "reference": snapshot.options["reference_object"],
+                "current": snapshot.options["low_object"],
+                "generated": snapshot.options["generated_low_object"],
             }
             if manifest_payload.get("objects") != expected_objects:
                 raise HTTPException(
@@ -1990,7 +2670,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 **RETOPOLOGY_PROCESS_REQUIRED_FILENAMES,
                 **(
                     RETOPOLOGY_PROCESS_OPTIONAL_FILENAMES
-                    if job.options.get("reference_views")
+                    if snapshot.options.get("reference_views")
                     else {}
                 ),
             }.items():
@@ -2012,9 +2692,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         422,
                         detail={"code": "RETOPOLOGY_REVIEW_IMAGE_INVALID", "filename": filename},
                     ) from exc
-            if final.exists():
-                raise HTTPException(409, detail={"code": "ASSET_OUTPUT_ALREADY_EXISTS"})
-            staging.rename(final)
+            fsync_completion_staging(staging)
+            job, worker = await lock_asset_completion_for_publish(snapshot, lease, db)
+            cancelled = await cancel_at_completion_safe_point(db, job, worker)
+            if cancelled is not None:
+                return cancelled
             db.add_all(created)
             audit_passed = audit_payload.get("audit_passed") is True
             report_promotable = report_payload.get("topology_goal_met") is True
@@ -2100,10 +2782,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             job.lease_expires_at = None
             job.lease_token_hash = None
-            worker = await db.get(AssetWorker, job.worker_id) if job.worker_id else None
             if worker is not None:
                 worker.current_jobs = max(0, worker.current_jobs - 1)
-            await release_substance_gpu_fence(db, job)
+            await release_substance_gpu_fence(
+                db,
+                job,
+                cfg.substance_pending_reservation_seconds,
+                cfg.asset_worker_heartbeat_timeout_seconds,
+            )
             await append_asset_event(
                 db,
                 job,
@@ -2123,6 +2809,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 },
             )
             await db.commit()
+            committed = True
             return {
                 "accepted": True,
                 "status": job.status,
@@ -2133,7 +2820,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "delivered_with_warnings": advisory_warning,
             }
         finally:
-            if staging.exists():
+            if not committed and staging.exists():
                 shutil.rmtree(staging)
 
     @app.post("/internal/v1/assets/jobs/{job_id}/uv-v2-complete")
@@ -2147,10 +2834,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         qa: Annotated[UploadFile, File()],
         fbx_qa: Annotated[UploadFile, File()],
     ) -> dict[str, Any]:
-        job = await leased_job(job_id, lease, db)
-        if job.job_type != "UV_PROCESS_V2":
-            raise HTTPException(409, detail={"code": "ASSET_JOB_TYPE_MISMATCH"})
-        stem = Path(job.source_filename).stem
+        snapshot = await prepare_asset_completion(
+            job_id, lease, db, "UV_PROCESS_V2"
+        )
+        stem = Path(snapshot.source_filename).stem
         contract = {
             "blend": (f"{stem}_PBR_UV.blend", "application/octet-stream"),
             "fbx": (f"{stem}_PBR_UV.fbx", "application/octet-stream"),
@@ -2165,21 +2852,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "qa": qa,
             "fbx_qa": fbx_qa,
         }
-        staging = cfg.asset_root / job.id / f".outputs-{uuid.uuid4().hex}"
-        final = cfg.asset_root / job.id / "output"
+        staging = cfg.asset_root / snapshot.id / f".outputs-{uuid.uuid4().hex}"
         staging.mkdir(parents=True, exist_ok=False)
         created: list[AssetArtifact] = []
+        committed = False
         try:
             for kind, upload in uploads.items():
                 filename, content_type = contract[kind]
                 path = staging / filename
-                digest = hashlib.sha256()
-                size = 0
-                with path.open("xb") as destination:
-                    while chunk := await upload.read(1024 * 1024):
-                        size += len(chunk)
-                        digest.update(chunk)
-                        destination.write(chunk)
+                digest, size = await persist_completion_upload(upload, path)
                 if size == 0:
                     raise HTTPException(
                         422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind}
@@ -2187,13 +2868,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 created.append(
                     AssetArtifact(
                         id=str(uuid.uuid4()),
-                        job_id=job.id,
+                        job_id=snapshot.id,
                         kind=kind,
                         filename=filename,
-                        path=str(final / filename),
+                        path=str(staging / filename),
                         content_type=content_type,
                         size_bytes=size,
-                        sha256=digest.hexdigest(),
+                        sha256=digest,
                     )
                 )
             try:
@@ -2208,9 +2889,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             except (OSError, ValueError) as exc:
                 raise HTTPException(422, detail={"code": "ASSET_QA_INVALID"}) from exc
-            if report_payload.get("input") not in {None, job.source_filename} and Path(
+            if report_payload.get("input") not in {None, snapshot.source_filename} and Path(
                 str(report_payload.get("input"))
-            ).name != job.source_filename:
+            ).name != snapshot.source_filename:
                 raise HTTPException(422, detail={"code": "ASSET_REPORT_INPUT_MISMATCH"})
             for label, payload in (
                 ("blend", blend_qa_payload),
@@ -2225,9 +2906,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     raise HTTPException(
                         422, detail={"code": "ASSET_QA_FAILED", "qa": label}
                     )
-            if final.exists():
-                raise HTTPException(409, detail={"code": "ASSET_OUTPUT_ALREADY_EXISTS"})
-            staging.rename(final)
+            fsync_completion_staging(staging)
+            job, worker = await lock_asset_completion_for_publish(snapshot, lease, db)
+            cancelled = await cancel_at_completion_safe_point(db, job, worker)
+            if cancelled is not None:
+                return cancelled
             db.add_all(created)
             job.status = "SUCCEEDED"
             job.progress = 100
@@ -2238,14 +2921,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.finished_at = datetime.now(UTC)
             job.lease_expires_at = None
             job.lease_token_hash = None
-            worker = await db.get(AssetWorker, job.worker_id) if job.worker_id else None
             if worker is not None:
                 worker.current_jobs = max(0, worker.current_jobs - 1)
             await append_asset_event(db, job, details={"event": "asset.succeeded"})
             await db.commit()
+            committed = True
             return {"accepted": True, "status": job.status}
         finally:
-            if staging.exists():
+            if not committed and staging.exists():
                 shutil.rmtree(staging)
 
     @app.post("/internal/v1/assets/jobs/{job_id}/substance-complete")
@@ -2266,10 +2949,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         roughness: Annotated[UploadFile | None, File()] = None,
         metallic: Annotated[UploadFile | None, File()] = None,
     ) -> dict[str, Any]:
-        job = await leased_job(job_id, lease, db)
-        if job.job_type != "SUBSTANCE_BAKE_V1":
-            raise HTTPException(409, detail={"code": "ASSET_JOB_TYPE_MISMATCH"})
-        profile = str(job.options.get("profile", ""))
+        snapshot = await prepare_asset_completion(
+            job_id, lease, db, "SUBSTANCE_BAKE_V1"
+        )
+        profile = str(snapshot.options.get("profile", ""))
         contract = SUBSTANCE_BAKE_OUTPUTS.get(profile)
         if contract is None:
             raise HTTPException(409, detail={"code": "SUBSTANCE_PROFILE_INVALID"})
@@ -2292,44 +2975,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if any(upload is not None and kind not in contract for kind, upload in supplied.items()):
             raise HTTPException(422, detail={"code": "SUBSTANCE_ARTIFACT_UNEXPECTED"})
 
-        staging = cfg.asset_root / job.id / f".outputs-{uuid.uuid4().hex}"
-        final = cfg.asset_root / job.id / "output"
+        staging = cfg.asset_root / snapshot.id / f".outputs-{uuid.uuid4().hex}"
         staging.mkdir(parents=True, exist_ok=False)
         created: list[AssetArtifact] = []
         actual_sha: dict[str, str] = {}
+        committed = False
         try:
             for kind, (filename, content_type) in contract.items():
                 upload = supplied[kind]
                 assert upload is not None
                 path = staging / filename
-                digest = hashlib.sha256()
-                size = 0
-                with path.open("xb") as destination:
-                    while chunk := await upload.read(1024 * 1024):
-                        size += len(chunk)
-                        if size > cfg.asset_max_upload_bytes:
-                            raise HTTPException(413, detail={"code": "ASSET_TOO_LARGE"})
-                        digest.update(chunk)
-                        destination.write(chunk)
+                digest, size = await persist_completion_upload(
+                    upload, path, max_bytes=cfg.asset_max_upload_bytes
+                )
                 if size == 0:
                     raise HTTPException(
                         422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind}
                     )
-                actual_sha[kind] = digest.hexdigest()
+                actual_sha[kind] = digest
                 created.append(
                     AssetArtifact(
                         id=str(uuid.uuid4()),
-                        job_id=job.id,
+                        job_id=snapshot.id,
                         kind=kind,
                         filename=filename,
-                        path=str(final / filename),
+                        path=str(staging / filename),
                         content_type=content_type,
                         size_bytes=size,
                         sha256=actual_sha[kind],
                     )
                 )
 
-            expected_resolution = int(job.options.get("resolution", 0))
+            expected_resolution = int(snapshot.options.get("resolution", 0))
             for kind in (
                 "ao", "normal_dx", "normal_gl", "world_normal", "curvature",
                 "thickness", "position", "base_color", "roughness", "metallic",
@@ -2369,7 +3046,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             output_hashes = result_payload.get("output_sha256") or {}
             if (
                 result_payload.get("schema_version") != 1
-                or result_payload.get("job_id") != job.id
+                or result_payload.get("job_id") != snapshot.id
                 or result_payload.get("status") != "SUCCEEDED"
                 or result_payload.get("profile") != profile
                 or tool.get("version") != "15.1.0"
@@ -2381,9 +3058,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ):
                 raise HTTPException(422, detail={"code": "SUBSTANCE_RESULT_INVALID"})
 
-            if final.exists():
-                raise HTTPException(409, detail={"code": "ASSET_OUTPUT_ALREADY_EXISTS"})
-            staging.rename(final)
+            fsync_completion_staging(staging)
+            job, worker = await lock_asset_completion_for_publish(snapshot, lease, db)
+            cancelled = await cancel_at_completion_safe_point(db, job, worker)
+            if cancelled is not None:
+                return cancelled
             db.add_all(created)
             job.status = "SUCCEEDED"
             job.progress = 100
@@ -2394,10 +3073,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.finished_at = datetime.now(UTC)
             job.lease_expires_at = None
             job.lease_token_hash = None
-            worker = await db.get(AssetWorker, job.worker_id) if job.worker_id else None
             if worker is not None:
                 worker.current_jobs = max(0, worker.current_jobs - 1)
-            await release_substance_gpu_fence(db, job)
+            await release_substance_gpu_fence(
+                db,
+                job,
+                cfg.substance_pending_reservation_seconds,
+                cfg.asset_worker_heartbeat_timeout_seconds,
+            )
             await append_asset_event(
                 db,
                 job,
@@ -2408,9 +3091,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 },
             )
             await db.commit()
+            committed = True
             return {"accepted": True, "status": job.status}
         finally:
-            if staging.exists():
+            if not committed and staging.exists():
                 shutil.rmtree(staging)
 
     @app.post("/internal/v1/assets/jobs/{job_id}/fail")
@@ -2420,7 +3104,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Annotated[AsyncSession, Depends(session)],
         lease: Annotated[str, Header(alias="X-Asset-Lease")],
     ) -> dict[str, Any]:
-        job = await leased_job(job_id, lease, db)
+        job = await leased_job(
+            job_id, lease, db, lock_substance_node=True
+        )
         worker = await db.get(AssetWorker, job.worker_id) if job.worker_id else None
         if worker is not None:
             worker.current_jobs = max(0, worker.current_jobs - 1)
@@ -2429,6 +3115,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.stage = "CANCELLED"
             job.stage_message = "任务已在 Worker 安全点取消"
             job.estimated_remaining_seconds = 0
+            job.finished_at = datetime.now(UTC)
         elif body.retryable and job.attempt_count < cfg.asset_job_max_attempts:
             job.status = "QUEUED"
             job.stage = "RETRY_QUEUED"
@@ -2446,12 +3133,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job.lease_token_hash = None
         job.lease_expires_at = None
         job.last_progress_at = datetime.now(UTC)
-        await release_substance_gpu_fence(db, job)
+        await release_substance_gpu_fence(
+            db,
+            job,
+            cfg.substance_pending_reservation_seconds,
+            cfg.asset_worker_heartbeat_timeout_seconds,
+        )
         await append_asset_event(
             db,
             job,
             details={
-                "event": "asset.failed" if job.status == "FAILED" else "asset.retry_queued",
+                "event": (
+                    "asset.cancelled"
+                    if job.status == "CANCELLED"
+                    else "asset.failed"
+                    if job.status == "FAILED"
+                    else "asset.retry_queued"
+                ),
                 "error_code": body.code,
                 "retryable": body.retryable,
             },

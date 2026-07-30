@@ -37,6 +37,10 @@ stages:
 
 poll_interval_seconds: 3
 max_retries: 4
+# Maximum-load evidence accepts a verified completed subset only when every
+# remaining run-owned task is scope-recovered, cancelled/terminal, and observed
+# settled. Joint acceptance scenarios should use the default `all_complete`.
+lifecycle_mode: bounded_stress
 # Production execution additionally requires a verified full backup created
 # before the approved window and no older than this limit.
 max_backup_age_hours: 24
@@ -74,7 +78,10 @@ preflight:
 
 thresholds:
   http_failure_rate_percent: 1.0
+  # Sync final-image processing (modelview_roughness) is intentionally excluded.
   submit_p95_ms: 3000
+  # Optional for backward compatibility, but enabled for this maximum-load plan.
+  sync_e2e_p95_ms: 600000
   poll_p95_ms: 1500
   artifact_p95_ms: 30000
   queue_p95_ms: 900000

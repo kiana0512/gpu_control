@@ -35,7 +35,9 @@ Asset 任务。重启现有 Scheduler 后，父批次全部收敛为 `CANCELLED`
 - 数据库 migration：`20260730_0011`
 - 上线后网关观察窗口：`429=0`、`5xx=0`
 - GPU 节点：`3/3 ACTIVE/ONLINE`
-- 六 API r5 阶梯压测：`进行中`；本文不声明尚未完成的吞吐、延迟或稳定性结果。
+- 六 API r5 阶梯压测：已完成；session teardown 的 88 个 ImageClip 父批次全部首次取消成功，
+  active lease 最终为 0。完整结果与剩余门禁见
+  `73_2026-07-30_SIX_API_120VU_LOAD_RESULT.md`。
 
 ## 修复合同
 
@@ -64,5 +66,7 @@ Asset 任务。重启现有 Scheduler 后，父批次全部收敛为 `CANCELLED`
 
 本文件不授权修改外部 ImageClip/ModelViewCreator workflow、模型、prompt、图结构或输出节点。
 四个服务已使用上述同一 source revision 构建并部署，数据库迁移、备份、健康检查和生产
-优先级门禁已执行。但 r5 压测、故障注入、持续观察与联合签收仍未完成，因此状态必须保持
+优先级门禁已执行。r5 已完成并验证 88/88 有界取消；另有 14 个因同步 Roughness 请求在强停前
+未返回任务 ID 的同会话任务，通过精确 test tenant/workflow/time allowlist 定向补清理。该缺口及
+另外两项门禁仍待修复和复测；故障注入、持续观察与联合签收也未完成。因此状态必须保持
 `DEPLOYED_NOT_ACCEPTED`，不得标记为 `FROZEN` 或 `PRODUCTION_ACCEPTED`。

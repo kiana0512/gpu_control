@@ -12,6 +12,7 @@ from packages.gpu_control_core.state_machine import InvalidTransition, require_t
         (JobStatus.SUBMITTED, JobStatus.RUNNING),
         (JobStatus.DOWNLOADING, JobStatus.SUCCEEDED),
         (JobStatus.RUNNING, JobStatus.CANCELLING),
+        (JobStatus.DOWNLOADING, JobStatus.CANCELLING),
         (JobStatus.CANCELLING, JobStatus.CANCELLED),
     ],
 )

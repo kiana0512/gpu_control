@@ -33,7 +33,12 @@ API_NAMES = (
     "retopology_process",
     "substance_bake",
 )
+SYNC_FINAL_API_NAMES = frozenset({"modelview_roughness"})
 LOAD_SUCCESS_STATUSES = frozenset({"SUCCEEDED", "WAITING_REVIEW"})
+LOAD_TERMINAL_STATUSES = frozenset(
+    {"SUCCEEDED", "WAITING_REVIEW", "REVIEW_REJECTED", "FAILED", "CANCELLED", "TIMED_OUT"}
+)
+LOAD_ACCEPTABLE_TEARDOWN_STATUSES = LOAD_SUCCESS_STATUSES | frozenset({"CANCELLED"})
 LOAD_ACTIVE_STATUSES = frozenset(
     {
         "RECEIVED",
@@ -49,7 +54,7 @@ LOAD_ACTIVE_STATUSES = frozenset(
         "RETRY_WAIT",
     }
 )
-METRIC_THRESHOLD_NAMES = frozenset(
+REQUIRED_METRIC_THRESHOLD_NAMES = frozenset(
     {
         "http_failure_rate_percent",
         "submit_p95_ms",
@@ -59,6 +64,16 @@ METRIC_THRESHOLD_NAMES = frozenset(
         "retry_rate_percent",
     }
 )
+OPTIONAL_METRIC_THRESHOLD_NAMES = frozenset({"sync_e2e_p95_ms"})
+METRIC_THRESHOLD_NAMES = REQUIRED_METRIC_THRESHOLD_NAMES | OPTIONAL_METRIC_THRESHOLD_NAMES
+LOAD_LIFECYCLE_MODES = frozenset({"all_complete", "bounded_stress"})
+
+ASSET_JOB_TYPE_TO_API = {
+    "UV_PROCESS_V2": "uv_process",
+    "RETOPOLOGY_AUDIT": "retopology_audit",
+    "RETOPOLOGY_PROCESS_V1": "retopology_process",
+    "SUBSTANCE_BAKE_V1": "substance_bake",
+}
 
 API_CONTRACTS: dict[str, dict[str, str]] = {
     "imageclip_batch": {
@@ -463,15 +478,171 @@ def identify_foreign_active_work(
     }
 
 
+def discover_scoped_teardown_tasks(
+    gpu_jobs: Sequence[Mapping[str, Any]],
+    asset_jobs: Sequence[Mapping[str, Any]],
+    *,
+    tenant_key_indices: Mapping[str, int],
+    session_id: str,
+    started_at: str,
+) -> list[dict[str, Any]]:
+    """Recover active run-owned tasks without widening cancellation scope.
+
+    The configured load tenants are dedicated to one run and map one-to-one to
+    API keys. Asset jobs and ImageClip batches must additionally carry the
+    harness session prefix. The synchronous roughness contract has no external
+    business ID, so it is recoverable only by exact test tenant, approved
+    workflow key, and a server ``created_at`` at or after this run's start.
+    Any ambiguous active row owned by a load tenant aborts discovery instead of
+    being guessed or cancelled.
+    """
+
+    if not SESSION_PATTERN.fullmatch(session_id):
+        raise LoadTestConfigurationError("teardown scan received an invalid session id")
+    normalized_indices: dict[str, int] = {}
+    for tenant_id, raw_index in tenant_key_indices.items():
+        tenant = str(tenant_id).strip()
+        if (
+            not tenant
+            or isinstance(raw_index, bool)
+            or not isinstance(raw_index, int)
+            or raw_index < 0
+        ):
+            raise LoadTestConfigurationError(
+                "teardown scan requires non-empty tenants and non-negative key indices"
+            )
+        normalized_indices[tenant] = raw_index
+    if not normalized_indices or len(set(normalized_indices.values())) != len(normalized_indices):
+        raise LoadTestConfigurationError(
+            "teardown scan requires a unique API key index for every tenant"
+        )
+    run_started_at = _parse_window_timestamp(started_at)
+    if run_started_at is None:
+        raise LoadTestConfigurationError("teardown scan requires an aware RFC3339 run start")
+
+    session_prefix = f"loadtest:{session_id}:"
+    discovered: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def common_fields(row: Mapping[str, Any], *, plane: str) -> tuple[str, str, int] | None:
+        status = str(row.get("status") or "")
+        if status not in LOAD_ACTIVE_STATUSES:
+            return None
+        owner_field = "tenant_id" if plane == "gpu" else "client_id"
+        owner = str(row.get(owner_field) or "")
+        if owner not in normalized_indices:
+            return None
+        if plane == "gpu" and row.get("client_kind") != "test":
+            raise LoadTestConfigurationError(
+                "teardown scan found a load-tenant GPU row without client_kind=test"
+            )
+        created_at = _parse_window_timestamp(str(row.get("created_at") or ""))
+        if created_at is None:
+            raise LoadTestConfigurationError(
+                "teardown scan cannot scope an active load-tenant row without created_at"
+            )
+        if created_at < run_started_at:
+            raise LoadTestConfigurationError(
+                "teardown scan found pre-run active work in a load tenant"
+            )
+        identifier = str(row.get("job_id") or row.get("batch_id") or "")
+        if not identifier or identifier in seen:
+            raise LoadTestConfigurationError(
+                "teardown scan found a missing or duplicate active task id"
+            )
+        seen.add(identifier)
+        return identifier, status, normalized_indices[owner]
+
+    for row in gpu_jobs:
+        if not isinstance(row, Mapping):
+            raise LoadTestConfigurationError("teardown scan received a non-object GPU job")
+        common = common_fields(row, plane="gpu")
+        if common is None:
+            continue
+        identifier, status, key_index = common
+        kind = str(row.get("kind") or "")
+        if kind == "batch":
+            external_id = str(row.get("external_batch_id") or "")
+            if not external_id.startswith(session_prefix):
+                raise LoadTestConfigurationError(
+                    "teardown scan found an ambiguous load-tenant GPU batch"
+                )
+            discovered.append(
+                {
+                    "id": identifier,
+                    "api": "imageclip_batch",
+                    "kind": "batch",
+                    "status_url": f"/api/v1/batches/{identifier}",
+                    "cancel_url": f"/api/v1/batches/{identifier}/cancel",
+                    "external_id": external_id,
+                    "api_key_index": key_index,
+                    "last_status": status,
+                    "recovery_source": "admin_scope_scan",
+                    "scope_basis": "tenant+created_at+external_batch_id",
+                }
+            )
+            continue
+        if kind != "job" or row.get("workflow_key") != "modelview-roughness":
+            raise LoadTestConfigurationError("teardown scan found an ambiguous load-tenant GPU job")
+        discovered.append(
+            {
+                "id": identifier,
+                "api": "modelview_roughness",
+                "kind": "job",
+                "status_url": f"/api/v1/jobs/{identifier}",
+                "cancel_url": f"/api/v1/jobs/{identifier}/cancel",
+                "external_id": None,
+                "api_key_index": key_index,
+                "last_status": status,
+                "recovery_source": "admin_scope_scan",
+                "scope_basis": "exclusive_test_tenant+created_at+workflow_key",
+            }
+        )
+
+    for row in asset_jobs:
+        if not isinstance(row, Mapping):
+            raise LoadTestConfigurationError("teardown scan received a non-object asset job")
+        common = common_fields(row, plane="asset")
+        if common is None:
+            continue
+        identifier, status, key_index = common
+        external_id = str(row.get("external_asset_id") or "")
+        api_name = ASSET_JOB_TYPE_TO_API.get(str(row.get("job_type") or ""))
+        if not external_id.startswith(session_prefix) or api_name is None:
+            raise LoadTestConfigurationError(
+                "teardown scan found an ambiguous load-tenant asset job"
+            )
+        discovered.append(
+            {
+                "id": identifier,
+                "api": api_name,
+                "kind": "asset",
+                "status_url": f"/api/v1/assets/jobs/{identifier}",
+                "cancel_url": f"/api/v1/assets/jobs/{identifier}/cancel",
+                "external_id": external_id,
+                "api_key_index": key_index,
+                "last_status": status,
+                "recovery_source": "admin_scope_scan",
+                "scope_basis": "tenant+created_at+external_asset_id",
+            }
+        )
+
+    return sorted(discovered, key=lambda item: (str(item["api"]), str(item["id"])))
+
+
 def evaluate_load_lifecycle(
     records: Sequence[Mapping[str, Any]],
     teardown: Sequence[Mapping[str, Any]],
+    *,
+    mode: str = "all_complete",
+    recovery_scan_passed: bool = True,
 ) -> dict[str, Any]:
-    """Fail closed on unfinished, unsuccessful, or artifact-incomplete work."""
+    """Evaluate acceptance or bounded-stress lifecycle semantics."""
 
-    incomplete = [
-        str(record.get("id")) for record in records if not record.get("terminal_status")
-    ]
+    if mode not in LOAD_LIFECYCLE_MODES:
+        raise LoadTestConfigurationError(f"unsupported load lifecycle mode: {mode}")
+
+    incomplete = [str(record.get("id")) for record in records if not record.get("terminal_status")]
     unsuccessful = [
         {
             "id": str(record.get("id")),
@@ -498,32 +669,88 @@ def evaluate_load_lifecycle(
     teardown_failed = [
         str(outcome.get("task_id"))
         for outcome in teardown
-        if outcome.get("cancelled") is not True
-    ]
-    passed = bool(records) and not any(
-        (
-            incomplete,
-            unsuccessful,
-            missing_artifacts,
-            artifact_contract_failures,
-            poll_timeouts,
-            teardown,
+        if not (
+            outcome.get("settled") is True
+            and str(outcome.get("final_status") or "") in LOAD_ACCEPTABLE_TEARDOWN_STATUSES
         )
-    )
+    ]
+    verified_successes = [
+        str(record.get("id"))
+        for record in records
+        if record.get("terminal_status") in LOAD_SUCCESS_STATUSES
+        and int(record.get("artifact_count") or 0) >= 1
+        and record.get("artifact_contract_failed") is not True
+    ]
+    safely_settled_ids = {
+        str(outcome.get("task_id"))
+        for outcome in teardown
+        if str(outcome.get("task_id") or "")
+        and outcome.get("settled") is True
+        and str(outcome.get("final_status") or "") in LOAD_ACCEPTABLE_TEARDOWN_STATUSES
+    }
+    unresolved_incomplete = [
+        identifier for identifier in incomplete if identifier not in safely_settled_ids
+    ]
+    bounded_unsuccessful = [
+        item
+        for item in unsuccessful
+        if not (item["status"] == "CANCELLED" and item["id"] in safely_settled_ids)
+    ]
+    if mode == "all_complete":
+        passed = bool(records) and not any(
+            (
+                incomplete,
+                unsuccessful,
+                missing_artifacts,
+                artifact_contract_failures,
+                poll_timeouts,
+                teardown,
+            )
+        )
+        policy = (
+            "all registered tasks must end successfully with a verified artifact; "
+            "teardown means the run is incomplete"
+        )
+    else:
+        passed = (
+            bool(records)
+            and bool(verified_successes)
+            and recovery_scan_passed
+            and not any(
+                (
+                    unresolved_incomplete,
+                    bounded_unsuccessful,
+                    missing_artifacts,
+                    artifact_contract_failures,
+                    poll_timeouts,
+                    teardown_failed,
+                )
+            )
+        )
+        policy = (
+            "bounded stress requires a verified successful subset and every residual "
+            "task to be scope-recovered, cancelled or terminal, and observed settled"
+        )
     return {
         "passed": passed,
+        "mode": mode,
         "registered": len(records),
         "successful": sum(
             record.get("terminal_status") in LOAD_SUCCESS_STATUSES for record in records
         ),
+        "verified_successful": len(verified_successes),
         "incomplete_task_ids": incomplete,
+        "unresolved_incomplete_task_ids": unresolved_incomplete,
         "unsuccessful_tasks": unsuccessful,
+        "bounded_unsuccessful_tasks": bounded_unsuccessful,
         "missing_artifact_task_ids": missing_artifacts,
         "artifact_contract_failure_task_ids": artifact_contract_failures,
         "poll_timeout_task_ids": poll_timeouts,
         "teardown_attempted": len(teardown),
         "teardown_failed_task_ids": teardown_failed,
-        "policy": "all registered tasks must end successfully with a verified artifact; teardown means the run is incomplete",
+        "teardown_safely_settled_task_ids": sorted(safely_settled_ids),
+        "recovery_scan_passed": recovery_scan_passed,
+        "policy": policy,
     }
 
 
@@ -562,6 +789,7 @@ class LoadScenario:
     operation_timeout_seconds: dict[str, int]
     max_retries: int
     max_backup_age_hours: float
+    lifecycle_mode: str
     preflight: dict[str, int]
     thresholds: dict[str, float]
     approved_workflows: dict[str, dict[str, str]]
@@ -1010,11 +1238,13 @@ def load_scenario(path: Path) -> LoadScenario:
         ) from exc
     if any(value < 0 for value in thresholds.values()):
         raise LoadTestConfigurationError("metric thresholds cannot be negative")
-    if set(thresholds) != METRIC_THRESHOLD_NAMES:
-        missing_thresholds = sorted(METRIC_THRESHOLD_NAMES - set(thresholds))
+    if not REQUIRED_METRIC_THRESHOLD_NAMES.issubset(thresholds) or not set(thresholds).issubset(
+        METRIC_THRESHOLD_NAMES
+    ):
+        missing_thresholds = sorted(REQUIRED_METRIC_THRESHOLD_NAMES - set(thresholds))
         unknown_thresholds = sorted(set(thresholds) - METRIC_THRESHOLD_NAMES)
         raise LoadTestConfigurationError(
-            "thresholds must contain every supported metric; "
+            "thresholds must contain every required metric and only supported metrics; "
             f"missing={missing_thresholds}, extra={unknown_thresholds}"
         )
     if poll_interval_seconds <= 0:
@@ -1025,6 +1255,11 @@ def load_scenario(path: Path) -> LoadScenario:
         raise LoadTestConfigurationError(
             "max_backup_age_hours must be greater than 0 and at most 168"
         )
+    lifecycle_mode = str(payload.get("lifecycle_mode", "all_complete")).strip()
+    if lifecycle_mode not in LOAD_LIFECYCLE_MODES:
+        raise LoadTestConfigurationError(
+            f"lifecycle_mode must be one of {sorted(LOAD_LIFECYCLE_MODES)}"
+        )
     return LoadScenario(
         source=source,
         weights=weights,
@@ -1034,6 +1269,7 @@ def load_scenario(path: Path) -> LoadScenario:
         operation_timeout_seconds=operation_timeouts,
         max_retries=max_retries,
         max_backup_age_hours=max_backup_age_hours,
+        lifecycle_mode=lifecycle_mode,
         preflight=preflight,
         thresholds=thresholds,
         approved_workflows={
@@ -1584,6 +1820,72 @@ def _distribution(values: Sequence[float]) -> dict[str, float | None]:
     }
 
 
+def evaluate_load_thresholds(
+    summary: Mapping[str, Any], thresholds: Mapping[str, float]
+) -> dict[str, Any]:
+    """Evaluate route metrics while separating async submit from sync E2E."""
+
+    raw_http = summary.get("http")
+    http: Mapping[str, Any] = raw_http if isinstance(raw_http, Mapping) else {}
+    raw_total = http.get("total")
+    total: Mapping[str, Any] = raw_total if isinstance(raw_total, Mapping) else {}
+    raw_entries = http.get("entries")
+    entries: Mapping[str, Any] = raw_entries if isinstance(raw_entries, Mapping) else {}
+
+    def maximum_p95(operation: str) -> float | None:
+        values = [
+            float(item["p95_ms"])
+            for name, item in entries.items()
+            if isinstance(item, Mapping)
+            and str(name).endswith(f":{operation}")
+            and _number(item.get("p95_ms")) is not None
+        ]
+        return max(values) if values else None
+
+    raw_queue = summary.get("queue_ms")
+    queue: Mapping[str, Any] = raw_queue if isinstance(raw_queue, Mapping) else {}
+    created = int(summary.get("created") or 0)
+    retries = int(summary.get("http_retry_attempts") or 0)
+    failure_ratio = _number(total.get("failure_rate"))
+    queue_p95 = _number(queue.get("p95"))
+    observed: dict[str, float | None] = {
+        "http_failure_rate_percent": (failure_ratio * 100 if failure_ratio is not None else None),
+        "submit_p95_ms": maximum_p95("submit"),
+        "sync_e2e_p95_ms": maximum_p95("sync-e2e"),
+        "poll_p95_ms": maximum_p95("poll"),
+        "artifact_p95_ms": maximum_p95("artifact-download"),
+        "queue_p95_ms": queue_p95,
+        "retry_rate_percent": (retries / created * 100) if created else None,
+    }
+    checks: dict[str, Any] = {}
+    for name, raw_limit in thresholds.items():
+        if name not in METRIC_THRESHOLD_NAMES:
+            raise LoadTestConfigurationError(f"unsupported metric threshold: {name}")
+        limit = float(raw_limit)
+        value = observed[name]
+        passed = value is not None and value <= limit
+        checks[name] = {
+            "observed": round(value, 6) if value is not None else None,
+            "maximum": limit,
+            "passed": passed,
+            "reason": (None if passed else "missing measurement" if value is None else "exceeded"),
+        }
+    return {
+        "passed": bool(checks) and all(item["passed"] for item in checks.values()),
+        "checks": checks,
+        "observed": {
+            key: round(value, 6) if value is not None else None for key, value in observed.items()
+        },
+        "route_classification": {
+            "async_submit_api_names": [
+                name for name in API_NAMES if name not in SYNC_FINAL_API_NAMES
+            ],
+            "sync_end_to_end_api_names": sorted(SYNC_FINAL_API_NAMES),
+            "sync_end_to_end_operation": "sync-e2e",
+        },
+    }
+
+
 def summarize_telemetry(
     samples: Sequence[Mapping[str, Any]],
     *,
@@ -1626,11 +1928,7 @@ def summarize_telemetry(
                     series[key].append(value)
             current_jobs = _number(raw_node.get("current_jobs"))
             max_concurrency = _number(raw_node.get("max_concurrency"))
-            if (
-                current_jobs is not None
-                and max_concurrency is not None
-                and max_concurrency > 0
-            ):
+            if current_jobs is not None and max_concurrency is not None and max_concurrency > 0:
                 series["slot_occupancy_percent"].append(
                     min(100.0, max(0.0, current_jobs / max_concurrency * 100))
                 )
@@ -1649,11 +1947,7 @@ def summarize_telemetry(
             max_concurrency = _number(raw_worker.get("max_concurrency"))
             if current_jobs is not None:
                 series["current_jobs"].append(current_jobs)
-            if (
-                current_jobs is not None
-                and max_concurrency is not None
-                and max_concurrency > 0
-            ):
+            if current_jobs is not None and max_concurrency is not None and max_concurrency > 0:
                 series["slot_occupancy_percent"].append(
                     min(100.0, max(0.0, current_jobs / max_concurrency * 100))
                 )
@@ -1663,9 +1957,7 @@ def summarize_telemetry(
         raw_gpu_cluster = scheduler.get("cluster")
         gpu_cluster = raw_gpu_cluster if isinstance(raw_gpu_cluster, dict) else {}
         raw_asset_capacity = sample.get("asset_capacity")
-        asset_capacity = (
-            raw_asset_capacity if isinstance(raw_asset_capacity, dict) else {}
-        )
+        asset_capacity = raw_asset_capacity if isinstance(raw_asset_capacity, dict) else {}
         cluster_values = {
             "queue_depth": scheduler.get("queue_depth"),
             "gpu_used_slots": gpu_cluster.get("used_slots"),
@@ -1764,6 +2056,92 @@ def summarize_telemetry(
     }
 
 
+def evaluate_telemetry_evidence(
+    samples: Sequence[Mapping[str, Any]],
+    *,
+    expected_resources: Mapping[str, Any],
+    sampling_interval_seconds: float,
+) -> dict[str, Any]:
+    """Validate the observed sample window and its explicit stop-time tail.
+
+    A run can start or stop between interval boundaries, so deriving a sample
+    count from total Locust elapsed time creates false gaps. Instead, require a
+    contiguous sequence, bounded gaps inside the actual telemetry window, and
+    one explicit final sample captured after the sampler is stopped.
+    """
+
+    if sampling_interval_seconds <= 0:
+        raise LoadTestConfigurationError("telemetry sampling interval must be positive")
+    invalid_count = sum(sample.get("valid") is not True for sample in samples)
+    sequences: list[int] = []
+    elapsed_values: list[float] = []
+    structure_valid = True
+    for sample in samples:
+        raw_sequence = sample.get("sequence")
+        raw_elapsed = sample.get("actual_elapsed_ms")
+        if (
+            isinstance(raw_sequence, bool)
+            or not isinstance(raw_sequence, int)
+            or raw_sequence < 1
+            or (elapsed := _number(raw_elapsed)) is None
+            or elapsed < 0
+        ):
+            structure_valid = False
+            continue
+        sequences.append(raw_sequence)
+        elapsed_values.append(elapsed)
+
+    sequence_contiguous = bool(sequences) and sequences == list(range(1, len(samples) + 1))
+    elapsed_monotonic = all(
+        current >= previous
+        for previous, current in zip(elapsed_values, elapsed_values[1:], strict=False)
+    )
+    gaps = [
+        current - previous
+        for previous, current in zip(elapsed_values, elapsed_values[1:], strict=False)
+    ]
+    maximum_gap_ms = max(gaps) if gaps else None
+    maximum_allowed_gap_ms = sampling_interval_seconds * 1500
+    first_sample_on_time = bool(elapsed_values) and elapsed_values[0] <= (
+        sampling_interval_seconds * 1000
+    )
+    explicit_final_sample = bool(samples) and samples[-1].get("final_sample") is True
+    resource_complete = (
+        expected_resources.get("all_gpu_samples_present") is True
+        and expected_resources.get("all_worker_samples_present") is True
+    )
+    passed = (
+        len(samples) >= 2
+        and invalid_count == 0
+        and structure_valid
+        and sequence_contiguous
+        and elapsed_monotonic
+        and first_sample_on_time
+        and (maximum_gap_ms is None or maximum_gap_ms <= maximum_allowed_gap_ms)
+        and explicit_final_sample
+        and resource_complete
+    )
+    return {
+        "passed": passed,
+        "policy": "observed_window_with_explicit_final_sample",
+        "sample_count": len(samples),
+        "minimum_required_samples": 2,
+        "invalid_sample_count": invalid_count,
+        "sequence_contiguous": sequence_contiguous,
+        "elapsed_monotonic": elapsed_monotonic,
+        "first_sample_on_time": first_sample_on_time,
+        "explicit_final_sample": explicit_final_sample,
+        "resource_samples_complete": resource_complete,
+        "observed_window_seconds": (
+            round((elapsed_values[-1] - elapsed_values[0]) / 1000, 3)
+            if len(elapsed_values) >= 2
+            else 0.0
+        ),
+        "maximum_gap_ms": round(maximum_gap_ms, 3) if maximum_gap_ms is not None else None,
+        "maximum_allowed_gap_ms": round(maximum_allowed_gap_ms, 3),
+    }
+
+
 def build_plan(
     runtime: RuntimeSettings,
     scenario: LoadScenario,
@@ -1844,6 +2222,7 @@ def build_plan(
             "maximum_users": scenario.maximum_users,
             "total_duration_seconds": scenario.total_duration_seconds,
             "max_backup_age_hours": scenario.max_backup_age_hours,
+            "lifecycle_mode": scenario.lifecycle_mode,
             "stages": [stage.__dict__ for stage in scenario.stages],
             "thresholds": scenario.thresholds,
             "approved_workflows": scenario.approved_workflows,

@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -13,7 +13,7 @@ from apps.scheduler.src.gpu_control_scheduler.main import (
     persist_prompt_id,
     prepare_prompt_submission,
 )
-from packages.comfy_client import ComfyClient
+from packages.comfy_client import ComfyClient, ComfyOutput
 from packages.gpu_control_core.batches import transition_batch
 from packages.gpu_control_core.database import Database
 from packages.gpu_control_core.enums import BatchStatus, JobStatus
@@ -21,10 +21,14 @@ from packages.gpu_control_core.models import (
     ApiClient,
     Base,
     BatchCancelOperation,
+    CallbackAttempt,
     Job,
+    JobArtifact,
     JobAttempt,
     JobBatch,
     JobBatchItem,
+    JobCallback,
+    JobEvent,
     Node,
     NodeLease,
     Workflow,
@@ -32,6 +36,13 @@ from packages.gpu_control_core.models import (
     WorkflowVersion,
 )
 from packages.gpu_control_core.repository import claim_next_job, prompt_client_id, release_lease
+from packages.gpu_control_core.scheduling import (
+    SUBSTANCE_DRAIN_OWNER,
+    SUBSTANCE_DRAIN_OWNER_LABEL,
+    SUBSTANCE_FENCE_LABEL,
+    SUBSTANCE_PENDING_RESERVATION_LABEL,
+    SUBSTANCE_RECOVERY_REQUIRED_LABEL,
+)
 from packages.gpu_control_core.settings import Settings
 from tests.fake_comfyui.app import Behavior, State, create_app
 
@@ -132,6 +143,470 @@ async def test_transactional_claim_enforces_single_node_slot(tmp_path: Path) -> 
             third = await claim_next_job(session, "3090-a", 300)
         assert third is not None and third[0].tenant_id != first[0].tenant_id
     await database.close()
+
+
+async def test_gpu_claim_atomically_cleans_expired_substance_reservation(
+    tmp_path: Path,
+) -> None:
+    database = await make_database(tmp_path / "expired-substance-reservation.db")
+    await seed(database)
+    async with database.session() as session:
+        node = await session.get(Node, "3090-a")
+        assert node is not None
+        node.mode = "DRAINING"
+        node.labels = {
+            SUBSTANCE_DRAIN_OWNER_LABEL: SUBSTANCE_DRAIN_OWNER,
+            SUBSTANCE_PENDING_RESERVATION_LABEL: {
+                "job_ids": ["stale-production-bake"],
+                "expires_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+            },
+        }
+        await session.commit()
+
+    async with database.session() as session:
+        async with session.begin():
+            claimed = await claim_next_job(session, "3090-a", 300)
+        assert claimed is not None
+
+    async with database.session() as session:
+        node = await session.get(Node, "3090-a")
+        assert node is not None
+        assert node.mode == "ACTIVE"
+        assert SUBSTANCE_DRAIN_OWNER_LABEL not in node.labels
+        assert SUBSTANCE_PENDING_RESERVATION_LABEL not in node.labels
+    await database.close()
+
+
+async def test_health_probe_merges_concurrent_substance_interlocks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "health-label-merge.db"
+    database = await make_database(path)
+    await seed(database)
+    scheduler = Scheduler(
+        Settings(
+            database_url=f"sqlite+aiosqlite:///{path.as_posix()}",
+            job_root=tmp_path / "jobs",
+        )
+    )
+    expires_at = datetime.now(UTC) + timedelta(minutes=5)
+    probe_completed_at = datetime.now(UTC) - timedelta(seconds=30)
+    recovery_observed_at = datetime.now(UTC)
+
+    class ProbeClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = probe_completed_at
+            return value if tz is not None else value.replace(tzinfo=None)
+
+    class ConcurrentHealthClient:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def system_stats(self) -> dict[str, object]:
+            # This commit occurs after Scheduler read its probe snapshot but
+            # before Scheduler performs its health writeback.
+            async with database.session() as session:
+                node = await session.get(Node, "3090-a", with_for_update=True)
+                assert node is not None
+                node.mode = "DRAINING"
+                node.labels = {
+                    "concurrent_marker": "preserve-me",
+                    SUBSTANCE_DRAIN_OWNER_LABEL: SUBSTANCE_DRAIN_OWNER,
+                    SUBSTANCE_PENDING_RESERVATION_LABEL: {
+                        "job_ids": ["queued-bake"],
+                        "expires_at": expires_at.isoformat(),
+                    },
+                    SUBSTANCE_FENCE_LABEL: ["running-bake"],
+                    SUBSTANCE_RECOVERY_REQUIRED_LABEL: [
+                        {
+                            "job_id": "ambiguous-bake",
+                            "worker_id": "asset-worker-3090-b-windows-01",
+                            "lease_expired_at": datetime.now(UTC).isoformat(),
+                            "idle_observed_at": recovery_observed_at.isoformat(),
+                        }
+                    ],
+                }
+                await session.commit()
+            scheduler.stop_event.set()
+            return {
+                "devices": [
+                    {
+                        "vram_free": 12 * 1024 * 1024 * 1024,
+                        "vram_total": 24 * 1024 * 1024 * 1024,
+                    }
+                ]
+            }
+
+        async def queue(self) -> dict[str, list[object]]:
+            return {"queue_running": [], "queue_pending": []}
+
+        async def object_info(self) -> dict[str, object]:
+            return {"SaveImage": {}}
+
+    async def no_identity(_: Node) -> None:
+        return None
+
+    async def no_agent_metrics(_: Node) -> None:
+        return None
+
+    monkeypatch.setattr(scheduler_main, "ComfyClient", ConcurrentHealthClient)
+    monkeypatch.setattr(scheduler_main, "datetime", ProbeClock)
+    scheduler.node_agent_identity = no_identity  # type: ignore[method-assign]
+    scheduler.node_agent_gpu_metrics = no_agent_metrics  # type: ignore[method-assign]
+    try:
+        await scheduler.update_node_health()
+        async with database.session() as session:
+            node = await session.get(Node, "3090-a")
+            assert node is not None
+            assert node.mode == "DRAINING"
+            assert node.labels["concurrent_marker"] == "preserve-me"
+            assert node.labels[SUBSTANCE_DRAIN_OWNER_LABEL] == SUBSTANCE_DRAIN_OWNER
+            assert node.labels[SUBSTANCE_FENCE_LABEL] == ["running-bake"]
+            assert node.labels[SUBSTANCE_RECOVERY_REQUIRED_LABEL][0]["job_id"] == (
+                "ambiguous-bake"
+            )
+            assert node.labels[SUBSTANCE_PENDING_RESERVATION_LABEL]["job_ids"] == [
+                "queued-bake"
+            ]
+            assert node.labels["comfy_class_types"] == ["SaveImage"]
+            assert node.health == "ONLINE"
+            heartbeat = node.last_heartbeat_at
+            assert heartbeat is not None
+            if heartbeat.tzinfo is None:
+                heartbeat = heartbeat.replace(tzinfo=UTC)
+            assert heartbeat == probe_completed_at
+            assert heartbeat < recovery_observed_at
+    finally:
+        await scheduler.redis.aclose()
+        await scheduler.db.close()
+        await database.close()
+
+
+async def test_completion_merges_labels_committed_after_node_snapshot(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "completion-label-merge.db"
+    database = await make_database(path)
+    await seed(database)
+    storage_root = tmp_path / "jobs"
+    job_root = storage_root / "completion-label-job"
+    for directory in ("comfy", "output"):
+        (job_root / directory).mkdir(parents=True, exist_ok=True)
+
+    async with database.session() as session:
+        async with session.begin():
+            claimed = await claim_next_job(session, "3090-a", 300)
+        assert claimed is not None
+        job_id = claimed[0].id
+        job = await session.get(Job, job_id, with_for_update=True)
+        node = await session.get(Node, "3090-a", with_for_update=True)
+        assert job is not None and node is not None
+        job.job_dir = str(job_root)
+        job.status = JobStatus.RUNNING.value
+        job.prompt_id = "prompt-label-merge"
+        node.labels = {"snapshot_marker": "stale"}
+        await session.commit()
+
+    scheduler = Scheduler(
+        Settings(
+            database_url=f"sqlite+aiosqlite:///{path.as_posix()}",
+            job_root=storage_root,
+        )
+    )
+
+    class CompletionClient:
+        @staticmethod
+        def outputs(
+            _: dict[str, object],
+            __: str,
+            ___: set[str],
+        ) -> list[ComfyOutput]:
+            return [ComfyOutput("result.png", "", "output")]
+
+        @staticmethod
+        async def download(_: ComfyOutput, destination: Path) -> tuple[int, str]:
+            payload = b"completed-output"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(payload)
+            return len(payload), "d" * 64
+
+    async def no_publish(_: dict) -> None:
+        return None
+
+    scheduler.publish = no_publish  # type: ignore[method-assign]
+    interlock_labels = {
+        "concurrent_marker": "preserve-me",
+        SUBSTANCE_DRAIN_OWNER_LABEL: SUBSTANCE_DRAIN_OWNER,
+        SUBSTANCE_PENDING_RESERVATION_LABEL: {
+            "job_ids": ["queued-bake"],
+            "expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+        },
+        SUBSTANCE_FENCE_LABEL: ["running-bake"],
+        SUBSTANCE_RECOVERY_REQUIRED_LABEL: [
+            {
+                "job_id": "ambiguous-bake",
+                "worker_id": "asset-worker-3090-b-windows-01",
+                "lease_expired_at": datetime.now(UTC).isoformat(),
+            }
+        ],
+    }
+    try:
+        async with scheduler.db.session() as completion_session:
+            job = await completion_session.get(Job, job_id)
+            workflow = await completion_session.scalar(select(WorkflowVersion))
+            stale_node = await completion_session.get(Node, "3090-a")
+            assert job is not None and workflow is not None and stale_node is not None
+            assert stale_node.labels == {"snapshot_marker": "stale"}
+            # Preserve the stale identity-map object across a transaction
+            # boundary, just as execute() does after its intermediate commits.
+            await completion_session.commit()
+
+            async with database.session() as writer:
+                current = await writer.get(Node, "3090-a", with_for_update=True)
+                assert current is not None
+                current.mode = "DRAINING"
+                current.labels = interlock_labels
+                await writer.commit()
+
+            await scheduler.finish_from_history(
+                completion_session,
+                job,
+                workflow,
+                CompletionClient(),  # type: ignore[arg-type]
+                {
+                    "prompt-label-merge": {
+                        "status": {"status_str": "success"},
+                        "outputs": {},
+                    }
+                },
+            )
+
+        async with database.session() as session:
+            node = await session.get(Node, "3090-a")
+            completed = await session.get(Job, job_id)
+            assert node is not None and completed is not None
+            assert completed.status == JobStatus.SUCCEEDED.value
+            assert node.mode == "DRAINING"
+            assert node.labels["concurrent_marker"] == "preserve-me"
+            assert node.labels[SUBSTANCE_DRAIN_OWNER_LABEL] == SUBSTANCE_DRAIN_OWNER
+            assert node.labels[SUBSTANCE_FENCE_LABEL] == ["running-bake"]
+            assert node.labels[SUBSTANCE_PENDING_RESERVATION_LABEL]["job_ids"] == [
+                "queued-bake"
+            ]
+            assert node.labels[SUBSTANCE_RECOVERY_REQUIRED_LABEL][0]["job_id"] == (
+                "ambiguous-bake"
+            )
+            assert node.labels["warm_workflow"] == "fake"
+            assert "warm_workflow_at" in node.labels
+    finally:
+        await scheduler.redis.aclose()
+        await scheduler.db.close()
+        await database.close()
+
+
+async def test_callback_unknown_delivery_reuses_attempt_and_idempotency_key(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "callback-unknown-delivery.db"
+    database = await make_database(path)
+    await seed(database)
+    callback_id = "callback-unknown-delivery"
+    async with database.session() as session:
+        job = await session.get(Job, "job-0", with_for_update=True)
+        assert job is not None
+        job.status = JobStatus.SUCCEEDED.value
+        job.finished_at = datetime.now(UTC)
+        session.add(
+            JobCallback(
+                id=callback_id,
+                job_id=job.id,
+                url="https://callback.example.com/hook",
+                signing_secret_hash="unused-in-scheduler",
+                status="PENDING",
+                next_attempt_at=datetime.now(UTC) - timedelta(seconds=1),
+            )
+        )
+        await session.commit()
+
+    scheduler = Scheduler(
+        Settings(
+            database_url=f"sqlite+aiosqlite:///{path.as_posix()}",
+            job_root=tmp_path / "jobs",
+        )
+    )
+    idempotency_keys: list[str] = []
+
+    class CallbackClient:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def post(
+            self,
+            url: str,
+            *,
+            content: bytes,
+            headers: dict[str, str],
+        ) -> httpx.Response:
+            del content
+            idempotency_keys.append(headers["Idempotency-Key"])
+            request = httpx.Request("POST", url)
+            if len(idempotency_keys) == 1:
+                raise httpx.ReadTimeout("response outcome is unknown", request=request)
+            return httpx.Response(204, request=request)
+
+    async def public_target(_: str) -> bool:
+        return True
+
+    monkeypatch.setattr(scheduler_main.httpx, "AsyncClient", CallbackClient)
+    scheduler.callback_target_is_public = public_target  # type: ignore[method-assign]
+    try:
+        assert await scheduler.dispatch_one_callback() is True
+        async with database.session() as session:
+            callback = await session.get(JobCallback, callback_id)
+            assert callback is not None
+            assert callback.status == "DELIVERING"
+            assert callback.next_attempt_at is not None
+            assert await session.scalar(
+                select(func.count(CallbackAttempt.id)).where(
+                    CallbackAttempt.callback_id == callback_id
+                )
+            ) == 0
+
+        # An unexpired ambiguous lease is not eligible for a concurrent replay.
+        assert await scheduler.dispatch_one_callback() is False
+        assert len(idempotency_keys) == 1
+
+        async with database.session() as session:
+            callback = await session.get(JobCallback, callback_id, with_for_update=True)
+            assert callback is not None
+            callback.next_attempt_at = datetime.now(UTC) - timedelta(seconds=1)
+            await session.commit()
+
+        assert await scheduler.dispatch_one_callback() is True
+        assert idempotency_keys == [
+            f"gpu-control-callback:{callback_id}:1",
+            f"gpu-control-callback:{callback_id}:1",
+        ]
+        async with database.session() as session:
+            callback = await session.get(JobCallback, callback_id)
+            attempts = list(
+                (
+                    await session.scalars(
+                        select(CallbackAttempt).where(
+                            CallbackAttempt.callback_id == callback_id
+                        )
+                    )
+                ).all()
+            )
+            assert callback is not None
+            assert callback.status == "SUCCEEDED"
+            assert callback.next_attempt_at is None
+            assert [attempt.attempt for attempt in attempts] == [1]
+            assert attempts[0].response_status == 204
+    finally:
+        await scheduler.redis.aclose()
+        await scheduler.db.close()
+        await database.close()
+
+
+async def test_callback_takeover_keeps_live_lease_and_ignores_late_result(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "callback-takeover.db"
+    database = await make_database(path)
+    await seed(database)
+    callback_id = "callback-takeover"
+    live_deadline = datetime.now(UTC) + timedelta(minutes=1)
+    async with database.session() as session:
+        job = await session.get(Job, "job-0", with_for_update=True)
+        assert job is not None
+        job.status = JobStatus.SUCCEEDED.value
+        job.finished_at = datetime.now(UTC)
+        session.add(
+            JobCallback(
+                id=callback_id,
+                job_id=job.id,
+                url="https://callback.example.com/hook",
+                signing_secret_hash="unused-in-scheduler",
+                status="DELIVERING",
+                next_attempt_at=live_deadline,
+            )
+        )
+        await session.commit()
+
+    scheduler = Scheduler(
+        Settings(
+            database_url=f"sqlite+aiosqlite:///{path.as_posix()}",
+            job_root=tmp_path / "jobs",
+        )
+    )
+    try:
+        # Startup reconciliation must not reset an unexpired delivery lease.
+        await scheduler.reconcile()
+        async with database.session() as session:
+            callback = await session.get(JobCallback, callback_id)
+            assert callback is not None
+            assert callback.status == "DELIVERING"
+            stored_deadline = callback.next_attempt_at
+            assert stored_deadline is not None
+            if stored_deadline.tzinfo is None:
+                stored_deadline = stored_deadline.replace(tzinfo=UTC)
+            assert stored_deadline == live_deadline
+
+        old_deadline = live_deadline - timedelta(seconds=30)
+        assert not await scheduler.finalize_callback_delivery(
+            callback_id=callback_id,
+            lease_deadline=old_deadline,
+            attempt_number=1,
+            status_code=200,
+            error_code=None,
+            duration_ms=10,
+        )
+        async with database.session() as session:
+            callback = await session.get(JobCallback, callback_id)
+            assert callback is not None
+            assert callback.status == "DELIVERING"
+            assert await session.scalar(
+                select(func.count(CallbackAttempt.id)).where(
+                    CallbackAttempt.callback_id == callback_id
+                )
+            ) == 0
+
+        assert await scheduler.finalize_callback_delivery(
+            callback_id=callback_id,
+            lease_deadline=live_deadline,
+            attempt_number=1,
+            status_code=200,
+            error_code=None,
+            duration_ms=10,
+        )
+        async with database.session() as session:
+            callback = await session.get(JobCallback, callback_id)
+            attempt = await session.scalar(
+                select(CallbackAttempt).where(
+                    CallbackAttempt.callback_id == callback_id
+                )
+            )
+            assert callback is not None and attempt is not None
+            assert callback.status == "SUCCEEDED"
+            assert attempt.attempt == 1
+    finally:
+        await scheduler.redis.aclose()
+        await scheduler.db.close()
+        await database.close()
 
 
 async def test_incompatible_workflow_is_not_claimed(tmp_path: Path) -> None:
@@ -774,6 +1249,531 @@ async def test_batch_transitions_do_not_fabricate_gpu_timestamps(tmp_path: Path)
         assert persisted.started_at is None
         assert persisted.execution_finished_at is None
     await database.close()
+
+
+async def test_cancel_committed_after_upload_prevents_prompt_submission(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "cancel-after-upload.db"
+    database = await make_database(path)
+    await seed(database)
+    job_root = tmp_path / "cancel-after-upload-job"
+    for directory in ("input", "workflow", "comfy", "output"):
+        (job_root / directory).mkdir(parents=True, exist_ok=True)
+    (job_root / "input" / "source.png").write_bytes(b"input")
+    (job_root / "workflow" / "rendered.api.json").write_text(
+        '{"9":{"class_type":"SaveImage","inputs":{}}}',
+        encoding="utf-8",
+    )
+    async with database.session() as session:
+        async with session.begin():
+            claimed = await claim_next_job(session, "3090-a", 300)
+        assert claimed is not None
+        job_id = claimed[0].id
+        job = await session.get(Job, job_id, with_for_update=True)
+        assert job is not None
+        job.job_dir = str(job_root)
+        await session.commit()
+
+    upload_calls = 0
+    submit_calls = 0
+
+    class CancelAfterUploadClient:
+        def __init__(self, _: str) -> None:
+            pass
+
+        async def free(self) -> dict[str, object]:
+            return {"released": True}
+
+        async def upload(
+            self,
+            _: Path,
+            *,
+            mask: bool,
+            subfolder: str,
+        ) -> dict[str, object]:
+            nonlocal upload_calls
+            upload_calls += 1
+            assert mask is False
+            assert subfolder == job_id
+            async with database.session() as cancellation_session:
+                cancelling = await cancellation_session.get(
+                    Job,
+                    job_id,
+                    with_for_update=True,
+                )
+                assert cancelling is not None
+                cancelling.cancel_requested = True
+                cancelling.status = JobStatus.CANCELLING.value
+                await cancellation_session.commit()
+            return {"attempt": 1, "overwrite": True, "verified": True}
+
+        async def submit(self, _: dict[str, object], __: str) -> str:
+            nonlocal submit_calls
+            submit_calls += 1
+            return "must-not-be-submitted"
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(scheduler_main, "ComfyClient", CancelAfterUploadClient)
+    scheduler = Scheduler(
+        Settings(
+            database_url=f"sqlite+aiosqlite:///{path.as_posix()}",
+            job_root=tmp_path / "jobs",
+        )
+    )
+    published: list[dict[str, object]] = []
+
+    async def record_publish(payload: dict[str, object]) -> None:
+        published.append(payload)
+
+    scheduler.publish = record_publish  # type: ignore[method-assign]
+    try:
+        await scheduler.execute(job_id)
+        assert upload_calls == 1
+        assert submit_calls == 0
+        async with scheduler.db.session() as session:
+            job = await session.get(Job, job_id)
+            attempt = await session.scalar(
+                select(JobAttempt).where(JobAttempt.job_id == job_id)
+            )
+            lease = await session.scalar(
+                select(NodeLease).where(NodeLease.job_id == job_id)
+            )
+            node = await session.get(Node, "3090-a")
+            assert job is not None and attempt is not None and lease is not None
+            assert node is not None
+            assert job.status == JobStatus.CANCELLED.value
+            assert job.prompt_id is None
+            assert job.submission_intent_at is None
+            assert attempt.prompt_attempts == 0
+            assert attempt.status == JobStatus.CANCELLED.value
+            assert lease.active is False
+            assert node.current_jobs == 0
+        assert published == [{"event": "job.cancelled", "job_id": job_id}]
+    finally:
+        await scheduler.redis.aclose()
+        await scheduler.db.close()
+        await database.close()
+
+
+async def test_cancel_during_submission_recovery_interrupts_before_terminal_cancel(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "cancel-during-submission-recovery.db"
+    database = await make_database(path)
+    await seed(database)
+    async with database.session() as session:
+        async with session.begin():
+            claimed = await claim_next_job(session, "3090-a", 300)
+        assert claimed is not None
+        job_id = claimed[0].id
+        job = await session.get(Job, job_id, with_for_update=True)
+        assert job is not None
+        client_id = await prepare_prompt_submission(session, job)
+        await session.commit()
+
+    recovered_prompt_id = "accepted-before-recovery-cancel"
+    interrupt_calls: list[str] = []
+
+    class CancelDuringRecoveryClient:
+        def __init__(self, _: str) -> None:
+            pass
+
+        async def prompt_ids_for_client(self, candidate_client_id: str) -> list[str]:
+            assert candidate_client_id == client_id
+            async with database.session() as cancellation_session:
+                cancelling = await cancellation_session.get(
+                    Job,
+                    job_id,
+                    with_for_update=True,
+                )
+                assert cancelling is not None
+                cancelling.cancel_requested = True
+                cancelling.status = JobStatus.CANCELLING.value
+                await cancellation_session.commit()
+            return [recovered_prompt_id]
+
+        async def interrupt(self) -> dict[str, object]:
+            interrupt_calls.append("interrupt")
+            return {"interrupted": True}
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(scheduler_main, "ComfyClient", CancelDuringRecoveryClient)
+    scheduler = Scheduler(
+        Settings(
+            database_url=f"sqlite+aiosqlite:///{path.as_posix()}",
+            job_root=tmp_path / "jobs",
+        )
+    )
+    published: list[dict[str, object]] = []
+    cancel_calls: list[str] = []
+    cancel_locked_job = scheduler.cancel_locked_job
+
+    async def assert_interrupt_precedes_cancel(session, job, *, event: str) -> None:
+        assert interrupt_calls == ["interrupt"]
+        cancel_calls.append(event)
+        await cancel_locked_job(session, job, event=event)
+
+    async def record_publish(payload: dict[str, object]) -> None:
+        published.append(payload)
+
+    scheduler.cancel_locked_job = assert_interrupt_precedes_cancel  # type: ignore[method-assign]
+    scheduler.publish = record_publish  # type: ignore[method-assign]
+    try:
+        await scheduler.execute(job_id, recovering=True)
+        assert interrupt_calls == ["interrupt"]
+        assert cancel_calls == ["scheduler.cancelled_after_submission_recovery"]
+        async with scheduler.db.session() as session:
+            job = await session.get(Job, job_id)
+            attempt = await session.scalar(
+                select(JobAttempt).where(JobAttempt.job_id == job_id)
+            )
+            lease = await session.scalar(
+                select(NodeLease).where(NodeLease.job_id == job_id)
+            )
+            node = await session.get(Node, "3090-a")
+            forbidden_events = await session.scalar(
+                select(func.count(JobEvent.id)).where(
+                    JobEvent.job_id == job_id,
+                    JobEvent.status.in_(
+                        [
+                            JobStatus.SUBMITTED.value,
+                            JobStatus.FAILED.value,
+                        ]
+                    ),
+                )
+            )
+            assert job is not None and attempt is not None and lease is not None
+            assert node is not None
+            assert job.status == JobStatus.CANCELLED.value
+            assert job.prompt_id == recovered_prompt_id
+            assert job.error_code is None
+            assert attempt.prompt_id == recovered_prompt_id
+            assert attempt.status == JobStatus.CANCELLED.value
+            assert forbidden_events == 0
+            assert lease.active is False
+            assert node.current_jobs == 0
+        assert published == [{"event": "job.cancelled", "job_id": job_id}]
+    finally:
+        await scheduler.redis.aclose()
+        await scheduler.db.close()
+        await database.close()
+
+
+async def test_cancel_committed_during_download_prevents_artifact_publish(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "cancel-during-download.db"
+    database = await make_database(path)
+    await seed(database)
+    storage_root = tmp_path / "jobs"
+    job_root = storage_root / "cancel-during-download-job"
+    for directory in ("comfy", "output"):
+        (job_root / directory).mkdir(parents=True, exist_ok=True)
+    prompt_id = "cancel-during-download-prompt"
+    async with database.session() as session:
+        async with session.begin():
+            claimed = await claim_next_job(session, "3090-a", 300)
+        assert claimed is not None
+        job_id = claimed[0].id
+        job = await session.get(Job, job_id, with_for_update=True)
+        assert job is not None
+        job.job_dir = str(job_root)
+        await prepare_prompt_submission(session, job)
+        await persist_prompt_id(session, job, prompt_id)
+        job.status = JobStatus.RUNNING.value
+        await session.commit()
+
+    download_destinations: list[Path] = []
+
+    class CancelDuringDownloadClient:
+        @staticmethod
+        def outputs(
+            _: dict[str, object],
+            __: str,
+            ___: set[str],
+        ) -> list[ComfyOutput]:
+            return [ComfyOutput("result.png", "", "output")]
+
+        @staticmethod
+        async def download(_: ComfyOutput, destination: Path) -> tuple[int, str]:
+            payload = b"downloaded-but-not-published"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(payload)
+            download_destinations.append(destination)
+            async with database.session() as cancellation_session:
+                cancelling = await cancellation_session.get(
+                    Job,
+                    job_id,
+                    with_for_update=True,
+                )
+                assert cancelling is not None
+                cancelling.cancel_requested = True
+                cancelling.status = JobStatus.CANCELLING.value
+                await cancellation_session.commit()
+            return len(payload), "d" * 64
+
+    scheduler = Scheduler(
+        Settings(
+            database_url=f"sqlite+aiosqlite:///{path.as_posix()}",
+            job_root=storage_root,
+        )
+    )
+    published: list[dict[str, object]] = []
+
+    async def record_publish(payload: dict[str, object]) -> None:
+        published.append(payload)
+
+    scheduler.publish = record_publish  # type: ignore[method-assign]
+    try:
+        async with scheduler.db.session() as completion_session:
+            job = await completion_session.get(Job, job_id)
+            workflow = await completion_session.scalar(select(WorkflowVersion))
+            assert job is not None and workflow is not None
+            await scheduler.finish_from_history(
+                completion_session,
+                job,
+                workflow,
+                CancelDuringDownloadClient(),  # type: ignore[arg-type]
+                {
+                    prompt_id: {
+                        "status": {"status_str": "success"},
+                        "outputs": {},
+                    }
+                },
+            )
+
+        assert len(download_destinations) == 1
+        assert not (job_root / "output" / "000-result.png").exists()
+        assert list((job_root / "output").glob("000-*")) == []
+        async with scheduler.db.session() as session:
+            job = await session.get(Job, job_id)
+            attempt = await session.scalar(
+                select(JobAttempt).where(JobAttempt.job_id == job_id)
+            )
+            lease = await session.scalar(
+                select(NodeLease).where(NodeLease.job_id == job_id)
+            )
+            node = await session.get(Node, "3090-a")
+            artifact_count = await session.scalar(
+                select(func.count(JobArtifact.id)).where(JobArtifact.job_id == job_id)
+            )
+            assert job is not None and attempt is not None and lease is not None
+            assert node is not None
+            assert job.status == JobStatus.CANCELLED.value
+            assert attempt.status == JobStatus.CANCELLED.value
+            assert lease.active is False
+            assert node.current_jobs == 0
+            assert artifact_count == 0
+        assert published == [{"event": "job.cancelled", "job_id": job_id}]
+    finally:
+        await scheduler.redis.aclose()
+        await scheduler.db.close()
+        await database.close()
+
+
+async def test_late_start_and_progress_events_cannot_revive_cancelled_job(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "late-events-after-cancel.db"
+    database = await make_database(path)
+    await seed(database)
+    prompt_id = "late-events-prompt"
+    async with database.session() as session:
+        async with session.begin():
+            claimed = await claim_next_job(session, "3090-a", 300)
+        assert claimed is not None
+        job_id = claimed[0].id
+        job = await session.get(Job, job_id, with_for_update=True)
+        assert job is not None
+        await prepare_prompt_submission(session, job)
+        await persist_prompt_id(session, job, prompt_id)
+        job.status = JobStatus.SUBMITTED.value
+        await session.commit()
+
+    class LateEventsClient:
+        def __init__(self, _: str) -> None:
+            pass
+
+        async def events(
+            self,
+            candidate_prompt_id: str,
+            _: str,
+        ) -> AsyncIterator[dict[str, object]]:
+            assert candidate_prompt_id == prompt_id
+            async with database.session() as cancellation_session:
+                cancelling = await cancellation_session.get(
+                    Job,
+                    job_id,
+                    with_for_update=True,
+                )
+                assert cancelling is not None
+                cancelling.cancel_requested = True
+                cancelling.status = JobStatus.CANCELLING.value
+                await cancellation_session.commit()
+            yield {
+                "type": "execution_start",
+                "data": {"prompt_id": candidate_prompt_id},
+            }
+            yield {
+                "type": "progress",
+                "data": {
+                    "prompt_id": candidate_prompt_id,
+                    "value": 99,
+                    "max": 100,
+                },
+            }
+            yield {
+                "type": "executing",
+                "data": {"prompt_id": candidate_prompt_id, "node": "9"},
+            }
+            yield {
+                "type": "execution_interrupted",
+                "data": {"prompt_id": candidate_prompt_id},
+            }
+
+        async def interrupt(self) -> dict[str, object]:
+            return {"interrupted": True}
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(scheduler_main, "ComfyClient", LateEventsClient)
+    scheduler = Scheduler(
+        Settings(
+            database_url=f"sqlite+aiosqlite:///{path.as_posix()}",
+            job_root=tmp_path / "jobs",
+        )
+    )
+    published: list[dict[str, object]] = []
+
+    async def record_publish(payload: dict[str, object]) -> None:
+        published.append(payload)
+
+    scheduler.publish = record_publish  # type: ignore[method-assign]
+    try:
+        await scheduler.execute(job_id)
+        async with scheduler.db.session() as session:
+            job = await session.get(Job, job_id)
+            attempt = await session.scalar(
+                select(JobAttempt).where(JobAttempt.job_id == job_id)
+            )
+            lease = await session.scalar(
+                select(NodeLease).where(NodeLease.job_id == job_id)
+            )
+            node = await session.get(Node, "3090-a")
+            running_events = await session.scalar(
+                select(func.count(JobEvent.id)).where(
+                    JobEvent.job_id == job_id,
+                    JobEvent.status == JobStatus.RUNNING.value,
+                )
+            )
+            assert job is not None and attempt is not None and lease is not None
+            assert node is not None
+            assert job.status == JobStatus.CANCELLED.value
+            assert job.started_at is None
+            assert job.progress == 0
+            assert attempt.gpu_started_at is None
+            assert attempt.gpu_finished_at is not None
+            assert attempt.status == JobStatus.CANCELLED.value
+            assert running_events == 0
+            assert lease.active is False
+            assert node.current_jobs == 0
+        assert published == [{"event": "job.cancelled", "job_id": job_id}]
+    finally:
+        await scheduler.redis.aclose()
+        await scheduler.db.close()
+        await database.close()
+
+
+async def test_timeout_watchdog_preserves_authenticated_cancellation(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "timeout-boundary-cancel.db"
+    database = await make_database(path)
+    await seed(database)
+    async with database.session() as session:
+        async with session.begin():
+            claimed = await claim_next_job(session, "3090-a", 300)
+        assert claimed is not None
+        job_id = claimed[0].id
+        job = await session.get(Job, job_id, with_for_update=True)
+        assert job is not None
+        job.cancel_requested = True
+        job.status = JobStatus.CANCELLING.value
+        await session.commit()
+
+    scheduler = Scheduler(
+        Settings(
+            database_url=f"sqlite+aiosqlite:///{path.as_posix()}",
+            job_root=tmp_path / "jobs",
+        )
+    )
+    interrupt_calls: list[str] = []
+    published: list[dict[str, object]] = []
+
+    class RecordingClient:
+        async def interrupt(self) -> dict[str, object]:
+            interrupt_calls.append("interrupt")
+            return {"interrupted": True}
+
+    async def record_publish(payload: dict[str, object]) -> None:
+        published.append(payload)
+
+    scheduler.publish = record_publish  # type: ignore[method-assign]
+    parent_task = asyncio.create_task(asyncio.Event().wait())
+    timeout_event = asyncio.Event()
+    try:
+        await scheduler.timeout_watchdog(
+            job_id,
+            timeout_seconds=0,
+            client=RecordingClient(),  # type: ignore[arg-type]
+            parent_task=parent_task,
+            timeout_event=timeout_event,
+        )
+        await asyncio.gather(parent_task, return_exceptions=True)
+
+        assert interrupt_calls == ["interrupt"]
+        assert parent_task.cancelled()
+        assert not timeout_event.is_set()
+        assert published == [{"event": "job.cancelled", "job_id": job_id}]
+        async with scheduler.db.session() as session:
+            job = await session.get(Job, job_id)
+            attempt = await session.scalar(
+                select(JobAttempt).where(JobAttempt.job_id == job_id)
+            )
+            lease = await session.scalar(
+                select(NodeLease).where(NodeLease.job_id == job_id)
+            )
+            node = await session.get(Node, "3090-a")
+            timed_out_events = await session.scalar(
+                select(func.count(JobEvent.id)).where(
+                    JobEvent.job_id == job_id,
+                    JobEvent.status == JobStatus.TIMED_OUT.value,
+                )
+            )
+            assert job is not None and attempt is not None and lease is not None
+            assert node is not None
+            assert job.status == JobStatus.CANCELLED.value
+            assert job.error_code is None
+            assert attempt.status == JobStatus.CANCELLED.value
+            assert lease.active is False
+            assert node.current_jobs == 0
+            assert timed_out_events == 0
+    finally:
+        if not parent_task.done():
+            parent_task.cancel()
+            await asyncio.gather(parent_task, return_exceptions=True)
+        await scheduler.redis.aclose()
+        await scheduler.db.close()
+        await database.close()
 
 
 async def test_executor_error_racing_with_cancel_does_not_retry_or_fail(

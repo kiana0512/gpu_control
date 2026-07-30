@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.6 — 2026-07-30
+
+- Retopology advisory 模式把通过完整性门禁的候选 BLEND/FBX 以正式 `blend`/`fbx` artifact 合同交付；几何 QA 告警与诊断证据保留，不再把用户需要的模型文件隐藏为诊断件。
+- Scheduler advisory lock 改为专用 autocommit 连接并持续验证 backend/锁所有权，消除长期 `idle in transaction`；失锁后停止领取并执行受控接管恢复。
+- Windows Substance Baker 与 ComfyUI 的 3090-B 物理 GPU 互斥改为持久 pending/fence/recovery 闭锁，加入生产优先、两阶段租约恢复、健康标签合并和统一锁序。
+- 所有 Asset 完成入口在正式发布 artifact 前执行取消安全点，避免取消与完成并发时错误交付。
+- 六 API 压测器区分同步端到端与异步 admission，自动恢复同步 Roughness 孤儿、执行严格范围清场，并支持有界极限压力的完整证据门禁。
+- WebUI 延续已发布的任务/API/工作流分类、完整阶段时间、性能分析和可解释调度界面；本补丁从同一 source revision 重建四个控制面镜像，避免组件版本漂移。
+
 ## 1.5.5（候选）— 2026-07-30
 
 - 对齐动画管家优化后的 V4.1 合同：父批次固化 ImageClip 身份快照、完整阶段时间、节点/attempt 性能证据，并在 create、父 GET、分页 manifest 和最终 ZIP manifest 返回同一身份。

@@ -6,6 +6,13 @@ from typing import Protocol
 
 from .enums import NodeHealth, NodeMode, NodePool
 
+SUBSTANCE_FENCE_LABEL = "substance_bake_fence_job_ids"
+SUBSTANCE_LEGACY_FENCE_LABEL = "substance_bake_fence_job_id"
+SUBSTANCE_PENDING_RESERVATION_LABEL = "substance_bake_pending_reservation"
+SUBSTANCE_RECOVERY_REQUIRED_LABEL = "substance_bake_recovery_required"
+SUBSTANCE_DRAIN_OWNER_LABEL = "substance_bake_drain_owner"
+SUBSTANCE_DRAIN_OWNER = "asset-api"
+
 
 class NodeLike(Protocol):
     id: str
@@ -50,9 +57,89 @@ def _in_allowed_window(now: datetime, windows: tuple[tuple[time, time], ...]) ->
     )
 
 
+def substance_fence_job_ids(labels: object) -> list[str]:
+    """Return the durable active Baker fence IDs, including the legacy shape."""
+    if not isinstance(labels, dict):
+        return []
+    raw = labels.get(SUBSTANCE_FENCE_LABEL, [])
+    job_ids = [str(value) for value in raw] if isinstance(raw, list) else []
+    legacy = labels.get(SUBSTANCE_LEGACY_FENCE_LABEL)
+    if legacy and str(legacy) not in job_ids:
+        job_ids.append(str(legacy))
+    return list(dict.fromkeys(job_ids))
+
+
+def substance_pending_reservation(
+    labels: object, now: datetime
+) -> tuple[list[str], datetime | None]:
+    """Parse a live production Baker reservation from a node label.
+
+    Invalid or expired data deliberately returns no job IDs. This prevents a
+    corrupt JSON label from draining a production GPU indefinitely.
+    """
+    if not isinstance(labels, dict):
+        return [], None
+    raw = labels.get(SUBSTANCE_PENDING_RESERVATION_LABEL)
+    if not isinstance(raw, dict):
+        return [], None
+    raw_ids = raw.get("job_ids")
+    raw_expiry = raw.get("expires_at")
+    if not isinstance(raw_ids, list) or not isinstance(raw_expiry, str):
+        return [], None
+    try:
+        expires_at = datetime.fromisoformat(raw_expiry.replace("Z", "+00:00"))
+    except ValueError:
+        return [], None
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    else:
+        expires_at = expires_at.astimezone(UTC)
+    current = now if now.tzinfo else now.replace(tzinfo=UTC)
+    if expires_at <= current:
+        return [], expires_at
+    job_ids = list(dict.fromkeys(str(value) for value in raw_ids if value))
+    return job_ids, expires_at
+
+
+def substance_owned_drain_is_expired(node: NodeLike, now: datetime) -> bool:
+    """Treat only an expired Asset API-owned drain as schedulable again."""
+    labels = getattr(node, "labels", {})
+    if not isinstance(labels, dict) or labels.get(SUBSTANCE_DRAIN_OWNER_LABEL) != SUBSTANCE_DRAIN_OWNER:
+        return False
+    # Lease expiry is ambiguous: the native Baker may still be executing and
+    # ComfyUI may not yet have recovered. Such a drain is intentionally
+    # unbounded until explicit worker/node health evidence clears it.
+    if labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL):
+        return False
+    if substance_fence_job_ids(labels):
+        return False
+    pending_ids, _ = substance_pending_reservation(labels, now)
+    return not pending_ids
+
+
 def base_exclusion(node: NodeLike, now: datetime, heartbeat_timeout_seconds: int) -> str | None:
-    if node.mode in {NodeMode.DISABLED.value, NodeMode.RESERVED.value, NodeMode.DRAINING.value}:
-        return f"mode_{node.mode.lower()}"
+    labels = getattr(node, "labels", {})
+    if isinstance(labels, dict):
+        # Substance's physical-GPU interlocks are authoritative even if an
+        # administrator (or another control-plane writer) changes the mode
+        # back to ACTIVE.  Mode is presentation/administrative state; these
+        # durable labels are the mutual-exclusion fence.
+        if labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL):
+            return "substance_recovery_required"
+        if substance_fence_job_ids(labels):
+            return "substance_fenced"
+        pending_ids, _ = substance_pending_reservation(labels, now)
+        if pending_ids:
+            return "substance_reserved"
+    effective_mode = node.mode
+    if node.mode == NodeMode.DRAINING.value and substance_owned_drain_is_expired(node, now):
+        effective_mode = NodeMode.ACTIVE.value
+    if effective_mode in {
+        NodeMode.DISABLED.value,
+        NodeMode.RESERVED.value,
+        NodeMode.DRAINING.value,
+    }:
+        return f"mode_{effective_mode.lower()}"
     if node.health != NodeHealth.ONLINE.value:
         return f"health_{node.health.lower()}"
     if node.last_heartbeat_at is None:

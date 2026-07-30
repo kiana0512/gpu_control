@@ -3,6 +3,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import uuid
@@ -10,13 +11,14 @@ from datetime import UTC, datetime, timedelta
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from pathlib import Path
+from threading import Event
 from typing import Any, cast
 from urllib.parse import urlparse
 
 import httpx
 from prometheus_client import Counter, Gauge, Histogram, Info, start_http_server
 from redis.asyncio import Redis
-from sqlalchemy import case, func, select, tuple_
+from sqlalchemy import and_, case, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
@@ -25,11 +27,18 @@ from packages.gpu_control_core.batches import (
     ArchiveFrame,
     BatchContractError,
     build_result_archive,
+    cleanup_result_archive_staging,
     materialize_batch_item,
+    result_archive_final_path,
+    result_archive_staging_path,
     transition_batch,
     workflow_identity_from_row,
 )
-from packages.gpu_control_core.database import Database
+from packages.gpu_control_core.database import (
+    Database,
+    SchedulerLockHandle,
+    SchedulerLockLost,
+)
 from packages.gpu_control_core.enums import (
     TERMINAL_JOB_STATUSES,
     BatchItemStatus,
@@ -106,6 +115,13 @@ FAIL_CLOSED_SUBMISSION_ERRORS = frozenset(
     }
 )
 MAX_BATCH_MATERIALIZATIONS_PER_TICK = 32
+SCHEDULER_LOCK_CHECK_INTERVAL_SECONDS = 2.0
+SCHEDULER_LOCK_QUERY_TIMEOUT_SECONDS = 2.0
+SCHEDULER_LOCK_FAILURE_GRACE_SECONDS = 3.0
+ARCHIVE_BUILD_CANCEL_GRACE_SECONDS = 2.5
+CALLBACK_DELIVERY_LEASE_SECONDS = 30
+CALLBACK_DNS_TIMEOUT_SECONDS = 5
+PROMPT_SUBMISSION_SETTLE_SECONDS = 35.0
 
 
 def runtime_version_metadata() -> dict[str, Any]:
@@ -131,29 +147,42 @@ def runtime_version_metadata() -> dict[str, Any]:
     }
 
 
-async def reconcile_prompt_submission(client: ComfyClient, client_id: str) -> str:
+async def reconcile_prompt_submission(
+    client: ComfyClient,
+    client_id: str,
+    *,
+    settle_seconds: float = 0.0,
+    poll_interval_seconds: float = 0.25,
+) -> str:
     """Resolve one durable submit intent without issuing another POST /prompt."""
-    try:
-        prompt_ids = await client.prompt_ids_for_client(client_id)
-    except ComfyError as exc:
-        raise ComfyError(
-            "COMFY_SUBMISSION_RECONCILE_FAILED",
-            "cannot reconcile the persisted prompt submission intent",
-            {"client_id": client_id, "cause": exc.code},
-        ) from exc
-    if not prompt_ids:
-        raise ComfyError(
-            "COMFY_SUBMISSION_UNKNOWN",
-            "persisted prompt submission intent was not found in Comfy queue or history",
-            {"client_id": client_id},
-        )
-    if len(prompt_ids) != 1:
-        raise ComfyError(
-            "COMFY_SUBMISSION_DUPLICATE",
-            "multiple Comfy prompts share one durable submission id",
-            {"client_id": client_id, "prompt_ids": prompt_ids},
-        )
-    return prompt_ids[0]
+    deadline = asyncio.get_running_loop().time() + max(0.0, settle_seconds)
+    while True:
+        try:
+            prompt_ids = await client.prompt_ids_for_client(client_id)
+        except ComfyError as exc:
+            if asyncio.get_running_loop().time() >= deadline:
+                raise ComfyError(
+                    "COMFY_SUBMISSION_RECONCILE_FAILED",
+                    "cannot reconcile the persisted prompt submission intent",
+                    {"client_id": client_id, "cause": exc.code},
+                ) from exc
+            prompt_ids = []
+        if len(prompt_ids) == 1:
+            return prompt_ids[0]
+        if len(prompt_ids) > 1:
+            raise ComfyError(
+                "COMFY_SUBMISSION_DUPLICATE",
+                "multiple Comfy prompts share one durable submission id",
+                {"client_id": client_id, "prompt_ids": prompt_ids},
+            )
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise ComfyError(
+                "COMFY_SUBMISSION_UNKNOWN",
+                "persisted prompt submission intent was not found in Comfy queue or history",
+                {"client_id": client_id, "settle_seconds": settle_seconds},
+            )
+        await asyncio.sleep(min(poll_interval_seconds, remaining))
 
 
 async def current_job_attempt(
@@ -428,6 +457,10 @@ class Scheduler:
         self.health_task: asyncio.Task[None] | None = None
         self.redis_task: asyncio.Task[None] | None = None
         self.callback_task: asyncio.Task[None] | None = None
+        self.scheduler_lock_task: asyncio.Task[None] | None = None
+        self.scheduler_lock_failure: SchedulerLockLost | None = None
+        self.scheduler_lock_handle: SchedulerLockHandle | None = None
+        self.scheduler_epoch: int | None = None
         self.object_info_checked_at: dict[str, float] = {}
 
     async def guard(self, session: AsyncSession) -> OverflowGuard:
@@ -490,10 +523,13 @@ class Scheduler:
         if not host:
             return False
         try:
-            records = await asyncio.to_thread(
-                socket.getaddrinfo, host, 443, type=socket.SOCK_STREAM
+            records = await asyncio.wait_for(
+                asyncio.to_thread(
+                    socket.getaddrinfo, host, 443, type=socket.SOCK_STREAM
+                ),
+                timeout=CALLBACK_DNS_TIMEOUT_SECONDS,
             )
-        except OSError:
+        except (OSError, TimeoutError):
             return False
         for record in records:
             address = ipaddress.ip_address(record[4][0])
@@ -501,15 +537,91 @@ class Scheduler:
                 return False
         return bool(records)
 
+    async def finalize_callback_delivery(
+        self,
+        *,
+        callback_id: str,
+        lease_deadline: datetime,
+        attempt_number: int,
+        status_code: int | None,
+        error_code: str | None,
+        duration_ms: int,
+    ) -> bool:
+        """Persist a callback result only for the exact live delivery lease."""
+
+        metric_result: str
+        async with self.db.session() as session:
+            # Epoch -> callback row is the global lock order. A late result
+            # from an old leader cannot mutate the callback after takeover.
+            await self.assert_scheduler_epoch(session)
+            current = await session.get(JobCallback, callback_id, with_for_update=True)
+            if current is None:
+                return False
+            current_deadline = current.next_attempt_at
+            if current_deadline is not None and current_deadline.tzinfo is None:
+                current_deadline = current_deadline.replace(tzinfo=UTC)
+            if current.status != "DELIVERING" or current_deadline != lease_deadline:
+                logger().warning(
+                    "callback.stale_result_ignored",
+                    callback_id=callback_id,
+                    status=current.status,
+                    attempt=attempt_number,
+                )
+                await session.rollback()
+                return False
+            session.add(
+                CallbackAttempt(
+                    callback_id=current.id,
+                    attempt=attempt_number,
+                    response_status=status_code,
+                    error_code=error_code,
+                    duration_ms=duration_ms,
+                )
+            )
+            if error_code is None:
+                current.status = "SUCCEEDED"
+                current.next_attempt_at = None
+                metric_result = "success"
+            elif attempt_number >= 6:
+                current.status = "FAILED"
+                current.next_attempt_at = None
+                metric_result = "failed"
+            else:
+                delays = (10, 60, 300, 1800, 7200)
+                current.status = "RETRY"
+                current.next_attempt_at = datetime.now(UTC) + timedelta(
+                    seconds=delays[min(attempt_number - 1, len(delays) - 1)]
+                )
+                metric_result = "retry"
+            await self.commit_as_leader(session)
+
+        CALLBACK_ATTEMPTS.labels(metric_result).inc()
+        if metric_result == "failed":
+            CALLBACK_FAILURES.inc()
+        return True
+
     async def dispatch_one_callback(self) -> bool:
         now = datetime.now(UTC)
+        lease_deadline = now + timedelta(seconds=CALLBACK_DELIVERY_LEASE_SECONDS)
         async with self.db.session() as session:
+            await self.assert_scheduler_epoch(session)
             callback = await session.scalar(
                 select(JobCallback)
                 .join(Job, Job.id == JobCallback.job_id)
                 .where(
-                    JobCallback.status.in_(["PENDING", "RETRY"]),
-                    JobCallback.next_attempt_at <= now,
+                    or_(
+                        and_(
+                            JobCallback.status.in_(["PENDING", "RETRY"]),
+                            JobCallback.next_attempt_at <= now,
+                        ),
+                        and_(
+                            JobCallback.status == "DELIVERING",
+                            or_(
+                                JobCallback.next_attempt_at.is_(None),
+                                JobCallback.next_attempt_at <= now,
+                            ),
+                        ),
+                    ),
                     Job.status.in_([status.value for status in TERMINAL_JOB_STATUSES]),
                 )
                 .order_by(JobCallback.next_attempt_at)
@@ -519,6 +631,10 @@ class Scheduler:
             if callback is None:
                 return False
             callback.status = "DELIVERING"
+            # While DELIVERING, next_attempt_at is the durable lease deadline
+            # and exact ownership token. It returns to retry scheduling only
+            # after finalization or lease expiry.
+            callback.next_attempt_at = lease_deadline
             job = await session.get(Job, callback.job_id)
             attempts = int(
                 await session.scalar(
@@ -528,7 +644,10 @@ class Scheduler:
                 )
                 or 0
             )
-            await session.commit()
+            attempt_number = attempts + 1
+            callback_id = callback.id
+            callback_url = callback.url
+            await self.commit_as_leader(session)
 
         if job is None:
             return False
@@ -546,25 +665,60 @@ class Scheduler:
         }
         body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         timestamp = str(int(now.timestamp()))
-        secret = derive_callback_secret(callback.id, self.settings.api_key_pepper)
+        secret = derive_callback_secret(callback_id, self.settings.api_key_pepper)
         headers = {
             "Content-Type": "application/json",
             "X-GPU-Control-Timestamp": timestamp,
             "X-GPU-Control-Signature": sign_callback_payload(body, timestamp, secret),
             "X-Request-ID": job.request_id,
+            # Delivery is explicitly at-least-once. Receivers must persist this
+            # attempt-scoped key and return the prior result for an ambiguous
+            # replay of that same attempt.
+            "Idempotency-Key": (
+                f"gpu-control-callback:{callback_id}:{attempt_number}"
+            ),
+            "X-GPU-Control-Callback-ID": callback_id,
+            "X-GPU-Control-Attempt": str(attempt_number),
         }
         status_code: int | None = None
         error_code: str | None = None
+        delivery_unknown = False
         started = asyncio.get_running_loop().time()
         try:
-            if not await self.callback_target_is_public(callback.url):
-                raise RuntimeError(
-                    "callback target did not resolve exclusively to public addresses"
-                )
-            async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
-                response = await client.post(callback.url, content=body, headers=headers)
-                status_code = response.status_code
-                response.raise_for_status()
+            # Hold the epoch key-share lock across DNS + HTTP. A new leader's
+            # epoch advance cannot start a concurrent replay while this POST
+            # has a known live owner.
+            async with self.db.session() as fence_session:
+                await self.assert_scheduler_epoch(fence_session)
+                if not await self.callback_target_is_public(callback_url):
+                    raise RuntimeError(
+                        "callback target did not resolve exclusively to public addresses"
+                    )
+                async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+                    response = await client.post(
+                        callback_url,
+                        content=body,
+                        headers=headers,
+                    )
+                    status_code = response.status_code
+                    response.raise_for_status()
+        except SchedulerLockLost:
+            # This owner is fenced. Leave the durable lease untouched so a
+            # new leader retries the same attempt and Idempotency-Key only
+            # after the lease deadline.
+            raise
+        except httpx.TransportError as exc:
+            # A timeout/transport break may happen after the receiver applied
+            # the request. Do not consume an attempt whose outcome is unknown.
+            delivery_unknown = True
+            logger().warning(
+                "callback.delivery_unknown",
+                job_id=job.id,
+                error_code="CALLBACK_DELIVERY_UNKNOWN",
+                error_type=type(exc).__name__,
+                attempt=attempt_number,
+                callback_id=callback_id,
+            )
         except Exception as exc:
             error_code = "CALLBACK_DELIVERY_FAILED"
             logger().warning(
@@ -572,39 +726,19 @@ class Scheduler:
                 job_id=job.id,
                 error_code=error_code,
                 error_type=type(exc).__name__,
-                attempt=attempts + 1,
+                attempt=attempt_number,
             )
         duration_ms = int((asyncio.get_running_loop().time() - started) * 1000)
-        async with self.db.session() as session:
-            current = await session.get(JobCallback, callback.id, with_for_update=True)
-            if current is None:
-                return True
-            session.add(
-                CallbackAttempt(
-                    callback_id=current.id,
-                    attempt=attempts + 1,
-                    response_status=status_code,
-                    error_code=error_code,
-                    duration_ms=duration_ms,
-                )
-            )
-            if error_code is None:
-                current.status = "SUCCEEDED"
-                current.next_attempt_at = None
-                CALLBACK_ATTEMPTS.labels("success").inc()
-            elif attempts + 1 >= 6:
-                current.status = "FAILED"
-                current.next_attempt_at = None
-                CALLBACK_ATTEMPTS.labels("failed").inc()
-                CALLBACK_FAILURES.inc()
-            else:
-                delays = (10, 60, 300, 1800, 7200)
-                current.status = "RETRY"
-                current.next_attempt_at = now + timedelta(
-                    seconds=delays[min(attempts, len(delays) - 1)]
-                )
-                CALLBACK_ATTEMPTS.labels("retry").inc()
-            await session.commit()
+        if delivery_unknown:
+            return True
+        await self.finalize_callback_delivery(
+            callback_id=callback_id,
+            lease_deadline=lease_deadline,
+            attempt_number=attempt_number,
+            status_code=status_code,
+            error_code=error_code,
+            duration_ms=duration_ms,
+        )
         return True
 
     async def callback_loop(self) -> None:
@@ -702,16 +836,25 @@ class Scheduler:
 
     async def update_node_health(self) -> None:
         while not self.stop_event.is_set():
-            async with self.db.session() as session:
-                nodes = list((await session.scalars(select(Node))).all())
+            # Keep probe ORM objects read-only. Health probes perform external
+            # I/O, so committing this long-lived session would write stale
+            # JSON labels over a concurrent Asset API fence/reservation.
+            async with self.db.session() as probe_session:
+                nodes = list((await probe_session.scalars(select(Node))).all())
                 workflow_versions = list(
-                    (await session.scalars(select(WorkflowVersion))).all()
+                    (await probe_session.scalars(select(WorkflowVersion))).all()
                 )
                 required_classes = {
                     class_type
                     for version in workflow_versions
                     for class_type in version.allowed_class_types
                 }
+                # Detach the read snapshots and end the transaction before
+                # network I/O. Writers can now commit a reservation while a
+                # slow health probe is in flight; the later locked write will
+                # observe and merge that committed state.
+                probe_session.expunge_all()
+                await probe_session.rollback()
                 for node in nodes:
                     try:
                         now_monotonic = asyncio.get_running_loop().time()
@@ -742,6 +885,11 @@ class Scheduler:
                                     self.node_agent_gpu_metrics(node),
                                 )
                                 inventory = None
+                        # Timestamp the evidence when the network probe
+                        # actually completed, before any wait on the Node row.
+                        # A stale probe must never appear newer merely because
+                        # a concurrent reservation held the write lock.
+                        probe_completed_at = datetime.now(UTC)
                         foreign = False
                         for section in ("queue_running", "queue_pending"):
                             for item in queue.get(section, []):
@@ -755,64 +903,96 @@ class Scheduler:
                                 client_id = str(metadata.get("client_id", ""))
                                 if client_id and not client_id.startswith("gpu-control-"):
                                     foreign = True
-                        node.foreign_queue_detected = foreign
-                        node.health = (
-                            NodeHealth.DEGRADED.value if foreign else NodeHealth.ONLINE.value
-                        )
-                        node.last_heartbeat_at = datetime.now(UTC)
                         devices = stats.get("devices", [])
-                        if gpu_metrics is not None:
-                            node.gpu_util_percent = gpu_metrics["gpu_util_percent"]
-                            node.free_vram_mb = gpu_metrics["free_vram_mb"]
-                            node.total_vram_mb = gpu_metrics["total_vram_mb"]
-                        elif devices:
-                            device = devices[0]
-                            node.free_vram_mb = int(device.get("vram_free", 0)) // (1024 * 1024)
-                            node.total_vram_mb = int(device.get("vram_total", 0)) // (1024 * 1024)
-                        if isinstance(inventory, dict):
-                            labels = dict(node.labels or {})
-                            labels["comfy_class_types"] = sorted(
-                                required_classes.intersection(inventory)
-                            )
-                            labels["comfy_class_inventory_checked_at"] = datetime.now(
-                                UTC
-                            ).isoformat()
-                            node.labels = labels
-                            self.object_info_checked_at[node.id] = now_monotonic
-                            for version in workflow_versions:
-                                reasons = node_compatibility_reasons(
-                                    min_vram_mb=version.min_vram_mb,
-                                    required_labels=version.node_labels,
-                                    allowed_class_types=version.allowed_class_types,
-                                    total_vram_mb=node.total_vram_mb,
-                                    reported_labels=labels,
+                        # Re-read and lock the row only after all external I/O.
+                        # The new session has no stale identity-map instance;
+                        # labels are merged from the latest committed value.
+                        async with self.db.session() as write_session:
+                            async with write_session.begin():
+                                await self.assert_scheduler_epoch(write_session)
+                                current = await write_session.scalar(
+                                    select(Node).where(Node.id == node.id).with_for_update()
                                 )
-                                compatibility = await session.scalar(
-                                    select(WorkflowNodeCompatibility).where(
-                                        WorkflowNodeCompatibility.workflow_version_id
-                                        == version.id,
-                                        WorkflowNodeCompatibility.node_id == node.id,
+                                if current is None:
+                                    continue
+                                current.foreign_queue_detected = foreign
+                                current.health = (
+                                    NodeHealth.DEGRADED.value
+                                    if foreign
+                                    else NodeHealth.ONLINE.value
+                                )
+                                current.last_heartbeat_at = probe_completed_at
+                                if gpu_metrics is not None:
+                                    current.gpu_util_percent = gpu_metrics[
+                                        "gpu_util_percent"
+                                    ]
+                                    current.free_vram_mb = gpu_metrics["free_vram_mb"]
+                                    current.total_vram_mb = gpu_metrics["total_vram_mb"]
+                                elif devices:
+                                    device = devices[0]
+                                    current.free_vram_mb = int(
+                                        device.get("vram_free", 0)
+                                    ) // (1024 * 1024)
+                                    current.total_vram_mb = int(
+                                        device.get("vram_total", 0)
+                                    ) // (1024 * 1024)
+                                if isinstance(inventory, dict):
+                                    labels = dict(current.labels or {})
+                                    labels["comfy_class_types"] = sorted(
+                                        required_classes.intersection(inventory)
                                     )
-                                )
-                                if compatibility is None:
-                                    session.add(
-                                        WorkflowNodeCompatibility(
-                                            workflow_version_id=version.id,
-                                            node_id=node.id,
-                                            compatible=not reasons,
-                                            reasons=reasons,
+                                    labels[
+                                        "comfy_class_inventory_checked_at"
+                                    ] = probe_completed_at.isoformat()
+                                    current.labels = labels
+                                    for version in workflow_versions:
+                                        reasons = node_compatibility_reasons(
+                                            min_vram_mb=version.min_vram_mb,
+                                            required_labels=version.node_labels,
+                                            allowed_class_types=version.allowed_class_types,
+                                            total_vram_mb=current.total_vram_mb,
+                                            reported_labels=labels,
                                         )
-                                    )
-                                else:
-                                    compatibility.compatible = not reasons
-                                    compatibility.reasons = reasons
-                                    compatibility.checked_at = datetime.now(UTC)
+                                        compatibility = await write_session.scalar(
+                                            select(WorkflowNodeCompatibility).where(
+                                                WorkflowNodeCompatibility.workflow_version_id
+                                                == version.id,
+                                                WorkflowNodeCompatibility.node_id == current.id,
+                                            )
+                                        )
+                                        if compatibility is None:
+                                            write_session.add(
+                                                WorkflowNodeCompatibility(
+                                                    workflow_version_id=version.id,
+                                                    node_id=current.id,
+                                                    compatible=not reasons,
+                                                    reasons=reasons,
+                                                )
+                                            )
+                                        else:
+                                            compatibility.compatible = not reasons
+                                            compatibility.reasons = reasons
+                                            compatibility.checked_at = probe_completed_at
+                                metric_health = current.health
+                                metric_jobs = current.current_jobs
+                        if isinstance(inventory, dict):
+                            self.object_info_checked_at[node.id] = now_monotonic
                         NODE_HEALTH.labels(node.id).set(
-                            1 if node.health == NodeHealth.ONLINE.value else 0
+                            1 if metric_health == NodeHealth.ONLINE.value else 0
                         )
-                        NODE_JOBS.labels(node.id).set(node.current_jobs)
+                        NODE_JOBS.labels(node.id).set(metric_jobs)
                     except Exception as exc:
-                        node.health = NodeHealth.OFFLINE.value
+                        # Failure writes use the same short locked transaction
+                        # and deliberately touch health only, never labels or
+                        # administrative mode.
+                        async with self.db.session() as write_session:
+                            async with write_session.begin():
+                                await self.assert_scheduler_epoch(write_session)
+                                current = await write_session.scalar(
+                                    select(Node).where(Node.id == node.id).with_for_update()
+                                )
+                                if current is not None:
+                                    current.health = NodeHealth.OFFLINE.value
                         NODE_HEALTH.labels(node.id).set(0)
                         logger().warning(
                             "node.health_failed",
@@ -820,7 +1000,6 @@ class Scheduler:
                             error_code="COMFY_HEALTH_FAILED",
                             error_type=type(exc).__name__,
                         )
-                await session.commit()
             self.wakeup.set()
             try:
                 await asyncio.wait_for(self.stop_event.wait(), timeout=5)
@@ -843,12 +1022,117 @@ class Scheduler:
         OLDEST.set(wait)
         return QueueSnapshot(depth=int(count or 0), oldest_wait_seconds=wait)
 
+    def mark_scheduler_lock_lost(self, failure: SchedulerLockLost) -> None:
+        """Fence this process and stop every source of scheduler-side writes."""
+
+        if self.scheduler_lock_failure is None:
+            self.scheduler_lock_failure = failure
+        self.stop_event.set()
+        self.wakeup.set()
+        current = asyncio.current_task()
+        tasks = [
+            getattr(self, "health_task", None),
+            getattr(self, "redis_task", None),
+            getattr(self, "callback_task", None),
+            *getattr(self, "executions", {}).values(),
+            *getattr(self, "batch_assemblies", {}).values(),
+        ]
+        for task in tasks:
+            if task is not None and task is not current and not task.done():
+                task.cancel()
+
+    async def establish_scheduler_epoch(self, handle: SchedulerLockHandle) -> int:
+        """Advance the durable leader epoch before startup reconciliation."""
+
+        self.scheduler_lock_handle = handle
+        async with self.db.session() as session:
+            async with session.begin():
+                epoch = await self.db.advance_scheduler_epoch(
+                    session,
+                    backend_pid=handle.backend_pid,
+                )
+        self.scheduler_epoch = epoch
+        return epoch
+
+    async def assert_scheduler_epoch(self, session: AsyncSession) -> None:
+        """Lock and validate the leader epoch for the caller's transaction.
+
+        Direct unit/integration calls that do not enter ``run`` intentionally
+        remain supported. In production, setting the lock handle without an
+        epoch is always a fail-closed startup error.
+        """
+
+        if self.scheduler_lock_handle is None:
+            return
+        if self.scheduler_epoch is None:
+            failure = SchedulerLockLost("scheduler leader epoch was not established")
+            self.mark_scheduler_lock_lost(failure)
+            raise failure
+        try:
+            await self.db.assert_scheduler_epoch(session, self.scheduler_epoch)
+        except SchedulerLockLost as failure:
+            self.mark_scheduler_lock_lost(failure)
+            raise
+
+    async def commit_as_leader(self, session: AsyncSession) -> None:
+        """Fence the caller's current short transaction through commit.
+
+        This deliberately does not reacquire after commit: GPU execution and
+        artifact transfer can run for minutes, and an idle key-share
+        transaction would block takeover and retain PostgreSQL vacuum state.
+        Every later durable mutation must enter another fenced transaction.
+        """
+
+        await self.assert_scheduler_epoch(session)
+        await session.commit()
+
+    async def lock_job_as_leader(
+        self,
+        session: AsyncSession,
+        job_id: str,
+    ) -> Job | None:
+        """Acquire the global epoch before refreshing and locking one Job."""
+
+        await self.assert_scheduler_epoch(session)
+        return cast(
+            Job | None,
+            await session.scalar(
+                select(Job)
+                .where(Job.id == job_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ),
+        )
+
+    async def cancel_locked_job(
+        self,
+        session: AsyncSession,
+        job: Job,
+        *,
+        event: str,
+    ) -> None:
+        if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
+            return
+        if job.status != JobStatus.CANCELLING.value:
+            await transition_job(session, job, JobStatus.CANCELLING, f"{event}.requested")
+        await transition_job(session, job, JobStatus.CANCELLED, event)
+        await release_lease(session, job, attempt_status=JobStatus.CANCELLED)
+
     async def reconcile(self) -> None:
         async with self.db.session() as session:
+            # The key-share lock is held through commit. A takeover must wait
+            # for this reconciliation transaction before advancing the epoch.
+            await self.assert_scheduler_epoch(session)
             delivering_callbacks = list(
                 (
                     await session.scalars(
-                        select(JobCallback).where(JobCallback.status == "DELIVERING")
+                        select(JobCallback).where(
+                            JobCallback.status == "DELIVERING",
+                            or_(
+                                JobCallback.next_attempt_at.is_(None),
+                                JobCallback.next_attempt_at <= datetime.now(UTC),
+                            ),
+                        )
                     )
                 ).all()
             )
@@ -920,7 +1204,7 @@ class Scheduler:
                             "message": job.error_message,
                         },
                     )
-            await session.commit()
+            await self.commit_as_leader(session)
 
     async def reconcile_batches(self) -> None:
         active_statuses = {
@@ -952,6 +1236,8 @@ class Scheduler:
             await self.assemble_batch(batch_id)
         except asyncio.CancelledError:
             raise
+        except SchedulerLockLost:
+            raise
         except Exception:
             logger().exception(
                 "batch.assembly_internal_error",
@@ -959,23 +1245,25 @@ class Scheduler:
                 error_code="BATCH_ASSEMBLY_INTERNAL_ERROR",
             )
             async with self.db.session() as session:
-                batch = await session.get(JobBatch, batch_id, with_for_update=True)
-                if batch is not None and batch.status == BatchStatus.ASSEMBLING.value:
-                    batch.error_code = "BATCH_ASSEMBLY_INTERNAL_ERROR"
-                    batch.error_message = "结果归档发生内部错误"
-                    await transition_batch(
-                        session,
-                        batch,
-                        BatchStatus.FAILED,
-                        "batch.assembly_internal_error",
-                    )
-                    await session.commit()
+                async with session.begin():
+                    await self.assert_scheduler_epoch(session)
+                    batch = await session.get(JobBatch, batch_id, with_for_update=True)
+                    if batch is not None and batch.status == BatchStatus.ASSEMBLING.value:
+                        batch.error_code = "BATCH_ASSEMBLY_INTERNAL_ERROR"
+                        batch.error_message = "结果归档发生内部错误"
+                        await transition_batch(
+                            session,
+                            batch,
+                            BatchStatus.FAILED,
+                            "batch.assembly_internal_error",
+                        )
         finally:
             self.batch_assemblies.pop(batch_id, None)
             self.wakeup.set()
 
     async def sync_batch_state(self, batch_id: str) -> bool:
         async with self.db.session() as session:
+            await self.assert_scheduler_epoch(session)
             batch = await session.scalar(
                 select(JobBatch).where(JobBatch.id == batch_id).with_for_update()
             )
@@ -1214,7 +1502,7 @@ class Scheduler:
                     "batch.failed_after_all_items",
                     {"failed_items": batch.failed_items},
                 )
-                await session.commit()
+                await self.commit_as_leader(session)
                 return False
             if batch.status == BatchStatus.CANCELLING.value and terminal_count == batch.total_items:
                 operation = await session.scalar(
@@ -1254,7 +1542,7 @@ class Scheduler:
                         operation.finished_at = datetime.now(UTC)
                     operation.completed_items = batch.succeeded_items + batch.failed_items
                     operation.cancelled_items = batch.cancelled_items
-                await session.commit()
+                await self.commit_as_leader(session)
                 return False
             if batch.succeeded_items == batch.total_items:
                 if batch.status == BatchStatus.QUEUED.value:
@@ -1264,14 +1552,14 @@ class Scheduler:
                 await transition_batch(
                     session, batch, BatchStatus.ASSEMBLING, "batch.assembling"
                 )
-                await session.commit()
+                await self.commit_as_leader(session)
                 return True
             if (
                 batch.status == BatchStatus.QUEUED.value
                 and batch.started_at is not None
             ):
                 await transition_batch(session, batch, BatchStatus.RUNNING, "batch.running")
-            await session.commit()
+            await self.commit_as_leader(session)
             return False
 
     async def feed_batch_items(self) -> None:
@@ -1330,6 +1618,7 @@ class Scheduler:
         materialized_jobs: list[tuple[str, Path]],
     ) -> None:
         async with self.db.session() as session:
+            await self.assert_scheduler_epoch(session)
             # Discovery intentionally does not lock every active batch.  Exact
             # allocations are calculated first, then only those batch rows are
             # locked and revalidated below.
@@ -1608,7 +1897,7 @@ class Scheduler:
             )
             if not final_allocations:
                 # Persist any fail-closed workflow transitions made above.
-                await session.commit()
+                await self.commit_as_leader(session)
                 return
 
             pending_by_batch: dict[str, list[JobBatchItem]] = {
@@ -1663,7 +1952,7 @@ class Scheduler:
                     materialized_in_pass = True
                 if not materialized_in_pass:
                     break
-            await session.commit()
+            await self.commit_as_leader(session)
             materialized_jobs.clear()
 
     async def assemble_batch(self, batch_id: str) -> None:
@@ -1721,68 +2010,125 @@ class Scheduler:
                 "pipeline_sha256": batch.pipeline_sha256,
                 "output_node": batch.output_node,
             }
-        try:
-            built = await asyncio.to_thread(
+        cleanup_result_archive_staging(batch_dir)
+        staging_path = result_archive_staging_path(batch_dir, batch_id)
+        cancel_event = Event()
+        build_task = asyncio.create_task(
+            asyncio.to_thread(
                 build_result_archive,
                 batch_id,
                 external_batch_id,
                 batch_dir,
                 frames,
                 workflow_identity,
+                staging_path,
+                cancel_event,
             )
+        )
+        try:
+            # Shield the executor future so task cancellation can signal the
+            # cooperative builder and wait briefly for it to leave staging.
+            built = await asyncio.shield(build_task)
+        except asyncio.CancelledError:
+            cancel_event.set()
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(build_task),
+                    timeout=ARCHIVE_BUILD_CANCEL_GRACE_SECONDS,
+                )
+            except Exception as exc:
+                logger().warning(
+                    "batch.archive_cancel_grace_exceeded",
+                    batch_id=batch_id,
+                    error_type=type(exc).__name__,
+                )
+            finally:
+                if build_task.done() and not staging_path.is_dir():
+                    staging_path.unlink(missing_ok=True)
+            raise
         except BatchContractError as exc:
             async with self.db.session() as session:
-                batch = await session.get(JobBatch, batch_id, with_for_update=True)
-                if batch is not None and batch.status == BatchStatus.ASSEMBLING.value:
-                    batch.error_code = exc.code
-                    batch.error_message = str(exc)[:1000]
+                async with session.begin():
+                    await self.assert_scheduler_epoch(session)
+                    batch = await session.get(JobBatch, batch_id, with_for_update=True)
+                    if batch is not None and batch.status == BatchStatus.ASSEMBLING.value:
+                        batch.error_code = exc.code
+                        batch.error_message = str(exc)[:1000]
+                        await transition_batch(
+                            session,
+                            batch,
+                            BatchStatus.FAILED,
+                            "batch.assembly_failed",
+                            {
+                                "ordinal": exc.ordinal,
+                                "relative_path": exc.relative_path,
+                                "error_code": exc.code,
+                            },
+                        )
+            return
+        try:
+            async with self.db.session() as session:
+                async with session.begin():
+                    # The epoch key-share lock and Batch row lock are held
+                    # across publish and commit. A takeover cannot advance and
+                    # reconcile until this exact filesystem/DB publish ends.
+                    await self.assert_scheduler_epoch(session)
+                    batch = await session.scalar(
+                        select(JobBatch)
+                        .where(JobBatch.id == batch_id)
+                        .with_for_update()
+                    )
+                    if batch is None or batch.status != BatchStatus.ASSEMBLING.value:
+                        return
+                    existing = await session.scalar(
+                        select(BatchArtifact).where(
+                            BatchArtifact.batch_id == batch.id,
+                            BatchArtifact.kind == "result_archive",
+                        )
+                    )
+                    destination = result_archive_final_path(Path(batch.batch_dir), batch.id)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(built.path, destination)
+                    directory_fd = os.open(destination.parent, os.O_RDONLY)
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+                    relative_path = str(
+                        destination.relative_to(Path(batch.batch_dir))
+                    ).replace("\\", "/")
+                    if existing is None:
+                        session.add(
+                            BatchArtifact(
+                                id=str(uuid.uuid4()),
+                                batch_id=batch.id,
+                                kind="result_archive",
+                                relative_path=relative_path,
+                                filename=f"{batch.id}-rgba.zip",
+                                content_type="application/zip",
+                                size_bytes=built.size_bytes,
+                                sha256=built.sha256,
+                            )
+                        )
+                    else:
+                        existing.relative_path = relative_path
+                        existing.filename = f"{batch.id}-rgba.zip"
+                        existing.content_type = "application/zip"
+                        existing.size_bytes = built.size_bytes
+                        existing.sha256 = built.sha256
+                    batch.progress = 100
                     await transition_batch(
                         session,
                         batch,
-                        BatchStatus.FAILED,
-                        "batch.assembly_failed",
-                        {
-                            "ordinal": exc.ordinal,
-                            "relative_path": exc.relative_path,
-                            "error_code": exc.code,
-                        },
+                        BatchStatus.SUCCEEDED,
+                        "batch.succeeded",
+                        {"result_sha256": built.sha256, "total": batch.total_items},
                     )
-                    await session.commit()
-            return
-        async with self.db.session() as session:
-            batch = await session.get(JobBatch, batch_id, with_for_update=True)
-            if batch is None or batch.status != BatchStatus.ASSEMBLING.value:
-                return
-            existing = await session.scalar(
-                select(BatchArtifact).where(
-                    BatchArtifact.batch_id == batch.id,
-                    BatchArtifact.kind == "result_archive",
-                )
-            )
-            if existing is None:
-                session.add(
-                    BatchArtifact(
-                        id=str(uuid.uuid4()),
-                        batch_id=batch.id,
-                        kind="result_archive",
-                        relative_path=str(built.path.relative_to(Path(batch.batch_dir))).replace(
-                            "\\", "/"
-                        ),
-                        filename=f"{batch.id}-rgba.zip",
-                        content_type="application/zip",
-                        size_bytes=built.size_bytes,
-                        sha256=built.sha256,
-                    )
-                )
-            batch.progress = 100
-            await transition_batch(
-                session,
-                batch,
-                BatchStatus.SUCCEEDED,
-                "batch.succeeded",
-                {"result_sha256": built.sha256, "total": batch.total_items},
-            )
-            await session.commit()
+        finally:
+            # This is safe only after the builder returned. If cancellation
+            # timed out earlier, its unique file is deliberately left for the
+            # age-based orphan cleanup instead of racing the live thread.
+            staging_path.unlink(missing_ok=True)
         await self.publish({"event": "batch.succeeded", "batch_id": batch_id})
 
     async def schedule_available(self) -> None:
@@ -1829,7 +2175,13 @@ class Scheduler:
                 node_pool = ""
                 compatibility_misses: list[str] = []
                 for candidate_id, candidate_pool in candidate_nodes:
+                    if self.stop_event.is_set():
+                        break
                     async with session.begin():
+                        # This lock is the commit barrier: a new leader's
+                        # FOR UPDATE epoch advance waits for old claims, while
+                        # post-takeover claims see the new epoch and rollback.
+                        await self.assert_scheduler_epoch(session)
                         candidate_assignment = await claim_next_job(
                             session,
                             candidate_id,
@@ -1854,6 +2206,14 @@ class Scheduler:
                     )
                     break
                 job, _ = assignment
+                if self.stop_event.is_set():
+                    logger().warning(
+                        "scheduler.assignment_deferred_after_stop",
+                        job_id=job.id,
+                        node_id=node_id,
+                        lock_lost=self.scheduler_lock_failure is not None,
+                    )
+                    break
                 if node_pool == "OVERFLOW":
                     OVERFLOW.inc()
                 logger().info(
@@ -1874,6 +2234,7 @@ class Scheduler:
         timeout_task: asyncio.Task[None] | None = None
         try:
             async with self.db.session() as session:
+                await self.assert_scheduler_epoch(session)
                 job = await session.get(Job, job_id)
                 if job is None or not job.node_id:
                     return
@@ -1886,6 +2247,10 @@ class Scheduler:
                 )
                 if node is None or workflow is None:
                     return
+                # Do not retain the epoch row or a database snapshot across a
+                # multi-minute GPU execution. This read fence proves startup
+                # ownership, then every later mutation is fenced separately.
+                await self.commit_as_leader(session)
                 token = bind_context(
                     job_id=job.id,
                     trace_id=job.trace_id,
@@ -1910,16 +2275,51 @@ class Scheduler:
                 )
                 try:
                     if recovering and not job.prompt_id and job.submission_intent_at:
+                        recovery_attempt = job.attempt_count
                         client_id = job.submission_client_id or prompt_client_id(
-                            job.id, job.attempt_count
+                            job.id, recovery_attempt
                         )
                         try:
                             recovered_prompt_id = await reconcile_prompt_submission(
-                                client, client_id
+                                client,
+                                client_id,
+                                settle_seconds=PROMPT_SUBMISSION_SETTLE_SECONDS,
                             )
                         except ComfyError as exc:
+                            current_job = await self.lock_job_as_leader(session, job.id)
+                            if current_job is None:
+                                return
+                            job = current_job
+                            current_client_id = job.submission_client_id or prompt_client_id(
+                                job.id,
+                                job.attempt_count,
+                            )
+                            if (
+                                job.attempt_count != recovery_attempt
+                                or current_client_id != client_id
+                                or job.prompt_id is not None
+                            ):
+                                await self.commit_as_leader(session)
+                                return
+                            if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
+                                await self.commit_as_leader(session)
+                                return
+                            if (
+                                job.cancel_requested
+                                or job.status == JobStatus.CANCELLING.value
+                            ):
+                                await self.cancel_locked_job(
+                                    session,
+                                    job,
+                                    event="scheduler.cancelled_during_submission_recovery",
+                                )
+                                await self.commit_as_leader(session)
+                                await self.publish(
+                                    {"event": "job.cancelled", "job_id": job.id}
+                                )
+                                return
                             await fail_closed_prompt_submission(session, job, exc)
-                            await session.commit()
+                            await self.commit_as_leader(session)
                             FAILED.labels(exc.code).inc()
                             await self.publish(
                                 {
@@ -1929,7 +2329,48 @@ class Scheduler:
                                 }
                             )
                             return
+                        current_job = await self.lock_job_as_leader(session, job.id)
+                        if current_job is None:
+                            return
+                        job = current_job
+                        current_client_id = job.submission_client_id or prompt_client_id(
+                            job.id,
+                            job.attempt_count,
+                        )
+                        if (
+                            job.attempt_count != recovery_attempt
+                            or current_client_id != client_id
+                            or job.prompt_id is not None
+                        ):
+                            await self.commit_as_leader(session)
+                            return
+                        if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
+                            await self.commit_as_leader(session)
+                            return
                         await persist_prompt_id(session, job, recovered_prompt_id)
+                        if (
+                            job.cancel_requested
+                            or job.status == JobStatus.CANCELLING.value
+                        ):
+                            try:
+                                await asyncio.wait_for(client.interrupt(), timeout=5)
+                            except Exception as interrupt_error:
+                                logger().warning(
+                                    "executor.cancel_interrupt_failed",
+                                    job_id=job.id,
+                                    error_code="COMFY_INTERRUPT_FAILED",
+                                    error_type=type(interrupt_error).__name__,
+                                )
+                            await self.cancel_locked_job(
+                                session,
+                                job,
+                                event="scheduler.cancelled_after_submission_recovery",
+                            )
+                            await self.commit_as_leader(session)
+                            await self.publish(
+                                {"event": "job.cancelled", "job_id": job.id}
+                            )
+                            return
                         if job.status == JobStatus.CLAIMED.value:
                             await transition_job(
                                 session, job, JobStatus.UPLOADING, "scheduler.recover_uploading"
@@ -1950,10 +2391,12 @@ class Scheduler:
                                 "recovered": True,
                             },
                         )
-                        await session.commit()
+                        await self.commit_as_leader(session)
                     if recovering and job.prompt_id:
-                        history = await client.history(job.prompt_id)
-                        if job.prompt_id in history:
+                        recovery_prompt_id = job.prompt_id
+                        recovery_attempt = job.attempt_count
+                        history = await client.history(recovery_prompt_id)
+                        if recovery_prompt_id in history:
                             await self.finish_from_history(session, job, workflow, client, history)
                             return
                         queue = await client.queue()
@@ -1963,14 +2406,41 @@ class Scheduler:
                             for item in queue.get(key, [])
                             if isinstance(item, list) and len(item) > 1
                         }
-                        if job.prompt_id not in prompt_ids:
+                        if recovery_prompt_id not in prompt_ids:
                             error = ComfyError(
                                 "COMFY_SUBMISSION_UNKNOWN",
                                 "prompt_id 不在 ComfyUI 队列或历史中，已闭锁且不会重复提交",
-                                {"prompt_id": job.prompt_id},
+                                {"prompt_id": recovery_prompt_id},
                             )
+                            current_job = await self.lock_job_as_leader(session, job.id)
+                            if current_job is None:
+                                return
+                            job = current_job
+                            if (
+                                job.prompt_id != recovery_prompt_id
+                                or job.attempt_count != recovery_attempt
+                            ):
+                                await self.commit_as_leader(session)
+                                return
+                            if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
+                                await self.commit_as_leader(session)
+                                return
+                            if (
+                                job.cancel_requested
+                                or job.status == JobStatus.CANCELLING.value
+                            ):
+                                await self.cancel_locked_job(
+                                    session,
+                                    job,
+                                    event="scheduler.cancelled_during_prompt_recovery",
+                                )
+                                await self.commit_as_leader(session)
+                                await self.publish(
+                                    {"event": "job.cancelled", "job_id": job.id}
+                                )
+                                return
                             await fail_closed_prompt_submission(session, job, error)
-                            await session.commit()
+                            await self.commit_as_leader(session)
                             FAILED.labels(error.code).inc()
                             return
                     if not job.prompt_id:
@@ -1987,6 +2457,19 @@ class Scheduler:
                             .order_by(Job.finished_at.desc())
                             .limit(1)
                         )
+                        # Publish UPLOADING under a short fence before any
+                        # cache or remote-input side effect begins.
+                        await self.assert_scheduler_epoch(session)
+                        await transition_job(
+                            session, job, JobStatus.UPLOADING, "executor.uploading"
+                        )
+                        await self.commit_as_leader(session)
+
+                        # Bound the complete pre-submit phase with one epoch
+                        # key-share transaction. Takeover waits until free,
+                        # overwrite+SHA-verified uploads and durable intent are
+                        # all complete, but never waits for GPU execution.
+                        await self.assert_scheduler_epoch(session)
                         if previous_workflow != job.workflow_key:
                             # Large model families cannot coexist on a 24 GiB 3090.
                             # Release only on a family switch (or cold start); same-
@@ -2009,10 +2492,6 @@ class Scheduler:
                                 job_id=job.id,
                                 workflow_key=job.workflow_key,
                             )
-                        await transition_job(
-                            session, job, JobStatus.UPLOADING, "executor.uploading"
-                        )
-                        await session.commit()
                         root = Path(job.job_dir)
                         self.storage.atomic_json(
                             root / "comfy" / "free.response.json", free_result
@@ -2026,6 +2505,24 @@ class Scheduler:
                                     )
                                 )
                         self.storage.atomic_json(root / "comfy" / "upload.responses.json", uploads)
+                        refreshed_job = await self.lock_job_as_leader(session, job.id)
+                        if refreshed_job is None:
+                            return
+                        job = refreshed_job
+                        if job.cancel_requested or job.status == JobStatus.CANCELLING.value:
+                            await self.cancel_locked_job(
+                                session,
+                                job,
+                                event="executor.cancelled_before_submit",
+                            )
+                            await self.commit_as_leader(session)
+                            await self.publish(
+                                {"event": "job.cancelled", "job_id": job.id}
+                            )
+                            return
+                        if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
+                            await self.commit_as_leader(session)
+                            return
                         attempt = await current_job_attempt(session, job, lock=True)
                         attempt.upload_attempts += sum(
                             max(1, int(upload.get("attempt", 1))) for upload in uploads
@@ -2033,17 +2530,20 @@ class Scheduler:
                         rendered = json.loads(
                             (root / "workflow" / "rendered.api.json").read_text(encoding="utf-8")
                         )
+                        submission_attempt = job.attempt_count
                         client_id = await prepare_prompt_submission(session, job)
                         # The intent and prompt-attempt count must be durable
                         # before the non-transactional Comfy request begins.
-                        await session.commit()
+                        await self.commit_as_leader(session)
                         recovered_after_submit_error = False
                         try:
                             submitted_prompt_id = await client.submit(rendered, client_id)
                         except ComfyError as submit_error:
                             try:
                                 submitted_prompt_id = await reconcile_prompt_submission(
-                                    client, client_id
+                                    client,
+                                    client_id,
+                                    settle_seconds=PROMPT_SUBMISSION_SETTLE_SECONDS,
                                 )
                                 recovered_after_submit_error = True
                             except ComfyError as reconcile_error:
@@ -2055,8 +2555,43 @@ class Scheduler:
                                         "submit_error_code": submit_error.code,
                                     },
                                 )
+                                refreshed_job = await self.lock_job_as_leader(
+                                    session,
+                                    job.id,
+                                )
+                                if refreshed_job is None:
+                                    return
+                                job = refreshed_job
+                                current_client_id = (
+                                    job.submission_client_id
+                                    or prompt_client_id(job.id, job.attempt_count)
+                                )
+                                if (
+                                    job.attempt_count != submission_attempt
+                                    or current_client_id != client_id
+                                    or job.prompt_id is not None
+                                ):
+                                    await self.commit_as_leader(session)
+                                    return
+                                if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
+                                    await self.commit_as_leader(session)
+                                    return
+                                if (
+                                    job.cancel_requested
+                                    or job.status == JobStatus.CANCELLING.value
+                                ):
+                                    await self.cancel_locked_job(
+                                        session,
+                                        job,
+                                        event="executor.cancelled_during_submit_reconcile",
+                                    )
+                                    await self.commit_as_leader(session)
+                                    await self.publish(
+                                        {"event": "job.cancelled", "job_id": job.id}
+                                    )
+                                    return
                                 await fail_closed_prompt_submission(session, job, error)
-                                await session.commit()
+                                await self.commit_as_leader(session)
                                 FAILED.labels(error.code).inc()
                                 await self.publish(
                                     {
@@ -2066,7 +2601,60 @@ class Scheduler:
                                     }
                                 )
                                 return
+                        refreshed_job = await self.lock_job_as_leader(session, job.id)
+                        if refreshed_job is None:
+                            return
+                        job = refreshed_job
+                        current_client_id = job.submission_client_id or prompt_client_id(
+                            job.id,
+                            job.attempt_count,
+                        )
+                        if (
+                            job.attempt_count != submission_attempt
+                            or current_client_id != client_id
+                            or (
+                                job.prompt_id is not None
+                                and job.prompt_id != submitted_prompt_id
+                            )
+                        ):
+                            await self.commit_as_leader(session)
+                            return
+                        if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
+                            await self.commit_as_leader(session)
+                            return
                         await persist_prompt_id(session, job, submitted_prompt_id)
+                        self.storage.atomic_json(
+                            root / "comfy" / "submit.response.json",
+                            {
+                                "prompt_id": submitted_prompt_id,
+                                "client_id": client_id,
+                                "recovered_after_submit_error": recovered_after_submit_error,
+                            },
+                        )
+                        cancelled_after_submit = bool(
+                            job.cancel_requested
+                            or job.status == JobStatus.CANCELLING.value
+                        )
+                        if cancelled_after_submit:
+                            try:
+                                await asyncio.wait_for(client.interrupt(), timeout=5)
+                            except Exception as exc:
+                                logger().warning(
+                                    "executor.cancel_interrupt_failed",
+                                    job_id=job.id,
+                                    error_code="COMFY_INTERRUPT_FAILED",
+                                    error_type=type(exc).__name__,
+                                )
+                            await self.cancel_locked_job(
+                                session,
+                                job,
+                                event="executor.cancelled_after_submit",
+                            )
+                            await self.commit_as_leader(session)
+                            await self.publish(
+                                {"event": "job.cancelled", "job_id": job.id}
+                            )
+                            return
                         await transition_job(
                             session,
                             job,
@@ -2078,30 +2666,42 @@ class Scheduler:
                                 "recovered_after_submit_error": recovered_after_submit_error,
                             },
                         )
-                        self.storage.atomic_json(
-                            root / "comfy" / "submit.response.json",
-                            {
-                                "prompt_id": submitted_prompt_id,
-                                "client_id": client_id,
-                                "recovered_after_submit_error": recovered_after_submit_error,
-                            },
-                        )
-                        await session.commit()
-                    if job.cancel_requested:
-                        await client.interrupt()
-                        if job.status != JobStatus.CANCELLING.value:
-                            await transition_job(
-                                session, job, JobStatus.CANCELLING, "executor.cancelling"
-                            )
-                        await transition_job(
-                            session, job, JobStatus.CANCELLED, "executor.cancelled"
-                        )
-                        await release_lease(
-                            session, job, attempt_status=JobStatus.CANCELLED
-                        )
-                        await session.commit()
+                        await self.commit_as_leader(session)
+                    current_job = await self.lock_job_as_leader(session, job.id)
+                    if current_job is None:
                         return
-                    cancellation_task = asyncio.create_task(self.watch_cancellation(job.id, client))
+                    job = current_job
+                    if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
+                        await self.commit_as_leader(session)
+                        return
+                    if job.cancel_requested or job.status == JobStatus.CANCELLING.value:
+                        # Interrupt is an external side effect; epoch -> Job
+                        # locks prove this executor still owns the attempt.
+                        try:
+                            await asyncio.wait_for(client.interrupt(), timeout=5)
+                        except Exception as exc:
+                            logger().warning(
+                                "executor.cancel_interrupt_failed",
+                                job_id=job.id,
+                                error_code="COMFY_INTERRUPT_FAILED",
+                                error_type=type(exc).__name__,
+                            )
+                        await self.cancel_locked_job(
+                            session,
+                            job,
+                            event="executor.cancelled",
+                        )
+                        await self.commit_as_leader(session)
+                        await self.publish({"event": "job.cancelled", "job_id": job.id})
+                        return
+                    execution_prompt_id = job.prompt_id
+                    execution_attempt = job.attempt_count
+                    # Do not retain the validation locks while waiting on the
+                    # websocket. Every meaningful event reacquires them.
+                    await self.commit_as_leader(session)
+                    cancellation_task = asyncio.create_task(
+                        self.watch_cancellation(job.id, client)
+                    )
                     try:
                         try:
                             async for event in client.events(
@@ -2114,16 +2714,38 @@ class Scheduler:
                                     "execution_start",
                                     "executing",
                                     "progress",
+                                    "execution_success",
+                                    "execution_error",
+                                    "execution_interrupted",
+                                    "history_recovered",
                                 }:
+                                    current_job = await self.lock_job_as_leader(
+                                        session,
+                                        job.id,
+                                    )
+                                    if current_job is None:
+                                        return
+                                    job = current_job
+                                    if (
+                                        job.prompt_id != execution_prompt_id
+                                        or job.attempt_count != execution_attempt
+                                        or JobStatus(job.status) in TERMINAL_JOB_STATUSES
+                                    ):
+                                        await self.commit_as_leader(session)
+                                        return
+                                cancelling = bool(
+                                    job.cancel_requested
+                                    or job.status == JobStatus.CANCELLING.value
+                                )
+                                if event_type == "progress" and not cancelling:
                                     await mark_gpu_started(session, job)
-                                if event_type == "progress":
                                     data = event.get("data", {})
                                     job.progress = monotonic_job_progress(
                                         job.progress,
                                         float(data.get("value", 0)),
                                         float(data.get("max", 1)),
                                     )
-                                    await session.commit()
+                                    await self.commit_as_leader(session)
                                     await self.publish(
                                         {
                                             "event": "job.progress",
@@ -2138,31 +2760,46 @@ class Scheduler:
                                     "history_recovered",
                                 }:
                                     await mark_gpu_finished(session, job)
-                                    await session.commit()
-                                elif event_type in {"execution_start", "executing"}:
-                                    await session.commit()
+                                    await self.commit_as_leader(session)
+                                elif (
+                                    event_type in {"execution_start", "executing"}
+                                    and not cancelling
+                                ):
+                                    await mark_gpu_started(session, job)
+                                    await self.commit_as_leader(session)
+                                elif event_type in {"progress", "execution_start", "executing"}:
+                                    # Preserve a concurrently committed cancel;
+                                    # this read-only commit only releases locks.
+                                    await self.commit_as_leader(session)
                         except ComfyError:
-                            await session.refresh(job)
+                            current_job = await self.lock_job_as_leader(session, job.id)
+                            if current_job is None:
+                                return
+                            job = current_job
                             if not job.cancel_requested:
                                 raise
                     finally:
                         cancellation_task.cancel()
                         await asyncio.gather(cancellation_task, return_exceptions=True)
-                    await session.refresh(job)
+                    current_job = await self.lock_job_as_leader(session, job.id)
+                    if current_job is None:
+                        return
+                    job = current_job
+                    if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
+                        await self.commit_as_leader(session)
+                        return
                     if job.cancel_requested:
-                        if job.status != JobStatus.CANCELLING.value:
-                            await transition_job(
-                                session, job, JobStatus.CANCELLING, "executor.cancelling"
-                            )
-                        await transition_job(
-                            session, job, JobStatus.CANCELLED, "executor.cancelled"
+                        await self.cancel_locked_job(
+                            session,
+                            job,
+                            event="executor.cancelled",
                         )
-                        await release_lease(
-                            session, job, attempt_status=JobStatus.CANCELLED
-                        )
-                        await session.commit()
+                        await self.commit_as_leader(session)
                         await self.publish({"event": "job.cancelled", "job_id": job.id})
                         return
+                    # End the refresh transaction before the external history
+                    # request so no idle snapshot/epoch lock spans network I/O.
+                    await self.commit_as_leader(session)
                     history = await client.history(job.prompt_id or "")
                     await self.finish_from_history(session, job, workflow, client, history)
                 finally:
@@ -2192,20 +2829,21 @@ class Scheduler:
         while not self.stop_event.is_set():
             await asyncio.sleep(0.5)
             async with self.db.session() as session:
+                await self.assert_scheduler_epoch(session)
                 cancel_requested = await session.scalar(
                     select(Job.cancel_requested).where(Job.id == job_id)
                 )
-            if cancel_requested:
-                try:
-                    await client.interrupt()
-                except Exception as exc:
-                    logger().warning(
-                        "executor.cancel_interrupt_failed",
-                        job_id=job_id,
-                        error_code="COMFY_INTERRUPT_FAILED",
-                        error_type=type(exc).__name__,
-                    )
-                return
+                if cancel_requested:
+                    try:
+                        await asyncio.wait_for(client.interrupt(), timeout=5)
+                    except Exception as exc:
+                        logger().warning(
+                            "executor.cancel_interrupt_failed",
+                            job_id=job_id,
+                            error_code="COMFY_INTERRUPT_FAILED",
+                            error_type=type(exc).__name__,
+                        )
+                    return
 
     async def timeout_watchdog(
         self,
@@ -2216,41 +2854,60 @@ class Scheduler:
         timeout_event: asyncio.Event,
     ) -> None:
         await asyncio.sleep(timeout_seconds)
-        timeout_event.set()
-        try:
-            await asyncio.wait_for(client.interrupt(), timeout=5)
-        except Exception as exc:
-            logger().warning(
-                "executor.timeout_interrupt_failed",
-                job_id=job_id,
-                error_code="COMFY_INTERRUPT_FAILED",
-                error_type=type(exc).__name__,
-            )
         timed_out = False
+        cancelled = False
         async with self.db.session() as session:
+            # Lock order is always epoch -> Job. This also proves an old
+            # watchdog cannot interrupt a prompt after takeover.
+            await self.assert_scheduler_epoch(session)
             job = await session.get(Job, job_id, with_for_update=True)
             if job is not None and JobStatus(job.status) not in TERMINAL_JOB_STATUSES:
-                attempt = await current_job_attempt(session, job, lock=True)
-                if attempt.gpu_started_at is not None and attempt.gpu_finished_at is None:
-                    attempt.gpu_finished_at = datetime.now(UTC)
-                job.error_code = "JOB_TIMEOUT"
-                job.error_message = f"任务超过工作流截止时间 {timeout_seconds} 秒"
-                await transition_job(
-                    session,
-                    job,
-                    JobStatus.TIMED_OUT,
-                    "executor.timed_out",
-                    {"timeout_seconds": timeout_seconds},
-                )
-                await release_lease(
-                    session,
-                    job,
-                    attempt_status=JobStatus.TIMED_OUT,
-                    attempt_error={"code": "JOB_TIMEOUT", "message": job.error_message},
-                )
-                await session.commit()
-                timed_out = True
-        if timed_out:
+                try:
+                    await asyncio.wait_for(client.interrupt(), timeout=5)
+                except Exception as exc:
+                    logger().warning(
+                        "executor.timeout_interrupt_failed",
+                        job_id=job_id,
+                        error_code="COMFY_INTERRUPT_FAILED",
+                        error_type=type(exc).__name__,
+                    )
+                if job.cancel_requested or job.status == JobStatus.CANCELLING.value:
+                    await self.cancel_locked_job(
+                        session,
+                        job,
+                        event="executor.cancelled_at_timeout_boundary",
+                    )
+                    await self.commit_as_leader(session)
+                    cancelled = True
+                else:
+                    timeout_event.set()
+                    attempt = await current_job_attempt(session, job, lock=True)
+                    if attempt.gpu_started_at is not None and attempt.gpu_finished_at is None:
+                        attempt.gpu_finished_at = datetime.now(UTC)
+                    job.error_code = "JOB_TIMEOUT"
+                    job.error_message = f"任务超过工作流截止时间 {timeout_seconds} 秒"
+                    await transition_job(
+                        session,
+                        job,
+                        JobStatus.TIMED_OUT,
+                        "executor.timed_out",
+                        {"timeout_seconds": timeout_seconds},
+                    )
+                    await release_lease(
+                        session,
+                        job,
+                        attempt_status=JobStatus.TIMED_OUT,
+                        attempt_error={
+                            "code": "JOB_TIMEOUT",
+                            "message": job.error_message,
+                        },
+                    )
+                    await self.commit_as_leader(session)
+                    timed_out = True
+        if cancelled:
+            await self.publish({"event": "job.cancelled", "job_id": job_id})
+            parent_task.cancel()
+        elif timed_out:
             FAILED.labels("JOB_TIMEOUT").inc()
             await self.publish({"event": "job.timed_out", "job_id": job_id})
             parent_task.cancel()
@@ -2263,11 +2920,37 @@ class Scheduler:
         client: ComfyClient,
         history: dict[str, Any],
     ) -> None:
-        entry = history.get(job.prompt_id or "")
+        expected_prompt_id = job.prompt_id
+        expected_attempt = job.attempt_count
+        entry = history.get(expected_prompt_id or "")
         if not entry:
             raise ComfyError("COMFY_OUTPUT_MISSING", "history does not contain prompt")
+
+        # Refresh under epoch -> Job locks before accepting the history result.
+        # A cancellation or replacement attempt committed while history was in
+        # flight must win over this late executor result.
+        current_job = await self.lock_job_as_leader(session, job.id)
+        if current_job is None:
+            return
+        job = current_job
+        if (
+            job.prompt_id != expected_prompt_id
+            or job.attempt_count != expected_attempt
+            or JobStatus(job.status) in TERMINAL_JOB_STATUSES
+        ):
+            await self.commit_as_leader(session)
+            return
+        if job.cancel_requested or job.status == JobStatus.CANCELLING.value:
+            await self.cancel_locked_job(
+                session,
+                job,
+                event="executor.cancelled_before_download",
+            )
+            await self.commit_as_leader(session)
+            await self.publish({"event": "job.cancelled", "job_id": job.id})
+            return
         await mark_gpu_finished(session, job)
-        await session.commit()
+        await self.commit_as_leader(session)
         status = entry.get("status", {})
         if status.get("status_str") == "error":
             error_message = "ComfyUI execution error"
@@ -2296,46 +2979,123 @@ class Scheduler:
         if not outputs:
             raise ComfyError("COMFY_OUTPUT_MISSING", "ComfyUI completed without outputs")
         if job.status != JobStatus.DOWNLOADING.value:
+            current_job = await self.lock_job_as_leader(session, job.id)
+            if current_job is None:
+                return
+            job = current_job
+            if (
+                job.prompt_id != expected_prompt_id
+                or job.attempt_count != expected_attempt
+                or JobStatus(job.status) in TERMINAL_JOB_STATUSES
+            ):
+                await self.commit_as_leader(session)
+                return
+            if job.cancel_requested or job.status == JobStatus.CANCELLING.value:
+                await self.cancel_locked_job(
+                    session,
+                    job,
+                    event="executor.cancelled_before_download",
+                )
+                await self.commit_as_leader(session)
+                await self.publish({"event": "job.cancelled", "job_id": job.id})
+                return
             await transition_job(session, job, JobStatus.DOWNLOADING, "executor.downloading")
-            await session.commit()
+            await self.commit_as_leader(session)
         root = Path(job.job_dir)
         self.storage.atomic_json(root / "comfy" / "history.json", history)
-        for index, output in enumerate(outputs):
-            destination = root / "output" / f"{index:03d}-{Path(output.filename).name}"
-            size, digest = await client.download(output, destination)
-            session.add(
-                JobArtifact(
-                    id=str(uuid.uuid4()),
-                    job_id=job.id,
-                    kind="output",
-                    relative_path=str(destination.relative_to(root)).replace("\\", "/"),
-                    content_type="application/octet-stream",
-                    size_bytes=size,
-                    sha256=digest,
-                    download_confirmed=True,
+        staging_dir = root / "output" / ".download" / str(uuid.uuid4())
+        downloaded: list[tuple[Path, Path, int, str]] = []
+        try:
+            for index, output in enumerate(outputs):
+                filename = f"{index:03d}-{Path(output.filename).name}"
+                staging = staging_dir / filename
+                destination = root / "output" / filename
+                size, digest = await client.download(output, staging)
+                downloaded.append((staging, destination, size, digest))
+
+            # The official output paths remain untouched during transfer.
+            # Acquire epoch -> Job locks only after every staged byte is
+            # durable, then revalidate cancellation and attempt identity.
+            current_job = await self.lock_job_as_leader(session, job.id)
+            if current_job is None:
+                return
+            job = current_job
+            if (
+                job.prompt_id != expected_prompt_id
+                or job.attempt_count != expected_attempt
+                or JobStatus(job.status) in TERMINAL_JOB_STATUSES
+            ):
+                await self.commit_as_leader(session)
+                return
+            if job.cancel_requested or job.status == JobStatus.CANCELLING.value:
+                await self.cancel_locked_job(
+                    session,
+                    job,
+                    event="executor.cancelled_during_download",
                 )
+                await self.commit_as_leader(session)
+                await self.publish({"event": "job.cancelled", "job_id": job.id})
+                return
+
+            output_dir = root / "output"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            for staging, destination, size, digest in downloaded:
+                os.replace(staging, destination)
+                session.add(
+                    JobArtifact(
+                        id=str(uuid.uuid4()),
+                        job_id=job.id,
+                        kind="output",
+                        relative_path=str(destination.relative_to(root)).replace("\\", "/"),
+                        content_type="application/octet-stream",
+                        size_bytes=size,
+                        sha256=digest,
+                        download_confirmed=True,
+                    )
+                )
+            directory_fd = os.open(output_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+
+            job.progress = 100
+            await transition_job(
+                session,
+                job,
+                JobStatus.SUCCEEDED,
+                "executor.succeeded",
+                {"outputs": len(outputs)},
             )
-        job.progress = 100
-        await transition_job(
-            session, job, JobStatus.SUCCEEDED, "executor.succeeded", {"outputs": len(outputs)}
-        )
-        if job.node_id:
-            node = await session.scalar(
-                select(Node).where(Node.id == job.node_id).with_for_update()
-            )
-            if node is not None:
-                labels = dict(node.labels or {})
-                labels["warm_workflow"] = job.workflow_key
-                labels["warm_workflow_at"] = datetime.now(UTC).isoformat()
-                node.labels = labels
-        await release_lease(session, job, attempt_status=JobStatus.SUCCEEDED)
-        await session.commit()
-        COMPLETED.labels(workflow.workflow_key).inc()
-        await self.publish({"event": "job.succeeded", "job_id": job.id})
+            if job.node_id:
+                # ``execute`` keeps this Session (and its initially loaded Node)
+                # alive across the whole GPU run.  Commits do not expire ORM
+                # instances, so force a refresh under the row lock and merge
+                # only GPU Control's warm-cache keys.
+                node = await session.get(
+                    Node,
+                    job.node_id,
+                    populate_existing=True,
+                    with_for_update=True,
+                )
+                if node is not None:
+                    labels = dict(node.labels or {})
+                    labels["warm_workflow"] = job.workflow_key
+                    labels["warm_workflow_at"] = datetime.now(UTC).isoformat()
+                    node.labels = labels
+            await release_lease(session, job, attempt_status=JobStatus.SUCCEEDED)
+            await self.commit_as_leader(session)
+            COMPLETED.labels(workflow.workflow_key).inc()
+            await self.publish({"event": "job.succeeded", "job_id": job.id})
+        finally:
+            # Only the unique private staging directory is removed. A late or
+            # cancelled download can therefore never erase a published file.
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
     async def fail_job(self, job_id: str, code: str, message: str) -> None:
         cancelled = False
         async with self.db.session() as session:
+            await self.assert_scheduler_epoch(session)
             job = await session.get(Job, job_id, with_for_update=True)
             if job is None:
                 return
@@ -2412,12 +3172,71 @@ class Scheduler:
                     attempt_status=JobStatus.FAILED,
                     attempt_error={"code": code, "message": message[:1000]},
                 )
-            await session.commit()
+            await self.commit_as_leader(session)
         if cancelled:
             await self.publish({"event": "job.cancelled", "job_id": job_id})
             return
         FAILED.labels(code).inc()
         await self.publish({"event": "job.failed", "job_id": job_id, "error_code": code})
+
+    async def monitor_scheduler_lock(self, handle: SchedulerLockHandle) -> None:
+        """Continuously prove singleton-lock ownership and fail closed on uncertainty."""
+
+        while not self.stop_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self.stop_event.wait(),
+                    timeout=SCHEDULER_LOCK_CHECK_INTERVAL_SECONDS,
+                )
+                return
+            except TimeoutError:
+                pass
+
+            try:
+                await asyncio.wait_for(
+                    self.db.assert_scheduler_lock(handle),
+                    timeout=SCHEDULER_LOCK_QUERY_TIMEOUT_SECONDS,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if isinstance(exc, SchedulerLockLost):
+                    failure = exc
+                else:
+                    failure = SchedulerLockLost(
+                        "scheduler advisory lock liveness check timed out or failed"
+                    )
+                self.mark_scheduler_lock_lost(failure)
+                logger().error(
+                    "scheduler.lock_lost",
+                    error_type=type(exc).__name__,
+                    backend_pid=handle.backend_pid,
+                )
+                if failure is exc:
+                    raise
+                raise failure from exc
+
+    def raise_if_scheduler_lock_lost(self) -> None:
+        if self.scheduler_lock_failure is not None:
+            raise self.scheduler_lock_failure
+
+    @staticmethod
+    async def cancel_tasks_bounded(
+        tasks: list[asyncio.Task[Any]], timeout_seconds: float
+    ) -> int:
+        """Cancel tasks without allowing a failed lock holder to block takeover."""
+
+        unique_tasks = list(dict.fromkeys(tasks))
+        if not unique_tasks:
+            return 0
+        for task in unique_tasks:
+            if not task.done():
+                task.cancel()
+        done, pending = await asyncio.wait(unique_tasks, timeout=timeout_seconds)
+        for task in done:
+            if not task.cancelled():
+                task.exception()
+        return len(pending)
 
     async def run(self) -> None:
         configure_logging("scheduler", self.settings.environment)
@@ -2431,52 +3250,80 @@ class Scheduler:
         BUILD_ALIGNED.set(1 if runtime_identity["version_aligned"] else 0)
         logger().info("scheduler.runtime_identity", **runtime_identity)
         start_http_server(9108)
-        async with self.db.session() as lock_session:
-            if not await self.db.acquire_scheduler_lock(lock_session):
-                raise RuntimeError("another scheduler owns the PostgreSQL advisory lock")
-            await self.reconcile()
-            self.health_task = asyncio.create_task(self.update_node_health())
-            self.redis_task = asyncio.create_task(self.redis_listener())
-            self.callback_task = asyncio.create_task(self.callback_loop())
-            expected = asyncio.get_running_loop().time()
-            try:
-                while not self.stop_event.is_set():
-                    expected += self.settings.scheduler_fallback_scan_ms / 1000
-                    await self.reconcile_batches()
-                    await self.schedule_available()
-                    LOOP_LAG.set(max(0, asyncio.get_running_loop().time() - expected))
-                    self.wakeup.clear()
-                    try:
-                        await asyncio.wait_for(
-                            self.wakeup.wait(),
-                            timeout=self.settings.scheduler_fallback_scan_ms / 1000,
-                        )
-                    except TimeoutError:
-                        continue
-            finally:
-                self.stop_event.set()
-                for task in (self.health_task, self.redis_task, self.callback_task):
-                    if task:
-                        task.cancel()
-                await asyncio.gather(
-                    *(
-                        task
-                        for task in (self.health_task, self.redis_task, self.callback_task)
-                        if task
-                    ),
-                    return_exceptions=True,
-                )
-                if self.executions:
-                    await asyncio.gather(*self.executions.values(), return_exceptions=True)
-                if self.batch_assemblies:
-                    for task in self.batch_assemblies.values():
-                        task.cancel()
-                    await asyncio.gather(
-                        *self.batch_assemblies.values(), return_exceptions=True
+        try:
+            async with self.db.scheduler_lock() as lock_handle:
+                try:
+                    self.scheduler_lock_task = asyncio.create_task(
+                        self.monitor_scheduler_lock(lock_handle)
                     )
-                await self.db.release_scheduler_lock(lock_session)
-        await self.redis.aclose()
-        await self.db.close()
+                    await self.establish_scheduler_epoch(lock_handle)
+                    self.raise_if_scheduler_lock_lost()
+                    await self.reconcile()
+                    self.raise_if_scheduler_lock_lost()
+                    self.health_task = asyncio.create_task(self.update_node_health())
+                    self.redis_task = asyncio.create_task(self.redis_listener())
+                    self.callback_task = asyncio.create_task(self.callback_loop())
+                    expected = asyncio.get_running_loop().time()
+                    while not self.stop_event.is_set():
+                        expected += self.settings.scheduler_fallback_scan_ms / 1000
+                        await self.reconcile_batches()
+                        self.raise_if_scheduler_lock_lost()
+                        await self.schedule_available()
+                        self.raise_if_scheduler_lock_lost()
+                        LOOP_LAG.set(max(0, asyncio.get_running_loop().time() - expected))
+                        self.wakeup.clear()
+                        try:
+                            await asyncio.wait_for(
+                                self.wakeup.wait(),
+                                timeout=self.settings.scheduler_fallback_scan_ms / 1000,
+                            )
+                        except TimeoutError:
+                            continue
+                    self.raise_if_scheduler_lock_lost()
+                finally:
+                    self.stop_event.set()
+                    auxiliary_tasks = [
+                        task
+                        for task in (
+                            self.health_task,
+                            self.redis_task,
+                            self.callback_task,
+                            self.scheduler_lock_task,
+                        )
+                        if task is not None
+                    ]
+                    if self.scheduler_lock_failure is not None:
+                        pending = await self.cancel_tasks_bounded(
+                            [
+                                *auxiliary_tasks,
+                                *self.executions.values(),
+                                *self.batch_assemblies.values(),
+                            ],
+                            SCHEDULER_LOCK_FAILURE_GRACE_SECONDS,
+                        )
+                        if pending:
+                            logger().error(
+                                "scheduler.lock_failure_cleanup_timeout",
+                                pending_tasks=pending,
+                                grace_seconds=SCHEDULER_LOCK_FAILURE_GRACE_SECONDS,
+                            )
+                    else:
+                        for task in auxiliary_tasks:
+                            task.cancel()
+                        await asyncio.gather(*auxiliary_tasks, return_exceptions=True)
+                        if self.executions:
+                            await asyncio.gather(
+                                *self.executions.values(), return_exceptions=True
+                            )
+                        if self.batch_assemblies:
+                            for task in self.batch_assemblies.values():
+                                task.cancel()
+                            await asyncio.gather(
+                                *self.batch_assemblies.values(), return_exceptions=True
+                            )
+        finally:
+            await self.redis.aclose()
+            await self.db.close()
 
 
 async def async_main() -> None:
