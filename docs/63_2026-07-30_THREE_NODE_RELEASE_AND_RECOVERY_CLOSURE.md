@@ -1,7 +1,6 @@
 # 2026-07-30 三节点发布、备份与恢复闭环记录
 
-> 状态：发布候选收尾记录；ImageClip 兼容性元数据与真实 canary 已关闭，Git/LFS 最终提交和
-> 发布后增量备份仍由主代理在完成后补入。<br>
+> 状态：发布完成；ImageClip 兼容性元数据与真实 canary、Git/LFS 运行发布、三地最终恢复点均已关闭。<br>
 > 时间基准：Asia/Singapore（UTC+08:00）。<br>
 > 生产约束：本轮没有修改 ImageClip 或 ModelViewCreator 的工作流 JSON、custom nodes、模型、提示词、
 > 推理参数、图拓扑或输出语义；没有为了文档审计重启生产后端，也没有把三台 GPU 长期留在
@@ -12,7 +11,7 @@
 [可复现备份与滚动更新手册](62_2026-07-30_REPRODUCIBLE_BACKUP_AND_ROLLING_UPDATE.md)和
 [备份恢复手册](17_BACKUP_AND_RESTORE.md)。
 
-## 1. 结论与尚未关闭的硬门禁
+## 1. 结论与已关闭的硬门禁
 
 当前已经完成：
 
@@ -28,19 +27,21 @@
 - 控制面、Asset Worker、ComfyUI 三类生产镜像均有规范归档、SHA-256、压缩测试和离线载入证据；
 - Python、Web 和备份/恢复安全测试通过。
 
-以下两项仍是发布完成的硬门禁，**不得提前写成已完成**：
+发布硬门禁已关闭：
 
-1. **待主代理补入：Git/LFS 发布。**
-   - 最终 Git commit：`<待主代理补入>`
-   - `origin/main`：`<待主代理补入>`
-   - GitHub `main`：`<待主代理补入>`
-   - `git lfs fsck`：`<待主代理补入>`
-   - `git lfs push --dry-run origin main`：`<待主代理补入>`
-2. **待主代理补入：发布后最终增量恢复点。**
-   - backup ID：`<待主代理补入>`
-   - `SHA256SUMS` SHA-256：`<待主代理补入>`
-   - `BACKUP_COMPLETE` SHA-256：`<待主代理补入>`
-   - LOCAL/A/B 校验计数：`<待主代理补入>`
+1. **Git/LFS 运行发布。**
+   - 运行发布 commit：`50f1d7b95e038fc5f313843dd9725c12a6b5e099`
+   - 发布时 `origin/main`：`50f1d7b95e038fc5f313843dd9725c12a6b5e099`
+   - 发布时 GitHub `main`：`50f1d7b95e038fc5f313843dd9725c12a6b5e099`
+   - `git lfs fsck --pointers` / `--objects`：PASS
+   - `git lfs push --dry-run origin main`：无输出，无待推对象
+   - Worker LFS 对象：685,495,065 B；OID `sha256:7bb6c067...c09c72f`
+2. **发布后最终增量恢复点。**
+   - backup ID：`20260730T045705Z-small`
+   - `SHA256SUMS` SHA-256：`7caadb13ad2e19754bb011d7f82c1581eb4ff4333a0df6175e2d0564a755c6ad`
+   - `BACKUP_COMPLETE` SHA-256：`a805e117f869429686d80dcb7f1b6ada1038ea41388c6f035e05bf1df4bd6af5`
+   - `BACKUP_MANIFEST` SHA-256：`ae7d5ce087df84fd8a93e7c0b44c2e57a5bced51d83e2ae958470e5399aa1dcb`
+   - LOCAL/A/B：三地均 14/14 payload PASS，`git-head.txt` 均为上述运行发布 commit
 
 ImageClip 发布门禁已经关闭：manifest `2026.07.30-691770c-r1` 已启用，旧版已禁用，三节点
 兼容矩阵为 `3/3 compatible`。真实 canary `87917fd6-1e38-4c5b-83a1-d0014a28ee91` 在
@@ -206,8 +207,16 @@ ISOLATED_DATABASE_RESTORE=PASS
 
 ### 6.4 发布后增量恢复点
 
-当前两个恢复点都早于最终 Git/LFS 发布提交。主代理推送成功后必须立即生成新的增量恢复点，绑定
-最终 40 位 commit，并复制到 A/B。证据填写在第 1 节；在此之前不能删除本节两个已验证恢复点。
+```text
+/srv/gpu-control/backups/20260730T045705Z-small
+```
+
+该恢复点在运行发布提交推送后创建，`git-head.txt` 绑定
+`50f1d7b95e038fc5f313843dd9725c12a6b5e099`。本机 `verify-only` 通过；随后以不删除远端旧备份的
+在线增量复制方式同步到 A/B，三地均为 16 个顶层文件、14/14 payload PASS。两路实际传输各
+6,770,191 字节；3090-A 耗时约 0.29 秒，3090-B 耗时约 0.81 秒。旧全量和 strict format-2
+恢复点均未删除。本文件的后续收口提交只更新审计文档，不改变运行代码、部署配置、镜像或业务
+管线，因此恢复点继续绑定运行发布提交，避免产生“为记录备份而再次备份”的自引用链。
 
 ## 7. 镜像归档、摘要与离线载入
 
@@ -224,10 +233,10 @@ ISOLATED_DATABASE_RESTORE=PASS
 3. 隔离 `docker load`；
 4. 载入后 `docker image inspect` 与预期 ID 比较。
 
-控制面 `1.5.4` 已有 Git LFS 分卷；Worker `1.2.2` 当前工作树新增
-`artifacts/asset-worker/1.2.2/li3d-blender-worker-1.2.2.tar.zst.part-00`，其内容摘要与规范归档相同。
-是否已经转换为 LFS pointer、对象是否已推送必须由主代理在暂存/提交后补入，不能只凭
-`.gitattributes` 推断成功。
+控制面 `1.5.4` 已有 Git LFS 分卷；Worker `1.2.2` 的
+`artifacts/asset-worker/1.2.2/li3d-blender-worker-1.2.2.tar.zst.part-00` 已确认在 Git 中为
+134 字节标准 LFS pointer，对象大小 685,495,065 字节，内容摘要与规范归档相同。LFS 上传
+100% 完成，平均约 5.5 MB/s；`fsck` 通过且 dry-run 无待推对象。
 
 ## 8. 测试与审计结果
 
@@ -242,7 +251,7 @@ ISOLATED_DATABASE_RESTORE=PASS
 | `git diff --check` | PASS |
 | secret scan | 0 个生产密钥/API Key/密码泄漏 |
 
-测试通过不等于发布完成；最终 Git/LFS 推送和发布后恢复点仍受第 1 节硬门禁约束。
+测试与发布证据必须同时成立；本轮 Git/LFS 推送和发布后恢复点已按第 1 节关闭。
 
 ## 9. Git/LFS 发布闭环
 
@@ -253,10 +262,14 @@ HEAD        1a912bbce56b744ca668ddd4ee8e149d46d939d2
 origin/main 1a912bbce56b744ca668ddd4ee8e149d46d939d2
 ```
 
-当前工作树包含经授权的控制面、Web、版本锁、备份/恢复脚本、测试、文档、ImageClip 兼容性元数据
-以及 Worker `1.2.2` LFS 归档分片。这些内容尚未形成新的远端发布基线。
+上述经授权的控制面、Web、版本锁、备份/恢复脚本、测试、文档、ImageClip 兼容性元数据以及
+Worker `1.2.2` LFS 归档分片，已形成新的远端运行发布基线：
 
-发布顺序：
+```text
+50f1d7b95e038fc5f313843dd9725c12a6b5e099
+```
+
+实际采用的发布顺序：
 
 ```bash
 cd /opt/gpu-control
@@ -273,8 +286,8 @@ git rev-parse HEAD
 git ls-remote origin refs/heads/main
 ```
 
-提交前必须确认 685 MB Worker part 在 index 中是 LFS pointer，而不是普通 Git blob。推送后把最终
-提交和 LFS 结果填入第 1 节，再生成发布后增量恢复点。
+实际执行结果：685 MB Worker part 在 index 中是 LFS pointer，而不是普通 Git blob；LFS 对象
+上传完成，本地、`origin/main`、GitHub `main` 三者一致，随后已生成并三地校验发布后恢复点。
 
 ## 10. 滚动更新与恢复步骤
 
@@ -344,17 +357,17 @@ git ls-remote origin refs/heads/main
 
 ## 12. 最终签收栏
 
-只有以下全部填写后，本文件状态才能从“发布候选”改为“发布完成”：
+以下发布与恢复签收项均已完成：
 
 | 项目 | 结果 |
 | --- | --- |
-| 最终 Git commit 与远端 main 一致 | `<待主代理补入>` |
-| LFS pointer / fsck / 无待推对象 | `<待主代理补入>` |
+| 运行发布 Git commit 与远端 main 一致 | `PASS`：`50f1d7b95e038fc5f313843dd9725c12a6b5e099` |
+| LFS pointer / fsck / 无待推对象 | `PASS`：134 B pointer；685,495,065 B 对象；OID `7bb6c067...c09c72f` |
 | ImageClip 新 manifest 3/3 compatible | `PASS`：`2026.07.30-691770c-r1` 已启用，旧版已禁用 |
 | ImageClip 最终 canary 与产物 SHA | `PASS`：`87917fd6-1e38-4c5b-83a1-d0014a28ee91` / `8f648f9b…0415c4a` |
-| 发布后增量备份 LOCAL/A/B | `<待主代理补入>` |
+| 发布后增量备份 LOCAL/A/B | `PASS`：`20260730T045705Z-small`，三地 14/14 payload PASS |
 | 三节点最终 ONLINE/ACTIVE、无长期排空 | `PASS`：4090 `OVERFLOW/ACTIVE`，A/B `PRIMARY/ACTIVE`；发布后继续按滚动门禁复核 |
 
-签收时不得删除
-`full-20260730T023838Z-pre-rollout` 或 `20260730T040031Z-small`，直到新的发布后恢复点完成三地
-校验并由管理员明确执行保留策略。
+`full-20260730T023838Z-pre-rollout`、`20260730T040031Z-small` 和
+`20260730T045705Z-small` 当前均保留。后续删除必须由管理员明确执行保留策略，不能把本轮验收
+当作自动清理授权。

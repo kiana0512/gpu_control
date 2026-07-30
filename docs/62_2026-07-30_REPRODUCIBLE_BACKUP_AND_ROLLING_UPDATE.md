@@ -7,26 +7,25 @@
 ## 1. 当前结论
 
 运行面已经具备统一基线。11:29 原始审计发现的备份自引用、规范归档缺口和版本默认值漂移
-均已在后续验收中关闭；截至本文最新增量核对，**文件级恢复、异机副本、数据库隔离恢复和镜像
-离线载入已经闭环**，但 Git/LFS 远端发布及本轮最终增量备份仍未完成，因而还不能把当前
-未提交工作树称为远端可复现发布版本。
+均已在后续验收中关闭；截至本文最新增量核对，**文件级恢复、异机副本、数据库隔离恢复、镜像
+离线载入、Git/LFS 远端发布和绑定发布提交的最终增量恢复点均已闭环**。
 
 - 三台 GPU 节点使用同一份 ComfyUI `projects-0.2.3` 镜像，镜像 ID 一致，容器健康且队列为空。
 - 三台 Linux/WSL2 资产 Worker 使用同一份 `li3d/blender-worker:1.2.2` 镜像，镜像 ID 一致。
 - 控制面实际运行版本为 `1.5.4`，Git 本地 `HEAD`、`origin/main` 和远端 `main` 一致。
-- 审计起点 `HEAD` 已引用的 Git LFS 对象完整，控制面 `1.5.4` 分卷能够重组并通过 SHA-256；
-  当前工作树新增的 Worker `1.2.2` 分片仍待正式暂存、提交和远端推送验证。
+- 运行发布提交 `50f1d7b95e038fc5f313843dd9725c12a6b5e099` 已推送到 GitHub `main`；
+  Asset Worker `1.2.2` 的 685,495,065 字节对象已作为标准 LFS pointer 提交并完成远端上传。
 - ComfyUI `0.2.3` 的本地完整归档和 SHA-256 已存在。
 - 11:29 审计时，候选全量备份 `full-20260730T023838Z-pre-rollout` 的校验文件生成过程发生自引用且没有最终完成标记；该历史问题已在审计后修复并完成 LOCAL/A/B 异机验收，当前状态见 5.4 节。
 - 当前运行的控制面 `1.5.4`、资产 Worker `1.2.2` 和 ComfyUI `0.2.3` 均已有本地规范归档、
-  SHA-256 和离线载入证据；Worker `1.2.2` 的 LFS 分片已准备但尚未形成远端发布证据。
-- 当前工作树仍有尚未提交的源码、备份/恢复脚本、清单和文档改进；这些修改在提交、推送和
-  生成发布后最终增量恢复点前，不属于新的远端可复现版本。
+  SHA-256 和离线载入证据；Worker LFS OID 与规范归档摘要均为 `7bb6c067...c09c72f`。
+- 最终小恢复点 `20260730T045705Z-small` 已绑定上述 40 位运行发布提交，并在 LOCAL、3090-A、
+  3090-B 三地通过 14/14 载荷校验。
 
 因此当前状态应表述为：
 
-> 生产运行与镜像基线一致；全量恢复点、异机副本、隔离数据库恢复和三类镜像归档已验收；
-> Git/LFS 发布提交与发布后最终增量恢复点待完成。任何恢复演练仍不得把没有有效
+> 生产运行与镜像基线一致；全量恢复点、异机副本、隔离数据库恢复、三类镜像归档、Git/LFS
+> 发布和发布后最终增量恢复点均已验收。任何恢复演练仍不得把没有有效
 > `BACKUP_COMPLETE` 的目录当作恢复点。
 
 ## 2. 稳定身份与节点基线
@@ -54,11 +53,12 @@ DHCP 地址变化后，主控应通过 MAC、节点注册信息和心跳重新�
 | --- | --- |
 | GPU Control 仓库 | `https://github.com/kiana0512/gpu_control.git` |
 | 分支 | `main` |
-| 本地 `HEAD` | `1a912bbce56b744ca668ddd4ee8e149d46d939d2` |
-| 本地 `origin/main` | `1a912bbce56b744ca668ddd4ee8e149d46d939d2` |
-| 远端 `main` | `1a912bbce56b744ca668ddd4ee8e149d46d939d2` |
+| 审计起点 `HEAD` | `1a912bbce56b744ca668ddd4ee8e149d46d939d2` |
+| 运行发布提交 | `50f1d7b95e038fc5f313843dd9725c12a6b5e099` |
+| 发布时 `origin/main` | `50f1d7b95e038fc5f313843dd9725c12a6b5e099` |
+| 发布时远端 `main` | `50f1d7b95e038fc5f313843dd9725c12a6b5e099` |
 | Git 完整性 | `git fsck --full --no-dangling` 通过 |
-| LFS 完整性 | 对审计起点 `HEAD`：`git lfs fsck` 通过，`git lfs push --dry-run origin main` 无待推送对象；不代表当前未提交的 Worker 分片已发布 |
+| LFS 完整性 | `git lfs fsck --pointers` 与 `--objects` 通过；`git lfs push --dry-run origin main` 无待推送对象 |
 
 11:29 原始审计时工作树至少存在以下未提交修改：
 
@@ -73,8 +73,10 @@ DHCP 地址变化后，主控应通过 MAC、节点注册信息和心跳重新�
 - `git diff --check`：通过。
 
 后续收尾又加入了经授权的控制面、Web、版本锁、测试、清单、兼容性元数据和镜像 LFS 分片。
-当前完整范围必须以正式提交前的 `git status --short` 与暂存区审计为准；所有变更提交并推送后，
-才能形成新的可复现 Git 基线。
+正式提交前已依据 `git status --short` 与暂存区完成范围审计；这些变更已经随运行发布提交
+`50f1d7b95e038fc5f313843dd9725c12a6b5e099` 推送，形成新的可复现 Git 基线。本文件后续的
+收口提交只补充审计事实，不改变运行代码、部署配置、镜像或业务管线；最终恢复点因此刻意绑定
+上述运行发布提交，而不是形成自引用备份。
 
 ### 3.2 控制面镜像
 
@@ -117,7 +119,7 @@ sha256sum /tmp/unified-scheduler-1.5.4-images.tar.gz
 | 镜像 | 生产镜像 ID | 三节点状态 | 规范归档状态 |
 | --- | --- | --- | --- |
 | `registry.local:5000/gpu-control/comfyui:projects-0.2.3` | `sha256:d76e54a137d7b630de4503e0f0b16fa4441b25f6a5b5e1561d7fb1615eca36ea` | 4090/A/B 一致，healthy，重启次数 0 | 完整归档存在 |
-| `li3d/blender-worker:1.2.2` | `sha256:9bf4344503041abec7dd67067ccbbb0946223af53b06d1a4a67a27acfeaab6ad` | 4090/A/B 一致，运行中，重启次数 0 | 规范归档、SHA 和离线载入已验证；LFS 分片待提交与远端验证 |
+| `li3d/blender-worker:1.2.2` | `sha256:9bf4344503041abec7dd67067ccbbb0946223af53b06d1a4a67a27acfeaab6ad` | 4090/A/B 一致，运行中，重启次数 0 | 规范归档、SHA、离线载入及远端 LFS 对象已验证 |
 
 ComfyUI `0.2.3` 归档：
 
@@ -321,9 +323,9 @@ verification=passed
 | `li3d-blender-worker-1.2.2.tar.zst` | `7bb6c067c4a358a864e436fd2fc09271716ed7848b805b753fbbdb97ec09c72f` |
 | `comfyui-projects-registry-0.2.3.tar.gz` | `20aa6ffec448ad2615916db49b5411b5974f01c1a51e61081160b544d6966586` |
 
-压缩完整性和隔离 `docker load` 已验证，载入后的镜像 ID与第 3 节一致。Worker `1.2.2` 的 LFS
-分片和跟踪规则已经写入工作树；在提交、确认指针并推送远端对象前，它仍不属于远端 Git/LFS
-发布基线。发布时继续运行：
+压缩完整性和隔离 `docker load` 已验证，载入后的镜像 ID 与第 3 节一致。Worker `1.2.2` 的 LFS
+分片和跟踪规则已随运行发布提交推送；Git blob 是 134 字节标准 LFS pointer，远端对象大小
+685,495,065 字节，OID 为 `sha256:7bb6c067...c09c72f`。复核命令：
 
 ```bash
 git lfs fsck
@@ -470,15 +472,14 @@ docker load < /srv/gpu-control/images/comfyui-projects-registry-0.2.3.tar.gz
 
 ## 12. 当前风险与待验收项
 
-以下项目按最新证据分为已完成和待收口两类。在待收口项目完成前，不得宣称“当前未提交工作树已从
-远端 Git/LFS 完整发布”：
+以下项目按最新证据分为已完成和非阻断清理项；运行发布、LFS 和三地恢复点已经闭环：
 
 1. **已完成：**全量恢复点已产生可验证的 `SHA256SUMS` 与 `BACKUP_COMPLETE`，并通过 LOCAL/A/B
    三地一致性与 32/32 载荷校验，详见 5.4 节。
 2. **已完成：**PostgreSQL custom dump 已在隔离实例真实恢复；恢复后表数 `29`、Alembic revision
    `20260729_0010`、节点数 `3`、任务数 `2383`，结果 `ISOLATED_DATABASE_RESTORE=PASS`。
-3. **部分完成：**控制面 `1.5.4`、Worker `1.2.2` 已落到规范归档目录；Worker `1.2.2` LFS 分片
-   已准备并通过本地摘要校验，但尚未提交并推送远端 LFS 对象。
+3. **已完成：**控制面 `1.5.4`、Worker `1.2.2` 已落到规范归档目录；Worker `1.2.2` LFS 分片
+   已作为 pointer 提交，685,495,065 字节对象完成远端上传并通过本地对象完整性检查。
 4. **已完成：**控制面归档已包含 API、Asset API、Scheduler、Web；ComfyUI 与 Worker 独立归档均已
    校验并完成隔离载入。
 5. **已完成：**ImageClip/ModelViewCreator 三节点实际 `HEAD`、权威远端提交、pipeline/model manifest
@@ -493,23 +494,23 @@ docker load < /srv/gpu-control/images/comfyui-projects-registry-0.2.3.tar.gz
 8. 将数据库中旧的 `asset-worker-3090-b-windows` 幽灵记录标记离线、归档或排除；保留当前四个真实 Windows Baker 槽位。
 9. 3090-B 在队列为空时仍可能因 PyTorch 缓存只剩约 4.9 GiB 可用显存；应在节点 `DRAINING` 且无任务时使用安全的缓存释放机制或按真实可用显存准入，不能杀运行任务。
 10. 确认并清理/隔离仍在运行的 `gpu-control-asset-realtest-*`、`gpu-control-asset-v3test-worker-4090` 测试栈；先证明它们不承载生产任务。
-11. **已完成于工作树：**Compose、lock 文件、Python/Web 包版本、UI footer 和实现文档默认值已统一；
-    尚需随发布提交推送。
+11. **已完成并发布：**Compose、lock 文件、Python/Web 包版本、UI footer 和实现文档默认值已统一，
+    已随运行发布提交 `50f1d7b95e038fc5f313843dd9725c12a6b5e099` 推送。
 12. **已完成：**全量与 strict format-2 恢复点均已复制到 3090-A、3090-B 两台不同物理主机并
     二次校验。
-13. **待完成：**当前工作树形成 Git 提交并推送 `main`，确认 LFS 对象远端可取；随后生成并异机
-    校验一份绑定该最终提交的增量恢复点。
+13. **已完成：**运行发布提交已推送 `main`；绑定该提交的 `20260730T045705Z-small` 已在 LOCAL、
+    3090-A、3090-B 三地完成 14/14 载荷校验。
 
 ## 13. 最终交付检查表
 
 ### Git 与文档
 
-- [ ] 工作树只包含本次明确授权的修改。
-- [ ] `git diff --check` 通过。
+- [x] 运行发布提交只包含本次明确授权的修改。
+- [x] `git diff --check` 通过。
 - [x] 测试与备份恢复演练通过。
-- [ ] 变更已提交到 `main` 并推送。
-- [ ] `git lfs fsck` 通过，无待推送 LFS 对象。
-- [ ] 本手册、发布记录、API 使用文档和镜像 README 记录同一版本。
+- [x] 运行变更已提交到 `main` 并推送。
+- [x] `git lfs fsck` 通过，无待推送 LFS 对象。
+- [x] 本手册、发布记录、API 使用文档和镜像 README 记录同一版本。
 
 ### Docker 与归档
 
@@ -538,7 +539,8 @@ docker load < /srv/gpu-control/images/comfyui-projects-registry-0.2.3.tar.gz
 - [x] 数据库隔离恢复通过。
 - [x] Git bundle、镜像、卷、节点快照和 secrets 均可读。
 - [x] 3090-A、3090-B 异机副本完成并通过二次校验。
-- [ ] 上一份 `VERIFIED` 恢复点在新恢复点验收前未被删除。
+- [x] 上一份 `VERIFIED` 恢复点在新恢复点验收前未被删除。
+- [x] 发布后恢复点 `20260730T045705Z-small` 绑定运行发布提交并在 LOCAL/A/B 通过 14/14 校验。
 
 ## 14. 变更纪律
 
@@ -550,13 +552,14 @@ docker load < /srv/gpu-control/images/comfyui-projects-registry-0.2.3.tar.gz
 - 不因节点失联就把用户任务静默标记为取消或失败；使用可恢复状态、幂等重试和明确错误码。
 - 每次生产变更都记录：Git 提交、镜像 tag/ID、管线提交、模型摘要、执行人、时间、验证结果和回滚点。
 
-本手册是恢复与发布的事实基线。完成第 12 节所有待验收项并勾选第 13 节后，才可将状态更新为“全量备份闭环完成、三节点可复现恢复”。
+本手册是恢复与发布的事实基线。第 12、13 节的发布硬门禁已经关闭；数据库旧行、可选节点缺失和
+测试栈清理仍按非阻断维护项处理，不得为清理它们中断生产。
 
 ## 15. 审计后修复状态（2026-07-30 收尾窗口）
 
-本节是 11:29 原始审计快照之后的增量状态，**不改写前述审计事实，也不等同于最终发布完成**。
+本节是 11:29 原始审计快照之后的增量状态，保留审计时间线并记录最终发布完成事实。
 
-已在当前工作树完成并通过静态核对的项目：
+已完成、发布并通过静态/运行核对的项目：
 
 - 控制面 Python 包、Web 包与 lock、Compose 默认值已经统一到 `1.5.4`；
 - Asset Worker 的控制面与节点 Compose 默认值已经统一到 `1.2.2`；
@@ -570,20 +573,22 @@ docker load < /srv/gpu-control/images/comfyui-projects-registry-0.2.3.tar.gz
 - PostgreSQL 已在隔离实例完成真实恢复，结果 `ISOLATED_DATABASE_RESTORE=PASS`；
 - Python 测试 `101/101`、备份/恢复安全测试 `23/23`、Web Vitest `3/3` 与生产构建均通过。
 
-仍未闭环、因此仍不得宣称“随时从 Git 完整恢复”的项目：
+最终闭环证据：
 
-1. Asset Worker `1.2.2` 分片当前仍未提交；必须在正式暂存后确认它被转换为 LFS 指针，执行
-   `git lfs fsck`，并确认 LFS 对象已经推送到远端；
-2. 当前工作树的源码、脚本、文档和清单尚未形成新的 Git 提交与远端发布基线；
-3. 发布后必须生成一份绑定最终 Git commit 的增量恢复点，并复制到 3090-A、3090-B 后再次校验；
+1. Asset Worker `1.2.2` 分片已确认是 LFS pointer；`git lfs fsck --pointers`、`--objects` 通过，
+   `git lfs push --dry-run origin main` 无待推对象；
+2. 源码、脚本、文档、清单和 LFS pointer 已形成运行发布提交
+   `50f1d7b95e038fc5f313843dd9725c12a6b5e099`，发布时本地、`origin/main` 与 GitHub `main` 一致；
+3. 发布后恢复点 `20260730T045705Z-small` 已绑定该运行提交，并复制到 3090-A、3090-B；三地
+   `SHA256SUMS`、`BACKUP_COMPLETE`、`BACKUP_MANIFEST` 摘要一致且 14/14 校验通过；
 4. 三节点在线状态、外部业务管线哈希和模型清单已在收尾窗口实时复核；ImageClip 兼容性元数据、
    `3/3 compatible` 与最终 canary 证据已经闭环；
 5. 数据库旧 `asset-worker-3090-b-windows` 行和 3090-A 可选、未被批准工作流引用的
    `NunchakuDepthPreprocessor` 缺失属于非阻断清理项，不得据此中断生产服务。
 
-因此，当前准确状态是：**版本漂移已在工作树修复；全量与小恢复点已完成文件级和异机校验；
-数据库隔离恢复、三类镜像归档/载入、代码与 Web 测试以及 ImageClip 最终 canary 已经通过。
-剩余硬门禁只有 Git/LFS 远端发布和绑定最终提交的增量恢复点。**
+因此，当前准确状态是：**版本漂移已修复并发布；全量与小恢复点已完成文件级和异机校验；
+数据库隔离恢复、三类镜像归档/载入、代码与 Web 测试、ImageClip 最终 canary、Git/LFS 远端发布
+以及绑定运行提交的最终恢复点均已通过。**
 
 最终发布与恢复闭环证据统一记录在
 [63 号收尾文档](63_2026-07-30_THREE_NODE_RELEASE_AND_RECOVERY_CLOSURE.md)。
