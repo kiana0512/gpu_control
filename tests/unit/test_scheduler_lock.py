@@ -220,7 +220,9 @@ async def test_scheduler_lock_monitor_stops_and_cancels_active_work(
     scheduler.db.assert_scheduler_lock = AsyncMock(side_effect=SchedulerLockLost("lock lost"))
     monkeypatch.setattr(scheduler_main, "SCHEDULER_LOCK_CHECK_INTERVAL_SECONDS", 0.001)
     active = asyncio.create_task(asyncio.Event().wait())
+    lag_monitor = asyncio.create_task(asyncio.Event().wait())
     scheduler.executions["job-1"] = active
+    scheduler.event_loop_lag_task = lag_monitor
     handle = SchedulerLockHandle(
         connection=MagicMock(), backend_pid=4242, postgresql=True
     )
@@ -231,8 +233,9 @@ async def test_scheduler_lock_monitor_stops_and_cancels_active_work(
     assert scheduler.stop_event.is_set()
     assert scheduler.wakeup.is_set()
     assert scheduler.scheduler_lock_failure is not None
-    await asyncio.gather(active, return_exceptions=True)
+    await asyncio.gather(active, lag_monitor, return_exceptions=True)
     assert active.cancelled()
+    assert lag_monitor.cancelled()
 
 
 async def test_scheduler_lock_failure_cleanup_is_bounded() -> None:

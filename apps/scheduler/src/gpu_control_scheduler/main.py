@@ -83,7 +83,10 @@ from packages.gpu_control_core.workflow import node_compatibility_reasons
 DECISION = Histogram(
     "gpu_control_scheduler_decision_duration_seconds", "Scheduler decision latency"
 )
-LOOP_LAG = Gauge("gpu_control_scheduler_loop_lag_seconds", "Scheduler event loop lag")
+LOOP_LAG = Gauge(
+    "gpu_control_scheduler_loop_lag_seconds",
+    "Current scheduler event-loop wake delay beyond the latest probe deadline",
+)
 QUEUED = Gauge("gpu_control_jobs_queued", "Queued jobs")
 RUNNING = Gauge("gpu_control_jobs_running", "Running jobs")
 OLDEST = Gauge("gpu_control_oldest_queued_job_seconds", "Oldest queued job age")
@@ -118,6 +121,7 @@ MAX_BATCH_MATERIALIZATIONS_PER_TICK = 32
 SCHEDULER_LOCK_CHECK_INTERVAL_SECONDS = 2.0
 SCHEDULER_LOCK_QUERY_TIMEOUT_SECONDS = 2.0
 SCHEDULER_LOCK_FAILURE_GRACE_SECONDS = 3.0
+SCHEDULER_LOOP_LAG_SAMPLE_INTERVAL_SECONDS = 0.5
 ARCHIVE_BUILD_CANCEL_GRACE_SECONDS = 2.5
 CALLBACK_DELIVERY_LEASE_SECONDS = 30
 CALLBACK_DNS_TIMEOUT_SECONDS = 5
@@ -290,6 +294,17 @@ def monotonic_batch_progress(
     return max(current, computed)
 
 
+def event_loop_wake_delay(
+    wait_started_at: float,
+    timeout_seconds: float,
+    woke_at: float,
+) -> float:
+    """Measure only the latest wait's deadline overshoot, never historical drift."""
+
+    wake_deadline = wait_started_at + max(0.0, timeout_seconds)
+    return max(0.0, woke_at - wake_deadline)
+
+
 async def latest_output_artifacts(
     session: AsyncSession,
     job_ids: list[str],
@@ -457,6 +472,7 @@ class Scheduler:
         self.health_task: asyncio.Task[None] | None = None
         self.redis_task: asyncio.Task[None] | None = None
         self.callback_task: asyncio.Task[None] | None = None
+        self.event_loop_lag_task: asyncio.Task[None] | None = None
         self.scheduler_lock_task: asyncio.Task[None] | None = None
         self.scheduler_lock_failure: SchedulerLockLost | None = None
         self.scheduler_lock_handle: SchedulerLockHandle | None = None
@@ -1034,6 +1050,7 @@ class Scheduler:
             getattr(self, "health_task", None),
             getattr(self, "redis_task", None),
             getattr(self, "callback_task", None),
+            getattr(self, "event_loop_lag_task", None),
             *getattr(self, "executions", {}).values(),
             *getattr(self, "batch_assemblies", {}).values(),
         ]
@@ -3216,6 +3233,31 @@ class Scheduler:
                     raise
                 raise failure from exc
 
+    async def monitor_event_loop_lag(
+        self,
+        interval_seconds: float = SCHEDULER_LOOP_LAG_SAMPLE_INTERVAL_SECONDS,
+    ) -> None:
+        """Sample current event-loop wake delay without carrying prior drift."""
+
+        interval_seconds = max(0.001, interval_seconds)
+        loop = asyncio.get_running_loop()
+        while not self.stop_event.is_set():
+            wait_started_at = loop.time()
+            try:
+                await asyncio.wait_for(
+                    self.stop_event.wait(),
+                    timeout=interval_seconds,
+                )
+                return
+            except TimeoutError:
+                LOOP_LAG.set(
+                    event_loop_wake_delay(
+                        wait_started_at,
+                        interval_seconds,
+                        loop.time(),
+                    )
+                )
+
     def raise_if_scheduler_lock_lost(self) -> None:
         if self.scheduler_lock_failure is not None:
             raise self.scheduler_lock_failure
@@ -3258,19 +3300,21 @@ class Scheduler:
                     )
                     await self.establish_scheduler_epoch(lock_handle)
                     self.raise_if_scheduler_lock_lost()
+                    self.event_loop_lag_task = asyncio.create_task(
+                        self.monitor_event_loop_lag()
+                    )
+                    # Arm the independent lag probe before startup reconciliation.
+                    await asyncio.sleep(0)
                     await self.reconcile()
                     self.raise_if_scheduler_lock_lost()
                     self.health_task = asyncio.create_task(self.update_node_health())
                     self.redis_task = asyncio.create_task(self.redis_listener())
                     self.callback_task = asyncio.create_task(self.callback_loop())
-                    expected = asyncio.get_running_loop().time()
                     while not self.stop_event.is_set():
-                        expected += self.settings.scheduler_fallback_scan_ms / 1000
                         await self.reconcile_batches()
                         self.raise_if_scheduler_lock_lost()
                         await self.schedule_available()
                         self.raise_if_scheduler_lock_lost()
-                        LOOP_LAG.set(max(0, asyncio.get_running_loop().time() - expected))
                         self.wakeup.clear()
                         try:
                             await asyncio.wait_for(
@@ -3288,6 +3332,7 @@ class Scheduler:
                             self.health_task,
                             self.redis_task,
                             self.callback_task,
+                            self.event_loop_lag_task,
                             self.scheduler_lock_task,
                         )
                         if task is not None
