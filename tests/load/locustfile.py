@@ -182,6 +182,13 @@ TEARDOWN_CANCEL_THROTTLE_SECONDS = 0.1
 TEARDOWN_CANCEL_TIMEOUT_SECONDS = 5.0
 TEARDOWN_SETTLE_TIMEOUT_SECONDS = 300
 TEARDOWN_SETTLE_POLL_INTERVAL_SECONDS = 1.0
+ADMIN_STATUS_QUERY_MAX_ATTEMPTS = 3
+ADMIN_STATUS_QUERY_INITIAL_BACKOFF_SECONDS = 0.25
+ADMIN_STATUS_QUERY_MAXIMUM_BACKOFF_SECONDS = 1.0
+# The administrator policy defaults to 5 requests/second with a burst of 10.
+# A complete active-state audit performs eleven scoped reads, so pace those
+# reads instead of weakening the production rate limit for a load test.
+ADMIN_STATUS_QUERY_THROTTLE_SECONDS = 0.25
 
 _operation_counter = itertools.count(1)
 _user_counter = itertools.count(0)
@@ -339,9 +346,7 @@ class SessionRegistry:
             timing = payload.get("timing")
             if isinstance(timing, dict):
                 record["queue_position"] = timing.get("queue_position")
-                record["estimated_start_seconds"] = timing.get(
-                    "estimated_start_seconds"
-                )
+                record["estimated_start_seconds"] = timing.get("estimated_start_seconds")
             elif payload.get("counts"):
                 record["queue_position"] = None
             if status in TERMINAL_STATUSES:
@@ -482,6 +487,26 @@ def preflight_json(
     return payload
 
 
+def admin_status_query_sender(
+    client: httpx.Client,
+    headers: Mapping[str, str],
+    *,
+    client_kind: str,
+    status: str,
+    response_holder: list[httpx.Response],
+) -> Callable[[], int]:
+    def send_status_query() -> int:
+        response = client.get(
+            f"/admin/jobs?client_kind={client_kind}&status={status}&limit=500",
+            headers=dict(headers),
+            timeout=30,
+        )
+        response_holder[:] = [response]
+        return response.status_code
+
+    return send_status_query
+
+
 def active_gpu_admin_jobs(
     client: httpx.Client,
     headers: Mapping[str, str],
@@ -493,13 +518,25 @@ def active_gpu_admin_jobs(
         raise LoadTestConfigurationError("invalid active GPU admin query scope")
     jobs_by_id: dict[str, dict[str, Any]] = {}
     rows_scanned = 0
+    http_attempts = 0
     for _ in range(passes):
         for status in ACTIVE_STATUS_QUERY_ORDER:
-            response = client.get(
-                f"/admin/jobs?client_kind={client_kind}&status={status}&limit=500",
-                headers=dict(headers),
-                timeout=30,
+            response_holder: list[httpx.Response] = []
+            _, attempts = execute_bounded_teardown_cancel(
+                admin_status_query_sender(
+                    client,
+                    headers,
+                    client_kind=client_kind,
+                    status=status,
+                    response_holder=response_holder,
+                ),
+                gevent.sleep,
+                max_attempts=ADMIN_STATUS_QUERY_MAX_ATTEMPTS,
+                initial_backoff_seconds=ADMIN_STATUS_QUERY_INITIAL_BACKOFF_SECONDS,
+                maximum_backoff_seconds=ADMIN_STATUS_QUERY_MAXIMUM_BACKOFF_SECONDS,
             )
+            http_attempts += attempts
+            response = response_holder[-1]
             response.raise_for_status()
             rows = response.json()
             if not isinstance(rows, list):
@@ -520,9 +557,12 @@ def active_gpu_admin_jobs(
                         "active GPU admin endpoint returned an invalid scoped row"
                     )
                 jobs_by_id[identifier] = row
+            gevent.sleep(ADMIN_STATUS_QUERY_THROTTLE_SECONDS)
     return list(jobs_by_id.values()), {
         "rows_scanned": rows_scanned,
         "status_queries": len(ACTIVE_STATUS_QUERY_ORDER) * passes,
+        "http_attempts": http_attempts,
+        "transient_retries": http_attempts - len(ACTIVE_STATUS_QUERY_ORDER) * passes,
     }
 
 
@@ -571,8 +611,7 @@ def perform_preflight() -> dict[str, Any]:
     if not isinstance(asset_overview, dict):
         raise LoadTestConfigurationError("asset preflight returned the wrong shape")
     public_versions = {
-        (str(item.get("workflow_key")), str(item.get("version")))
-        for item in public_workflows
+        (str(item.get("workflow_key")), str(item.get("version"))) for item in public_workflows
     }
     for workflow_key, approval in SCENARIO.approved_workflows.items():
         version = str(approval["version"])
@@ -587,9 +626,7 @@ def perform_preflight() -> dict[str, Any]:
             and item.get("version") == version
             and item.get("enabled") is True
         ]
-        if len(matches) != 1 or matches[0].get("template_sha256") != approval[
-            "template_sha256"
-        ]:
+        if len(matches) != 1 or matches[0].get("template_sha256") != approval["template_sha256"]:
             raise LoadTestConfigurationError(
                 f"approved template SHA mismatch: {workflow_key}:{version}"
             )
@@ -643,9 +680,7 @@ def perform_preflight() -> dict[str, Any]:
         "/api/v1/assets/bake/process",
     }
     actual_asset_submits = {
-        str(item.get("submit"))
-        for item in contracts.values()
-        if isinstance(item, dict)
+        str(item.get("submit")) for item in contracts.values() if isinstance(item, dict)
     }
     if expected_asset_submits != actual_asset_submits:
         raise LoadTestConfigurationError("server six-API contract set has drifted")
@@ -664,9 +699,7 @@ def perform_preflight() -> dict[str, Any]:
         }
         for label, value in production_counters.items():
             if isinstance(value, bool) or not isinstance(value, int) or value != 0:
-                raise LoadTestConfigurationError(
-                    f"production preflight requires {label}=0"
-                )
+                raise LoadTestConfigurationError(f"production preflight requires {label}=0")
         if any(int(item.get("current_jobs", -1)) != 0 for item in healthy_gpu_nodes):
             raise LoadTestConfigurationError(
                 "production preflight requires every approved GPU node to be idle"
@@ -759,9 +792,7 @@ def collect_telemetry(client: httpx.Client) -> dict[str, Any]:
     if not isinstance(cluster, dict):
         raise LoadTestConfigurationError("telemetry scheduler response omitted cluster")
     asset_summary = asset_overview.get("summary")
-    if not isinstance(asset_summary, dict) or not isinstance(
-        asset_summary.get("counts"), dict
-    ):
+    if not isinstance(asset_summary, dict) or not isinstance(asset_summary.get("counts"), dict):
         raise LoadTestConfigurationError("telemetry asset response omitted queue counts")
 
     def required_number(
@@ -1055,14 +1086,10 @@ def guarded_preflight(environment: Any, **_: Any) -> None:
         online_asset_workers=len(result["online_asset_workers"]),
     )
     _expected_gpu_node_ids = tuple(
-        str(item["id"])
-        for item in result["healthy_gpu_nodes"]
-        if item.get("id")
+        str(item["id"]) for item in result["healthy_gpu_nodes"] if item.get("id")
     )
     _expected_asset_worker_ids = tuple(
-        str(item["id"])
-        for item in result["online_asset_workers"]
-        if item.get("id")
+        str(item["id"]) for item in result["online_asset_workers"] if item.get("id")
     )
     start_telemetry(environment)
 
@@ -1131,9 +1158,7 @@ class SixApiUser(HttpUser):
                     status_code, has_transport_error=transport_error is not None
                 ):
                     if status_code >= 400:
-                        response.failure(
-                            f"HTTP {status_code}: {response.text[:200]}"
-                        )
+                        response.failure(f"HTTP {status_code}: {response.text[:200]}")
                     else:
                         response.success()
                     return response, retries
@@ -1179,9 +1204,7 @@ class SixApiUser(HttpUser):
                         status_code, has_transport_error=transport_error is not None
                     ):
                         if status_code not in {200, 202}:
-                            response.failure(
-                                f"HTTP {status_code}: {response.text[:200]}"
-                            )
+                            response.failure(f"HTTP {status_code}: {response.text[:200]}")
                         else:
                             response.success()
                         return response, retries
@@ -1202,16 +1225,12 @@ class SixApiUser(HttpUser):
         api_name: str,
         ordinal: int,
         metadata: dict[str, Any],
-        builder: Callable[
-            [ExitStack, str], tuple[dict[str, str], list[tuple[str, Any]]]
-        ],
+        builder: Callable[[ExitStack, str], tuple[dict[str, str], list[tuple[str, Any]]]],
     ) -> None:
         request_id, idempotency_key, traceparent = correlation(api_name, ordinal)
         business_id = external_id(api_name, ordinal)
         metadata["external_asset_id"] = business_id
-        headers = request_headers(
-            self.api_key, request_id, traceparent, idempotency_key
-        )
+        headers = request_headers(self.api_key, request_id, traceparent, idempotency_key)
         started = time.monotonic()
         response, retries = self.post_multipart(
             API_CONTRACTS[api_name]["submit"],
@@ -1263,9 +1282,7 @@ class SixApiUser(HttpUser):
         api_name: str,
         headers: Mapping[str, str],
     ) -> None:
-        record = next(
-            (item for item in REGISTRY.records() if item["id"] == identifier), None
-        )
+        record = next((item for item in REGISTRY.records() if item["id"] == identifier), None)
         if record is None:
             return
         deadline = time.monotonic() + SCENARIO.operation_timeout_seconds[api_name]
@@ -1389,9 +1406,7 @@ class SixApiUser(HttpUser):
             REGISTRY.mark_artifact_contract_failure(
                 identifier, "artifact URL or SHA-256 is missing"
             )
-            REGISTRY.event(
-                "artifact.invalid_contract", api=api_name, task_id=identifier
-            )
+            REGISTRY.event("artifact.invalid_contract", api=api_name, task_id=identifier)
             self.validation_failure(
                 api_name,
                 "artifact-contract",
@@ -1425,9 +1440,7 @@ class SixApiUser(HttpUser):
         actual_sha = hashlib.sha256(response.content).hexdigest()
         header_sha = response.headers.get("X-Artifact-SHA256")
         if actual_sha != expected_sha or (header_sha and header_sha != expected_sha):
-            REGISTRY.mark_artifact_contract_failure(
-                identifier, "artifact SHA-256 mismatch"
-            )
+            REGISTRY.mark_artifact_contract_failure(identifier, "artifact SHA-256 mismatch")
             self.validation_failure(
                 api_name,
                 "artifact-sha256",
@@ -1457,9 +1470,7 @@ class SixApiUser(HttpUser):
         manifest = fixture_json(api_name, "manifest")
         business_id = external_id(api_name, ordinal)
         manifest["external_batch_id"] = business_id
-        headers = request_headers(
-            self.api_key, request_id, traceparent, idempotency_key
-        )
+        headers = request_headers(self.api_key, request_id, traceparent, idempotency_key)
 
         def builder(stack: ExitStack) -> tuple[dict[str, str], list[tuple[str, Any]]]:
             archive = fixture_path(api_name, "archive")
@@ -1507,9 +1518,7 @@ class SixApiUser(HttpUser):
     def run_modelview_roughness(self, ordinal: int) -> None:
         api_name = "modelview_roughness"
         request_id, idempotency_key, traceparent = correlation(api_name, ordinal)
-        headers = request_headers(
-            self.api_key, request_id, traceparent, idempotency_key
-        )
+        headers = request_headers(self.api_key, request_id, traceparent, idempotency_key)
 
         def builder(stack: ExitStack) -> tuple[dict[str, str], list[tuple[str, Any]]]:
             image = fixture_path(api_name, "image")

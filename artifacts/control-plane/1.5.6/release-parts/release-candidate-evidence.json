@@ -1,0 +1,240 @@
+{
+  "actions_not_performed": [
+    "docker compose up/restart",
+    "production service restart",
+    "database migration",
+    "registry push",
+    "git commit/push",
+    "git lfs add/push"
+  ],
+  "archive": {
+    "filename": "gpu-control-control-plane-1.5.6-images.tar.gz",
+    "parts": [
+      {
+        "lfs_oid_candidate": "sha256:fc307632f1ce17973f99a0158e4abfe0f26ee0f2edd92ccd15adf226c5393e0a",
+        "lfs_pointer_status": "NOT_YET_STAGED_OR_PUSHED",
+        "path": "gpu-control-control-plane-1.5.6-images.tar.gz.part-00",
+        "sha256": "fc307632f1ce17973f99a0158e4abfe0f26ee0f2edd92ccd15adf226c5393e0a",
+        "size": 134217728
+      },
+      {
+        "lfs_oid_candidate": "sha256:bd2f5a2561f9d91c752f6e54bcfe6a15ab4cfb82fd7b7c757d360f1c8063a82d",
+        "lfs_pointer_status": "NOT_YET_STAGED_OR_PUSHED",
+        "path": "gpu-control-control-plane-1.5.6-images.tar.gz.part-01",
+        "sha256": "bd2f5a2561f9d91c752f6e54bcfe6a15ab4cfb82fd7b7c757d360f1c8063a82d",
+        "size": 56645063
+      }
+    ],
+    "sha256": "577b251c215f252f0920e7db007c9b5e5e2993db2b4dd17e846d0c8dacf5bb87",
+    "size": 190862791,
+    "split_size_bytes": 134217728
+  },
+  "attestations": {
+    "provenance_status": "VERIFIED_OFFLINE_OCI",
+    "registry_binding_status": "PENDING_REGISTRY_PUSH",
+    "sbom_status": "PENDING_PINNED_SBOM_GENERATOR",
+    "strict_release_identity_status": "PENDING_REGISTRY_SBOM_BINDING"
+  },
+  "builder": {
+    "base_images": {
+      "NGINX_BASE_IMAGE": "nginx@sha256:30f1c0d78e0ad60901648be663a710bdadf19e4c10ac6782c235200619158284",
+      "NODE_BASE_IMAGE": "node@sha256:5539840ce9d013fa13e3b9814c9353024be7ac75aca5db6d039504a56c04ea59",
+      "PYTHON_BASE_IMAGE": "python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
+    },
+    "buildx_version": "github.com/docker/buildx v0.35.0 a319e5b15052cf6557ceb666eb8ff6e32380b782",
+    "name": "default"
+  },
+  "built_at": "2026-07-30T15:22:09.592380+00:00",
+  "deployed": false,
+  "forbidden_actions_performed": [],
+  "git_lfs": {
+    "directory": "artifacts/control-plane/1.5.6/release-parts",
+    "objects_pushed": false,
+    "pointers_staged": false,
+    "tracking_rule_verified": true
+  },
+  "images": {
+    "api": {
+      "docker_archive_config_digest": "sha256:600ba0cc2bcf05acae0c167fdb931c7a3c3eeca4878078b953fb61d21f97eca2",
+      "docker_oci_config_match": true,
+      "local_image_id": "sha256:26f622257facfbc74199c6d266b2a02e31b28dad6910596f5c4bd8fecf458cf4",
+      "local_image_id_semantics": "ENGINE_LOCAL_CONTENT_ID_NOT_ASSUMED_CONFIG_DIGEST",
+      "oci_config_digest": "sha256:600ba0cc2bcf05acae0c167fdb931c7a3c3eeca4878078b953fb61d21f97eca2",
+      "oci_image_manifest_digest": "sha256:26f622257facfbc74199c6d266b2a02e31b28dad6910596f5c4bd8fecf458cf4",
+      "oci_labels": {
+        "org.opencontainers.image.revision": "310a44c70c20f7cbfc601d19e19858380a61c20a",
+        "org.opencontainers.image.source": "https://github.com/kiana0512/gpu_control.git",
+        "org.opencontainers.image.title": "GPU Control API",
+        "org.opencontainers.image.version": "1.5.6"
+      },
+      "reference": "gpu-control-api:1.5.6",
+      "registry_manifest_digest": "PENDING_REGISTRY_PUSH",
+      "repo_digests": [
+        "gpu-control-api@sha256:26f622257facfbc74199c6d266b2a02e31b28dad6910596f5c4bd8fecf458cf4"
+      ],
+      "runtime_version_env": {
+        "GPU_CONTROL_BUILD_REVISION": "310a44c70c20f7cbfc601d19e19858380a61c20a",
+        "GPU_CONTROL_BUILD_VERSION": "1.5.6"
+      }
+    },
+    "asset-api": {
+      "docker_archive_config_digest": "sha256:1f2acc8b72a92262392ba0fb2513b1cfa088159d359292fa2ec7d8c97b2f6e76",
+      "docker_oci_config_match": true,
+      "local_image_id": "sha256:f83bed46d7540de4cf7d08e4cff8d7675dd7dd4675bf13d301226f5f5c4cb01f",
+      "local_image_id_semantics": "ENGINE_LOCAL_CONTENT_ID_NOT_ASSUMED_CONFIG_DIGEST",
+      "oci_config_digest": "sha256:1f2acc8b72a92262392ba0fb2513b1cfa088159d359292fa2ec7d8c97b2f6e76",
+      "oci_image_manifest_digest": "sha256:f83bed46d7540de4cf7d08e4cff8d7675dd7dd4675bf13d301226f5f5c4cb01f",
+      "oci_labels": {
+        "org.opencontainers.image.revision": "310a44c70c20f7cbfc601d19e19858380a61c20a",
+        "org.opencontainers.image.source": "https://github.com/kiana0512/gpu_control.git",
+        "org.opencontainers.image.title": "GPU Control Asset API",
+        "org.opencontainers.image.version": "1.5.6"
+      },
+      "reference": "unified-scheduler-asset-api:1.5.6",
+      "registry_manifest_digest": "PENDING_REGISTRY_PUSH",
+      "repo_digests": [
+        "unified-scheduler-asset-api@sha256:f83bed46d7540de4cf7d08e4cff8d7675dd7dd4675bf13d301226f5f5c4cb01f"
+      ],
+      "runtime_version_env": {
+        "GPU_CONTROL_BUILD_REVISION": "310a44c70c20f7cbfc601d19e19858380a61c20a",
+        "GPU_CONTROL_BUILD_VERSION": "1.5.6"
+      }
+    },
+    "scheduler": {
+      "docker_archive_config_digest": "sha256:9e03ffb538cac156434eca16de3be31a9ffd0164bb352e04f0d27d870681185d",
+      "docker_oci_config_match": true,
+      "local_image_id": "sha256:c2c420e6fa8fd2d8d84852e5b509f5248cf6e1e8b1239c6f8053eee5e3a6845b",
+      "local_image_id_semantics": "ENGINE_LOCAL_CONTENT_ID_NOT_ASSUMED_CONFIG_DIGEST",
+      "oci_config_digest": "sha256:9e03ffb538cac156434eca16de3be31a9ffd0164bb352e04f0d27d870681185d",
+      "oci_image_manifest_digest": "sha256:c2c420e6fa8fd2d8d84852e5b509f5248cf6e1e8b1239c6f8053eee5e3a6845b",
+      "oci_labels": {
+        "org.opencontainers.image.revision": "310a44c70c20f7cbfc601d19e19858380a61c20a",
+        "org.opencontainers.image.source": "https://github.com/kiana0512/gpu_control.git",
+        "org.opencontainers.image.title": "GPU Control Scheduler",
+        "org.opencontainers.image.version": "1.5.6"
+      },
+      "reference": "gpu-control-scheduler:1.5.6",
+      "registry_manifest_digest": "PENDING_REGISTRY_PUSH",
+      "repo_digests": [
+        "gpu-control-scheduler@sha256:c2c420e6fa8fd2d8d84852e5b509f5248cf6e1e8b1239c6f8053eee5e3a6845b"
+      ],
+      "runtime_version_env": {
+        "GPU_CONTROL_BUILD_REVISION": "310a44c70c20f7cbfc601d19e19858380a61c20a",
+        "GPU_CONTROL_BUILD_VERSION": "1.5.6"
+      }
+    },
+    "web": {
+      "docker_archive_config_digest": "sha256:a0cee3167c7e620c02ebaa7d30c02fd9b67928bcbac3b9f8eccf7e672edfc442",
+      "docker_oci_config_match": true,
+      "local_image_id": "sha256:54005b4091b37de0805f2561d3b53a3e470e2b1ed3a795ec6bd7b0e98b0ebc14",
+      "local_image_id_semantics": "ENGINE_LOCAL_CONTENT_ID_NOT_ASSUMED_CONFIG_DIGEST",
+      "oci_config_digest": "sha256:a0cee3167c7e620c02ebaa7d30c02fd9b67928bcbac3b9f8eccf7e672edfc442",
+      "oci_image_manifest_digest": "sha256:54005b4091b37de0805f2561d3b53a3e470e2b1ed3a795ec6bd7b0e98b0ebc14",
+      "oci_labels": {
+        "org.opencontainers.image.revision": "310a44c70c20f7cbfc601d19e19858380a61c20a",
+        "org.opencontainers.image.source": "https://github.com/kiana0512/gpu_control.git",
+        "org.opencontainers.image.title": "GPU Control Web",
+        "org.opencontainers.image.version": "1.5.6"
+      },
+      "reference": "gpu-control-web:1.5.6",
+      "registry_manifest_digest": "PENDING_REGISTRY_PUSH",
+      "repo_digests": [
+        "gpu-control-web@sha256:54005b4091b37de0805f2561d3b53a3e470e2b1ed3a795ec6bd7b0e98b0ebc14"
+      ],
+      "runtime_version_env": {}
+    }
+  },
+  "offline_oci_exports": {
+    "api": {
+      "attestations": {
+        "provenance": {
+          "predicate_type": "https://slsa.dev/provenance/v1",
+          "sha256": "dad809e46fdb31ee4f54029a99a64496157bcc7356175b65f57e5d041d093d32",
+          "subject_digest": "sha256:26f622257facfbc74199c6d266b2a02e31b28dad6910596f5c4bd8fecf458cf4"
+        }
+      },
+      "build_metadata_sha256": "1b690a7a1c4da51565d0c352060d372e1aeebee9b8cecbf5f8e96dec47daaa16",
+      "docker_archive_config_digest": "sha256:600ba0cc2bcf05acae0c167fdb931c7a3c3eeca4878078b953fb61d21f97eca2",
+      "docker_export_sha256": "b376a8f479dcbd8d0620263871b5d262fe29eb9d7db6b522e703ee7df1d59615",
+      "docker_oci_config_match": true,
+      "oci_config_digest": "sha256:600ba0cc2bcf05acae0c167fdb931c7a3c3eeca4878078b953fb61d21f97eca2",
+      "oci_export_sha256": "3355a96a6e4e1713e3d8dd884412d76c6472c82386057f272745348fd1dca2d3",
+      "oci_image_manifest_digest": "sha256:26f622257facfbc74199c6d266b2a02e31b28dad6910596f5c4bd8fecf458cf4",
+      "offline_oci_digest_is_registry_digest": false,
+      "offline_oci_index_digest": "sha256:1e5c713bf3a3fee32c54ecbfddc0377dc57964fba6726d647d5eb3212a11849f",
+      "solve_strategy": "SPLIT_OCI_ATTESTED_AND_DOCKER_SHARED_CACHE"
+    },
+    "asset-api": {
+      "attestations": {
+        "provenance": {
+          "predicate_type": "https://slsa.dev/provenance/v1",
+          "sha256": "44b89fdcc3529979113c6b2a71d53a005a1d6040778079b4f7526493f0a7d259",
+          "subject_digest": "sha256:f83bed46d7540de4cf7d08e4cff8d7675dd7dd4675bf13d301226f5f5c4cb01f"
+        }
+      },
+      "build_metadata_sha256": "dccfc7b7dba24d328ef6685df17071436c0a6cd44476df1dd944758b4407d305",
+      "docker_archive_config_digest": "sha256:1f2acc8b72a92262392ba0fb2513b1cfa088159d359292fa2ec7d8c97b2f6e76",
+      "docker_export_sha256": "dc01dbb6084c34a7d60bca4aeac0c5ce08d1c9a6a58478d9d26bd0d4f05ffef7",
+      "docker_oci_config_match": true,
+      "oci_config_digest": "sha256:1f2acc8b72a92262392ba0fb2513b1cfa088159d359292fa2ec7d8c97b2f6e76",
+      "oci_export_sha256": "8bdc2c2f7a40aff29ab110236136facea62494352eebe90791a133ed7ba778e2",
+      "oci_image_manifest_digest": "sha256:f83bed46d7540de4cf7d08e4cff8d7675dd7dd4675bf13d301226f5f5c4cb01f",
+      "offline_oci_digest_is_registry_digest": false,
+      "offline_oci_index_digest": "sha256:336a5a056aa4fc0b697dde39258b622e5d46242bb7cc75882f2132ccdc5a908f",
+      "solve_strategy": "SPLIT_OCI_ATTESTED_AND_DOCKER_SHARED_CACHE"
+    },
+    "scheduler": {
+      "attestations": {
+        "provenance": {
+          "predicate_type": "https://slsa.dev/provenance/v1",
+          "sha256": "68c99803004577bff9cb6da983aad221018e74f1df4a59a1e5edb4d0b97f2fe9",
+          "subject_digest": "sha256:c2c420e6fa8fd2d8d84852e5b509f5248cf6e1e8b1239c6f8053eee5e3a6845b"
+        }
+      },
+      "build_metadata_sha256": "4041bc8d45018bd4342c4872cb8a43983cb58d0688f34a4a013a928d62de44dd",
+      "docker_archive_config_digest": "sha256:9e03ffb538cac156434eca16de3be31a9ffd0164bb352e04f0d27d870681185d",
+      "docker_export_sha256": "e827b7443c9732bb4df5dbe0ae99f7a8f5dd2197dae919a474aaaaf2eca46fc5",
+      "docker_oci_config_match": true,
+      "oci_config_digest": "sha256:9e03ffb538cac156434eca16de3be31a9ffd0164bb352e04f0d27d870681185d",
+      "oci_export_sha256": "e0da3c01005fe0c14a9cc9a8dbe09d33a0f693bfaf067b3d1f98a4b17ce70534",
+      "oci_image_manifest_digest": "sha256:c2c420e6fa8fd2d8d84852e5b509f5248cf6e1e8b1239c6f8053eee5e3a6845b",
+      "offline_oci_digest_is_registry_digest": false,
+      "offline_oci_index_digest": "sha256:9419bbf874ffe5611be9520234d9600950bfc6b50e62ca2b53c441862d7ac5cc",
+      "solve_strategy": "SPLIT_OCI_ATTESTED_AND_DOCKER_SHARED_CACHE"
+    },
+    "web": {
+      "attestations": {
+        "provenance": {
+          "predicate_type": "https://slsa.dev/provenance/v1",
+          "sha256": "84c24aabc83a2b321816213751781a2e3500fbdd9deb2a7edec1bc61c44f58c4",
+          "subject_digest": "sha256:54005b4091b37de0805f2561d3b53a3e470e2b1ed3a795ec6bd7b0e98b0ebc14"
+        }
+      },
+      "build_metadata_sha256": "da6c5db83e5b054d01cd66166b40e75dec86ed54ea40e29503d056167bfa8f63",
+      "docker_archive_config_digest": "sha256:a0cee3167c7e620c02ebaa7d30c02fd9b67928bcbac3b9f8eccf7e672edfc442",
+      "docker_export_sha256": "391bfb087fb03229aa78febcd67af0da520e7a39b859fc874fcd166f783fe54c",
+      "docker_oci_config_match": true,
+      "oci_config_digest": "sha256:a0cee3167c7e620c02ebaa7d30c02fd9b67928bcbac3b9f8eccf7e672edfc442",
+      "oci_export_sha256": "0b1d9a80e017f26c75dc458a6d388fff88cea224d8004c06c884417d2987ed62",
+      "oci_image_manifest_digest": "sha256:54005b4091b37de0805f2561d3b53a3e470e2b1ed3a795ec6bd7b0e98b0ebc14",
+      "offline_oci_digest_is_registry_digest": false,
+      "offline_oci_index_digest": "sha256:ed70ea30495051dfc60107951a0c8e1bfd43e68bbbe9c867e56eae6412bd62cc",
+      "solve_strategy": "SPLIT_OCI_ATTESTED_AND_DOCKER_SHARED_CACHE"
+    }
+  },
+  "production_accepted": false,
+  "release_status": "CANDIDATE_ARCHIVE_ONLY",
+  "revision": "310a44c70c20f7cbfc601d19e19858380a61c20a",
+  "schema_version": "gpu-control-release-candidate.v2",
+  "source": {
+    "remote_ref": "origin/main",
+    "remote_sha": "310a44c70c20f7cbfc601d19e19858380a61c20a",
+    "repository": "https://github.com/kiana0512/gpu_control.git",
+    "versions": {
+      "python": "1.5.6",
+      "web": "1.5.6",
+      "web_lock": "1.5.6"
+    }
+  },
+  "version": "1.5.6"
+}

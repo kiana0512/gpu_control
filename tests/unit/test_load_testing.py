@@ -396,6 +396,11 @@ def test_locust_uses_status_scoped_recovery_and_sync_e2e_route_name() -> None:
         for node in module.body
         if isinstance(node, ast.FunctionDef) and node.name == "active_gpu_admin_jobs"
     )
+    status_sender = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "admin_status_query_sender"
+    )
     discovery = next(
         node
         for node in module.body
@@ -408,9 +413,12 @@ def test_locust_uses_status_scoped_recovery_and_sync_e2e_route_name() -> None:
     )
 
     active_query_source = ast.get_source_segment(source, active_query) or ""
+    status_sender_source = ast.get_source_segment(source, status_sender) or ""
     discovery_source = ast.get_source_segment(source, discovery) or ""
     roughness_source = ast.get_source_segment(source, roughness) or ""
-    assert "client_kind={client_kind}&status={status}&limit=500" in active_query_source
+    assert "client_kind={client_kind}&status={status}&limit=500" in status_sender_source
+    assert "execute_bounded_teardown_cancel" in active_query_source
+    assert "ADMIN_STATUS_QUERY_THROTTLE_SECONDS" in active_query_source
     assert 'client_kind="test"' in discovery_source
     assert "passes=2" in discovery_source
     assert 'operation="sync-e2e"' in roughness_source
@@ -450,9 +458,7 @@ def test_wrapper_forces_safe_locust_stop_timeout(tmp_path: Path) -> None:
     )
     command = locust_command(tmp_path / "locust", runtime.target, result_dir)
 
-    assert child_environment["LOCUST_STOP_TIMEOUT"] == str(
-        SAFE_LOCUST_STOP_TIMEOUT_SECONDS
-    )
+    assert child_environment["LOCUST_STOP_TIMEOUT"] == str(SAFE_LOCUST_STOP_TIMEOUT_SECONDS)
     assert child_environment["PRESERVE_ME"] == "yes"
     assert command.count("--stop-timeout") == 1
     stop_timeout_index = command.index("--stop-timeout")
@@ -1064,11 +1070,7 @@ def test_production_backup_rejects_files_finalized_after_window(tmp_path: Path) 
     payload.write_text("changed after the approved window opened\n", encoding="utf-8")
     sums = backup / "SHA256SUMS"
     payload_paths = sorted(
-        (
-            path
-            for path in backup.iterdir()
-            if path.name not in {"SHA256SUMS", "BACKUP_COMPLETE"}
-        ),
+        (path for path in backup.iterdir() if path.name not in {"SHA256SUMS", "BACKUP_COMPLETE"}),
         key=lambda path: path.name,
     )
     sums.write_text(
