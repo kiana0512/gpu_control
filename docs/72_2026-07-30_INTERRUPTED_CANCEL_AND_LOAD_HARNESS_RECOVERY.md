@@ -1,7 +1,7 @@
 # ComfyUI 中断终态与压测止损恢复
 
 日期：2026-07-30  
-状态：`CODE_AND_TEST_ONLY / NOT_DEPLOYED`
+状态：`DEPLOYED_NOT_ACCEPTED`
 
 ## 现场结论
 
@@ -21,6 +21,21 @@
 Asset 任务。重启现有 Scheduler 后，父批次全部收敛为 `CANCELLED`、lease 全部释放、三节点
 `current_jobs=0`。旧 1.5.4 将内部子任务记录为 `FAILED/COMFY_EXECUTION_ERROR`；当前源码的
 “取消意图优先”规则会把相同竞态收敛为 `CANCELLED`。
+
+## 部署身份与现状
+
+本修复已按受控窗口上线，当前属于“已部署、未验收”：
+
+- 应用源码 revision：`7656aa68ebde9c95f5a41c52db3f066cae00e249`
+- 发布归档 commit：`40d5d1c911953adedf4016073e240152f028ddd6`
+- API 镜像：`sha256:762dc15ebc72ba8825906a0716e781f9a8d9ec29f0e81793b820489faba3ec43`
+- Scheduler 镜像：`sha256:6abbaa1ed6a9238109dfa2d6f6fb3804804f73366d5944bd3562331511cf206d`
+- Asset API 镜像：`sha256:52c8c96e79074b086884afd4b72a10c4fe6a79479f0a6552721a042fdd96aec6`
+- Web 镜像：`sha256:80f8651621d2264ce00500180a19fbf6ceaad9887ef4adc44983b67a4341f0bf`
+- 数据库 migration：`20260730_0011`
+- 上线后网关观察窗口：`429=0`、`5xx=0`
+- GPU 节点：`3/3 ACTIVE/ONLINE`
+- 六 API r5 阶梯压测：`进行中`；本文不声明尚未完成的吞吐、延迟或稳定性结果。
 
 ## 修复合同
 
@@ -48,5 +63,6 @@ Asset 任务。重启现有 Scheduler 后，父批次全部收敛为 `CANCELLED`
   `--stop-timeout 30`。
 
 本文件不授权修改外部 ImageClip/ModelViewCreator workflow、模型、prompt、图结构或输出节点。
-正式部署必须使用同一个已提交并推送的 source commit 构建 API、Scheduler、Asset API 和 Web，
-通过迁移、备份、健康检查和生产优先级门禁后再运行下一轮压力测试。
+四个服务已使用上述同一 source revision 构建并部署，数据库迁移、备份、健康检查和生产
+优先级门禁已执行。但 r5 压测、故障注入、持续观察与联合签收仍未完成，因此状态必须保持
+`DEPLOYED_NOT_ACCEPTED`，不得标记为 `FROZEN` 或 `PRODUCTION_ACCEPTED`。

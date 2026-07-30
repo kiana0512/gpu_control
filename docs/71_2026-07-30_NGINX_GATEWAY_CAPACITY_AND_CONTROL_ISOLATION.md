@@ -1,7 +1,7 @@
-# Nginx 网关容量与控制流隔离（源码候选，未部署）
+# Nginx 网关容量与控制流隔离（已部署，未验收）
 
 日期：2026-07-30  
-状态：`CODE_AND_TEST_ONLY / NOT_DEPLOYED`
+状态：`DEPLOYED_NOT_ACCEPTED`
 
 ## 背景
 
@@ -9,7 +9,23 @@ r4 的 25 VU 运行证明旧网关的单来源 IP `10 r/s + burst 20 + 20 active
 requests` 会先于应用层限流返回 429。业务请求、节点心跳和 capacity 查询还共用同一个
 request/connection budget，因此同一出口 IP 的业务流量可以让控制流一起被拒绝。
 
-本候选只修改仓库中的 Nginx 配置与验证测试，没有 reload、重启、部署或生产流量操作。
+该配置已按受控窗口部署：先备份、确认无活动 GPU/Asset 任务并排空三节点，
+再完成候选 `nginx -t`、热 reload 和上线后 `nginx -t`。上线后观察窗口内
+网关 `429=0`、`5xx=0`，三个 GPU 节点均已恢复 `ACTIVE/ONLINE`。这些是部署
+证据，不代表联合验收已完成。
+
+## 部署身份与现状
+
+- 应用源码 revision：`7656aa68ebde9c95f5a41c52db3f066cae00e249`
+- 发布归档 commit：`40d5d1c911953adedf4016073e240152f028ddd6`
+- API 镜像：`sha256:762dc15ebc72ba8825906a0716e781f9a8d9ec29f0e81793b820489faba3ec43`
+- Scheduler 镜像：`sha256:6abbaa1ed6a9238109dfa2d6f6fb3804804f73366d5944bd3562331511cf206d`
+- Asset API 镜像：`sha256:52c8c96e79074b086884afd4b72a10c4fe6a79479f0a6552721a042fdd96aec6`
+- Web 镜像：`sha256:80f8651621d2264ce00500180a19fbf6ceaad9887ef4adc44983b67a4341f0bf`
+- 数据库 migration：`20260730_0011`
+- 上线后网关窗口：`429=0`、`5xx=0`
+- GPU 节点：`3/3 ACTIVE/ONLINE`
+- 六 API r5 阶梯压测：`进行中`；本文不预告或编造尚未生成的压测结果。
 
 ## 固定预算
 
@@ -65,8 +81,10 @@ nginx: configuration file /etc/nginx/nginx.conf test is successful
 `NGINX_CONFIG_TEST_IMAGE` 指向已经批准且已缓存的相同版本 digest。脚本只执行
 `nginx -t`；它不会 reload 或连接任何 upstream。
 
-## 后续生产门禁
+## 后续验收门禁
 
-本文件不授权部署。后续变更窗口必须先确认无活动变更冲突，再执行配置备份、候选
-`nginx -t`、受控 reload，并观察网关 429、API/Asset API 延迟、数据库连接池和三个控制
-端点连续可用性。若出现 5xx、心跳丢失或数据库饱和，按既有回滚流程恢复旧配置。
+当前仅能标记为 `DEPLOYED_NOT_ACCEPTED`。六 API r5 阶梯压测和联合验收尚未结束；在原始
+报告、故障注入、持续观察与双方回执完成前，不得标记为 `FROZEN` 或
+`PRODUCTION_ACCEPTED`。压测期间必须继续观察网关 429、API/Asset API 延迟、数据库连接池
+和三个控制端点的连续可用性。若出现持续 5xx、心跳丢失或数据库饱和，按既有回滚流程
+恢复旧配置。
