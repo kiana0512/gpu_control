@@ -43,6 +43,12 @@ OCI_MANIFEST_MEDIA_TYPES = frozenset(
         "application/vnd.docker.distribution.manifest.v2+json",
     }
 )
+OCI_INDEX_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+    }
+)
 ATTESTATION_REFERENCE_TYPE = "attestation-manifest"
 SPLIT_SIZE = 128 * 1024 * 1024
 MINIMUM_FREE_BYTES = 2 * 1024 * 1024 * 1024
@@ -547,6 +553,54 @@ def extract_offline_attestations(
         descriptors = index.get("manifests") if isinstance(index, dict) else None
         if not isinstance(descriptors, list):
             raise ReleasePackagingError("OCI index does not contain manifests")
+
+        # Current Buildx OCI exports wrap the requested single-platform image
+        # and its attestation manifest in one additional image index. Older
+        # Buildx releases emitted those descriptors directly at the root. Walk
+        # only an unambiguous single-index chain so both layouts are accepted
+        # without weakening the one-image fail-closed contract.
+        seen_indexes: set[str] = set()
+        while True:
+            nested_indexes = [
+                descriptor
+                for descriptor in descriptors
+                if isinstance(descriptor, dict)
+                and str(descriptor.get("mediaType")) in OCI_INDEX_MEDIA_TYPES
+                and dict(descriptor.get("annotations") or {}).get(
+                    "vnd.docker.reference.type"
+                )
+                != ATTESTATION_REFERENCE_TYPE
+            ]
+            direct_images = [
+                descriptor
+                for descriptor in descriptors
+                if isinstance(descriptor, dict)
+                and str(descriptor.get("mediaType")) in OCI_MANIFEST_MEDIA_TYPES
+                and dict(descriptor.get("annotations") or {}).get(
+                    "vnd.docker.reference.type"
+                )
+                != ATTESTATION_REFERENCE_TYPE
+            ]
+            if direct_images:
+                if nested_indexes:
+                    raise ReleasePackagingError(
+                        "OCI index mixes nested indexes with image manifests"
+                    )
+                break
+            if len(nested_indexes) != 1:
+                raise ReleasePackagingError(
+                    "OCI index must contain exactly one image or nested image index"
+                )
+            nested_digest = str(nested_indexes[0].get("digest") or "")
+            if nested_digest in seen_indexes:
+                raise ReleasePackagingError("OCI index contains a descriptor cycle")
+            seen_indexes.add(nested_digest)
+            nested_raw = _oci_blob(archive, nested_digest)
+            nested = json.loads(nested_raw)
+            descriptors = nested.get("manifests") if isinstance(nested, dict) else None
+            if not isinstance(descriptors, list):
+                raise ReleasePackagingError("nested OCI index does not contain manifests")
+
         image_descriptors = [
             descriptor
             for descriptor in descriptors

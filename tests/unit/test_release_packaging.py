@@ -38,7 +38,12 @@ def _add_tar_file(archive: tarfile.TarFile, name: str, raw: bytes) -> None:
     archive.addfile(member, io.BytesIO(raw))
 
 
-def _oci_fixture(path: Path, *, valid_subject: bool = True) -> tuple[str, str]:
+def _oci_fixture(
+    path: Path,
+    *,
+    valid_subject: bool = True,
+    nested_index: bool = False,
+) -> tuple[str, str]:
     config_digest, image_config = _blob({"architecture": "amd64", "rootfs": {"diff_ids": []}})
     image_digest, image_manifest = _blob(
         {
@@ -93,14 +98,30 @@ def _oci_fixture(path: Path, *, valid_subject: bool = True) -> tuple[str, str]:
             },
         ],
     }
+    root_index = index
+    extra_blobs: tuple[tuple[str, bytes], ...] = ()
+    if nested_index:
+        nested_digest, nested_raw = _blob(index)
+        root_index = {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [
+                {
+                    "mediaType": "application/vnd.oci.image.index.v1+json",
+                    "digest": nested_digest,
+                }
+            ],
+        }
+        extra_blobs = ((nested_digest, nested_raw),)
     with tarfile.open(path, "w") as archive:
-        _add_tar_file(archive, "index.json", json.dumps(index).encode())
+        _add_tar_file(archive, "index.json", json.dumps(root_index).encode())
         for digest, raw in (
             (config_digest, image_config),
             (image_digest, image_manifest),
             (attestation_digest, attestation_manifest),
             (sbom_digest, sbom),
             (provenance_digest, provenance),
+            *extra_blobs,
         ):
             _add_tar_file(archive, f"blobs/sha256/{digest[7:]}", raw)
     return image_digest, config_digest
@@ -183,6 +204,17 @@ def test_offline_attestations_are_bound_to_oci_manifest(tmp_path: Path) -> None:
         == evidence.attestations["provenance"].subject_digest
     )
     assert evidence.index_digest.startswith("sha256:")
+    assert evidence.image_manifest_digest == image_digest
+    assert evidence.config_digest == config_digest
+
+
+def test_offline_attestations_support_current_buildx_nested_index(tmp_path: Path) -> None:
+    path = tmp_path / "nested-candidate.oci.tar"
+    image_digest, config_digest = _oci_fixture(path, nested_index=True)
+
+    evidence = extract_offline_attestations(path, require_sbom=True)
+
+    assert set(evidence.attestations) == {"provenance", "sbom"}
     assert evidence.image_manifest_digest == image_digest
     assert evidence.config_digest == config_digest
 
