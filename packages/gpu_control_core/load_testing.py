@@ -151,6 +151,36 @@ class LoadTestConfigurationError(ValueError):
     """Raised when a plan, fixture manifest, or safety gate is invalid."""
 
 
+def approved_load_tls_verify(ca_file: Path | None) -> bool | str:
+    """Return requests/httpx TLS verification using only the approved CA."""
+
+    if ca_file is None:
+        return True
+    try:
+        if not ca_file.is_file():
+            raise LoadTestConfigurationError("approved load-test CA is not a file")
+        with ca_file.open("rb"):
+            pass
+    except OSError as exc:
+        raise LoadTestConfigurationError("approved load-test CA is not readable") from exc
+    return str(ca_file)
+
+
+def configure_locust_client_tls(client: Any, ca_file: Path | None) -> bool | str:
+    """Bind a Locust HttpSession to the approved CA before its first request."""
+
+    if not hasattr(client, "verify") or not hasattr(client, "trust_env"):
+        raise LoadTestConfigurationError("Locust client does not expose TLS controls")
+    verify = approved_load_tls_verify(ca_file)
+    client.verify = verify
+    # requests can otherwise let REQUESTS_CA_BUNDLE replace Session.verify.
+    # Disable environment merging so every VU stays bound to the reviewed CA.
+    client.trust_env = False
+    if getattr(client, "verify", None) != verify or getattr(client, "trust_env", True):
+        raise LoadTestConfigurationError("Locust client rejected approved TLS controls")
+    return verify
+
+
 def normalize_scheduler_capacity_v1(payload: object) -> dict[str, Any]:
     """Canonicalize only the two documented scheduler-capacity v1 aliases.
 

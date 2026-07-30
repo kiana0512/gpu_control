@@ -14,6 +14,7 @@ from packages.gpu_control_core.load_testing import (
     LoadTestConfigurationError,
     RuntimeSettings,
     build_plan,
+    configure_locust_client_tls,
     evaluate_load_lifecycle,
     identify_foreign_active_work,
     load_fixture_manifest,
@@ -274,6 +275,65 @@ def test_default_runtime_is_plan_only_and_has_no_credentials() -> None:
     assert runtime.allow_load_test is False
     assert runtime.api_keys == ()
     assert runtime.environment == "plan"
+
+
+def test_locust_client_is_bound_to_approved_ca(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOCUST_SKIP_MONKEY_PATCH", "true")
+    monkeypatch.setenv("LOCUST_SKIP_URLLIB3_PATCH", "true")
+    locust_clients = pytest.importorskip("locust.clients")
+    locust_event = pytest.importorskip("locust.event")
+    ca_file = tmp_path / "approved-ca.pem"
+    ca_file.write_text("test-ca\n", encoding="utf-8")
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", "/tmp/unapproved-ca.pem")
+    client = locust_clients.HttpSession(
+        "https://load-target.invalid",
+        locust_event.EventHook(),
+        None,
+    )
+
+    verify = configure_locust_client_tls(client, ca_file)
+
+    assert verify == str(ca_file)
+    assert client.verify == str(ca_file)
+    assert client.trust_env is False
+    settings = client.merge_environment_settings(
+        "https://load-target.invalid/health",
+        {},
+        None,
+        None,
+        None,
+    )
+    assert settings["verify"] == str(ca_file)
+
+
+def test_approved_load_ca_fails_closed_when_missing_or_unreadable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TestClient:
+        verify: bool | str = True
+        trust_env = True
+
+    client = TestClient()
+    missing_ca = tmp_path / "missing-ca.pem"
+    with pytest.raises(LoadTestConfigurationError, match="not a file"):
+        configure_locust_client_tls(client, missing_ca)
+
+    unreadable_ca = tmp_path / "unreadable-ca.pem"
+    unreadable_ca.write_text("test-ca\n", encoding="utf-8")
+    original_open = Path.open
+
+    def deny_approved_ca(path: Path, *args: object, **kwargs: object) -> object:
+        if path == unreadable_ca:
+            raise PermissionError("denied for test")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_approved_ca)
+    with pytest.raises(LoadTestConfigurationError, match="not readable"):
+        configure_locust_client_tls(client, unreadable_ca)
 
 
 def test_scheduler_capacity_v1_normalizes_new_and_legacy_aliases() -> None:

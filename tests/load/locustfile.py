@@ -35,6 +35,8 @@ from packages.gpu_control_core.load_testing import (
     LOAD_SUCCESS_STATUSES,
     LoadTestConfigurationError,
     RuntimeSettings,
+    approved_load_tls_verify,
+    configure_locust_client_tls,
     evaluate_load_lifecycle,
     file_sha256,
     identify_foreign_active_work,
@@ -436,7 +438,7 @@ def external_id(api_name: str, ordinal: int) -> str:
 
 
 def httpx_verify() -> bool | str:
-    return str(RUNTIME.ca_file) if RUNTIME.ca_file else True
+    return approved_load_tls_verify(RUNTIME.ca_file)
 
 
 def preflight_json(
@@ -946,6 +948,7 @@ class SixApiUser(HttpUser):
     wait_time = between(0.5, 2.0)
 
     def on_start(self) -> None:
+        configure_locust_client_tls(self.client, RUNTIME.ca_file)
         self.api_key_index = next(_user_counter) % len(RUNTIME.api_keys)
         self.api_key = RUNTIME.api_keys[self.api_key_index]
 
