@@ -59,7 +59,7 @@ function logout() {
       </nav>
       <div class="cluster-state">
         <i></i><span>控制平面在线</span
-        ><small>4090 主控 · Unified Scheduler 1.5.0</small>
+        ><small>4090 主控 · Unified Scheduler 1.5.4</small>
       </div>
     </aside>
     <section class="workspace">

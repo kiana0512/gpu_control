@@ -1,5 +1,5 @@
 workflow_key: imageclip-rgba
-version: 2026.07.27-721f7d6-r1
+version: 2026.07.30-691770c-r1
 template_file: template.api.json
 parameter_schema:
   type: object
@@ -46,13 +46,13 @@ required_models:
   - unet/flux-2-klein-9b-Q6_K.gguf
   - vae/flux2-vae.safetensors
 required_custom_nodes:
-  - Cherry_lizi@721f7d6
+  - Cherry_lizi@691770c
   - ComfyUI-GGUF
   - ComfyUI-Easy-Use
 min_vram_mb: 22000
 timeout_seconds: 1800
 node_labels:
-  imageclip_commit: 721f7d68635ee36d45f545ce2c82037046147442
+  imageclip_commit: 691770cd6a59fd7c51391456fe900dc57a313233
   imageclip_pipeline_sha256: 00e7104762f0a1fdf3a4c20e043bec2b9f088132452d5a5ce4302ba268edac0b
 output_nodes:
   - "25"

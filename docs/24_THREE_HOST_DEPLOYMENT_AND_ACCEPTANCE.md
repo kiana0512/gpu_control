@@ -1,15 +1,19 @@
 # 三台 GPU 主机完整部署、联调与验收手册
 
-> 本文保留通用三机验收流程和历史示例。2026-07-23 当前 ImageClip +
-> ModelViewCreator 双项目、`projects-0.2.2` 镜像和 3090 实际接入命令，必须以
-> `docs/33_3090_NODE_DEPLOYMENT_HANDOFF.md` 为准。
+> 本文保留通用三机验收流程和历史示例。当前生产基线为 GPU Control `1.5.4`、
+> ComfyUI `projects-0.2.3`、3090-A/B `ONLINE/ACTIVE`、4090
+> `ONLINE/OVERFLOW`；部署和恢复以 `docs/33_3090_NODE_DEPLOYMENT_HANDOFF.md`
+> 与 `docs/62_2026-07-30_REPRODUCIBLE_BACKUP_AND_ROLLING_UPDATE.md` 为准。
+> 下文保留的 `projects-0.2.2`、4090 `RESERVED` 和“人工切换 ACTIVE”内容是初始
+> 部署时期的事实与演练流程，均已被上述新版基线取代。Asset 生产交付采用严格 QA
+> 自动发布，不存在人工发布门。
 
 版本：1.0.0  
 目标系统：Ubuntu 24.04 LTS x86_64  
 角色：1 台 RTX 4090 控制中心，2 台 RTX 3090 主计算节点  
 执行原则：命令块上方明确写出执行主机；出现占位符时先替换，禁止原样执行。
 
-## 1. 最终运行形态
+## 1. 初始设计运行形态（历史，已被新版取代）
 
 - 4090 控制中心运行 Nginx、Web、API、asyncio scheduler、PostgreSQL、Redis、Loki、Grafana Alloy、Prometheus、Alertmanager、Grafana、exporter；4090 ComfyUI 默认不启动，数据库模式为 `RESERVED`。
 - 3090-A 和 3090-B 各运行一个 ComfyUI、Alloy、node exporter、DCGM exporter，并在宿主机用 systemd 运行受限 Node Agent。
@@ -263,7 +267,10 @@ nano configs/nodes.yaml
 /opt/gpu-control/.venv/bin/python scripts/bootstrap_nodes.py --config configs/nodes.yaml
 ```
 
-`configs/nodes.yaml` 必须满足：两个 3090 为 `PRIMARY/ACTIVE`；4090 为 `OVERFLOW/RESERVED`；每节点 `max_concurrency: 1`。4090 的 `base_url` 保持容器网络地址 `http://comfyui-4090:8188`，`agent_url` 使用 4090 的真实主机 IP。
+当前 `configs/nodes.yaml` 必须满足：两个 3090 为 `PRIMARY/ACTIVE`；4090 为
+`OVERFLOW/OVERFLOW`；每个 ComfyUI 节点 `max_concurrency: 1`。4090 的 `base_url`
+保持容器网络地址 `http://comfyui-4090:8188`，`agent_url` 使用 4090 的真实主机 IP。
+早期验收使用的 `OVERFLOW/RESERVED` 已被当前基线取代。
 
 验证数据库：
 
@@ -273,7 +280,9 @@ docker compose -f deploy/control-plane/compose.yaml exec -T postgres psql \
   -c 'select id,pool,mode,health,base_url,agent_url,max_concurrency from nodes order by id;'
 ```
 
-此时两台工作节点尚未启动，显示 `OFFLINE` 正常；4090 必须仍是 `RESERVED`。
+历史首次部署阶段，两台工作节点尚未启动时显示 `OFFLINE` 正常，4090 当时保持
+`RESERVED`。当前滚动部署不得套用该状态：无任务且验收完成后 A/B 应回到 `ACTIVE`，
+4090 应回到 `OVERFLOW`。
 
 ## 6. 分发镜像和模型
 
@@ -438,7 +447,8 @@ docker compose -f deploy/control-plane/compose.yaml exec -T postgres psql \
   -c 'select id,pool,mode,health,current_jobs,gpu_util_percent,free_vram_mb,last_heartbeat_at from nodes order by id;'
 ```
 
-验收：两个 3090 为 `ONLINE/ACTIVE/current_jobs=0`；4090 为 `RESERVED`。如果 4090 ComfyUI 没启动，health 可为 OFFLINE，但 mode 必须 RESERVED，且不能被调度。
+当前验收：两个 3090 为 `ONLINE/ACTIVE/current_jobs=0`；4090 为
+`ONLINE/OVERFLOW/current_jobs=0`。4090 只有在全部 OVERFLOW Guard 通过时才可被调度。
 
 ## 10. 日志、指标和 Grafana 验证
 
@@ -552,7 +562,7 @@ curl -kfsS "https://CONTROL/api/v1/jobs/$JOB_ID" \
 
 - 提交至少三项可运行任务。
 - 两台 3090 最多各运行一项，其余留在 PostgreSQL `QUEUED`。
-- 4090 保持 `RESERVED`，不能出现 prompt。
+- 4090 保持 `OVERFLOW`；未达到全部 OVERFLOW Guard 时不能出现 prompt。
 
 查询：
 
@@ -570,12 +580,15 @@ curl -fsS http://192.168.10.12:8188/queue | jq
 - 已运行任务可完成，但不再领取新任务。
 - `current_jobs=0` 后执行维护，再切回 `ACTIVE`。
 
-### 13.3 4090 人工 ACTIVE
+### 13.3 4090 人工 ACTIVE（历史演练，已被新版取代）
 
 - 先确认控制面资源正常、没有人工预留文件、显存充足。
 - 启动 4090 ComfyUI：`scripts/gpuctl comfy start`。
 - 管理台将 4090 切为 `ACTIVE`，提交测试任务，确认可运行。
 - 测试结束先 Drain，等待空闲，再改回 `RESERVED` 并执行 `scripts/gpuctl comfy stop`。
+
+以上是初始部署期演练记录。当前生产基线不再使用该流程，节点应恢复为
+`ONLINE/OVERFLOW`，并由 Guard 决定是否接单。
 
 ### 13.4 OVERFLOW
 
@@ -656,7 +669,7 @@ sha256sum -c /srv/gpu-control/backups/LATEST/SHA256SUMS
 | PostgreSQL 空库迁移 | Alembic head | 待填写 |
 | Redis 降级不丢任务 | 故障注入记录 | 待填写 |
 | 两台 3090 ONLINE/ACTIVE | DB/Web 截图 | 待填写 |
-| 4090 RESERVED | DB/Web/无 prompt | 待填写 |
+| 4090 ONLINE/OVERFLOW | DB/Web；Guard 未满足时无 prompt | 待填写 |
 | 单节点并发恒为 1 | DB 与 ComfyUI queue | 待填写 |
 | 真实 API 工作流首单成功 | job_id、artifact SHA | 待填写 |
 | 取消/超时释放槽位 | 状态事件和 lease | 待填写 |

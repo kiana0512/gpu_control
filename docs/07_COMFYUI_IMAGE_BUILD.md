@@ -7,11 +7,11 @@ ComfyUI、CUDA、PyTorch 和公共自定义节点；ImageClip、ModelViewCreator
 当前正式镜像：
 
 ```text
-gpu-control/comfyui:projects-0.2.2
-registry.local:5000/gpu-control/comfyui:projects-0.2.2
-Image ID: sha256:bb8c76cfb0bf18c1caff7cfe2a758a9ec1e049543180f117d75af2e94d73a325
-Image size: 8284294954 bytes
-lock SHA-256: 5b57a8cba970c41329b5d7a3af0ecf8426c6793c4cdaade4218d38ad0ee41a65
+gpu-control/comfyui:projects-0.2.3
+registry.local:5000/gpu-control/comfyui:projects-0.2.3
+Image ID: sha256:d76e54a137d7b630de4503e0f0b16fa4441b25f6a5b5e1561d7fb1615eca36ea
+Image size: 8292205258 bytes
+lock SHA-256: 5ef4ba8cc88fd24a0fc81c997420bcbbf5cbae96fb96aff1276b7c3c5d60648d
 ComfyUI commit: 700821e1364eaab0e8f21c538a2131719fec57bf
 ```
 
@@ -73,10 +73,10 @@ scripts/verify_comfy_projects.sh
 ```bash
 cd /opt/gpu-control
 scripts/build_comfyui_image.sh \
-  --tag registry.local:5000/gpu-control/comfyui:projects-0.2.2
+  --tag registry.local:5000/gpu-control/comfyui:projects-0.2.3
 
 docker image inspect \
-  registry.local:5000/gpu-control/comfyui:projects-0.2.2 \
+  registry.local:5000/gpu-control/comfyui:projects-0.2.3 \
   --format '{{.Id}} {{.Size}} {{json .Config.Labels}}'
 ```
 
@@ -132,28 +132,27 @@ ModelViewCreator 使用 Git LFS。每台机器同步后都运行 `verify_comfy_p
 ```bash
 cd /opt/gpu-control
 scripts/export_comfyui_image.sh \
-  --image registry.local:5000/gpu-control/comfyui:projects-0.2.2 \
-  --output /srv/gpu-control/images/comfyui-projects-registry-0.2.2.tar.gz
+  --image registry.local:5000/gpu-control/comfyui:projects-0.2.3 \
+  --output /srv/gpu-control/images/comfyui-projects-registry-0.2.3.tar.gz
 ```
 
 把 `.tar.gz` 和同名 `.sha256` 一起复制到 3090。目标机必须克隆三个仓库的固定
 提交，执行 ModelViewCreator 的 `git lfs pull`，再导入镜像：
 
-当前归档验收值：
+当前 `0.2.3` 归档验收值：
 
 ```text
-文件：/srv/gpu-control/images/comfyui-projects-registry-0.2.2.tar.gz
-大小：8263311384 bytes
-SHA-256：97c5e8f73fd189a29b59ac7c6a851f9278fe53bb641c118fd20baec22c027ddc
+文件：/srv/gpu-control/images/comfyui-projects-registry-0.2.3.tar.gz
+SHA-256：20aa6ffec448ad2615916db49b5411b5974f01c1a51e61081160b544d6966586
 ```
 
 ```bash
 cd /opt/gpu-control
 scripts/import_comfyui_image.sh \
-  --input /srv/gpu-control/images/comfyui-projects-registry-0.2.2.tar.gz
+  --input /srv/gpu-control/images/comfyui-projects-registry-0.2.3.tar.gz
 
 docker image inspect \
-  registry.local:5000/gpu-control/comfyui:projects-0.2.2 \
+  registry.local:5000/gpu-control/comfyui:projects-0.2.3 \
   --format '{{.Id}} {{.Size}}'
 
 scripts/verify_comfy_projects.sh
@@ -163,6 +162,19 @@ COMFY_DATA_ROOT=/srv/comfyui/runtime scripts/comfyui-server.sh start
 4090 和两台 3090 的 `docker image inspect` 必须返回相同 Image ID。Docker 镜像不是
 Git 仓库，不能 `git pull` 同步：小代码由三个 Git 仓库同步，镜像由新 tag 的归档或
 内网 Registry 同步，大模型由 LFS/rsync 同步。
+
+### 5.1 历史 0.2.2 验收值（已被 0.2.3 取代）
+
+以下值只保留用于审计和回滚，不能再作为新节点部署基线：
+
+```text
+Image ID: sha256:bb8c76cfb0bf18c1caff7cfe2a758a9ec1e049543180f117d75af2e94d73a325
+Image size: 8284294954 bytes
+lock SHA-256: 5b57a8cba970c41329b5d7a3af0ecf8426c6793c4cdaade4218d38ad0ee41a65
+archive: /srv/gpu-control/images/comfyui-projects-registry-0.2.2.tar.gz
+archive size: 8263311384 bytes
+archive SHA-256: 97c5e8f73fd189a29b59ac7c6a851f9278fe53bb641c118fd20baec22c027ddc
+```
 
 ## 6. 回滚
 

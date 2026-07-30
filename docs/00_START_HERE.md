@@ -2,6 +2,10 @@
 
 本页是仓库文档导航。今天部署时不要从 30 多份文档逐一翻找，按下面的“现场主线”执行即可；其余文档是遇到具体问题时的细节手册。
 
+当前生产基线：GPU Control `1.5.4`、ComfyUI `projects-0.2.3`；3090-A/3090-B 为
+`ONLINE/ACTIVE`，4090 为 `ONLINE/OVERFLOW`。Asset 任务通过严格 QA 后自动发布，
+不存在人工发布门；QA 未通过时必须拒绝交付。
+
 ## 1. 当前现场主线
 
 1. 根目录 `GPU_CONTROL_成品部署联调与核心逻辑手册.pdf`：产品结构、核心算法、三机命令、联调、日志、压测和故障定位的单文件版本。
@@ -20,6 +24,12 @@
 14. `docs/57_2026-07-28_3090_B_WINDOWS_WSL2_GPU_ACCEPTANCE.md`：3090-B Windows/WSL2 混合节点、真实 GPU API 验收、当前 Asset Worker 状态与后续项。
 15. `docs/58_2026-07-29_ASSET_V4_CLIENT_HANDOFF_AND_STABILITY.md`：Asset V4 当前唯一客户端合同、自动交付、Codex/RetopoFlow 健康和三机稳定性验收。
 16. `docs/59_2026-07-29_RELEASE_AUDIT_STABILITY_AND_IMAGE_RECORD.md`：本轮完整发布审计、三节点压力测试、镜像与机器可读证据。
+17. `docs/57_2026-07-29_MODELVIEW_ROUGHNESS_API.md`：ModelView 粗糙度工作流公共 API、输入输出和真实调用说明。
+18. `docs/58_2026-07-29_SUBSTANCE_BAKER_API.md`：Windows Substance Baker API、输入包、贴图类型和下载合同。
+19. `docs/59_2026-07-29_ROUGHNESS_AND_SUBSTANCE_BAKER_API_HANDOFF_V2.md`：粗糙度与烘焙当前联合交接和验收规则。
+20. `docs/60_2026-07-29_UV_AND_RETOPOLOGY_API_HANDOFF_V5.md`：UV/重拓扑当前客户端合同、自动 QA 发布与错误语义。
+21. `docs/61_2026-07-29_SUBSTANCE_BAKER_4_SLOT_RELEASE.md`：3090-B Windows Baker 四个独立槽位发布记录。
+22. `docs/62_2026-07-30_REPRODUCIBLE_BACKUP_AND_ROLLING_UPDATE.md`：当前可复现镜像、备份状态、滚动更新和回滚手册。
 
 3090-A 的已完成部署、动态心跳、Web 修复和真实任务证据见
 `docs/34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md`。
@@ -46,10 +56,12 @@
 | 动画管家 V4 | `56_GPU_CONTROL_MATTING_HANDOFF_V4.md` | 批量抠图当前接口、上传完整性、失败/取消语义和联调清单 |
 | 批处理部署记录 | `39_2026-07-24_BATCH_MATTING_DEPLOYMENT_RECORD.md` | 1.2.0 生产变更、真实三卡证据和回滚点 |
 | 1.3.2/1.3.3 压测记录 | `41_2026-07-27_GPU_CONTROL_1_3_2_STRESS_AND_PIPELINE_RECORD.md` | 最新管线修复、真实 7:3 压力和生产优先级证据 |
-| Asset V3 | `55_ASSET_UV_RETOPOLOGY_V3_API_AND_LIVE_ACCEPTANCE.md` | UV、重拓扑、多视角、进度/ETA、审核与两机真实验收 |
+| Asset V3 | `55_ASSET_UV_RETOPOLOGY_V3_API_AND_LIVE_ACCEPTANCE.md` | UV、重拓扑、多视角、进度/ETA 与两机真实验收；人工审核描述已被 V4/V5 自动 QA 合同取代 |
 | 3090-B 混合节点验收 | `57_2026-07-28_3090_B_WINDOWS_WSL2_GPU_ACCEPTANCE.md` | Windows/WSL2 网络、节点身份、GPU 真实任务、Asset Worker 与回滚 |
 | Asset V4 客户端合同 | `58_2026-07-29_ASSET_V4_CLIENT_HANDOFF_AND_STABILITY.md` | UV/重拓扑当前 API、自动交付、确定性算法、Codex/RetopoFlow 健康与稳定性验收 |
-| 1.5.1 发布审计 | `59_2026-07-29_RELEASE_AUDIT_STABILITY_AND_IMAGE_RECORD.md` | 三节点真实压力、代码审计、镜像归档与机器可读证据 |
+| 1.5.4 发布审计 | `59_2026-07-29_RELEASE_AUDIT_STABILITY_AND_IMAGE_RECORD.md`、`62_2026-07-30_REPRODUCIBLE_BACKUP_AND_ROLLING_UPDATE.md` | 三节点真实压力、代码审计、镜像归档、恢复状态与机器可读证据 |
+| 粗糙度与烘焙 | `57_2026-07-29_MODELVIEW_ROUGHNESS_API.md`、`58_2026-07-29_SUBSTANCE_BAKER_API.md`、`59_2026-07-29_ROUGHNESS_AND_SUBSTANCE_BAKER_API_HANDOFF_V2.md`、`61_2026-07-29_SUBSTANCE_BAKER_4_SLOT_RELEASE.md` | 粗糙度 GPU API、Windows Baker API、四槽并发与客户端交接 |
+| UV / 重拓扑 V5 | `60_2026-07-29_UV_AND_RETOPOLOGY_API_HANDOFF_V5.md` | 当前自动严格 QA、无人工门、产物与错误合同 |
 | 分角色安装 | `03`—`11` | 网络、准备、4090、3090、镜像、模型、工作流、首次部署 |
 | 使用手册 | `12_WEB_ADMIN_GUIDE.md`、`13_PUBLIC_API_GUIDE.md` | 管理后台和业务 API |
 | 运维 | `15`—`22` | 日志、告警、备份、升级、故障、容量和 FAQ |
@@ -60,7 +72,7 @@
 
 | 主机 | 默认职责 | GPU 状态 | 关键服务 |
 |---|---|---|---|
-| RTX 4090 主控 | 控制面、数据、监控、日志，也作为第三个受控 ComfyUI 槽位 | `ACTIVE`（池为 `OVERFLOW`） | Nginx、Web、API、Scheduler、PostgreSQL、Redis、Loki、Grafana、Alloy、Prometheus、Alertmanager、ComfyUI |
+| RTX 4090 主控 | 控制面、数据、监控、日志，也作为第三个受控 ComfyUI 槽位 | `OVERFLOW` | Nginx、Web、API、Scheduler、PostgreSQL、Redis、Loki、Grafana、Alloy、Prometheus、Alertmanager、ComfyUI |
 | RTX 3090-A | 主推理节点 | `ACTIVE` | ComfyUI、Alloy、GPU exporter、Node Agent |
 | RTX 3090-B | 主推理节点 | `ACTIVE` | ComfyUI、Alloy、GPU exporter、Node Agent |
 
@@ -94,4 +106,4 @@
 
 ## 6. 上线成功的最低标准
 
-三机 CUDA 容器通过；三机镜像 ID 和模型 SHA 一致；两台 3090 显示 `ONLINE/ACTIVE`；4090 显示 `RESERVED`；PostgreSQL/Redis/API/Nginx/Loki/Grafana/Prometheus 正常；真实 API 工作流完成 1 单、3 单、10 单；Fake ComfyUI 100 并发无丢单；管理后台能够 Drain、Reserve、Release、中断、释放模型、启停/重启和下载诊断；Grafana 可按 `job_id`、`request_id`、`node_id`、`prompt_id` 查询。
+三机 CUDA 容器通过；三机 ComfyUI `projects-0.2.3` 镜像 ID 和批准模型 SHA 一致；两台 3090 显示 `ONLINE/ACTIVE`；4090 显示 `ONLINE/OVERFLOW`；PostgreSQL/Redis/API/Nginx/Loki/Grafana/Prometheus 正常；真实 API 工作流完成 1 单、3 单、10 单；Fake ComfyUI 100 并发无丢单；管理后台能够 Drain、Reserve、Release、中断、释放模型、启停/重启和下载诊断；Grafana 可按 `job_id`、`request_id`、`node_id`、`prompt_id` 查询。

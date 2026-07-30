@@ -1,9 +1,13 @@
 # 统一调度中心 Asset V4 客户端对接与稳定性验收
 
 文档日期：2026-07-29
-控制面版本：GPU Control `1.5.1`
-Asset Worker：`li3d/blender-worker:1.2.1`
+当前适用基线：GPU Control `1.5.4`；Asset Worker `li3d/blender-worker:1.2.2`
 适用方：Li3D 资产客户端、动画管家、内部资产 Agent
+
+> 文档状态（2026-07-30）：本文保留 2026-07-29 的接口设计和真实验收记录，其中明确写有
+> `1.5.1` / `1.2.1` 的数据均为当时的历史事实，不代表当前部署版本。当前客户端合同与发布、
+> 恢复要求应同时参阅 59 号粗糙度/烘焙交接、60 号 UV/重拓扑交接、61 号 Baker 四槽发布记录
+> 以及 62 号可复现备份与滚动更新手册；发生冲突时以后述文档和当前锁定版本为准。
 
 本文替代 55 号文档中“重拓扑必须人工复核”的旧合同。当前生产规则是：服务端自动执行严格
 QA；QA 通过后直接原子交付，QA 未通过则返回结构化失败。统一调度中心只负责调度、可观测、
@@ -156,7 +160,7 @@ manifest、Agent prompt/plan/events 和候选 BLEND/FBX；客户端可只向普�
 - 三台 Codex：版本 `codex-cli 0.146.0-alpha.3.1`、`AUTHENTICATED / HEALTHY`；
 - 三台 RetopoFlow：真实 Blender operator 探针 `HEALTHY`，revision
   `ac2570c5292c1dd90190fd3641b4dbc42cf4bd63`；
-- 真实 UV：使用此前失败的 `uv.fbx`，Worker 1.2.1 并发 6/6 成功，全部 attempt=1；
+- 真实 UV：使用此前失败的 `uv.fbx`，当时的 Worker `1.2.1` 并发 6/6 成功，全部 attempt=1；
 - 真实重拓扑：同一不可变 BLEND 与 4 张真实参考图并发 3 单，3/3 `SUCCEEDED`、全部
   `attempt_count=1`，分别耗时 177 / 177 / 245 秒；4090 执行 2 单、3090-B 执行 1 单；
   每单 23 件制品，SSE 事件 20 / 21 / 24 条，制品响应体、API SHA 与响应头 SHA 全部一致。

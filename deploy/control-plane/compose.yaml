@@ -28,7 +28,7 @@ services:
   api:
     <<: *app
     build: {context: ../.., dockerfile: apps/api/Dockerfile}
-    image: gpu-control-api:${APP_IMAGE_TAG:-1.5.0}
+    image: gpu-control-api:${APP_IMAGE_TAG:-1.5.4}
     # Starlette spools large multipart uploads before the endpoint streams the
     # archive into its batch layout. Keep that temporary file on the mounted
     # job filesystem instead of the container overlay.
@@ -47,7 +47,7 @@ services:
   asset-api:
     <<: *app
     build: {context: ../.., dockerfile: apps/asset_api/Dockerfile}
-    image: unified-scheduler-asset-api:${APP_IMAGE_TAG:-1.5.0}
+    image: unified-scheduler-asset-api:${APP_IMAGE_TAG:-1.5.4}
     environment:
       TMPDIR: /srv/gpu-control/assets
       ASSET_ROOT: ${ASSET_ROOT:-/srv/gpu-control/assets}
@@ -63,7 +63,7 @@ services:
       context: ../..
       dockerfile: apps/blender_worker/Dockerfile
       args: {BLENDER_BASE_IMAGE: "${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}"}
-    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.1.0}
+    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.2.2}
     restart: unless-stopped
     environment:
       ASSET_API_URL: http://asset-api:8010
@@ -92,7 +92,7 @@ services:
   scheduler:
     <<: *app
     build: {context: ../.., dockerfile: apps/scheduler/Dockerfile}
-    image: gpu-control-scheduler:${APP_IMAGE_TAG:-1.5.0}
+    image: gpu-control-scheduler:${APP_IMAGE_TAG:-1.5.4}
     volumes:
       - ${JOB_ROOT:-/srv/gpu-control/jobs}:/srv/gpu-control/jobs
       - /run/gpu-control:/run/gpu-control:ro
@@ -102,7 +102,7 @@ services:
     healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9108/metrics',timeout=2)"], interval: 15s, timeout: 3s, retries: 5}
 
   web:
-    image: gpu-control-web:${APP_IMAGE_TAG:-1.5.0}
+    image: gpu-control-web:${APP_IMAGE_TAG:-1.5.4}
     build:
       context: ../../apps/web
       args:

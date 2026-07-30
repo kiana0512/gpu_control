@@ -5,7 +5,7 @@
 面向两台 RTX 3090 工作节点和一台 RTX 4090 控制中心的统一任务调度、运维与可观测平台；GPU
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
-当前版本：`1.5.0`。GPU 推理平面继续提供三机图片 API 与分布式序列帧调度；独立 CPU Asset 平面新增 Blender PBR UV 和 AI 重拓扑 API，支持并发 Worker、轮询与可续传 SSE 进度、动态 ETA、多视角参考、三模型四视图复核、人工发布门禁和逐产物 SHA-256 校验。两个平面使用独立队列与租约，资产任务不会占用或阻塞 GPU 推理槽。
+当前应用版本：`1.5.4`；三机 ComfyUI 固定镜像：`projects-0.2.3`。GPU 推理平面继续提供三机图片 API 与分布式序列帧调度；独立 CPU Asset 平面提供 Blender PBR UV、AI 重拓扑和 Windows Substance 烘焙 API，支持并发 Worker、轮询与可续传 SSE 进度、动态 ETA、多视角参考、严格 QA 自动发布和逐产物 SHA-256 校验。生产链路没有人工发布门；任一严格 QA 失败均拒绝发布。两个平面使用独立队列与租约，资产任务不会占用或阻塞 GPU 推理槽。
 
 ```mermaid
 flowchart LR
@@ -15,11 +15,11 @@ flowchart LR
   S["asyncio Scheduler\n单主 advisory lock"] --> P
   S --> A["3090-A / ComfyUI"]
   S --> B["3090-B / ComfyUI"]
-  S -.ACTIVE/OVERFLOW.-> G["4090 / ComfyUI"]
+  S -.OVERFLOW guards.-> G["4090 / ComfyUI"]
   A & B & G --> L["Alloy → Loki / Prometheus → Grafana"]
 ```
 
-当前生产模式为 4090、3090-A、3090-B 三节点全部 `ACTIVE`，合计 3 个执行槽位。维护期间可把 4090 切换为 `OVERFLOW`，此时才启用队列阈值、等待时长、哨兵文件、利用率、显存和允许时段门槛。每个 ComfyUI 只保留一个本系统任务。
+当前生产拓扑为 3090-A、3090-B `ONLINE/ACTIVE`，4090 `ONLINE/OVERFLOW`，合计最多 3 个受控 GPU 执行槽位。4090 仅在队列阈值、等待时长、哨兵文件、利用率、显存和允许时段等 OVERFLOW Guard 全部通过时参与推理。每个 ComfyUI 只保留一个本系统任务。
 
 ## 组件
 
@@ -92,3 +92,7 @@ make verify
 - [4090 与双项目部署实录](docs/31_2026-07-22_4090_DEPLOYMENT_RECORD.md) · [图片 API、真实任务与 Web 管理台实录](docs/32_2026-07-23_PUBLIC_IMAGE_API_AND_UI_RECORD.md) · [3090 当前接入交接](docs/33_3090_NODE_DEPLOYMENT_HANDOFF.md) · [3090-B 与三卡 10 客户验收](docs/35_2026-07-23_3090_B_AND_THREE_NODE_ACCEPTANCE.md)
 - [批量抠图 1.2.0 生产部署记录](docs/39_2026-07-24_BATCH_MATTING_DEPLOYMENT_RECORD.md)
 - [Asset V3：UV / 重拓扑 API 与真实两机验收](docs/55_ASSET_UV_RETOPOLOGY_V3_API_AND_LIVE_ACCEPTANCE.md)
+- [3090-B Windows/WSL2 GPU 验收](docs/57_2026-07-28_3090_B_WINDOWS_WSL2_GPU_ACCEPTANCE.md) · [ModelView 粗糙度 API](docs/57_2026-07-29_MODELVIEW_ROUGHNESS_API.md)
+- [Asset V4 客户端合同](docs/58_2026-07-29_ASSET_V4_CLIENT_HANDOFF_AND_STABILITY.md) · [Substance Baker API](docs/58_2026-07-29_SUBSTANCE_BAKER_API.md)
+- [发布审计与稳定性记录](docs/59_2026-07-29_RELEASE_AUDIT_STABILITY_AND_IMAGE_RECORD.md) · [粗糙度与烘焙 V2 交接](docs/59_2026-07-29_ROUGHNESS_AND_SUBSTANCE_BAKER_API_HANDOFF_V2.md)
+- [UV / 重拓扑 V5 交接](docs/60_2026-07-29_UV_AND_RETOPOLOGY_API_HANDOFF_V5.md) · [Baker 四槽发布](docs/61_2026-07-29_SUBSTANCE_BAKER_4_SLOT_RELEASE.md) · [可复现备份与滚动更新](docs/62_2026-07-30_REPRODUCIBLE_BACKUP_AND_ROLLING_UPDATE.md)

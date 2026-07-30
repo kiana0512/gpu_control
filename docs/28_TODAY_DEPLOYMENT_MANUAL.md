@@ -1,5 +1,11 @@
 # GPU Control 三机当天部署与联调手册
 
+> **版本取代提示（2026-07-30）：**本文记录的 `projects-0.2.2` 是历史部署基线，已经被
+> `registry.local:5000/gpu-control/comfyui:projects-0.2.3` 取代。新部署、滚动更新和恢复必须使用
+> `projects-0.2.3`，并以 `docs/33_3090_NODE_DEPLOYMENT_HANDOFF.md`、
+> `configs/versions.lock.env` 和 `docs/62_2026-07-30_REPRODUCIBLE_BACKUP_AND_ROLLING_UPDATE.md`
+> 的当前锁定值为准。下文保留 0.2.2 命令仅用于历史追溯，不得直接复制到当前生产环境。
+
 版本：1.1.0（2026-07-22）  
 适用：Ubuntu 24.04 LTS、RTX 4090 主控一台、RTX 3090 工作机两台  
 目标：从三台可 SSH 的 Ubuntu 主机开始，当天完成统一 ComfyUI 镜像、控制面、两台主计算节点、管理后台、日志监控和首个真实任务联调。

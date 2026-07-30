@@ -1,6 +1,8 @@
 # 2026-07-23 RTX 3090 节点部署交接
 
-这是当前将 4090 已验证环境接入 3090-A/3090-B 的唯一最新操作页。旧文档中的
+这是当前将 4090 已验证环境接入 3090-A/3090-B 的操作页。当前恢复状态、滚动更新和
+镜像归档验收还必须同时遵循
+`docs/62_2026-07-30_REPRODUCIBLE_BACKUP_AND_ROLLING_UPDATE.md`。旧文档中的
 `imageclip-0.1.0`、`comfyui-0.1.0` 和单目录 `/srv/comfyui/models` 命令只属于历史
 记录，不用于本次部署。
 
@@ -8,8 +10,10 @@
 
 | 内容 | 当前值 |
 |---|---|
+| GPU Control 应用 | `1.5.4` |
 | GPU Control 主控 | `10.3.34.11` |
-| ComfyUI 镜像 | `registry.local:5000/gpu-control/comfyui:projects-0.2.2` |
+| ComfyUI 镜像 | `registry.local:5000/gpu-control/comfyui:projects-0.2.3` |
+| GPU 拓扑 | 3090-A/B `ONLINE/ACTIVE`；4090 `ONLINE/OVERFLOW` |
 | ComfyUI commit | `700821e1364eaab0e8f21c538a2131719fec57bf` |
 | ImageClip commit | `bb243808a6bd43055ad92c1071b2ea949b1d9ea1` |
 | ModelViewCreator commit | `b22bb377d200d10ae1af565494674fdfb53580dc` |
@@ -99,7 +103,7 @@ git -C /opt/modelviewcreator lfs status
 从 4090 复制镜像包：
 
 ```bash
-scp /srv/gpu-control/images/comfyui-projects-registry-0.2.2.tar.gz* \
+scp /srv/gpu-control/images/comfyui-projects-registry-0.2.3.tar.gz* \
   "$WORKER_USER@$WORKER_IP:/srv/gpu-control/images/"
 ```
 
@@ -107,10 +111,10 @@ scp /srv/gpu-control/images/comfyui-projects-registry-0.2.2.tar.gz* \
 
 ```bash
 cd /opt/gpu-control
-sha256sum -c /srv/gpu-control/images/comfyui-projects-registry-0.2.2.tar.gz.sha256
+sha256sum -c /srv/gpu-control/images/comfyui-projects-registry-0.2.3.tar.gz.sha256
 scripts/import_comfyui_image.sh \
-  --input /srv/gpu-control/images/comfyui-projects-registry-0.2.2.tar.gz
-sudo docker image inspect registry.local:5000/gpu-control/comfyui:projects-0.2.2
+  --input /srv/gpu-control/images/comfyui-projects-registry-0.2.3.tar.gz
+sudo docker image inspect registry.local:5000/gpu-control/comfyui:projects-0.2.3
 ```
 
 ## 7. 同步两个项目的模型
@@ -129,7 +133,21 @@ scripts/sync_models.sh --host "$WORKER_IP" --user "$WORKER_USER"
 
 ## 8. 当前镜像验收值
 
-完成 `projects-0.2.2` 构建与离线导出后，以这里记录的四项为准：
+当前部署必须以 `projects-0.2.3` 的以下值为准：
+
+```text
+Image ID: sha256:d76e54a137d7b630de4503e0f0b16fa4441b25f6a5b5e1561d7fb1615eca36ea
+Image size: 8292205258 bytes
+lock SHA-256: 5ef4ba8cc88fd24a0fc81c997420bcbbf5cbae96fb96aff1276b7c3c5d60648d
+archive: /srv/gpu-control/images/comfyui-projects-registry-0.2.3.tar.gz
+archive SHA-256: 20aa6ffec448ad2615916db49b5411b5974f01c1a51e61081160b544d6966586
+```
+
+三台节点导入后必须逐项相同。该镜像的三节点一致性和恢复证据见 62 号手册。
+
+### 8.1 历史 0.2.2 验收值（已被 0.2.3 取代）
+
+以下现场值保留用于审计和回滚，不能用于新节点上线：
 
 ```text
 Image ID: sha256:bb8c76cfb0bf18c1caff7cfe2a758a9ec1e049543180f117d75af2e94d73a325
@@ -140,7 +158,7 @@ archive size: 8263311384 bytes
 archive SHA-256: 97c5e8f73fd189a29b59ac7c6a851f9278fe53bb641c118fd20baec22c027ddc
 ```
 
-3090 导入后必须逐项相同。该镜像已在 RTX 4090 上真实启动，`pip check` 通过；
+该历史镜像曾在 RTX 4090 上真实启动，`pip check` 通过；
 ImageClip 23 种 API 节点、ModelViewCreator 18 种 API 节点的缺失数量均为 0。
 
 ## 9. 节点配置与启动
@@ -209,6 +227,9 @@ B 已完成部署并验收：`10.3.34.14`、`lilithgames3`、`enp69s0`、MAC
 `ONLINE / ACTIVE`。A/B 均使用各自 HMAC 密钥，未复制另一台的 `.env`。B 的固定镜像、
 9 个模型、两个 Git HEAD、四个远端端口、Prometheus 目标、真实冷/热任务和三卡 10 客户
 验收证据见 `docs/35_2026-07-23_3090_B_AND_THREE_NODE_ACCEPTANCE.md`。
+
+当前运行拓扑已升级为 A/B `ONLINE/ACTIVE`、4090 `ONLINE/OVERFLOW`。早期文档中
+4090 `RESERVED` 或三节点全部 `ACTIVE` 的描述均为当时部署事实，已被当前拓扑取代。
 
 两台节点均已安装开机 NVIDIA persistence systemd 服务；Node Agent 提供 HMAC 保护的实时
 GPU 利用率/显存接口，Scheduler 每 5 秒写回数据库。工作流相同时复用热缓存，切换工作流

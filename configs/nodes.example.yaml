@@ -1,4 +1,4 @@
 nodes:
   - {id: worker-3090-a, display_name: 3090-A, host: 192.168.10.11, pool: PRIMARY, mode: ACTIVE, gpu: RTX3090, max_concurrency: 1}
   - {id: worker-3090-b, display_name: 3090-B, host: 192.168.10.12, pool: PRIMARY, mode: ACTIVE, gpu: RTX3090, max_concurrency: 1}
-  - {id: control-4090, display_name: 4090 控制中心, host: 192.168.10.10, base_url: "http://comfyui-4090:8188", agent_url: "http://192.168.10.10:9201", pool: OVERFLOW, mode: RESERVED, gpu: RTX4090, max_concurrency: 1}
+  - {id: control-4090, display_name: 4090 控制中心, host: 192.168.10.10, base_url: "http://comfyui-4090:8188", agent_url: "http://192.168.10.10:9201", pool: OVERFLOW, mode: OVERFLOW, gpu: RTX4090, max_concurrency: 1}

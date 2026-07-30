@@ -1,6 +1,6 @@
 # ImageClip RGBA API
 
-- 业务仓库提交：`/opt/imageclip` `721f7d68635ee36d45f545ce2c82037046147442`
+- 业务仓库提交：`/opt/imageclip` `691770cd6a59fd7c51391456fe900dc57a313233`
 - 管线文件哈希：`00e7104762f0a1fdf3a4c20e043bec2b9f088132452d5a5ce4302ba268edac0b`
 - 用户输入：multipart 字段 `input_image`
 - 参数注入：`image_filename -> 28.inputs.image` (`LoadImage #28`)
@@ -19,3 +19,7 @@ API 模板只保留 `SaveImage #25` 的祖先子图，并拒绝出现第二个�
 
 调度器还会在领取任务时逐项比较工作流声明的 Git 提交和管线内容哈希与节点最近一次
 签名心跳；任一值缺失或不一致，该节点都不能领取此版本的抠图任务。
+
+`2026.07.30-691770c-r1` 仅更新 GPU Control 的不可变兼容标签。三台节点与
+ImageClip 远端 `main` 均为 `691770c…`，API 管线内容哈希仍为
+`00e7104762f0…`，因此没有修改业务工作流、模型、提示词、节点参数或输出语义。

@@ -595,7 +595,7 @@ async def test_admin_asset_processing_reports_real_workers_jobs_and_artifacts(
         response = await client.get("/admin/asset-processing", headers=auth)
         assert response.status_code == 200, response.text
         payload = response.json()
-        assert payload["schema_version"] == "asset-admin.v3"
+        assert payload["schema_version"] == "asset-admin.v4"
         assert payload["summary"]["online_workers"] == 1
         assert payload["summary"]["total_slots"] == 4
         assert payload["summary"]["used_slots"] == 1

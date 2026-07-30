@@ -167,7 +167,7 @@ def control(args: argparse.Namespace) -> None:
         "    pool: PRIMARY\n    mode: ACTIVE\n    gpu: RTX3090\n    max_concurrency: 1\n"
         f"  - id: control-4090\n    display_name: 4090 控制中心\n    host: {args.control_ip}\n"
         "    base_url: http://comfyui-4090:8188\n"
-        f"    agent_url: http://{args.control_ip}:9201\n    pool: OVERFLOW\n    mode: RESERVED\n"
+        f"    agent_url: http://{args.control_ip}:9201\n    pool: OVERFLOW\n    mode: OVERFLOW\n"
         "    gpu: RTX4090\n    max_concurrency: 1\n",
         encoding="utf-8",
     )
