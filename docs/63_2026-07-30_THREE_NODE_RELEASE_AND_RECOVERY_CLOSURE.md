@@ -56,7 +56,7 @@ IP 只用于路由；身份必须以 `node_id + MAC + GPU UUID` 为准。
 | --- | --- | --- | --- | --- | --- |
 | `control-4090` | `10.3.34.11` | MAC `58:11:22:c1:66:63` | `OVERFLOW / ACTIVE` | ComfyUI `projects-0.2.3` | `li3d/blender-worker:1.2.2`，2 槽 |
 | `worker-3090-a` | `10.3.34.12` | MAC `18:c0:4d:9f:13:13` | `PRIMARY / ACTIVE` | ComfyUI `projects-0.2.3` | `li3d/blender-worker:1.2.2`，3 槽 |
-| `worker-3090-b` | Windows `10.3.34.14`；WSL SSH `:2222` | MAC `2c:f0:5d:76:7b:70` | `PRIMARY / ACTIVE` | ComfyUI `projects-0.2.3` | Linux/WSL Worker 4 槽；Windows Baker 4 槽 |
+| `worker-3090-b` | Windows `10.3.34.14`；WSL SSH `gpucontrol@10.3.34.14:2222` | MAC `2c:f0:5d:76:7b:70` | `PRIMARY / ACTIVE` | ComfyUI `projects-0.2.3` | Linux/WSL Worker 4 槽；Windows Baker 4 槽 |
 
 统一版本：
 
@@ -89,7 +89,7 @@ IP 只用于路由；身份必须以 `node_id + MAC + GPU UUID` 为准。
 - 三台 `/system_stats` 均连续 `10/10` 返回成功；
 - ComfyUI `0.28.0`、Python `3.11.13`、PyTorch `2.7.1+cu128`；
 - 三台 GPU Agent 和 Docker service active；
-- 3090-A SSH 连续 `10/10`；3090-B `10.3.34.14:2222` SSH 连续 `10/10`；
+- 3090-A SSH 连续 `10/10`；3090-B 正式账户 `gpucontrol@10.3.34.14:2222` 收尾回归连续 `5/5`；
 - 三台节点均 `ONLINE / ACTIVE / current_jobs=0`，4090 保持 OVERFLOW 而不是长期排空。
 
 ### 3.3 CPU/Windows 资产节点

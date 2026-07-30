@@ -36,11 +36,11 @@
 | --- | --- | --- | --- | --- | --- |
 | `control-4090` | `10.3.34.11` | 主控固定 MAC `58:11:22:c1:66:63` | 控制面、4090 备用/溢出算力、CPU Asset Worker | ComfyUI `projects-0.2.3` | `li3d/blender-worker:1.2.2`，并发槽位 2 |
 | `worker-3090-a` | `10.3.34.12`（以实时心跳为准） | MAC `18:c0:4d:9f:13:13` | Linux GPU/CPU Worker | ComfyUI `projects-0.2.3` | `li3d/blender-worker:1.2.2`，并发槽位 3 |
-| `worker-3090-b` | Windows `10.3.34.14`，WSL SSH `:2222` | MAC `2c:f0:5d:76:7b:70` | WSL2 GPU/CPU Worker、Windows Substance Baker | ComfyUI `projects-0.2.3` | Linux Worker 并发槽位 4；Windows Baker 四个独立槽位 |
+| `worker-3090-b` | Windows `10.3.34.14`，WSL SSH `gpucontrol@10.3.34.14:2222` | MAC `2c:f0:5d:76:7b:70` | WSL2 GPU/CPU Worker、Windows Substance Baker | ComfyUI `projects-0.2.3` | Linux Worker 并发槽位 4；Windows Baker 四个独立槽位 |
 
 3090-B 还必须同时满足以下两条链路：
 
-1. `4090 -> 10.3.34.14:2222 -> WSL2 sshd` 稳定；
+1. `4090 -> gpucontrol@10.3.34.14:2222 -> WSL2 sshd` 稳定；历史账户 `lilithgames` 不再用于该链路；
 2. `4090 -> Windows 原生 Baker Worker` 心跳与任务调用稳定。
 
 DHCP 地址变化后，主控应通过 MAC、节点注册信息和心跳重新绑定地址；不得新建一个同名“新节点”留下幽灵记录。

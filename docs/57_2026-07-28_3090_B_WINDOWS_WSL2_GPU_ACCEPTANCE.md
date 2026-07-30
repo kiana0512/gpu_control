@@ -53,16 +53,15 @@ Windows 侧已验证：
 - ComfyUI 与 Blender Worker 都使用 `restart: unless-stopped`；
 - 节点心跳持续更新，数据库显示 `ONLINE / ACTIVE / current_jobs=0`。
 
-上述连续握手是 WSL2 Keepalive/端口转发修复时的验收结果。收尾回归中，`2222` 仍可建立
-TCP/SSH 握手，但 4090 当前 `/home/lilithgames/.ssh/id_ed25519` 和 root 默认身份均被 B 返回
-`Permission denied (publickey)`。这不影响 Node Agent 心跳、ComfyUI 调度或已完成的真实 GPU
-任务，但会阻止主控直接进入 WSL2 运维。下一维护窗口应在 B 上重新授权主控公钥，随后再做
-连续登录回归：
+上述连续握手是 WSL2 Keepalive/端口转发修复时的验收结果。2026-07-30 收尾回归确认：3090-B
+WSL2 的正式运维账户是专用账户 `gpucontrol`，不是历史 Linux 安装阶段使用的
+`lilithgames`。主控部署公钥已由 `gpucontrol` 授权，正式链路连续 `5/5` 登录成功；使用历史
+账户会按预期返回 `Permission denied (publickey)`，不应将其误判为节点掉线或端口重置。
+
+正式只读登录检查：
 
 ```bash
-ssh-copy-id -i /home/lilithgames/.ssh/id_ed25519.pub \
-  -p 2222 lilithgames@10.3.34.14
-ssh -p 2222 -o BatchMode=yes lilithgames@10.3.34.14 true
+ssh -p 2222 -o BatchMode=yes gpucontrol@10.3.34.14 true
 ```
 
 ## 4. GPU 运行时一致性
