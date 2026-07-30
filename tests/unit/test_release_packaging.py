@@ -13,6 +13,7 @@ from scripts.package_control_plane_release import (
     _run,
     confirmation_token,
     default_lfs_directory,
+    docker_archive_config_digest,
     docker_build_command,
     extract_offline_attestations,
     oci_build_command,
@@ -127,6 +128,21 @@ def _oci_fixture(
     return image_digest, config_digest
 
 
+def _docker_fixture(path: Path, reference: str) -> str:
+    config_digest, config_raw = _blob(
+        {"architecture": "amd64", "config": {"Labels": {"fixture": "true"}}}
+    )
+    config_path = f"blobs/sha256/{config_digest[7:]}"
+    with tarfile.open(path, "w") as archive:
+        _add_tar_file(
+            archive,
+            "manifest.json",
+            json.dumps([{"Config": config_path, "RepoTags": [reference]}]).encode(),
+        )
+        _add_tar_file(archive, config_path, config_raw)
+    return config_digest
+
+
 def test_confirmation_token_binds_version_and_full_revision() -> None:
     assert confirmation_token("1.5.5", REVISION) == f"PACKAGE_CONTROL_PLANE_1.5.5_{REVISION}"
 
@@ -226,7 +242,7 @@ def test_offline_attestation_subject_mismatch_fails_closed(tmp_path: Path) -> No
         extract_offline_attestations(path, require_sbom=True)
 
 
-def test_docker_image_id_must_equal_oci_config_digest() -> None:
+def test_docker_archive_config_must_equal_oci_config_digest() -> None:
     digest = f"sha256:{'1' * 64}"
     validate_docker_oci_config_identity("gpu-control-api:1.5.5", digest, digest)
     with pytest.raises(ReleasePackagingError, match="does not match OCI config digest"):
@@ -235,6 +251,14 @@ def test_docker_image_id_must_equal_oci_config_digest() -> None:
             digest,
             f"sha256:{'2' * 64}",
         )
+
+
+def test_docker_archive_config_digest_is_bound_to_config_bytes(tmp_path: Path) -> None:
+    reference = "gpu-control-api:1.5.5"
+    path = tmp_path / "candidate.docker.tar"
+    expected = _docker_fixture(path, reference)
+
+    assert docker_archive_config_digest(path, reference) == expected
 
 
 def test_plan_exposes_two_safe_solves_per_component(tmp_path: Path) -> None:

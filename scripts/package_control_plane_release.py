@@ -533,6 +533,36 @@ def _oci_blob(archive: tarfile.TarFile, digest: str) -> bytes:
     return raw
 
 
+def docker_archive_config_digest(path: Path, reference: str) -> str:
+    """Return and verify the config digest embedded in one Docker archive."""
+
+    with tarfile.open(path, mode="r:*") as archive:
+        manifest = json.loads(_tar_member_bytes(archive, "manifest.json"))
+        if not isinstance(manifest, list):
+            raise ReleasePackagingError("Docker archive manifest is not a list")
+        candidates = [
+            entry
+            for entry in manifest
+            if isinstance(entry, dict)
+            and reference in [str(value) for value in entry.get("RepoTags") or []]
+        ]
+        if len(candidates) != 1:
+            raise ReleasePackagingError(
+                f"Docker archive must contain exactly one manifest for {reference}"
+            )
+        config_path = str(candidates[0].get("Config") or "")
+        config_raw = _tar_member_bytes(archive, config_path)
+        digest = _sha256_bytes(config_raw)
+        accepted_paths = {f"{digest}.json", f"blobs/sha256/{digest}"}
+        if config_path not in accepted_paths:
+            raise ReleasePackagingError(
+                f"{reference} Docker config path does not match its content digest"
+            )
+        if not isinstance(json.loads(config_raw), dict):
+            raise ReleasePackagingError(f"{reference} Docker config is not a JSON object")
+        return f"sha256:{digest}"
+
+
 def _statement_kind(predicate_type: str) -> str | None:
     lowered = predicate_type.lower()
     if "spdx" in lowered or "cyclonedx" in lowered:
@@ -729,15 +759,15 @@ def _validate_image(
 
 def validate_docker_oci_config_identity(
     reference: str,
-    local_image_id: str,
+    docker_config_digest: str,
     oci_config_digest: str,
 ) -> None:
     """Fail unless the Docker-loadable export and attested OCI export share one config."""
 
-    if local_image_id != oci_config_digest:
+    if docker_config_digest != oci_config_digest:
         raise ReleasePackagingError(
-            f"{reference} Docker image ID does not match OCI config digest: "
-            f"{local_image_id} != {oci_config_digest}"
+            f"{reference} Docker archive config does not match OCI config digest: "
+            f"{docker_config_digest} != {oci_config_digest}"
         )
 
 
@@ -802,7 +832,9 @@ def _release_readme(evidence: dict[str, Any]) -> str:
 
 All four images were built from the same clean, pushed full Git SHA. Each component uses one
 attested OCI solve followed by a Docker-loadable solve that imports the first solve's local cache.
-The loaded Docker image ID must equal the OCI manifest's config digest; a mismatch fails closed.
+The config bytes inside each Docker archive must hash to the attested OCI config digest; a mismatch
+fails closed. Docker Engine 29 with the containerd image store may expose a local manifest/content
+identity as `.Id`, so that engine-local value is recorded but is not misidentified as a config digest.
 OCI labels and the Python runtime build-version environment were checked before the combined
 `docker image save` archive was created. No Compose command, service restart, production migration,
 registry push, or Git LFS push is performed by the packager.
@@ -900,6 +932,15 @@ def execute_package(
             _run(docker_command, cwd=repository)
             if not docker_tar.is_file() or docker_tar.stat().st_size < 1:
                 raise ReleasePackagingError(f"Buildx did not create {docker_tar.name}")
+            docker_config_digest = docker_archive_config_digest(
+                docker_tar,
+                component.image_reference(version),
+            )
+            validate_docker_oci_config_identity(
+                component.image_reference(version),
+                docker_config_digest,
+                offline_oci.config_digest,
+            )
             component_evidence[component.key] = {
                 "build_metadata_sha256": _sha256_file(metadata_path),
                 "oci_export_sha256": _sha256_file(oci_tar),
@@ -907,6 +948,7 @@ def execute_package(
                 "offline_oci_index_digest": offline_oci.index_digest,
                 "oci_image_manifest_digest": offline_oci.image_manifest_digest,
                 "oci_config_digest": offline_oci.config_digest,
+                "docker_archive_config_digest": docker_config_digest,
                 "offline_oci_digest_is_registry_digest": False,
                 "solve_strategy": "SPLIT_OCI_ATTESTED_AND_DOCKER_SHARED_CACHE",
                 "docker_oci_config_match": False,
@@ -933,11 +975,6 @@ def execute_package(
             validated = _validate_image(component, reference, inspected, version, revision)
             component_details = component_evidence[component.key]
             oci_config_digest = str(component_details["oci_config_digest"])
-            validate_docker_oci_config_identity(
-                reference,
-                str(validated["local_image_id"]),
-                oci_config_digest,
-            )
             if validated["local_image_id"] in image_ids:
                 raise ReleasePackagingError(
                     "multiple components resolved to the same local image ID"
@@ -945,6 +982,12 @@ def execute_package(
             image_ids.add(validated["local_image_id"])
             validated["oci_image_manifest_digest"] = component_details["oci_image_manifest_digest"]
             validated["oci_config_digest"] = oci_config_digest
+            validated["docker_archive_config_digest"] = component_details[
+                "docker_archive_config_digest"
+            ]
+            validated["local_image_id_semantics"] = (
+                "ENGINE_LOCAL_CONTENT_ID_NOT_ASSUMED_CONFIG_DIGEST"
+            )
             validated["docker_oci_config_match"] = True
             component_details["docker_oci_config_match"] = True
             image_evidence[component.key] = validated
@@ -1116,7 +1159,7 @@ def plan(
             "validate OCI provenance and optional SBOM subjects",
             "extract the OCI image config digest",
             "load four candidate image tars without starting containers",
-            "require every Docker image ID to equal its OCI config digest",
+            "require every Docker archive config digest to equal its OCI config digest",
             "validate OCI labels and build-version metadata",
             "docker image save four images, deterministic gzip, split into 128 MiB parts",
             "write SHA256SUMS, evidence, README, and Git LFS candidate paths",

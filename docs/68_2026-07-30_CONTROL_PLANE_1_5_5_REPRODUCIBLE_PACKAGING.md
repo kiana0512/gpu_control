@@ -45,7 +45,9 @@ Docker tar。打包器因此对每个组件执行两个严格关联的 solve：
 2. **Docker-loadable solve**：显式 `--provenance=false`，导入上一步 cache，仅导出 Docker tar。
 
 脚本从 OCI image manifest 读取并校验 config blob digest；Docker tar 加载后，必须满足
-`docker image inspect .Id == OCI config digest`。这项强绑定失败即关闭，因此拆分 exporter 不会把
+`Docker archive config bytes SHA-256 == OCI config digest`。Docker Engine 29 的 containerd
+image store 可能把本地 manifest/content identity 暴露为 `.Id`，因此 `.Id` 只作为本地引擎
+身份记录，不能冒充 config digest。这项 archive/config 强绑定失败即关闭，因此拆分 exporter 不会把
 两份不同 image config 当成同一候选。OCI provenance/SBOM 的 in-toto subject 仍必须绑定 attested
 OCI image manifest digest，没有降低原证据要求。
 
@@ -140,7 +142,7 @@ artifacts/control-plane/1.5.5/release-parts/
 
 组合包由一次 `docker image save` 导出四镜像，再使用固定 gzip `mtime=0` 压缩和 128 MiB 分片。
 脚本校验 OCI labels、API/Scheduler/Asset API 的 build version/revision 环境变量、四个互异的本地
-image ID、每个 Docker image ID 与相应 OCI config digest 的一致性、gzip 可读性、整包与每片
+image ID、每个 Docker archive config digest 与相应 OCI config digest 的一致性、gzip 可读性、整包与每片
 SHA-256。证据中的 `solve_strategy`、OCI manifest/config digest、Docker tar SHA 和
 `docker_oci_config_match` 会保留这条关联链。证据文件中的 LFS OID 只是内容哈希候选；只有在后续
 独立审核的 `git add`/commit/push、`git lfs fsck` 和远端对象检查完成后才能改为已上传。
