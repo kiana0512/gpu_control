@@ -12,6 +12,14 @@ from urllib.parse import urlencode
 import httpx
 import websockets
 
+# ComfyUI reports an operator/API interrupt as ``execution_interrupted``.
+# It is a terminal websocket event just like success and execution_error; if
+# the iterator keeps waiting after this event, a durably cancelled job holds
+# its scheduler lease until the full workflow timeout expires.
+TERMINAL_EXECUTION_EVENTS = frozenset(
+    {"execution_success", "execution_error", "execution_interrupted"}
+)
+
 
 class ComfyError(RuntimeError):
     def __init__(self, code: str, message: str, details: dict[str, Any] | None = None) -> None:
@@ -303,7 +311,7 @@ class ComfyClient:
                         if data.get("prompt_id") not in {None, prompt_id}:
                             continue
                         yield payload
-                        if payload.get("type") in {"execution_success", "execution_error"}:
+                        if payload.get("type") in TERMINAL_EXECUTION_EVENTS:
                             return
             except (TimeoutError, OSError, websockets.WebSocketException) as exc:
                 history = await self.history(prompt_id)

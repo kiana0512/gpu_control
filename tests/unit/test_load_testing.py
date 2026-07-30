@@ -1,3 +1,4 @@
+import ast
 import hashlib
 import json
 import os
@@ -11,22 +12,31 @@ import yaml
 from packages.gpu_control_core.load_testing import (
     API_NAMES,
     REQUIRED_FULL_BACKUP_PAYLOADS,
+    LoadShapeStopSignal,
+    LoadStage,
     LoadTestConfigurationError,
     RuntimeSettings,
     build_plan,
     configure_locust_client_tls,
     evaluate_load_lifecycle,
+    execute_bounded_teardown_cancel,
     identify_foreign_active_work,
     load_fixture_manifest,
     load_queue_start,
     load_response_is_retryable,
     load_scenario,
     normalize_scheduler_capacity_v1,
+    select_load_shape_stage,
     summarize_records,
     summarize_telemetry,
     validate_asset_worker_roles,
     validate_production_backup,
     validate_test_client_capacities,
+)
+from scripts.run_six_api_load import (
+    SAFE_LOCUST_STOP_TIMEOUT_SECONDS,
+    locust_child_environment,
+    locust_command,
 )
 
 
@@ -334,6 +344,84 @@ def test_approved_load_ca_fails_closed_when_missing_or_unreadable(
     monkeypatch.setattr(Path, "open", deny_approved_ca)
     with pytest.raises(LoadTestConfigurationError, match="not readable"):
         configure_locust_client_tls(client, unreadable_ca)
+
+
+def test_shape_stop_request_is_idempotent_and_shape_owned() -> None:
+    stages = (LoadStage(users=10, duration_seconds=60, spawn_rate=2.0),)
+    signal = LoadShapeStopSignal()
+
+    assert signal.request("telemetry_sample_failed") is True
+    assert signal.request("foreign_work_detected") is False
+    assert signal.requested is True
+    assert signal.reason == "telemetry_sample_failed"
+    assert select_load_shape_stage(stages, 1.0, stop_requested=signal.requested) is None
+
+    signal.reset()
+    assert signal.requested is False
+    assert select_load_shape_stage(stages, 1.0, stop_requested=False) == (10, 2.0)
+    with pytest.raises(LoadTestConfigurationError, match="reason cannot be empty"):
+        signal.request("  ")
+
+
+def test_telemetry_never_quits_the_locust_runner_directly() -> None:
+    source = Path(__file__).resolve().parents[2] / "tests/load/locustfile.py"
+    module = ast.parse(source.read_text(encoding="utf-8"))
+    telemetry_loop = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "telemetry_loop"
+    )
+    direct_quits = [
+        node
+        for node in ast.walk(telemetry_loop)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "quit"
+    ]
+    assert direct_quits == []
+
+
+def test_teardown_cancel_retries_429_and_5xx_with_bounded_backoff() -> None:
+    statuses = iter((429, 503, 200))
+    sleeps: list[float] = []
+
+    status_code, attempts = execute_bounded_teardown_cancel(
+        lambda: next(statuses),
+        sleeps.append,
+    )
+
+    assert (status_code, attempts) == (200, 3)
+    assert sleeps == [0.25, 0.5]
+
+    exhausted = iter((500, 502, 599))
+    exhausted_sleeps: list[float] = []
+    status_code, attempts = execute_bounded_teardown_cancel(
+        lambda: next(exhausted),
+        exhausted_sleeps.append,
+    )
+    assert (status_code, attempts) == (599, 3)
+    assert exhausted_sleeps == [0.25, 0.5]
+
+
+def test_wrapper_forces_safe_locust_stop_timeout(tmp_path: Path) -> None:
+    runtime = RuntimeSettings.from_environment(allowed_environment(tmp_path))
+    result_dir = tmp_path / "results"
+    child_environment = locust_child_environment(
+        runtime,
+        tmp_path / "scenario.yaml",
+        tmp_path / "fixtures.yaml",
+        result_dir,
+        source={"LOCUST_STOP_TIMEOUT": "21600", "PRESERVE_ME": "yes"},
+    )
+    command = locust_command(tmp_path / "locust", runtime.target, result_dir)
+
+    assert child_environment["LOCUST_STOP_TIMEOUT"] == str(
+        SAFE_LOCUST_STOP_TIMEOUT_SECONDS
+    )
+    assert child_environment["PRESERVE_ME"] == "yes"
+    assert command.count("--stop-timeout") == 1
+    stop_timeout_index = command.index("--stop-timeout")
+    assert command[stop_timeout_index + 1] == str(SAFE_LOCUST_STOP_TIMEOUT_SECONDS)
 
 
 def test_scheduler_capacity_v1_normalizes_new_and_legacy_aliases() -> None:

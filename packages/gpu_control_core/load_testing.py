@@ -13,9 +13,10 @@ import json
 import os
 import re
 import stat
+import threading
 import zipfile
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -149,6 +150,65 @@ NONEMPTY_FULL_BACKUP_PAYLOADS = REQUIRED_FULL_BACKUP_PAYLOADS - {
 
 class LoadTestConfigurationError(ValueError):
     """Raised when a plan, fixture manifest, or safety gate is invalid."""
+
+
+class LoadShapeStopSignal:
+    """Thread-safe, idempotent request for the Locust Shape to end a run."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._reason: str | None = None
+
+    def request(self, reason: str) -> bool:
+        normalized = reason.strip()
+        if not normalized:
+            raise LoadTestConfigurationError("load Shape stop reason cannot be empty")
+        with self._lock:
+            if self._reason is not None:
+                return False
+            self._reason = normalized
+            return True
+
+    def reset(self) -> None:
+        with self._lock:
+            self._reason = None
+
+    @property
+    def requested(self) -> bool:
+        with self._lock:
+            return self._reason is not None
+
+    @property
+    def reason(self) -> str | None:
+        with self._lock:
+            return self._reason
+
+
+def execute_bounded_teardown_cancel(
+    send_status: Callable[[], int],
+    sleep: Callable[[float], None],
+    *,
+    max_attempts: int = 3,
+    initial_backoff_seconds: float = 0.25,
+    maximum_backoff_seconds: float = 1.0,
+) -> tuple[int, int]:
+    """Cancel once, retrying only 429/5xx responses with bounded backoff."""
+
+    if max_attempts < 1:
+        raise LoadTestConfigurationError("teardown cancel max_attempts must be positive")
+    if initial_backoff_seconds < 0 or maximum_backoff_seconds < 0:
+        raise LoadTestConfigurationError("teardown cancel backoff cannot be negative")
+    for attempt in range(1, max_attempts + 1):
+        status_code = send_status()
+        retryable = status_code == 429 or 500 <= status_code <= 599
+        if not retryable or attempt == max_attempts:
+            return status_code, attempt
+        delay = min(
+            maximum_backoff_seconds,
+            initial_backoff_seconds * (2 ** (attempt - 1)),
+        )
+        sleep(delay)
+    raise AssertionError("bounded teardown cancel exhausted without returning")
 
 
 def approved_load_tls_verify(ca_file: Path | None) -> bool | str:
@@ -472,6 +532,24 @@ class LoadStage:
     users: int
     duration_seconds: int
     spawn_rate: float
+
+
+def select_load_shape_stage(
+    stages: Sequence[LoadStage],
+    run_time: float,
+    *,
+    stop_requested: bool,
+) -> tuple[int, float] | None:
+    """Return the active stage, or let the Shape end after a safety request."""
+
+    if stop_requested:
+        return None
+    elapsed = 0
+    for stage in stages:
+        elapsed += stage.duration_seconds
+        if run_time < elapsed:
+            return stage.users, stage.spawn_rate
+    return None
 
 
 @dataclass(frozen=True)

@@ -1,5 +1,10 @@
+import json
+from collections.abc import AsyncIterator
+from typing import Any
+
 import httpx
 
+from packages.comfy_client import client as comfy_client_module
 from packages.comfy_client.client import ComfyClient
 from tests.fake_comfyui.app import Behavior, State, create_app
 
@@ -122,3 +127,72 @@ def test_output_collection_is_limited_to_declared_nodes() -> None:
     }
     outputs = ComfyClient.outputs(history, "prompt", {"25"})
     assert [item.filename for item in outputs] == ["final-rgba.png"]
+
+
+async def test_interrupted_execution_ends_event_stream_without_reconnect(
+    monkeypatch,
+) -> None:
+    messages = iter(
+        (
+            {
+                "type": "progress",
+                "data": {"prompt_id": "another-prompt", "value": 1, "max": 10},
+            },
+            {
+                "type": "execution_interrupted",
+                "data": {"prompt_id": "target-prompt"},
+            },
+        )
+    )
+
+    class FakeSocket(AsyncIterator[str]):
+        def __init__(self) -> None:
+            self.read_count = 0
+
+        def __aiter__(self) -> "FakeSocket":
+            return self
+
+        async def __anext__(self) -> str:
+            self.read_count += 1
+            try:
+                return json.dumps(next(messages))
+            except StopIteration as exc:
+                raise AssertionError(
+                    "the client read past execution_interrupted instead of returning"
+                ) from exc
+
+    socket = FakeSocket()
+    connect_calls: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeConnection:
+        async def __aenter__(self) -> FakeSocket:
+            return socket
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+    def fake_connect(url: str, **kwargs: Any) -> FakeConnection:
+        connect_calls.append((url, kwargs))
+        return FakeConnection()
+
+    monkeypatch.setattr(comfy_client_module.websockets, "connect", fake_connect)
+    client = ComfyClient("http://fake")
+    try:
+        events = [
+            event
+            async for event in client.events(
+                "target-prompt", "target-client", max_reconnects=3
+            )
+        ]
+    finally:
+        await client.close()
+
+    assert events == [
+        {
+            "type": "execution_interrupted",
+            "data": {"prompt_id": "target-prompt"},
+        }
+    ]
+    assert socket.read_count == 2
+    assert len(connect_calls) == 1
+    assert connect_calls[0][0] == "ws://fake/ws?clientId=target-client"

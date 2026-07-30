@@ -2134,6 +2134,7 @@ class Scheduler:
                                 elif event_type in {
                                     "execution_success",
                                     "execution_error",
+                                    "execution_interrupted",
                                     "history_recovered",
                                 }:
                                     await mark_gpu_finished(session, job)

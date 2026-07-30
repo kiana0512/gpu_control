@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from apps.scheduler.src.gpu_control_scheduler import main as scheduler_main
 from apps.scheduler.src.gpu_control_scheduler.main import (
     Scheduler,
     mark_gpu_finished,
+    persist_prompt_id,
     prepare_prompt_submission,
 )
 from packages.comfy_client import ComfyClient
@@ -840,6 +842,88 @@ async def test_executor_error_racing_with_cancel_does_not_retry_or_fail(
             assert terminal.status == JobStatus.SUCCEEDED.value
             assert terminal.error_code is None
             assert terminal.error_message is None
+        assert published == [{"event": "job.cancelled", "job_id": job_id}]
+    finally:
+        await scheduler.redis.aclose()
+        await scheduler.db.close()
+        await database.close()
+
+
+async def test_execution_interrupted_finishes_gpu_timing_and_durable_cancel(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "execution-interrupted-cancel.db"
+    database = await make_database(path)
+    await seed(database)
+    prompt_id = "interrupted-prompt"
+    async with database.session() as session:
+        async with session.begin():
+            claimed = await claim_next_job(session, "3090-a", 300)
+        assert claimed is not None
+        job_id = claimed[0].id
+        job = await session.get(Job, job_id, with_for_update=True)
+        assert job is not None
+        await prepare_prompt_submission(session, job)
+        await persist_prompt_id(session, job, prompt_id)
+        job.status = JobStatus.RUNNING.value
+        await session.commit()
+
+    class InterruptedClient:
+        def __init__(self, _: str) -> None:
+            pass
+
+        async def events(
+            self, candidate_prompt_id: str, _: str
+        ) -> AsyncIterator[dict[str, object]]:
+            assert candidate_prompt_id == prompt_id
+            async with database.session() as cancellation_session:
+                cancelling = await cancellation_session.get(
+                    Job, job_id, with_for_update=True
+                )
+                assert cancelling is not None
+                cancelling.cancel_requested = True
+                cancelling.status = JobStatus.CANCELLING.value
+                await cancellation_session.commit()
+            yield {
+                "type": "execution_interrupted",
+                "data": {"prompt_id": candidate_prompt_id},
+            }
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(scheduler_main, "ComfyClient", InterruptedClient)
+    scheduler = Scheduler(
+        Settings(
+            database_url=f"sqlite+aiosqlite:///{path.as_posix()}",
+            job_root=tmp_path / "jobs",
+        )
+    )
+    published: list[dict[str, object]] = []
+
+    async def record_publish(payload: dict[str, object]) -> None:
+        published.append(payload)
+
+    scheduler.publish = record_publish  # type: ignore[method-assign]
+    try:
+        await scheduler.execute(job_id)
+        async with scheduler.db.session() as session:
+            job = await session.get(Job, job_id)
+            attempt = await session.scalar(
+                select(JobAttempt).where(JobAttempt.job_id == job_id)
+            )
+            lease = await session.scalar(
+                select(NodeLease).where(NodeLease.job_id == job_id)
+            )
+            node = await session.get(Node, "3090-a")
+            assert job is not None and attempt is not None and lease is not None
+            assert node is not None
+            assert job.status == JobStatus.CANCELLED.value
+            assert attempt.gpu_finished_at is not None
+            assert attempt.status == JobStatus.CANCELLED.value
+            assert lease.active is False
+            assert node.current_jobs == 0
         assert published == [{"event": "job.cancelled", "job_id": job_id}]
     finally:
         await scheduler.redis.aclose()

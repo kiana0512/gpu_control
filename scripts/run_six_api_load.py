@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 from packages.gpu_control_core.load_testing import (
@@ -28,6 +29,7 @@ from packages.gpu_control_core.load_testing import (
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCENARIO = REPOSITORY_ROOT / "tests/load/scenarios/six_api_120.example.yaml"
 DEFAULT_FIXTURES = REPOSITORY_ROOT / "tests/load/fixtures/six_api.example.yaml"
+SAFE_LOCUST_STOP_TIMEOUT_SECONDS = 30
 
 
 def arguments() -> argparse.Namespace:
@@ -56,6 +58,49 @@ def write_json(path: Path, payload: dict[str, object]) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def locust_child_environment(
+    runtime: RuntimeSettings,
+    scenario_source: Path,
+    fixture_source: Path,
+    result_dir: Path,
+    source: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Build a child environment with a non-overridable safe stop timeout."""
+
+    child_environment = dict(os.environ if source is None else source)
+    child_environment.update(
+        {
+            "LOAD_TEST_SCENARIO_FILE": str(scenario_source),
+            "LOAD_TEST_FIXTURE_MANIFEST": str(fixture_source),
+            "LOAD_TEST_RESULT_DIR": str(result_dir),
+            "LOAD_TEST_TARGET": runtime.target,
+            "LOCUST_STOP_TIMEOUT": str(SAFE_LOCUST_STOP_TIMEOUT_SECONDS),
+        }
+    )
+    return child_environment
+
+
+def locust_command(locust_bin: Path, target: str, result_dir: Path) -> list[str]:
+    """Return the fixed Locust invocation used by the guarded wrapper."""
+
+    return [
+        str(locust_bin),
+        "-f",
+        str(REPOSITORY_ROOT / "tests/load/locustfile.py"),
+        "--headless",
+        "--host",
+        target,
+        "--stop-timeout",
+        str(SAFE_LOCUST_STOP_TIMEOUT_SECONDS),
+        "--csv",
+        str(result_dir / "locust"),
+        "--html",
+        str(result_dir / "locust.html"),
+        "--json-file",
+        str(result_dir / "locust.json"),
+    ]
 
 
 def main() -> int:
@@ -110,29 +155,13 @@ def main() -> int:
     shutil.copy2(scenario.source, result_dir / "configuration/scenario.yaml")
     shutil.copy2(fixtures.source, result_dir / "configuration/fixtures.yaml")
 
-    child_environment = dict(os.environ)
-    child_environment.update(
-        {
-            "LOAD_TEST_SCENARIO_FILE": str(scenario.source),
-            "LOAD_TEST_FIXTURE_MANIFEST": str(fixtures.source),
-            "LOAD_TEST_RESULT_DIR": str(result_dir),
-            "LOAD_TEST_TARGET": runtime.target,
-        }
+    child_environment = locust_child_environment(
+        runtime,
+        scenario.source,
+        fixtures.source,
+        result_dir,
     )
-    command = [
-        str(args.locust_bin),
-        "-f",
-        str(REPOSITORY_ROOT / "tests/load/locustfile.py"),
-        "--headless",
-        "--host",
-        runtime.target,
-        "--csv",
-        str(result_dir / "locust"),
-        "--html",
-        str(result_dir / "locust.html"),
-        "--json-file",
-        str(result_dir / "locust.json"),
-    ]
+    command = locust_command(args.locust_bin, runtime.target, result_dir)
     exit_code = 2
     try:
         completed = subprocess.run(  # noqa: S603 - fixed executable and argv, no shell

@@ -33,11 +33,13 @@ from packages.gpu_control_core.load_testing import (
     API_CONTRACTS,
     API_NAMES,
     LOAD_SUCCESS_STATUSES,
+    LoadShapeStopSignal,
     LoadTestConfigurationError,
     RuntimeSettings,
     approved_load_tls_verify,
     configure_locust_client_tls,
     evaluate_load_lifecycle,
+    execute_bounded_teardown_cancel,
     file_sha256,
     identify_foreign_active_work,
     load_fixture_manifest,
@@ -45,6 +47,7 @@ from packages.gpu_control_core.load_testing import (
     load_response_is_retryable,
     load_scenario,
     normalize_scheduler_capacity_v1,
+    select_load_shape_stage,
     summarize_records,
     summarize_telemetry,
     validate_asset_worker_roles,
@@ -156,12 +159,18 @@ ACTIVE_STATUSES = {
     "RETRY_WAIT",
 }
 TELEMETRY_INTERVAL_SECONDS = 5.0
+TEARDOWN_CANCEL_MAX_ATTEMPTS = 3
+TEARDOWN_CANCEL_INITIAL_BACKOFF_SECONDS = 0.25
+TEARDOWN_CANCEL_MAXIMUM_BACKOFF_SECONDS = 1.0
+TEARDOWN_CANCEL_THROTTLE_SECONDS = 0.1
+TEARDOWN_CANCEL_TIMEOUT_SECONDS = 5.0
 
 _operation_counter = itertools.count(1)
 _user_counter = itertools.count(0)
 _telemetry_greenlet: Any | None = None
 _telemetry_stop = False
 _production_watchdog_triggered = False
+_shape_stop_signal = LoadShapeStopSignal()
 _expected_gpu_node_ids: tuple[str, ...] = ()
 _expected_asset_worker_ids: tuple[str, ...] = ()
 
@@ -854,17 +863,15 @@ def telemetry_loop(environment: Any) -> None:
                 watchdog = sample.get("production_watchdog")
                 if isinstance(watchdog, dict) and watchdog.get("detected") is True:
                     _production_watchdog_triggered = True
-                    REGISTRY.event(
-                        "safety.foreign_work_detected",
-                        count=watchdog.get("count"),
-                        jobs=watchdog.get("jobs"),
-                        action="stop_spawn_and_quit",
-                    )
+                    first_request = _shape_stop_signal.request("foreign_work_detected")
                     environment.process_exit_code = 2
-                    if environment.runner is not None:
-                        # test_stop invokes teardown_session_tasks(), whose only
-                        # cancellation source is this session's registry.
-                        environment.runner.quit()
+                    if first_request:
+                        REGISTRY.event(
+                            "safety.foreign_work_detected",
+                            count=watchdog.get("count"),
+                            jobs=watchdog.get("jobs"),
+                            action="shape_stop_requested",
+                        )
                     return
             except Exception as exc:
                 error_sample = {
@@ -882,14 +889,15 @@ def telemetry_loop(environment: Any) -> None:
                         json.dumps(error_sample, ensure_ascii=False, sort_keys=True)
                         + "\n"
                     )
-                REGISTRY.event(
-                    "telemetry.sample_failed",
-                    sequence=sequence,
-                    error=type(exc).__name__,
-                )
+                first_request = _shape_stop_signal.request("telemetry_sample_failed")
                 environment.process_exit_code = 2
-                if environment.runner is not None:
-                    environment.runner.quit()
+                if first_request:
+                    REGISTRY.event(
+                        "telemetry.sample_failed",
+                        sequence=sequence,
+                        error=type(exc).__name__,
+                        action="shape_stop_requested",
+                    )
                 return
             elapsed = time.monotonic() - cycle_started
             gevent.sleep(max(0.1, TELEMETRY_INTERVAL_SECONDS - elapsed))
@@ -917,6 +925,7 @@ def stop_telemetry(**_: Any) -> None:
 def guarded_preflight(environment: Any, **_: Any) -> None:
     global _expected_asset_worker_ids, _expected_gpu_node_ids
 
+    _shape_stop_signal.reset()
     try:
         result = perform_preflight()
     except Exception as exc:
@@ -1546,24 +1555,38 @@ class SixApiUser(HttpUser):
 
 class SixApiStagesShape(LoadTestShape):
     def tick(self) -> tuple[int, float] | None:
-        run_time = self.get_run_time()
-        elapsed = 0
-        for stage in SCENARIO.stages:
-            elapsed += stage.duration_seconds
-            if run_time < elapsed:
-                return stage.users, stage.spawn_rate
-        return None
+        return select_load_shape_stage(
+            SCENARIO.stages,
+            self.get_run_time(),
+            stop_requested=_shape_stop_signal.requested,
+        )
+
+
+def teardown_cancel_sender(
+    client: httpx.Client,
+    cancel_url: str,
+    headers: Mapping[str, str],
+    attempt_counter: list[int],
+) -> Callable[[], int]:
+    def send_cancel() -> int:
+        attempt_counter[0] += 1
+        return client.post(cancel_url, headers=dict(headers)).status_code
+
+    return send_cancel
 
 
 def teardown_session_tasks() -> list[dict[str, Any]]:
     outcomes: list[dict[str, Any]] = []
+    active_records = REGISTRY.active()
+    if not active_records:
+        return outcomes
     with httpx.Client(
         base_url=RUNTIME.target,
         verify=httpx_verify(),
         follow_redirects=False,
-        timeout=30,
+        timeout=TEARDOWN_CANCEL_TIMEOUT_SECONDS,
     ) as client:
-        for record in REGISTRY.active():
+        for index, record in enumerate(active_records):
             key_index = int(record["api_key_index"])
             api_key = RUNTIME.api_keys[key_index]
             request_id = f"lt:{RUNTIME.session_id}:teardown:{record['id']}"[:64]
@@ -1573,24 +1596,43 @@ def teardown_session_tasks() -> list[dict[str, Any]]:
             }
             if record["kind"] == "batch":
                 headers["Idempotency-Key"] = f"{record['external_id']}:cancel"
+            attempt_counter = [0]
+            send_cancel = teardown_cancel_sender(
+                client,
+                str(record["cancel_url"]),
+                headers,
+                attempt_counter,
+            )
+
             try:
-                response = client.post(str(record["cancel_url"]), headers=headers)
+                status_code, attempts = execute_bounded_teardown_cancel(
+                    send_cancel,
+                    gevent.sleep,
+                    max_attempts=TEARDOWN_CANCEL_MAX_ATTEMPTS,
+                    initial_backoff_seconds=TEARDOWN_CANCEL_INITIAL_BACKOFF_SECONDS,
+                    maximum_backoff_seconds=TEARDOWN_CANCEL_MAXIMUM_BACKOFF_SECONDS,
+                )
                 outcome = {
                     "task_id": record["id"],
                     "api": record["api"],
-                    "status_code": response.status_code,
-                    "cancelled": response.status_code == 200,
+                    "status_code": status_code,
+                    "cancelled": status_code == 200,
+                    "attempts": attempts,
                 }
             except httpx.HTTPError as exc:
+                attempts = attempt_counter[0]
                 outcome = {
                     "task_id": record["id"],
                     "api": record["api"],
                     "status_code": 0,
                     "cancelled": False,
                     "error": type(exc).__name__,
+                    "attempts": attempts,
                 }
             outcomes.append(outcome)
             REGISTRY.event("teardown.cancel", **outcome)
+            if index + 1 < len(active_records):
+                gevent.sleep(TEARDOWN_CANCEL_THROTTLE_SECONDS)
     return outcomes
 
 
@@ -1767,8 +1809,12 @@ def finalize_results(environment: Any, **_: Any) -> None:
     }
     summary["production_watchdog"] = {
         "triggered": _production_watchdog_triggered,
-        "action": "stop_spawn_and_quit" if _production_watchdog_triggered else None,
+        "action": "shape_stop_requested" if _production_watchdog_triggered else None,
         "running_test_work_is_non_preemptive": True,
+    }
+    summary["shape_stop"] = {
+        "requested": _shape_stop_signal.requested,
+        "reason": _shape_stop_signal.reason,
     }
     summary["lifecycle_evaluation"] = evaluate_load_lifecycle(records, teardown)
     (RESULT_DIR / "records.json").write_text(
