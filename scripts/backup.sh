@@ -325,7 +325,10 @@ if [[ "${mode}" == "full" ]]; then
   # Host data is intentionally uncompressed: images and job artifacts are
   # commonly compressed already, and an uncompressed tar is faster to verify
   # and recover during an outage.
-  tar --sparse -C / -cf "${destination}/host-data.tar" -- "${full_rel[@]}"
+  # Expand hard links into ordinary file members.  The restore trust boundary
+  # deliberately rejects all link members, so preserving tar hard-link entries
+  # would produce a checksummed backup that cannot pass --verify-only.
+  tar --sparse --hard-dereference -C / -cf "${destination}/host-data.tar" -- "${full_rel[@]}"
 
   # This second snapshot detects jobs that appeared while the potentially long
   # filesystem archives were being created.  It is a detector, not an API

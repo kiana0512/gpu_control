@@ -253,6 +253,9 @@ for ((index = 0; index < ${#args[@]}; index++)); do
   esac
 done
 [[ -n "${output}" ]] || exec /usr/bin/tar "$@"
+if [[ "${output##*/}" == host-data.tar ]]; then
+  exec /usr/bin/tar "$@"
+fi
 if [[ "${compressed}" == true ]]; then
   exec /usr/bin/tar -czf "${output}" --files-from /dev/null
 fi
@@ -279,6 +282,10 @@ install -d -- "${data_root}/"{jobs,assets,images,runtime,comfy}
 for dir in jobs assets images runtime comfy; do
   printf 'fixture\n' > "${data_root}/${dir}/payload"
 done
+# A production job tree contains many hard-linked frame inputs.  The full
+# backup must materialize them as regular members because restore rejects link
+# members at its trust boundary.
+ln "${data_root}/jobs/payload" "${data_root}/jobs/payload-hardlink"
 
 full_output="${test_root}/full-output"
 gate_log="${test_root}/full-gates.log"

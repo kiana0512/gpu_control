@@ -58,12 +58,17 @@ GPU/Asset 活动任务；发现不属于本次精确 test tenant 清单的工作
 - `provenance.json`: `4e1ddb6cd9349d8580d7e103d3b379102ad6404bd0f602870900d8e6337d050e`
 - `SHA256SUMS`: `2e30a9f286c2dee80236bf77e85025819a5e11a55ac5fc067b0cb0d77430c221`
 
-真实序列帧抠图及所有 Asset 任务清零后，三节点通过受审计 API 短暂切换为 `DRAINING`，已创建
-`/srv/gpu-control/backups/20260730T110423Z-full` 完整备份并通过脚本内 SHA-256 校验；完成后节点已
-恢复 `ACTIVE`。首次执行同时发现 full backup 门禁仍引用旧的 `nodes.status` 字段，已改为当前模型的
-`nodes.health` 并通过 23 项 backup/restore 安全回归；两份失败候选均没有 `BACKUP_COMPLETE`，不会被
-压测门禁接受。独立 `restore.sh --verify-only` 通过后，再由 plan 校验工作流 SHA、三节点健康、test
-client、CA、结果目录及确认令牌，并按
+真实序列帧抠图及所有 Asset 任务清零后，三节点通过受审计 API 短暂切换为 `DRAINING`。首次执行发现
+full backup 门禁仍引用旧的 `nodes.status` 字段，已改为当前模型的 `nodes.health`。随后独立恢复验证又
+发现 GNU tar 会把生产任务树中的硬链接保存为 link member，而恢复信任边界只允许普通文件/目录；
+归档现使用 `--hard-dereference` 将硬链接展开，并增加真实 hardlink 回归夹具。两项修复均通过 23 项
+backup/restore 安全回归。
+
+最终可恢复基线为 `/srv/gpu-control/backups/20260730T111645Z-full`：前后零任务门禁、双轮 SHA-256 和
+独立 `restore.sh --verify-only` 均通过，三节点随后恢复 `ACTIVE`。旧的
+`20260730T110423Z-full` 完成标记已改名为 `BACKUP_INVALID_HARDLINK_MEMBERS`，两份更早失败候选也没有
+`BACKUP_COMPLETE`，因此都不会被压测门禁接受。压测 plan 仅绑定最终可恢复基线，并校验工作流 SHA、
+三节点健康、test client、CA、结果目录及确认令牌，然后按
 `1 → 10 → 25 → 50 → 100 → 120` 用户升压。
 
 ## 5. 回滚
