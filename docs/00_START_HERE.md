@@ -37,6 +37,7 @@
 26. `docs/66_2026-07-30_WEBUI_OPERATIONS_REDESIGN.md`：与动画管家对齐的任务中心、性能分析、调度说明、证据规则和安全发布边界。
 27. `docs/67_2026-07-30_SIX_API_MIXED_LOAD_TEST_RUNBOOK.md`：六 API、GPU/CPU/Windows Worker 的 100+ 用户综合压测计划、安全门禁、遥测和停止条件；默认只生成计划，用户未授权窗口前禁止执行。
 28. `docs/68_2026-07-30_CONTROL_PLANE_1_5_5_REPRODUCIBLE_PACKAGING.md`：1.5.5 四组件候选镜像的干净提交、固定基础镜像、SBOM/provenance、离线分片与 Git LFS 打包门禁；当前仅准备、未执行构建或推送。
+29. `docs/69_2026-07-30_ASSETCLAW_1_5_5_SPEED_STABILITY_PREJOINT_RECEIPT.md`：动画管家第三轮输入的最终源码候选回执；汇总速度/稳定性、WebUI、六 API 压测准备、冻结素材阻断和未执行的发布动作，作为联合测试前单一事实入口。
 
 3090-A 的已完成部署、动态心跳、Web 修复和真实任务证据见
 `docs/34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md`。
@@ -74,6 +75,7 @@
 | WebUI 运行中心重构 | `66_2026-07-30_WEBUI_OPERATIONS_REDESIGN.md` | 任务/API 分类、真实时间、性能分析、调度解释、视觉验证与 Web-only 回滚边界 |
 | 六 API 综合压测 | `67_2026-07-30_SIX_API_MIXED_LOAD_TEST_RUNBOOK.md` | 100+ 用户真实请求组合、GPU/CPU/Windows 槽位遥测、生产双重授权和零活动任务门禁；当前仅准备、未执行 |
 | 1.5.5 候选打包 | `68_2026-07-30_CONTROL_PLANE_1_5_5_REPRODUCIBLE_PACKAGING.md` | 四镜像可复现候选、固定基础镜像、SBOM/provenance、离线归档和 LFS 的 fail-closed 门禁；当前仅准备、未执行 |
+| 动画管家 1.5.5 联测前回执 | `69_2026-07-30_ASSETCLAW_1_5_5_SPEED_STABILITY_PREJOINT_RECEIPT.md` | 本轮最终源码、性能稳定修复、WebUI、素材输入阻断和发布/压测未执行边界；联合测试前按此对账 |
 | 分角色安装 | `03`—`11` | 网络、准备、4090、3090、镜像、模型、工作流、首次部署 |
 | 使用手册 | `12_WEB_ADMIN_GUIDE.md`、`13_PUBLIC_API_GUIDE.md` | 管理后台和业务 API |
 | 运维 | `15`—`22` | 日志、告警、备份、升级、故障、容量和 FAQ |

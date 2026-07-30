@@ -1,7 +1,35 @@
 # 实施状态
 
-最后更新：2026-07-28
-版本：统一调度中心 1.5.0 + 3090-B Windows/WSL2 GPU 生产验收；V4 批量抠图永久修复候选等待安全滚动发布
+最后更新：2026-07-30
+版本：生产 GPU Control 1.5.4 / DB 20260729_0010；1.5.5 速度稳定性源码候选 `59b35d319d84715489dedbd22d81bc56719f57c8`，未构建、未部署、未迁移、未联合验收
+
+## 2026-07-30 GPU Control 1.5.5 速度稳定性候选
+
+- 本轮最终源码提交：`59b35d319d84715489dedbd22d81bc56719f57c8`；最终离线测试汇总：Python 188 passed / 0 failed；Ruff、mypy（34 个源文件）、compileall、Control/Node Compose 均通过；PostgreSQL 17.5 隔离 SQL 通过；Web Vitest 8/8、mocked Playwright 20/20、lint/format/typecheck/build 通过；plan-only 0 HTTP。
+- 父批次状态/装配已用批量最新 artifact 查询替代逐帧 N+1；feeder 按系统、租户、批次和单轮预算
+  公平有界投喂，只锁定实际选择项。
+- 单任务创建与 batch feeder 统一采用 `global admission → sorted tenant locks → recount`，关闭跨租户并发
+  越过全局队列上限的窗口。
+- materialize 遇到 commit 结果不确定时，从新会话按精确 job ID 对账；查询失败或任一记录存在时保留
+  输入目录，不冒险删除服务端已提交任务依赖的文件。
+- Node Agent 的 GPU 型号为可选遥测，探测失败不阻断心跳；父批次逐节点帧数、attempt、GPU 时间、
+  P50/P95、改派和证据完整性已形成候选实现。`straggler_ratio` 使用合同 03 的分数公式和 `<=0.15`
+  口径；动画管家 06 的 `<=1.15` 是 `1 + ratio` 倍率展示，需由对方确认。
+- WebUI 源码候选已在 `e726b93c45b8dbdffc9b013024aff6703967d866` 形成，已完成 Vitest 8/8、
+  mocked Playwright 20/20、lint、format、typecheck 和 build；生产 Web 仍为 1.5.4，本轮未热更新。
+- 六 API 100+ VU 工具、分阶段计划、真实素材合同、只读预检、双重执行门禁和 session 清理已准备；
+  本轮没有启动 Locust，也没有向生产发送压测请求。
+- 动画管家第三轮输入 SHA 为
+  `f0a46e701022185397d5c1574f90e58cd33ccde785f8ba63c75e15f95d2f2da9`。其声明的 65 号旧回执
+  SHA `40938b4884ba788f509fd0a4942ee10630962825a861bcad744bb85bbe383047` 与仓库当前历史文件 SHA
+  `d2b5d3c2c908447f3beeee23b0d47f349da90a7d181589ef2fe9a2f907d05bb8` 分别保留，不互相改写。
+- 第三轮输入中的 `bundle_index.json` SHA 有 65 个十六进制字符，且实际 index、六个 bundle 和生成器
+  尚未传输；状态为 `PENDING_INPUT_CORRECTION_AND_TRANSFER`。离线 validator 已 21/21 通过，但没有
+  声称真实素材 SHA 匹配。
+- 1.5.5 打包工具代码已准备；四镜像构建、SBOM/provenance、registry push、Git LFS 上传、rollback
+  镜像实测和生产数据库 `0010 → 0011` 均未执行。
+- 完整交接和双方下一输入见
+  `69_2026-07-30_ASSETCLAW_1_5_5_SPEED_STABILITY_PREJOINT_RECEIPT.md`。
 
 ## 2026-07-28 3090-B Windows / WSL2 GPU 上线
 
