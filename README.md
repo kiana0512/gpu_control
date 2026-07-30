@@ -5,17 +5,28 @@
 面向两台 RTX 3090 工作节点和一台 RTX 4090 控制中心的统一任务调度、运维与可观测平台；GPU
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
-生产在线版本：`1.5.5`，最后核验的生产数据库修订为 `20260730_0011`；当前源码候选为
-`1.5.6`（已完成离线回归，尚未热更新、尚未联合验收）。三机 ComfyUI 固定镜像仍为
+生产在线版本：`1.5.6`，控制面镜像统一绑定源码
+`310a44c70c20f7cbfc601d19e19858380a61c20a`，最后核验的生产数据库修订为
+`20260730_0011`。当前发布状态为 `DEPLOYED_NOT_ACCEPTED`：四个控制面服务已在零活动任务窗口完成
+热更新并通过健康、版本和单主锁核对，但固定 B 系列速度基准、完整故障注入、registry/SBOM 证据及
+连续七天观察尚未全部完成，不能写成 `FROZEN` 或 `PRODUCTION_ACCEPTED`。三机 ComfyUI 固定镜像仍为
 `projects-0.2.3`。GPU 推理平面继续提供三机图片 API 与分布式序列帧调度；独立 CPU Asset
 平面提供 Blender PBR UV、AI 重拓扑和 Windows Substance 烘焙 API。当前生产配置
 `RETOPOLOGY_QA_ENFORCEMENT=advisory`：几何质量不达标会保留告警和诊断报告，但通过输入身份、
 manifest、文件完整性与 SHA 硬门禁的 BLEND/FBX 仍以正式 `blend`/`fbx` 交付；源文件保护与
 完整性失败仍拒绝交付。两个平面使用独立队列与租约，生产任务优先于测试任务。
 
+六 API、120 VU 的独立 R8 有界压力已以退出码 0 完成：`39,778` 个 HTTP 请求、0 失败，六 API、
+七项阈值、`120/120` 清场、三 GPU 饱和和 379 个连续遥测样本全部通过。该结果只验收综合有界压力，
+不替代固定 B97/`3×B97`、完整故障矩阵或七天生产观察；原始证据和 SHA 见
+`docs/76_2026-07-31_SIX_API_120VU_FINAL_ACCEPTANCE.md`，完整原始结果同时以 Git LFS 归档保存在
+`artifacts/load-tests/sixapi-20260730-r8/`。
+
 1.5.5 的归档规则见 `docs/68_2026-07-30_CONTROL_PLANE_1_5_5_REPRODUCIBLE_PACKAGING.md`；
-1.5.6 继续使用同一 fail-closed 打包器。默认命令仅生成计划，缺少已推送干净提交、固定 SBOM
-generator、精确确认令牌或 registry 证据时不得写成正式发布或生产验收。
+1.5.6 已生成本地可校验离线归档并将两段大文件作为 Git LFS 对象同步。由于固定 SBOM generator 与
+registry manifest digest 仍待补齐，该归档仍是 `CANDIDATE_ARCHIVE_ONLY`，不能把本地 image ID 或
+离线 OCI identity 冒充 registry digest。部署、归档、回滚和剩余门禁统一见
+`docs/75_2026-07-30_CONTROL_PLANE_1_5_6_DEPLOYMENT_AND_ARCHIVE.md`。
 
 ```mermaid
 flowchart LR
@@ -109,4 +120,4 @@ make verify
 - [三节点发布与恢复闭环](docs/63_2026-07-30_THREE_NODE_RELEASE_AND_RECOVERY_CLOSURE.md) · [动画管家 V4.1 首轮事实回执](docs/64_2026-07-30_ASSETCLAW_GPU_CONTROL_V4_1_RECEIPT.md) · [动画管家优化后第二轮对齐回执](docs/65_2026-07-30_ASSETCLAW_POST_OPTIMIZATION_ALIGNMENT_RECEIPT.md)
 - [WebUI 运行中心重构](docs/66_2026-07-30_WEBUI_OPERATIONS_REDESIGN.md) · [六 API 综合压测手册](docs/67_2026-07-30_SIX_API_MIXED_LOAD_TEST_RUNBOOK.md)
 - [1.5.5 可复现打包门禁](docs/68_2026-07-30_CONTROL_PLANE_1_5_5_REPRODUCIBLE_PACKAGING.md) · [动画管家 1.5.5 速度稳定性联测前回执](docs/69_2026-07-30_ASSETCLAW_1_5_5_SPEED_STABILITY_PREJOINT_RECEIPT.md)
-- [Retopology QA Advisory 热修复](docs/70_2026-07-30_RETOPOLOGY_QA_ADVISORY_HOTFIX_AND_LOAD_READINESS.md) · [Nginx 容量与控制流隔离](docs/71_2026-07-30_NGINX_GATEWAY_CAPACITY_AND_CONTROL_ISOLATION.md) · [取消与压测恢复](docs/72_2026-07-30_INTERRUPTED_CANCEL_AND_LOAD_HARNESS_RECOVERY.md) · [六 API 120 VU 压测结果](docs/73_2026-07-30_SIX_API_120VU_LOAD_RESULT.md) · [Scheduler/Substance 稳定性热修复](docs/74_2026-07-30_SCHEDULER_AND_SUBSTANCE_STABILITY_HOTFIX.md)
+- [Retopology QA Advisory 热修复](docs/70_2026-07-30_RETOPOLOGY_QA_ADVISORY_HOTFIX_AND_LOAD_READINESS.md) · [Nginx 容量与控制流隔离](docs/71_2026-07-30_NGINX_GATEWAY_CAPACITY_AND_CONTROL_ISOLATION.md) · [取消与压测恢复](docs/72_2026-07-30_INTERRUPTED_CANCEL_AND_LOAD_HARNESS_RECOVERY.md) · [六 API 120 VU r5/r7 历史结果](docs/73_2026-07-30_SIX_API_120VU_LOAD_RESULT.md) · [Scheduler/Substance 稳定性热修复](docs/74_2026-07-30_SCHEDULER_AND_SUBSTANCE_STABILITY_HOTFIX.md) · [1.5.6 部署、归档与回滚证据](docs/75_2026-07-30_CONTROL_PLANE_1_5_6_DEPLOYMENT_AND_ARCHIVE.md) · [六 API 120 VU R8 最终有界压测验收](docs/76_2026-07-31_SIX_API_120VU_FINAL_ACCEPTANCE.md)

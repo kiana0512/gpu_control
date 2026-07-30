@@ -2,9 +2,12 @@
 
 本页是仓库文档导航。今天部署时不要从 30 多份文档逐一翻找，按下面的“现场主线”执行即可；其余文档是遇到具体问题时的细节手册。
 
-当前生产基线：GPU Control `1.5.5`、数据库 `20260730_0011`、ComfyUI
-`projects-0.2.3`；1.5.6 为已通过离线回归、尚未热更新的稳定性候选。最近只读检查时三个 GPU
-节点均为 `ONLINE/ACTIVE` 且空闲，具体状态仍必须以运行时 API/数据库为准。
+当前生产基线：GPU Control `1.5.6`、源码 revision
+`310a44c70c20f7cbfc601d19e19858380a61c20a`、数据库 `20260730_0011`、ComfyUI
+`projects-0.2.3`。四个控制面服务已在零任务窗口完成热更新，状态为
+`DEPLOYED_NOT_ACCEPTED`；固定 B 系列速度基准、故障注入、registry/SBOM 和七天观察未闭环前，禁止
+标记 `FROZEN / PRODUCTION_ACCEPTED`。最近一次清场核对时三个 GPU 节点在线、活动任务为 0，具体
+状态仍必须以运行时 API/数据库为准。
 断电或重启后必须重新执行只读健康检查，不能把本文档导航当作实时监控。Retopology 当前为
 advisory 质量模式：质量不达标保留告警，但通过身份、manifest、完整性和 SHA 硬门禁的正式
 BLEND/FBX 仍交付；不存在人工发布门。
@@ -37,9 +40,14 @@ BLEND/FBX 仍交付；不存在人工发布门。
 24. `docs/64_2026-07-30_ASSETCLAW_GPU_CONTROL_V4_1_RECEIPT.md`：动画管家 V4.1 性能稳定合同的首轮事实回执、缺口和联合验收前置项。
 25. `docs/65_2026-07-30_ASSETCLAW_POST_OPTIMIZATION_ALIGNMENT_RECEIPT.md`：动画管家优化后的第二轮代码对齐回执、G-P0-01～07 状态，以及 Docker/Git LFS/联合验收待填证据。
 26. `docs/66_2026-07-30_WEBUI_OPERATIONS_REDESIGN.md`：与动画管家对齐的任务中心、性能分析、调度说明、证据规则和安全发布边界。
-27. `docs/67_2026-07-30_SIX_API_MIXED_LOAD_TEST_RUNBOOK.md`：六 API、GPU/CPU/Windows Worker 的 100+ 用户综合压测计划、安全门禁、遥测和停止条件；默认只生成计划，用户未授权窗口前禁止执行。
-28. `docs/68_2026-07-30_CONTROL_PLANE_1_5_5_REPRODUCIBLE_PACKAGING.md`：1.5.5 四组件候选镜像的干净提交、固定基础镜像、SBOM/provenance、离线分片与 Git LFS 打包门禁；当前仅准备、未执行构建或推送。
-29. `docs/69_2026-07-30_ASSETCLAW_1_5_5_SPEED_STABILITY_PREJOINT_RECEIPT.md`：动画管家第三轮输入的最终源码候选回执；汇总速度/稳定性、WebUI、六 API 压测准备、冻结素材阻断和未执行的发布动作，作为联合测试前单一事实入口。
+27. `docs/67_2026-07-30_SIX_API_MIXED_LOAD_TEST_RUNBOOK.md`：六 API、GPU/CPU/Windows Worker 的 100+ 用户综合压测计划、安全门禁、遥测和停止条件；这是执行手册，r5/r7 历史结果见 73 号记录，R8 最终有界压测见 76 号记录。
+28. `docs/68_2026-07-30_CONTROL_PLANE_1_5_5_REPRODUCIBLE_PACKAGING.md`：1.5.5 四组件的历史可复现打包门禁；1.5.6 实际镜像、归档和 LFS 证据见 75 号记录。
+29. `docs/69_2026-07-30_ASSETCLAW_1_5_5_SPEED_STABILITY_PREJOINT_RECEIPT.md`：动画管家第三轮输入的历史联测前回执；其中“未部署/未压测”状态已被 73～75 号记录取代。
+30. `docs/70_2026-07-30_RETOPOLOGY_QA_ADVISORY_HOTFIX_AND_LOAD_READINESS.md`：Retopology advisory 正式 BLEND/FBX 交付、SHA 硬门禁和回滚方式。
+31. `docs/73_2026-07-30_SIX_API_120VU_LOAD_RESULT.md`：保留 r5 历史结果及 r7 的业务通过、遥测超界 199 ms 的 fail-closed 事实；附 R8 新结果索引，不反向改写历史失败。
+32. `docs/74_2026-07-30_SCHEDULER_AND_SUBSTANCE_STABILITY_HOTFIX.md`：Scheduler 单主锁、leader epoch、Substance 物理 GPU fence/recovery 的 1.5.6 已部署证据。
+33. `docs/75_2026-07-30_CONTROL_PLANE_1_5_6_DEPLOYMENT_AND_ARCHIVE.md`：1.5.6 四镜像身份、零任务热更新、回滚标签、离线归档/LFS 和尚未通过的正式验收门禁。
+34. `docs/76_2026-07-31_SIX_API_120VU_FINAL_ACCEPTANCE.md`：R8 退出码 0、六 API/七阈值、120/120 清场、GPU/Asset 峰值、Substance 自动 fence 恢复、379 样本与持久 SHA 证据；不替代 B97、故障矩阵和七天验收。
 
 3090-A 的已完成部署、动态心跳、Web 修复和真实任务证据见
 `docs/34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md`。
@@ -71,14 +79,15 @@ BLEND/FBX 仍交付；不存在人工发布门。
 | Asset V4 客户端合同 | `58_2026-07-29_ASSET_V4_CLIENT_HANDOFF_AND_STABILITY.md` | UV/重拓扑当前 API、自动交付、确定性算法、Codex/RetopoFlow 健康与稳定性验收 |
 | 1.5.4 发布审计 | `59_2026-07-29_RELEASE_AUDIT_STABILITY_AND_IMAGE_RECORD.md`、`62_2026-07-30_REPRODUCIBLE_BACKUP_AND_ROLLING_UPDATE.md` | 三节点真实压力、代码审计、镜像归档、恢复状态与机器可读证据 |
 | 粗糙度与烘焙 | `57_2026-07-29_MODELVIEW_ROUGHNESS_API.md`、`58_2026-07-29_SUBSTANCE_BAKER_API.md`、`59_2026-07-29_ROUGHNESS_AND_SUBSTANCE_BAKER_API_HANDOFF_V2.md`、`61_2026-07-29_SUBSTANCE_BAKER_4_SLOT_RELEASE.md` | 粗糙度 GPU API、Windows Baker API、四槽并发与客户端交接 |
-| UV / 重拓扑 V5 | `60_2026-07-29_UV_AND_RETOPOLOGY_API_HANDOFF_V5.md` | 当前自动严格 QA、无人工门、产物与错误合同 |
+| UV / 重拓扑 V5 | `60_2026-07-29_UV_AND_RETOPOLOGY_API_HANDOFF_V5.md` | 历史 V5 合同；当前几何 QA 已切为 advisory，正式 BLEND/FBX 交付以 70 号记录为准 |
 | 动画管家 V4.1 回执 | `64_2026-07-30_ASSETCLAW_GPU_CONTROL_V4_1_RECEIPT.md` | 逐项实现状态、版本证据、身份冲突、P0/P1 缺口与联合验收输入 |
 | 动画管家优化后第二轮回执 | `65_2026-07-30_ASSETCLAW_POST_OPTIMIZATION_ALIGNMENT_RECEIPT.md` | 批准的 691 身份、G-P0-01～07 候选代码状态、取消状态映射、发布与联合验收待填证据 |
 | WebUI 运行中心重构 | `66_2026-07-30_WEBUI_OPERATIONS_REDESIGN.md` | 任务/API 分类、真实时间、性能分析、调度解释、视觉验证与 Web-only 回滚边界 |
-| 六 API 综合压测 | `67_2026-07-30_SIX_API_MIXED_LOAD_TEST_RUNBOOK.md` | 100+ 用户真实请求组合、GPU/CPU/Windows 槽位遥测、生产双重授权和零活动任务门禁；当前仅准备、未执行 |
-| 1.5.5 候选打包 | `68_2026-07-30_CONTROL_PLANE_1_5_5_REPRODUCIBLE_PACKAGING.md` | 四镜像可复现候选、固定基础镜像、SBOM/provenance、离线归档和 LFS 的 fail-closed 门禁；当前仅准备、未执行 |
+| 六 API 综合压测 | `67_2026-07-30_SIX_API_MIXED_LOAD_TEST_RUNBOOK.md`、`73_2026-07-30_SIX_API_120VU_LOAD_RESULT.md`、`76_2026-07-31_SIX_API_120VU_FINAL_ACCEPTANCE.md` | 100+ 用户真实请求组合、GPU/CPU/Windows 槽位遥测、生产让路和精确清场；73 保留 r5/r7 历史，R8 在 76 号记录中以退出码 0 通过有界压力门禁 |
+| 1.5.5 候选打包 | `68_2026-07-30_CONTROL_PLANE_1_5_5_REPRODUCIBLE_PACKAGING.md` | 1.5.5 历史打包门禁；当前 1.5.6 部署/归档身份以 75 号记录为准 |
 | 动画管家 1.5.5 联测前回执 | `69_2026-07-30_ASSETCLAW_1_5_5_SPEED_STABILITY_PREJOINT_RECEIPT.md` | 本轮最终源码、性能稳定修复、WebUI、素材输入阻断和发布/压测未执行边界；联合测试前按此对账 |
-| Retopology / 六 API / 稳定性热修复 | `70_2026-07-30_RETOPOLOGY_QA_ADVISORY_HOTFIX_AND_LOAD_READINESS.md`、`73_2026-07-30_SIX_API_120VU_LOAD_RESULT.md`、`74_2026-07-30_SCHEDULER_AND_SUBSTANCE_STABILITY_HOTFIX.md` | 正式 BLEND/FBX advisory 交付、120 VU 首轮原始结果，以及 Scheduler/Substance 并发修复与旧版本回滚门禁 |
+| Retopology / 六 API / 稳定性热修复 | `70_2026-07-30_RETOPOLOGY_QA_ADVISORY_HOTFIX_AND_LOAD_READINESS.md`、`73_2026-07-30_SIX_API_120VU_LOAD_RESULT.md`、`74_2026-07-30_SCHEDULER_AND_SUBSTANCE_STABILITY_HOTFIX.md`、`76_2026-07-31_SIX_API_120VU_FINAL_ACCEPTANCE.md` | 正式 BLEND/FBX advisory 交付、r5/r7 历史、R8 最终有界压力结果，以及已随 1.5.6 部署的 Scheduler/Substance 并发修复 |
+| 1.5.6 部署与归档 | `75_2026-07-30_CONTROL_PLANE_1_5_6_DEPLOYMENT_AND_ARCHIVE.md` | 四镜像 source identity、热更新、回滚、离线归档/LFS 和 `DEPLOYED_NOT_ACCEPTED` 边界 |
 | 分角色安装 | `03`—`11` | 网络、准备、4090、3090、镜像、模型、工作流、首次部署 |
 | 使用手册 | `12_WEB_ADMIN_GUIDE.md`、`13_PUBLIC_API_GUIDE.md` | 管理后台和业务 API |
 | 运维 | `15`—`22` | 日志、告警、备份、升级、故障、容量和 FAQ |

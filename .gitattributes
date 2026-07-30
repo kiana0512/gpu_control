@@ -17,3 +17,4 @@ artifacts/control-plane/1.5.4/*.part-* filter=lfs diff=lfs merge=lfs -text
 artifacts/control-plane/1.5.5/release-parts/*.part-* filter=lfs diff=lfs merge=lfs -text
 artifacts/control-plane/1.5.6/release-parts/*.part-* filter=lfs diff=lfs merge=lfs -text
 artifacts/asset-worker/1.2.2/*.part-* filter=lfs diff=lfs merge=lfs -text
+artifacts/load-tests/sixapi-20260730-r8/*.tar.gz filter=lfs diff=lfs merge=lfs -text

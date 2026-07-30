@@ -3,14 +3,15 @@
 日期：2026-07-30
 
 范围：GPU Control API / Scheduler / Asset API；不修改 ImageClip、ModelViewCreator、Retopology Skill 或任何外部 workflow
-当前状态：`SOURCE_TESTED_NOT_DEPLOYED`
+当前状态：`DEPLOYED_NOT_ACCEPTED`
 
 ## 1. 目标与结论边界
 
 六 API 120 VU 首轮压力暴露了两项控制面稳定性问题：Scheduler 为持有 PostgreSQL session
 advisory lock 留下长期 `idle in transaction`，以及 Windows Substance Baker 在持续 ComfyUI 队列下
-可能拿不到同一张 `worker-3090-b` 物理 GPU。当前源码候选同时修复这两项问题，并补齐取消、租约过期、
-健康写回和生产优先级的并发闭环。
+可能拿不到同一张 `worker-3090-b` 物理 GPU。这些修复及取消、租约过期、健康写回、leader epoch 和
+生产优先级并发闭环已包含在 1.5.6 源码 `310a44c70c20f7cbfc601d19e19858380a61c20a`，并在零活动
+任务窗口完成控制面热更新。当前结论仍是“已部署、未联合验收”，不是 `PRODUCTION_ACCEPTED`。
 
 本候选不改变外部业务 workflow、模型、prompt、分辨率、采样、节点图或输出语义；Retopology advisory
 仍只放宽几何质量判定，BLEND/FBX 完整性、SHA、manifest 和输入身份继续是硬门禁。
@@ -61,9 +62,9 @@ Scheduler 即使看到节点被误改回 `ACTIVE`，只要上述 pending/fence/r
 - 联表领取查询只执行 `FOR UPDATE OF asset_jobs`，不锁 `api_clients`；
 - test tenant 的 Substance 只使用真正空闲容量；任一非 test GPU Job/Batch 非终态时不领取新的 test bake。
 
-## 5. 发布前门禁
+## 5. 已执行的发布门禁
 
-只有以下条件同时满足才允许热更新：
+本次热更新只在以下条件同时满足后执行：
 
 1. GPU job、父批次、Asset job 活动数全部为 0；
 2. 三个 GPU 节点 `ONLINE`，没有 foreign queue、manual reserve、fence 或 recovery；
@@ -94,12 +95,54 @@ Windows Baker 与 ComfyUI，而不是强行解锁物理 GPU。
 ## 7. 当前验证记录
 
 最终源码已完成完整禁网回归 `272 passed / 5 skipped / 0 failed`，其中 Asset 完整专项 `28 passed`、
-Scheduler 受影响专项 `58 passed`、load harness 回归 `41 passed`；Scheduler 真实 PostgreSQL 17
+Scheduler 受影响专项 `42 passed`、发布时 load harness 回归 `41 passed`；Scheduler 真实 PostgreSQL 17
 锁与接管回归 `5 passed`。Ruff、全项目 mypy（34 个源码文件）、`git diff --check`、两份 Compose render、
 Web ESLint/Prettier、Vitest `10/10`、Vue 类型检查和生产构建均通过。Web 构建只有一个非阻断的
 `504.46 kB` 分包提示。
 
-r6 六 API 计划已离线验证为 `EXECUTION_ELIGIBLE`：六类固定素材、120 VU、31 分钟、完整备份
-`VERIFIED_FULL_PRE_WINDOW`，无执行阻断；该结论只是计划门禁，不表示已发送生产请求。镜像构建、
-空闲热更新和 r6 真实运行仍以后续记录为准；在完成前状态保持 `SOURCE_TESTED_NOT_DEPLOYED`，不得写成
-`PRODUCTION_ACCEPTED`。
+r6 六 API 计划曾离线验证为 `EXECUTION_ELIGIBLE`，但首次运行在业务负载开始前被 Admin API 429
+fail closed；没有创建测试任务。watchdog 的 11 个初始状态扫描随后改为节流、对 429/5xx 做有界重试，
+修复提交为 `3e0ecd4`。1.5.6 上的 r7 已完成完整 120 VU 计划，业务阈值、生命周期、生产让路和清场
+通过；唯一失败是遥测相邻样本最大间隔 `7,699 ms` 比严格上限多 `199 ms`。详情见 73 号记录。
+
+## 8. 1.5.6 热更新与在线核对
+
+| 项目 | 当前证据 |
+| --- | --- |
+| source revision | `310a44c70c20f7cbfc601d19e19858380a61c20a` |
+| API image ID | `sha256:26f622257facfbc74199c6d266b2a02e31b28dad6910596f5c4bd8fecf458cf4` |
+| Scheduler image ID | `sha256:c2c420e6fa8fd2d8d84852e5b509f5248cf6e1e8b1239c6f8053eee5e3a6845b` |
+| Asset API image ID | `sha256:f83bed46d7540de4cf7d08e4cff8d7675dd7dd4675bf13d301226f5f5c4cb01f` |
+| Web image ID | `sha256:54005b4091b37de0805f2561d3b53a3e470e2b1ed3a795ec6bd7b0e98b0ebc14` |
+| 更新顺序 | Scheduler → Asset API → API → Web，逐服务健康后继续 |
+| 发布状态 | `DEPLOYED_NOT_ACCEPTED` |
+
+更新前确认 GPU job、父批次、Asset job 均为 0，并保存四个 1.5.5 rollback tag。更新没有重启
+PostgreSQL、Redis、ComfyUI、GPU Worker、Asset Worker 或任何外部业务 pipeline。更新后：
+
+- API 与 Asset API 版本端点均为 `1.5.6`、`version_aligned=true`、
+  `provenance_complete=true`；
+- 四个控制面容器健康，Scheduler advisory lock 精确一个；数据库长期 `idle in transaction` 为 0；
+- 三节点/Worker 健康，队列与活动任务为 0；
+- r7 中 Substance 物理 GPU fence/recovery 两次完成受控闭锁和自动恢复，未发生 ComfyUI 与 Baker
+  同时占用 3090-B，也未依赖人工删除标签。
+
+完整镜像、归档、回滚标签和正式验收边界见
+`75_2026-07-30_CONTROL_PLANE_1_5_6_DEPLOYMENT_AND_ARCHIVE.md`。r7 后的遥测关闭顺序修复
+`682b2c3` 只修改压测 harness，不改变当前生产 1.5.6 镜像的 source revision；其效果必须通过新的
+独立结果证明。
+
+## 9. R8 稳定性复测与新增观测边界
+
+独立会话 `sixapi-20260730-r8` 已以退出码 0 完成六 API、120 VU 有界压力：`39,778/0` HTTP
+请求/失败、`151/66` 登记/验证成功任务、七项阈值全部通过，120 个作用域任务全部 accepted 并
+settled。遥测为 `379` 个有效样本，最大间隔 `5,004 ms`，关闭了 r7 的尾部采样红灯。Substance
+压力期间三次观察到 3090-B 受控 DRAINING/OFFLINE → ONLINE/ACTIVE 自动恢复，8 个 Baker 任务成功，
+没有人工解锁或跨平面同时占卡。完整证据见 76 号记录。
+
+R8 还暴露一项只影响可观测性的 Scheduler Gauge 算法偏差：生产 1.5.6 的
+`gpu_control_scheduler_loop_lag_seconds` 使用累计历史 deadline，曾显示约 `326 s`；同一时段 20 秒内
+调度循环仍增加 39 次且任务持续推进，所以该值不是当前 event loop 阻塞时长。提交 `521ab58` 已改为
+独立 500 ms wake probe、每次重新建立 deadline，并通过相关 `22 passed`，但该修改尚未构建或部署，
+不属于生产 revision `310a44c70c20f7cbfc601d19e19858380a61c20a`。后续必须在零活动任务窗口按
+正常门禁发布并在线复核，禁止把源码候选冒充线上修复。

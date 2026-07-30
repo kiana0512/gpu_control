@@ -1,11 +1,16 @@
-# 2026-07-30 六 API、120 VU 生产混合压测结果
+# 2026-07-30 六 API、120 VU 生产混合压测结果（r5/r7 历史与 R8 索引）
 
 日期：2026-07-30
 
 会话：`sixapi-20260730-r5`
 
-状态：`LOAD COMPLETED / CONTROL PLANE STABLE / ACCEPTANCE GATES PARTIAL`
+状态：`r5 LOAD COMPLETED / CONTROL PLANE STABLE / ACCEPTANCE GATES PARTIAL`
 发布状态：`DEPLOYED_NOT_ACCEPTED`
+
+> 阅读提示：第 1～11 节保留 r5 当时的原始判断；第 12 节记录 1.5.6 上的 r7 复测；第 13 节只索引
+> 独立 R8 最终记录。r7 已关闭
+> r5 的业务阈值、生命周期和作用域清场缺口，但遥测相邻样本最大间隔以 `7,699 ms` 超过严格上限
+> `7,500 ms`，故该轮仍以退出码 1 fail closed。R8 通过不能反向改写 r7 原始结果。
 
 ## 1. 最终结论
 
@@ -252,9 +257,10 @@ Locust 到达固定时限后，88 个已登记但未完成的 ImageClip 父批�
 有任务时，ComfyUI 可在 Baker claim 前连续占用同一张卡。四个 Windows worker 本身健康，最终均
 领取并完成任务，因此这不是 worker 离线或产物失败，而是物理 GPU fence 的待处理公平性缺口。
 
-源码工作区已有“生产 Substance pending reservation + 到期释放”的候选修复，并坚持真实生产优先，
-test 流量不能覆盖 production reservation。该候选尚未完成全量测试、尚未构建镜像、尚未部署，
-不属于本轮已发布 digest。Asset queue ETA 排除 stale worker 的候选修复同样尚未部署。
+源码工作区在 r5 当时已有“生产 Substance pending reservation + 到期释放”的候选修复，并坚持真实
+生产优先，test 流量不能覆盖 production reservation。该候选在 r5 时不属于当轮镜像；此后已完成
+全量测试并随 1.5.6 的 `310a44c` 镜像部署，当前事实见 74、75 号记录。Asset queue ETA 排除 stale
+worker 的修复也随同部署。
 
 ### 9.2 Scheduler advisory lock 留下 idle transaction
 
@@ -265,15 +271,17 @@ test 流量不能覆盖 production reservation。该候选尚未完成全量测�
 
 修复必须在保持“全局只允许一个 Scheduler”语义的前提下，把 advisory lock 放到专用 autocommit
 连接或等价的可证明生命周期中；不能简单 commit 后把 session-level lock 所在连接交回池中。
-相关修复仍在源码审查/离线测试，尚未构建、尚未部署，不属于本轮稳定结论。
+相关修复在 r5 时仍处于源码审查/离线测试，不属于 r5 稳定结论；此后专用 AUTOCOMMIT 锁连接、
+leader epoch 和旧 leader 写入 fence 已完成真实 PostgreSQL 回归并随 1.5.6 部署。
 
 ### 9.3 压测 harness 的两个证据缺口
 
 - 同步 Roughness 被通用 async submit P95 门禁误分类，并在强停时可能留下未登记服务端任务；
 - 理论 380 个遥测样本只落盘 378 个，尾部采样与结果汇总的关闭顺序需要收敛。
 
-对应候选修改尚未进入生产。下一轮必须保持 fail closed，不能通过调大 3 秒门槛、忽略孤儿任务或
-把 `378` 伪写为 `380` 来获得绿色结果。
+这些缺口在 r5 时尚未进入生产。后续 harness 已拆分 async submit 与 sync end-to-end 指标、增加作用域
+恢复并改为基于观测窗口的显式最终采样；r7 结果见第 12 节。任何复测仍必须 fail closed，不能通过
+调大门槛、忽略孤儿任务或伪写遥测来获得绿色结果。
 
 ## 10. 验收矩阵
 
@@ -298,6 +306,9 @@ test 流量不能覆盖 production reservation。该候选尚未完成全量测�
 
 ## 11. 后续动作与发布边界
 
+以下是 r5 时点提出的后续动作；其中控制面修复和 r7 复测已有进展，最终状态以第 12 节及 74、75 号
+记录为准：
+
 1. 把当前 `/tmp` 结果目录按 `checksums.sha256` 复核后归档到受控、持久存储；在完成前不要删除
    原始目录；
 2. 完成同步 Roughness registry/指标分类和尾部遥测关闭顺序修复，补齐离线单测；
@@ -309,3 +320,91 @@ test 流量不能覆盖 production reservation。该候选尚未完成全量测�
 
 本报告不授权修改 ImageClip、ModelViewCreator、Retopology Skill 的 workflow JSON、模型、prompt、
 图拓扑、采样参数或输出语义。所有未部署候选修复必须继续留在 GPU Control 所有权边界内。
+
+## 12. 1.5.6 上的 r7 复测
+
+### 12.1 结果边界
+
+会话 `sixapi-20260730-r7` 在生产 1.5.6 控制面上完成同样的
+`1 → 10 → 25 → 50 → 100 → 120 VU` 有界升压。结果生成器仍以退出码 1 fail closed，但这次业务
+阈值、六 API 覆盖、生命周期、生产让路、作用域恢复和清场全部通过；唯一未通过项是遥测相邻样本
+最大间隔 `7,699 ms`，比 `7,500 ms` 的严格上限多 `199 ms`。因此准确状态是
+`LOAD COMPLETED / BUSINESS GATES PASS / TELEMETRY GAP FAIL CLOSED / DEPLOYED_NOT_ACCEPTED`，不能
+写成整体验收通过。
+
+### 12.2 核心结果
+
+| 指标 | r7 结果 | 门禁 |
+| --- | ---: | --- |
+| HTTP 请求 / 失败 | `39,776 / 0` | PASS |
+| HTTP P50 / P95 / P99 | `11 / 37 / 170 ms` | 记录 |
+| 已登记 / 已验证成功任务 | `184 / 99` | 有界生命周期 PASS |
+| 六 API 登记数 | ImageClip `85`、Roughness `13`、UV `29`、Retopo Audit `15`、Retopo Process `25`、Substance `17` | coverage PASS |
+| async submit P95 | `1,400 ms` | `≤3,000 ms`，PASS |
+| Roughness sync E2E P95 | `354,000 ms` | `≤600,000 ms`，PASS |
+| poll / artifact P95 | `42 / 41 ms` | PASS |
+| queue P95 | `548,885 ms` | `≤900,000 ms`，PASS |
+| failure / retry rate | `0% / 0%` | PASS |
+| teardown | `120/120` accepted、`120/120` settled；作用域恢复 `35` 个未登记任务 | PASS |
+| production watchdog | `triggered=false` | PASS |
+
+r7 共有 `184` 个任务进入服务端，其中 `99` 个在窗口内完成并通过产物合同；剩余任务全部被限定在
+本轮精确 test tenant、开始时间和业务身份范围内恢复并安全清场。因此有界压力模式的生命周期判定为
+通过，不再把“所有任务必须在固定加压窗口内自然完成”误作唯一成功条件，也没有广泛取消其他租户。
+
+### 12.3 资源饱和与稳定性
+
+- 三张 GPU 峰值均为 `100%`；利用率 P50/P95 分别为 4090 `98%/100%`、3090-A
+  `99%/100%`、3090-B `42%/97%`，三节点饱和目标通过；
+- GPU 槽位峰值 `3/3`、队列峰值 `485`；Asset 槽位峰值 `13/13`、队列峰值 `20`；
+- Substance fence/recovery 在真实负载中两次使 3090-B 进入受控 DRAINING/OFFLINE 观察状态，并在
+  Windows 物理 GPU 使用结束后自动恢复 ONLINE/ACTIVE；没有手工解锁，也没有跨平面并发占卡；
+- 生产 watchdog 未发现外来任务；整轮无 HTTP 失败、业务失败、retry 或 recovery 失败；清场后
+  GPU/Asset 活动任务、租约和队列均为 0。
+
+### 12.4 遥测 199 ms 边界偏差
+
+`telemetry.jsonl` 有 `378` 个有效样本，序号连续、显式 final sample 存在、全部 GPU/Worker 资源样本
+齐全且无无效样本。唯一失败发生在第 377 个正常样本与第 378 个 final sample 之间：最大间隔
+`7,699 ms`，超过允许的 `7,500 ms` 共 `199 ms`；其他正常采样间隔最大约 `5,004 ms`。根因是停止
+流程先终止正在进行的采样，再写 final sample，而不是服务端稳定性或监控数据缺失。
+
+源码提交 `682b2c3` 已让停止监听器先等待当前采样结束，再在超出有界 grace 时兜底终止，并补充 AST
+回归；相关 load harness 测试为 `42 passed`。该修改是 r7 后产生的代码证据，不得将 r7 原始
+`sampling_evidence.passed=false` 改写为 true；必须由后续独立运行生成新的机器报告。
+
+### 12.5 原始证据
+
+| 项目 | 值 |
+| --- | --- |
+| 开始 / 结束 | `2026-07-30T15:40:38.286046Z` / `2026-07-30T16:13:36.346554Z` |
+| 结果目录 | `/tmp/gpu-control-load-results/sixapi-20260730-r7` |
+| `summary.json` SHA-256 | `9a26cdb1ce537ca4704817160d9b997caffdc86679c56871e18646152e0af1e6` |
+| `manifest.json` SHA-256 | `18183af989406ea4d07ca9f02fe720e873e5ef05551bd22eff586f80feaba222` |
+| `checksums.sha256` SHA-256 | `3cacc4832ac33f87d155133df4dd592ddacf6e8bdb75548b3d60b1a70a50d69b` |
+
+全目录已按 `checksums.sha256` 复核。原始报告保留 r7 的非零退出与遥测失败，不通过编辑 Markdown
+掩盖。该轮仍不能替代固定 B1/B6/B30/B64/B97/B300、1/2/3 节点同素材 A/B、`3×B97`、完整故障
+注入和连续七天观察。
+
+## 13. R8 独立复测：机器门禁全部通过
+
+会话 `sixapi-20260730-r8` 在同一生产 1.5.6 控制面重新完成最高 120 VU 的六 API 有界压力，执行
+进程退出码为 `0`。本轮 `39,778` 个 HTTP 请求、失败 0，登记/验证成功任务 `151/66`；六 API
+coverage、七项阈值、生产 watchdog、有界生命周期、作用域恢复、三卡饱和与遥测证据均通过，
+teardown 为 `120/120 accepted`、`120/120 settled`。
+
+R8 共生成 `379` 个有效、0 个无效遥测样本，sequence 连续且包含显式 final sample；相邻样本最大
+间隔 `5,004 ms`，低于严格上限 `7,500 ms`。这是一份新的独立机器结果，关闭了 R7 的尾部采样门禁，
+但不会反向修改本文件第 12 节保留的 R7 退出码 1 与 `7,699 ms` 历史事实。
+
+R8 持久结果目录为 `/srv/gpu-control/load-results/sixapi-20260730-r8`；`summary.json` SHA-256 为
+`1463154198a005415d285f7567d2382b6922d17e873a6c95010eac704e4bcf57`，`manifest.json` 为
+`ada21d3c083aefb080ab269bff6523f2ea949c6893adb08e439754547beb2ea0`，外层
+`checksums.sha256` 为
+`c5ae4401befecdef85702f076a24c9e902a7543d826c3c6ff62b980b425380de`。完整阈值、硬件、Substance
+fence/recovery、Scheduler lag 观测边界和全部关键 SHA 见
+`76_2026-07-31_SIX_API_120VU_FINAL_ACCEPTANCE.md`。
+
+R8 的 `BOUNDED_STRESS_ACCEPTED` 仍不等于固定 B97、完整故障矩阵或七天生产验收，总体发布状态保持
+`DEPLOYED_NOT_ACCEPTED`。
