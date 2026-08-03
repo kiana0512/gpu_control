@@ -1,5 +1,9 @@
 # 统一调度中心 Asset V4 客户端对接与稳定性验收
 
+> 最新应用端合同已迁移到
+> `81_2026-08-03_ASSET_V4_UV_RETOPOLOGY_LATEST_HANDOFF.md`。本文仅保留 2026-07-29 历史设计与验收证据；
+> 若输入格式、参数范围、QA 或正式 artifact kind 冲突，以 81 号文档和当前服务端 schema 为准。
+
 文档日期：2026-07-29
 当前适用基线：GPU Control `1.5.4`；Asset Worker `li3d/blender-worker:1.2.2`
 适用方：Li3D 资产客户端、动画管家、内部资产 Agent

@@ -52,6 +52,7 @@ BLEND/FBX 仍交付；不存在人工发布门。
 36. `docs/78_2026-08-03_SUBSTANCE_LONG_LEASE_AND_AGENT_RECOVERY_HOTFIX.md`：Substance 长烘焙租约续期、Windows Agent 计划任务自恢复、3090-B 安全排空与 ComfyUI 连续性证据。
 37. `docs/79_2026-08-03_CODEX_PER_NODE_AUTH_AND_PROBE_RECOVERY.md`：三节点独立持久化 Codex 认证、Worker 1.2.3 滚动更新、真实探针恢复、镜像身份限制和回滚证据。
 38. `docs/80_2026-08-03_CONTROL_PLANE_1_5_8_CANDIDATE_AND_SAFE_ROLLOUT.md`：1.5.8 源码候选的 Substance 两阶段恢复、Agent 单实例、nonce 防重放、Codex 新鲜度、离线验证和严格发布顺序；当前未部署。
+39. `docs/81_2026-08-03_ASSET_V4_UV_RETOPOLOGY_LATEST_HANDOFF.md`：Li3D/动画管家当前 UV 与自动重拓扑唯一最新应用端合同，包含 CA、幂等、仅 BLEND、QA advisory、正式 BLEND/FBX、SSE、SHA 和 1.5.8 未部署边界。
 
 3090-A 的已完成部署、动态心跳、Web 修复和真实任务证据见
 `docs/34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md`。
@@ -96,6 +97,7 @@ BLEND/FBX 仍交付；不存在人工发布门。
 | Substance 长租约与 Agent 恢复 | `78_2026-08-03_SUBSTANCE_LONG_LEASE_AND_AGENT_RECOVERY_HOTFIX.md` | 长烘焙持续续租、四个 Windows Agent 自恢复、安全排空和不重启 ComfyUI 的生产热修复证据 |
 | Codex 三节点探针恢复 | `79_2026-08-03_CODEX_PER_NODE_AUTH_AND_PROBE_RECOVERY.md` | 每节点独立可写认证、Worker 1.2.3、三机真实探针、构建来源限制与回滚；当前 `DEPLOYED_NOT_ACCEPTED` |
 | 1.5.8 候选与安全发布 | `80_2026-08-03_CONTROL_PLANE_1_5_8_CANDIDATE_AND_SAFE_ROLLOUT.md` | Substance 两阶段恢复、Agent v4 单实例、nonce 防重放、Codex 新鲜度与应用 CA 诊断；源码已验证但生产任务清空前不部署 |
+| Asset V4 UV/自动拓扑最新合同 | `81_2026-08-03_ASSET_V4_UV_RETOPOLOGY_LATEST_HANDOFF.md` | 当前 1.5.7/Worker 1.2.3 应用合同：CA、幂等、仅 BLEND、严格 UV、advisory 拓扑、正式 BLEND/FBX 与 SHA；1.5.8 能力门禁单列为未部署 |
 | 分角色安装 | `03`—`11` | 网络、准备、4090、3090、镜像、模型、工作流、首次部署 |
 | 使用手册 | `12_WEB_ADMIN_GUIDE.md`、`13_PUBLIC_API_GUIDE.md` | 管理后台和业务 API |
 | 运维 | `15`—`22` | 日志、告警、备份、升级、故障、容量和 FAQ |

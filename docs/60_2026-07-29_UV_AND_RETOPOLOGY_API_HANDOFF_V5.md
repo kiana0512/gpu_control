@@ -1,5 +1,9 @@
 # Li3D UV 与自动重拓扑 API 对接文档 V5
 
+> 最新对外业务合同统一使用 Asset V4 命名，见
+> `81_2026-08-03_ASSET_V4_UV_RETOPOLOGY_LATEST_HANDOFF.md`。本文保留为历史技术记录；当前自动重拓扑
+> 只接受 BLEND、生产使用 advisory，版本和参数范围以 81 号文档为准。
+
 发布日期：2026-07-29
 统一入口：`https://10.3.34.11`
 控制面版本：`GPU Control Asset/Web 1.5.4`
