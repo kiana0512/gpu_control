@@ -119,6 +119,7 @@ SUBSTANCE_BAKE_OUTPUTS = {
 SUBSTANCE_WORKER_ID = "asset-worker-3090-b-windows"
 SUBSTANCE_WORKER_ID_PREFIX = f"{SUBSTANCE_WORKER_ID}-"
 SUBSTANCE_GPU_NODE_ID = "worker-3090-b"
+CODEX_REQUIRED_JOB_TYPES = frozenset({"RETOPOLOGY_PROCESS_V1"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,7 +165,7 @@ def fsync_completion_staging(staging: Path) -> None:
     finally:
         os.close(descriptor)
 SUBSTANCE_VERSION = "substance-15.1.0"
-SUBSTANCE_SKILL_VERSION = "substance-baker-2026.08.03-v3"
+SUBSTANCE_SKILL_VERSION = "substance-baker-2026.08.03-v4"
 SUBSTANCE_MAX_PARALLEL = 4
 RETOPOLOGY_AUDIT_ARTIFACTS = {
     "audit": ("retopology_audit.json", "application/json"),
@@ -380,13 +381,13 @@ async def reconcile_substance_gpu_reservation(
     return pending_job_ids
 
 
-def substance_recovery_entries(labels: dict[str, Any]) -> list[dict[str, str]]:
+def substance_recovery_entries(labels: dict[str, Any]) -> list[dict[str, Any]]:
     raw = labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL, [])
     if isinstance(raw, dict):
         raw = [raw]
     if not isinstance(raw, list):
         return []
-    entries: list[dict[str, str]] = []
+    entries: list[dict[str, Any]] = []
     for item in raw:
         if not isinstance(item, dict) or not item.get("job_id") or not item.get("worker_id"):
             continue
@@ -394,8 +395,15 @@ def substance_recovery_entries(labels: dict[str, Any]) -> list[dict[str, str]]:
             {
                 "job_id": str(item["job_id"]),
                 "worker_id": str(item["worker_id"]),
+                "worker_instance_id": str(item.get("worker_instance_id", "")),
                 "lease_expired_at": str(item.get("lease_expired_at", "")),
                 "idle_observed_at": str(item.get("idle_observed_at", "")),
+                "idle_observed_agent_instance_id": str(
+                    item.get("idle_observed_agent_instance_id", "")
+                ),
+                "process_probe_checked_at": str(
+                    item.get("process_probe_checked_at", "")
+                ),
             }
         )
     return entries
@@ -436,6 +444,7 @@ async def mark_substance_gpu_recovery_required(
         {
             "job_id": job.id,
             "worker_id": worker_id,
+            "worker_instance_id": str(job.worker_instance_id or ""),
             "lease_expired_at": now.isoformat(),
         }
     )
@@ -448,13 +457,26 @@ async def confirm_substance_gpu_recovery(
     db: AsyncSession,
     worker: AssetWorker,
     reported_current_jobs: int,
+    reported_agent_instance_id: str | None,
+    process_probe_status: str,
+    process_probe_checked_at: datetime | None,
+    active_baker_processes: int | None,
     reservation_seconds: int,
     node_heartbeat_timeout_seconds: int,
     worker_heartbeat_timeout_seconds: int,
     *,
     locked_node: Node | None = None,
 ) -> bool:
-    """Release an expiry drain only after worker-idle and ComfyUI health evidence."""
+    """Release an expiry drain after host-process and ComfyUI evidence.
+
+    Recovery deliberately uses a two-phase observation.  The first healthy
+    host-wide zero-process probe is persisted as the recovery barrier.  A
+    later Scheduler heartbeat must then prove that ComfyUI is still healthy
+    and idle *after* that barrier; a subsequent current zero-process probe
+    triggers release.  This ordering prevents a pre-recovery ComfyUI heartbeat
+    from unlocking the GPU after an orphan Baker exits.  A restarted Agent's
+    in-memory ``current_jobs`` counter is never sufficient.
+    """
     node = locked_node
     if node is None:
         node = await db.scalar(
@@ -481,35 +503,76 @@ async def confirm_substance_gpu_recovery(
     if (
         reported_current_jobs != 0
         or worker.status != "ONLINE"
+        or not reported_agent_instance_id
+        or worker.agent_instance_id != reported_agent_instance_id
+        or process_probe_status != "HEALTHY"
+        or process_probe_checked_at is None
+        or active_baker_processes != 0
     ):
         return False
     observation_time = datetime.now(UTC)
-    if any(not entry.get("idle_observed_at") for entry in matching):
-        # Phase one: persist the exact original worker's idle observation.
-        # A Comfy heartbeat that predates this evidence is never sufficient.
+    process_observation = as_utc(process_probe_checked_at)
+    if (
+        observation_time < latest_lease_expiry
+        or process_observation < latest_lease_expiry
+        or process_observation > observation_time + timedelta(seconds=30)
+        or (observation_time - process_observation).total_seconds()
+        > worker_heartbeat_timeout_seconds
+    ):
+        return False
+    # Preserve the first valid zero-process observation instead of replacing
+    # it on every Agent heartbeat.  Replacing it would continually move the
+    # barrier ahead of Scheduler and make the two-phase handshake impossible.
+    persisted_idle_observations: list[datetime] = []
+    persisted_process_observations: list[datetime] = []
+    for entry in matching:
+        try:
+            idle_observed_at = as_utc(
+                datetime.fromisoformat(
+                    entry["idle_observed_at"].replace("Z", "+00:00")
+                )
+            )
+            persisted_process_observation = as_utc(
+                datetime.fromisoformat(
+                    entry["process_probe_checked_at"].replace("Z", "+00:00")
+                )
+            )
+        except (ValueError, TypeError):
+            continue
+        if (
+            idle_observed_at >= latest_lease_expiry
+            and idle_observed_at <= observation_time
+            and persisted_process_observation >= latest_lease_expiry
+            and persisted_process_observation
+            <= idle_observed_at + timedelta(seconds=30)
+        ):
+            persisted_idle_observations.append(idle_observed_at)
+            persisted_process_observations.append(persisted_process_observation)
+    if not persisted_idle_observations:
         for entry in entries:
-            if entry["worker_id"] == worker.id and not entry.get("idle_observed_at"):
+            if entry["worker_id"] == worker.id:
                 entry["idle_observed_at"] = observation_time.isoformat()
-        labels[SUBSTANCE_RECOVERY_REQUIRED_LABEL] = entries
-        ensure_substance_owned_drain(node, labels)
-        node.labels = labels
-        return False
-    try:
-        latest_idle_observation = max(
-            as_utc(datetime.fromisoformat(entry["idle_observed_at"].replace("Z", "+00:00")))
-            for entry in matching
+                entry["idle_observed_agent_instance_id"] = (
+                    reported_agent_instance_id
+                )
+                entry["process_probe_checked_at"] = process_observation.isoformat()
+        recovery_observed_after = observation_time
+    else:
+        recovery_observed_after = max(
+            *persisted_idle_observations,
+            *persisted_process_observations,
         )
-    except (ValueError, TypeError):
-        return False
-    if latest_idle_observation < latest_lease_expiry:
-        return False
+    labels[SUBSTANCE_RECOVERY_REQUIRED_LABEL] = entries
+    ensure_substance_owned_drain(node, labels)
+    node.labels = labels
     node_heartbeat = (
         as_utc(node.last_heartbeat_at) if node.last_heartbeat_at is not None else None
     )
     if (
         node.health != "ONLINE"
         or node_heartbeat is None
-        or node_heartbeat <= latest_idle_observation
+        or node_heartbeat < latest_lease_expiry
+        or node_heartbeat < recovery_observed_after
         or (observation_time - node_heartbeat).total_seconds()
         > node_heartbeat_timeout_seconds
         or node.current_jobs != 0
@@ -588,6 +651,13 @@ class WorkerHeartbeat(BaseModel):
     current_jobs: int = Field(ge=0, le=32)
     load_1m: float = Field(ge=0, le=4096)
     available_memory_mb: int = Field(ge=0)
+    agent_instance_id: str | None = Field(
+        default=None, pattern=r"^[a-f0-9]{32}$", max_length=32
+    )
+    agent_started_at: datetime | None = None
+    substance_process_probe_status: str = Field(default="NOT_RUN", max_length=24)
+    substance_process_probe_checked_at: datetime | None = None
+    substance_active_processes: int | None = Field(default=None, ge=0, le=64)
     codex_cli_version: str | None = Field(default=None, max_length=64)
     codex_auth_status: str = Field(default="UNKNOWN", max_length=24)
     codex_probe_status: str = Field(default="NOT_RUN", max_length=24)
@@ -606,6 +676,9 @@ class WorkerHeartbeat(BaseModel):
 class WorkerClaim(BaseModel):
     model_config = ConfigDict(extra="forbid")
     worker_id: str = Field(min_length=1, max_length=64)
+    agent_instance_id: str | None = Field(
+        default=None, pattern=r"^[a-f0-9]{32}$", max_length=32
+    )
     load_1m: float = Field(ge=0, le=4096)
     available_memory_mb: int = Field(ge=0)
 
@@ -655,6 +728,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version=runtime_version,
         lifespan=lifespan,
     )
+    # Worker requests use a short-lived HMAC timestamp, but the timestamp by
+    # itself does not make a signed recovery heartbeat single-use.  Keep a
+    # process-local replay window, protected by a lock so concurrent copies of
+    # the same signed request cannot both pass the check.  Deployments run one
+    # Asset API process; a future multi-process topology should move this
+    # bounded cache to Redis without changing the wire contract.
+    app.state.asset_worker_nonces = {}
+    app.state.asset_worker_nonce_lock = asyncio.Lock()
 
     @app.middleware("http")
     async def request_context(request: Request, call_next: Any) -> Any:
@@ -746,7 +827,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await db.commit()
         return Principal(id=client.id)
 
-    async def verify_worker(request: Request, raw_body: bytes) -> None:
+    async def verify_worker(
+        request: Request, raw_body: bytes, worker_id: str
+    ) -> None:
         timestamp = request.headers.get("x-asset-timestamp", "")
         nonce = request.headers.get("x-asset-nonce", "")
         signature = request.headers.get("x-asset-signature", "")
@@ -754,7 +837,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             stamp = int(timestamp)
         except ValueError as exc:
             raise HTTPException(401, detail={"code": "WORKER_AUTH_FAILED"}) from exc
-        if abs(int(time.time()) - stamp) > 30 or not nonce:
+        now = int(time.time())
+        if abs(now - stamp) > 30 or not nonce or len(nonce) > 128:
             raise HTTPException(401, detail={"code": "WORKER_AUTH_EXPIRED"})
         expected = sign_agent_request(
             request.method,
@@ -766,6 +850,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         if not hmac.compare_digest(signature, expected):
             raise HTTPException(401, detail={"code": "WORKER_AUTH_FAILED"})
+        nonces: dict[str, int] = request.app.state.asset_worker_nonces
+        nonce_lock: asyncio.Lock = request.app.state.asset_worker_nonce_lock
+        replay_key = f"{worker_id}:{nonce}"
+        async with nonce_lock:
+            for key, seen_at in list(nonces.items()):
+                if now - seen_at > 60:
+                    del nonces[key]
+            if replay_key in nonces:
+                raise HTTPException(
+                    409, detail={"code": "ASSET_WORKER_REQUEST_REPLAY"}
+                )
+            nonces[replay_key] = now
 
     def artifact_payload(artifact: AssetArtifact) -> dict[str, Any]:
         return {
@@ -813,7 +909,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ),
             "SUBSTANCE_LEASE_EXPIRED_RECOVERY_REQUIRED": (
                 "Substance 3D Baker 租约失效；为防止重复执行，3090-B 已保持恢复闭锁，"
-                "等待 Worker 空闲与 ComfyUI 恢复证据。"
+                "等待宿主 Baker 进程为零与 ComfyUI 恢复证据。"
             ),
             "SUBSTANCE_COMFYUI_CONTINUITY_FAILED": (
                 "烘焙期间 ComfyUI 进程身份或健康状态发生变化；3090-B 已保持恢复闭锁，"
@@ -1767,7 +1863,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: Request,
         db: Annotated[AsyncSession, Depends(session)],
     ) -> dict[str, Any]:
-        await verify_worker(request, await request.body())
+        await verify_worker(request, await request.body(), body.worker_id)
         substance_heartbeat_node: Node | None = None
         if is_substance_worker_id(body.worker_id):
             substance_heartbeat_node = await db.scalar(
@@ -1798,13 +1894,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         worker.max_concurrency = (
             1 if is_substance_worker_id(body.worker_id) else body.max_concurrency
         )
-        worker.current_jobs = body.current_jobs
+        durable_current_jobs = 0
+        if is_substance_worker_id(body.worker_id):
+            durable_current_jobs = int(
+                await db.scalar(
+                    select(func.count(AssetJob.id)).where(
+                        AssetJob.worker_id == body.worker_id,
+                        AssetJob.status.in_(["CLAIMED", "RUNNING", "CANCELLING"]),
+                    )
+                )
+                or 0
+            )
+        # A restarted scheduled task has an empty in-memory counter.  Never
+        # let that overwrite a durable lease still assigned to the same
+        # stable worker_id.
+        worker.current_jobs = max(body.current_jobs, durable_current_jobs)
+        worker.agent_instance_id = body.agent_instance_id
+        worker.agent_started_at = body.agent_started_at
+        worker.substance_process_probe_status = body.substance_process_probe_status
+        worker.substance_process_probe_checked_at = (
+            body.substance_process_probe_checked_at
+        )
+        worker.substance_active_processes = body.substance_active_processes
         worker.codex_cli_version = body.codex_cli_version
         worker.codex_auth_status = body.codex_auth_status
         worker.codex_probe_status = body.codex_probe_status
         worker.codex_probe_latency_ms = body.codex_probe_latency_ms
         worker.codex_last_checked_at = body.codex_last_checked_at
-        worker.codex_last_success_at = body.codex_last_success_at
+        # A failed probe after a Worker restart may have no in-memory success
+        # timestamp.  Preserve the durable historical success rather than
+        # erasing useful recovery evidence with a null heartbeat field.
+        if body.codex_last_success_at is not None:
+            worker.codex_last_success_at = body.codex_last_success_at
         worker.codex_error_code = body.codex_error_code
         worker.retopoflow_version = body.retopoflow_version
         worker.retopoflow_revision = body.retopoflow_revision
@@ -1812,7 +1933,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         worker.retopoflow_probe_latency_ms = body.retopoflow_probe_latency_ms
         worker.retopoflow_last_checked_at = body.retopoflow_last_checked_at
         worker.retopoflow_error_code = body.retopoflow_error_code
-        worker.last_heartbeat_at = datetime.now(UTC)
+        heartbeat_at = datetime.now(UTC)
+        worker.last_heartbeat_at = heartbeat_at
         resource_ok = (
             body.available_memory_mb >= cfg.asset_worker_min_available_memory_mb
             and body.load_1m / body.cpu_count <= cfg.asset_worker_max_load_per_cpu
@@ -1823,12 +1945,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if is_substance_worker_id(body.worker_id)
             else body.blender_version == "5.1.2"
         )
-        worker.status = "ONLINE" if runtime_version_ok and resource_ok else "DRAINING"
+        process_checked_at = (
+            as_utc(body.substance_process_probe_checked_at)
+            if body.substance_process_probe_checked_at is not None
+            else None
+        )
+        agent_started_at = (
+            as_utc(body.agent_started_at)
+            if body.agent_started_at is not None
+            else None
+        )
+        substance_process_evidence_ok = (
+            not is_substance_worker_id(body.worker_id)
+            or (
+                body.agent_instance_id is not None
+                and agent_started_at is not None
+                and process_checked_at is not None
+                and body.substance_process_probe_status == "HEALTHY"
+                and body.substance_active_processes is not None
+                and agent_started_at <= process_checked_at
+                and process_checked_at
+                >= heartbeat_at
+                - timedelta(seconds=cfg.asset_worker_heartbeat_timeout_seconds)
+                and process_checked_at <= heartbeat_at + timedelta(seconds=30)
+            )
+        )
+        worker.status = (
+            "ONLINE"
+            if runtime_version_ok and resource_ok and substance_process_evidence_ok
+            else "DRAINING"
+        )
         if is_substance_worker_id(worker.id):
             await confirm_substance_gpu_recovery(
                 db,
                 worker,
-                body.current_jobs,
+                worker.current_jobs,
+                body.agent_instance_id,
+                body.substance_process_probe_status,
+                body.substance_process_probe_checked_at,
+                body.substance_active_processes,
                 cfg.substance_pending_reservation_seconds,
                 cfg.node_heartbeat_timeout_seconds,
                 cfg.asset_worker_heartbeat_timeout_seconds,
@@ -1843,7 +1998,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: Request,
         db: Annotated[AsyncSession, Depends(session)],
     ) -> JSONResponse:
-        await verify_worker(request, await request.body())
+        await verify_worker(request, await request.body(), body.worker_id)
         expiry_cutoff = datetime.now(UTC)
         substance_expiry_hint = await db.scalar(
             select(AssetJob.id)
@@ -1918,12 +2073,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 # or ComfyUI assignment can use the physical 3090-B.
                 stale.status = "FAILED"
                 stale.stage = "RECOVERY_REQUIRED"
-                stale.stage_message = "Substance Worker 租约失效；等待 Worker 与 ComfyUI 恢复确认"
+                stale.stage_message = (
+                    "Substance Worker 租约失效；等待宿主进程探针与 ComfyUI 恢复确认"
+                )
                 stale.estimated_remaining_seconds = 0
                 stale.error_code = "SUBSTANCE_LEASE_EXPIRED_RECOVERY_REQUIRED"
                 stale.error_message = (
                     "native Baker lease expired; automatic retry is blocked until "
-                    "worker-idle and ComfyUI-online evidence is observed"
+                    "a healthy host process probe reports zero native Bakers and "
+                    "ComfyUI-online evidence is observed"
                 )
                 stale.finished_at = expired_at
             elif stale.attempt_count < cfg.asset_job_max_attempts:
@@ -1932,6 +2090,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 stale.stage_message = "Worker 租约失效，任务已安全返回队列"
                 stale.estimated_remaining_seconds = None
                 stale.worker_id = None
+                stale.worker_instance_id = None
                 stale.error_code = "ASSET_LEASE_EXPIRED"
                 stale.error_message = "worker lease expired; job returned to the asset queue"
             else:
@@ -1960,6 +2119,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "event": "asset.lease_expired",
                     "recovery_required": substance_expired,
                     "automatic_retry_blocked": substance_expired,
+                    "worker_instance_id": stale.worker_instance_id,
                 },
             )
         if expired:
@@ -1987,6 +2147,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             or body.load_1m / max(worker.cpu_count, 1) > cfg.asset_worker_max_load_per_cpu
         ):
             return JSONResponse({"job": None}, 200)
+        if is_substance_worker_id(worker.id) and (
+            body.agent_instance_id is None
+            or body.agent_instance_id != worker.agent_instance_id
+        ):
+            # A restarted scheduled task must heartbeat its new generation
+            # before it can claim.  This prevents an older process with the
+            # same stable worker_id from borrowing the newer instance's slot.
+            return JSONResponse({"job": None}, 200)
+        if is_substance_worker_id(worker.id):
+            existing_assignment = await db.scalar(
+                select(AssetJob.id)
+                .where(
+                    AssetJob.worker_id == worker.id,
+                    AssetJob.status.in_(["CLAIMED", "RUNNING", "CANCELLING"]),
+                )
+                .limit(1)
+            )
+            if existing_assignment is not None:
+                # The durable assignment is authoritative even if a restarted
+                # Agent reported current_jobs=0 or that counter was otherwise
+                # stale.  One stable Worker ID may never own two live leases.
+                return JSONResponse({"job": None}, 200)
         pending_substance_job_ids: list[str] = []
         if is_substance_worker_id(worker.id):
             # Lock the physical GPU node before the asset job row.  The GPU
@@ -2053,6 +2235,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
         else:
             claim_query = claim_query.where(AssetJob.job_type != "SUBSTANCE_BAKE_V1")
+            codex_probe_cutoff = datetime.now(UTC) - timedelta(
+                seconds=cfg.asset_codex_probe_max_age_seconds
+            )
+            codex_ready = (
+                worker.codex_auth_status == "AUTHENTICATED"
+                and worker.codex_probe_status == "HEALTHY"
+                and worker.codex_last_checked_at is not None
+                and as_utc(worker.codex_last_checked_at) >= codex_probe_cutoff
+            )
+            if not codex_ready:
+                # Codex planning is required only by the full retopology
+                # process. Keep UV and Blender-only retopology audit capacity
+                # available while the credential or live probe is unhealthy.
+                claim_query = claim_query.where(
+                    AssetJob.job_type.not_in(CODEX_REQUIRED_JOB_TYPES)
+                )
         claimed_row = (
             await db.execute(
                 claim_query
@@ -2106,6 +2304,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         now = datetime.now(UTC)
         job.status = "CLAIMED"
         job.worker_id = worker.id
+        job.worker_instance_id = (
+            body.agent_instance_id if is_substance_worker_id(worker.id) else None
+        )
         job.lease_token_hash = lease_token_hash(token)
         job.lease_expires_at = now + timedelta(seconds=cfg.asset_worker_lease_seconds)
         job.attempt_count += 1
@@ -2125,7 +2326,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await append_asset_event(
             db,
             job,
-            details={"event": "asset.claimed", "worker_id": worker.id},
+            details={
+                "event": "asset.claimed",
+                "worker_id": worker.id,
+                "worker_instance_id": job.worker_instance_id,
+            },
         )
         await db.commit()
         return JSONResponse(
@@ -3125,6 +3330,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job_id, lease, db, lock_substance_node=True
         )
         previous_worker_id = job.worker_id
+        previous_worker_instance_id = job.worker_instance_id
         requires_runtime_recovery = (
             job.job_type == "SUBSTANCE_BAKE_V1"
             and body.code == "SUBSTANCE_COMFYUI_CONTINUITY_FAILED"
@@ -3145,6 +3351,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.stage_message = "执行失败，任务已按策略返回队列重试"
             job.estimated_remaining_seconds = None
             job.worker_id = None
+            job.worker_instance_id = None
         else:
             job.status = "FAILED"
             job.stage = "FAILED"
@@ -3184,6 +3391,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "error_code": body.code,
                 "retryable": body.retryable,
                 "recovery_required": requires_runtime_recovery,
+                "worker_instance_id": previous_worker_instance_id,
             },
         )
         await db.commit()

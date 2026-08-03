@@ -291,6 +291,19 @@ class AssetWorker(Base):
     max_concurrency: Mapped[int] = mapped_column(Integer, default=2)
     current_jobs: Mapped[int] = mapped_column(Integer, default=0)
     cpu_count: Mapped[int] = mapped_column(Integer, default=1)
+    agent_instance_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    agent_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    substance_process_probe_status: Mapped[str] = mapped_column(
+        String(24), default="NOT_RUN"
+    )
+    substance_process_probe_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    substance_active_processes: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
     codex_cli_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     codex_auth_status: Mapped[str] = mapped_column(String(24), default="UNKNOWN")
     codex_probe_status: Mapped[str] = mapped_column(String(24), default="NOT_RUN")
@@ -346,6 +359,7 @@ class AssetJob(Base):
     worker_id: Mapped[str | None] = mapped_column(
         ForeignKey("asset_workers.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    worker_instance_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     lease_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True

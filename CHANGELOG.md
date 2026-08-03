@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.5.8（候选）— 2026-08-03
+
+- 三台 Asset Worker 改用各自独立、可写且持久化的 Codex home；真实探针、认证轮换、TLS 环境、
+  超时回收和同节点调用串行化恢复，不再跨节点复用 refresh token。
+- Codex 管理视图与领取门禁使用同一组新鲜度证据；只认精确 Linux Worker、在线心跳、有效认证和
+  未过期真实探针，过期状态显示为 `STALE`，不再出现“页面健康但任务持续排队”。
+- Substance Baker Agent v4 上报宿主级进程、Agent 代际和启动时间；长烘焙持续续租，租约歧义恢复
+  同时要求零 Baker 进程与其后的 ComfyUI 空闲证据，签名 nonce 禁止重放。
+- 每个 Substance 槽位增加全局单实例锁与持久作业互锁，Agent 重启、孤儿 Baker 或重复 Agent 均
+  fail closed，不能造成同槽双领或提前恢复 3090-B。
+- 新增迁移 `20260803_0012` 保存 Agent/进程证据；修复控制面部署脚本遗漏 `asset-api` 镜像的问题。
+- 不修改外部 ImageClip/ModelView 工作流、模型、prompt、参数、图拓扑或输出语义；生产任务清零、
+  v4 Agent 协调升级和真实 PBR canary 完成前保持候选状态。
+
 ## 1.5.7 — 2026-08-03
 
 - 修复 Windows Substance Baker 等待当前 ComfyUI 帧时 reservation 续租未提交的问题；PBR 取得

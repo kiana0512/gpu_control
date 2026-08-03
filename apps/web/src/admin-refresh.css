@@ -1201,6 +1201,9 @@
 .codex-runtime-card.unavailable {
   border-top-color: #ff6f83;
 }
+.codex-runtime-card.stale {
+  border-top-color: #f2b84b;
+}
 .codex-runtime-card header,
 .codex-machine,
 .codex-health-pill,
@@ -1264,6 +1267,14 @@
 .healthy .codex-health-pill i {
   background: var(--codex-green);
   box-shadow: 0 0 9px rgba(49, 221, 176, 0.5);
+}
+.stale .codex-health-pill {
+  color: #f6c86b;
+  background: rgba(242, 184, 75, 0.1);
+}
+.stale .codex-health-pill i {
+  background: #f2b84b;
+  box-shadow: 0 0 9px rgba(242, 184, 75, 0.42);
 }
 .codex-health-message {
   min-height: 42px;

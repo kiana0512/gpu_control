@@ -14,7 +14,7 @@ export interface NodeInfo {
   foreign_queue_detected: boolean;
   last_heartbeat_at?: string | null;
   codex_cli?: {
-    health: "HEALTHY" | "CHECKING" | "DEGRADED" | "UNAVAILABLE";
+    health: "HEALTHY" | "CHECKING" | "DEGRADED" | "STALE" | "UNAVAILABLE";
     host_entry_installed: boolean;
     host_version: string | null;
     runtime_version: string | null;
@@ -23,6 +23,11 @@ export interface NodeInfo {
     probe_latency_ms: number | null;
     last_checked_at: string | null;
     last_success_at: string | null;
+    worker_status: string | null;
+    worker_last_heartbeat_at: string | null;
+    heartbeat_fresh: boolean;
+    probe_fresh: boolean;
+    eligibility_reason: string;
     error_code: string | null;
     task: {
       job_id: string;
@@ -41,7 +46,7 @@ export interface NodeInfo {
       output_contract: string[];
       is_active: boolean;
     } | null;
-    scheduler_eligible: false;
+    scheduler_eligible: boolean;
   };
 }
 export interface JobInfo {

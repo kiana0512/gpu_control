@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     asset_worker_hmac_secret: str = "development-only-change-me"
     asset_worker_lease_seconds: int = Field(300, ge=30, le=3600)
     asset_worker_heartbeat_timeout_seconds: int = Field(30, ge=5, le=600)
+    asset_codex_probe_max_age_seconds: int = Field(3600, ge=300, le=86400)
     asset_worker_max_concurrency: int = Field(2, ge=1, le=32)
     asset_worker_max_load_per_cpu: float = Field(0.85, ge=0.1, le=4.0)
     asset_worker_min_available_memory_mb: int = Field(8192, ge=1024, le=1_048_576)

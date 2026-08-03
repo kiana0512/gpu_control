@@ -3,6 +3,11 @@ import { computed, ref } from "vue";
 import { api } from "../api";
 import type { AssetProcessingOverview, NodeInfo } from "../types";
 import { useAutoRefresh } from "../composables/useAutoRefresh";
+import {
+  codexHealthLabel,
+  codexHealthMessage,
+  healthyCodexProbeAverage,
+} from "../codexPresentation";
 
 const nodes = ref<NodeInfo[]>([]);
 const assets = ref<AssetProcessingOverview | null>(null);
@@ -15,8 +20,7 @@ const runtimes = computed(() =>
 );
 const healthyCount = computed(
   () =>
-    runtimes.value.filter((node) => node.codex_cli?.health === "HEALTHY")
-      .length,
+    runtimes.value.filter((node) => node.codex_cli?.scheduler_eligible).length,
 );
 const activeCount = computed(
   () => runtimes.value.filter((node) => node.codex_cli?.task?.is_active).length,
@@ -29,14 +33,7 @@ const authenticatedCount = computed(
       ),
     ).length,
 );
-const averageLatency = computed(() => {
-  const values = runtimes.value
-    .map((node) => node.codex_cli?.probe_latency_ms)
-    .filter((value): value is number => value != null);
-  return values.length
-    ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length)
-    : null;
-});
+const averageLatency = computed(() => healthyCodexProbeAverage(runtimes.value));
 
 const workerNode = computed(() => {
   const result = new Map<string, string>();
@@ -56,20 +53,10 @@ function health(node: NodeInfo) {
   return node.codex_cli?.health ?? "CHECKING";
 }
 function healthLabel(node: NodeInfo) {
-  return {
-    HEALTHY: "真实调用正常",
-    CHECKING: "等待探针",
-    DEGRADED: "调用异常",
-    UNAVAILABLE: "未安装",
-  }[health(node)];
+  return codexHealthLabel(node);
 }
 function healthMessage(node: NodeInfo) {
-  const runtime = node.codex_cli;
-  if (!runtime) return "节点尚未上报 Codex CLI 状态";
-  if (runtime.health === "HEALTHY")
-    return `认证有效，真实 exec 探针已通过${runtime.probe_latency_ms == null ? "" : ` · ${runtime.probe_latency_ms} ms`}`;
-  if (runtime.health === "CHECKING") return "已发现命令，正在核验登录与调用";
-  return runtime.error_code ?? "真实调用探针未通过";
+  return codexHealthMessage(node);
 }
 function time(value: string | null | undefined) {
   if (!value) return "尚未成功";

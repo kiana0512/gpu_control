@@ -1409,6 +1409,177 @@ async def test_admin_login_and_destructive_confirmation(tmp_path: Path) -> None:
         assert missing_confirmation.status_code == 409
 
 
+async def test_admin_nodes_selects_linux_codex_worker_not_newer_windows_baker(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        now = datetime.now(UTC)
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            labels = dict(node.labels or {})
+            labels.update(
+                {
+                    "codex_cli_installed": True,
+                    "codex_cli_version": "codex-cli 0.146.0-alpha.3.1",
+                }
+            )
+            node.labels = labels
+            db.add_all(
+                [
+                    AssetWorker(
+                        id="asset-worker-3090-b",
+                        display_name="3090-B CPU Worker",
+                        node_id="worker-3090-b",
+                        hostname="worker-3090-b-wsl",
+                        status="ONLINE",
+                        blender_version="5.1.2",
+                        skill_version="asset-skills-2026.07.28",
+                        max_concurrency=4,
+                        current_jobs=0,
+                        cpu_count=64,
+                        codex_cli_version="codex-cli 0.146.0-alpha.3.1",
+                        codex_auth_status="AUTHENTICATED",
+                        codex_probe_status="HEALTHY",
+                        codex_probe_latency_ms=12000,
+                        codex_last_checked_at=now,
+                        codex_last_success_at=now,
+                        last_heartbeat_at=now,
+                        updated_at=now,
+                    ),
+                    AssetWorker(
+                        id="asset-worker-3090-b-windows-01",
+                        display_name="3090-B Windows Substance Baker #01",
+                        node_id="worker-3090-b",
+                        hostname="LILITHGAMES3",
+                        status="ONLINE",
+                        blender_version="substance-15.1.0",
+                        skill_version="substance-baker-2026.08.03-v4",
+                        max_concurrency=1,
+                        current_jobs=0,
+                        cpu_count=64,
+                        codex_auth_status="UNKNOWN",
+                        codex_probe_status="NOT_RUN",
+                        last_heartbeat_at=now + timedelta(seconds=1),
+                        updated_at=now + timedelta(seconds=1),
+                    ),
+                ]
+            )
+            await db.commit()
+
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        response = await client.get("/admin/nodes", headers=auth)
+        assert response.status_code == 200, response.text
+        worker_3090_b = next(item for item in response.json() if item["id"] == "worker-3090-b")
+        runtime = worker_3090_b["codex_cli"]
+        assert runtime["health"] == "HEALTHY"
+        assert runtime["runtime_version"] == "codex-cli 0.146.0-alpha.3.1"
+        assert runtime["auth_status"] == "AUTHENTICATED"
+        assert runtime["probe_status"] == "HEALTHY"
+        assert runtime["heartbeat_fresh"] is True
+        assert runtime["probe_fresh"] is True
+        assert runtime["scheduler_eligible"] is True
+        assert runtime["eligibility_reason"] == "ELIGIBLE"
+
+
+async def test_admin_nodes_marks_stale_codex_worker_or_probe_ineligible(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        now = datetime.now(UTC)
+        settings = app.state.settings
+        async with app.state.db.session() as db:
+            control = await db.get(Node, "control-4090")
+            worker_a = await db.get(Node, "worker-3090-a")
+            assert control is not None
+            assert worker_a is not None
+            for node in (control, worker_a):
+                labels = dict(node.labels or {})
+                labels.update(
+                    {
+                        "codex_cli_installed": True,
+                        "codex_cli_version": "codex-cli 0.146.0-alpha.3.1",
+                    }
+                )
+                node.labels = labels
+
+            db.add_all(
+                [
+                    AssetWorker(
+                        id="asset-control-4090",
+                        display_name="4090 CPU Worker",
+                        node_id="control-4090",
+                        hostname="control-4090",
+                        status="ONLINE",
+                        blender_version="5.1.2",
+                        skill_version="asset-skills-2026.07.28-v3",
+                        max_concurrency=2,
+                        current_jobs=0,
+                        cpu_count=24,
+                        codex_cli_version="codex-cli 0.146.0-alpha.3.1",
+                        codex_auth_status="AUTHENTICATED",
+                        codex_probe_status="HEALTHY",
+                        codex_probe_latency_ms=7000,
+                        codex_last_checked_at=now,
+                        codex_last_success_at=now,
+                        last_heartbeat_at=now
+                        - timedelta(seconds=settings.asset_worker_heartbeat_timeout_seconds + 60),
+                        updated_at=now,
+                    ),
+                    AssetWorker(
+                        id="asset-worker-3090-a",
+                        display_name="3090-A CPU Worker",
+                        node_id="worker-3090-a",
+                        hostname="worker-3090-a",
+                        status="ONLINE",
+                        blender_version="5.1.2",
+                        skill_version="asset-skills-2026.07.28-v3",
+                        max_concurrency=3,
+                        current_jobs=0,
+                        cpu_count=32,
+                        codex_cli_version="codex-cli 0.146.0-alpha.3.1",
+                        codex_auth_status="AUTHENTICATED",
+                        codex_probe_status="HEALTHY",
+                        codex_probe_latency_ms=12000,
+                        codex_last_checked_at=now
+                        - timedelta(seconds=settings.asset_codex_probe_max_age_seconds + 60),
+                        codex_last_success_at=now
+                        - timedelta(seconds=settings.asset_codex_probe_max_age_seconds + 60),
+                        last_heartbeat_at=now,
+                        updated_at=now,
+                    ),
+                ]
+            )
+            await db.commit()
+
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        response = await client.get("/admin/nodes", headers=auth)
+        assert response.status_code == 200, response.text
+        runtimes = {item["id"]: item["codex_cli"] for item in response.json()}
+
+        stale_worker = runtimes["control-4090"]
+        assert stale_worker["health"] == "STALE"
+        assert stale_worker["heartbeat_fresh"] is False
+        assert stale_worker["probe_fresh"] is True
+        assert stale_worker["scheduler_eligible"] is False
+        assert stale_worker["eligibility_reason"] == "ASSET_WORKER_HEARTBEAT_STALE"
+
+        stale_probe = runtimes["worker-3090-a"]
+        assert stale_probe["health"] == "STALE"
+        assert stale_probe["heartbeat_fresh"] is True
+        assert stale_probe["probe_fresh"] is False
+        assert stale_probe["scheduler_eligible"] is False
+        assert stale_probe["eligibility_reason"] == "CODEX_PROBE_STALE"
+
+
 async def test_admin_asset_processing_reports_real_workers_jobs_and_artifacts(
     tmp_path: Path,
 ) -> None:

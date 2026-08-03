@@ -154,6 +154,41 @@ async def signed_post(
     return await client.post(path, content=body, headers=worker_headers(settings, path, body))
 
 
+async def test_asset_worker_signed_request_replay_is_rejected(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        path = "/internal/v1/assets/workers/heartbeat"
+        payload = {
+            "worker_id": "asset-worker-3090-a",
+            "node_id": "worker-3090-a",
+            "display_name": "3090-A CPU Worker",
+            "hostname": "worker-3090-a",
+            "blender_version": "5.1.2",
+            "skill_version": "asset-skills-test",
+            "cpu_count": 32,
+            "max_concurrency": 1,
+            "current_jobs": 0,
+            "load_1m": 0,
+            "available_memory_mb": 100000,
+        }
+        body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        headers = worker_headers(settings, path, body)
+
+        first = await client.post(path, content=body, headers=headers)
+        assert first.status_code == 200, first.text
+        replay = await client.post(path, content=body, headers=headers)
+        assert replay.status_code == 409, replay.text
+        assert replay.json()["detail"]["code"] == "ASSET_WORKER_REQUEST_REPLAY"
+
+        concurrent_headers = worker_headers(settings, path, body)
+        concurrent = await asyncio.gather(
+            client.post(path, content=body, headers=concurrent_headers),
+            client.post(path, content=body, headers=concurrent_headers),
+        )
+        assert sorted(response.status_code for response in concurrent) == [200, 409]
+
+
 async def create_minimal_substance_job(
     client: httpx.AsyncClient,
     external_asset_id: str,
@@ -189,7 +224,18 @@ async def register_substance_worker(
     client: httpx.AsyncClient,
     settings: Settings,
     worker_id: str,
-) -> None:
+    *,
+    generation: str = "initial",
+    current_jobs: int = 0,
+    process_probe_status: str = "HEALTHY",
+    active_baker_processes: int | None = 0,
+    process_probe_checked_at: datetime | None = None,
+    expected_status: str = "ONLINE",
+) -> httpx.Response:
+    checked_at = process_probe_checked_at or datetime.now(UTC)
+    agent_instance_id = hashlib.sha256(
+        f"{worker_id}:{generation}".encode()
+    ).hexdigest()[:32]
     response = await signed_post(
         client,
         settings,
@@ -200,29 +246,41 @@ async def register_substance_worker(
             "display_name": worker_id,
             "hostname": "LILITHGAMES3",
             "blender_version": "substance-15.1.0",
-            "skill_version": "substance-baker-2026.08.03-v3",
+            "skill_version": "substance-baker-2026.08.03-v4",
             "cpu_count": 128,
             "max_concurrency": 1,
-            "current_jobs": 0,
+            "current_jobs": current_jobs,
             "load_1m": 0,
             "available_memory_mb": 100000,
+            "agent_instance_id": agent_instance_id,
+            "agent_started_at": (checked_at - timedelta(minutes=1)).isoformat(),
+            "substance_process_probe_status": process_probe_status,
+            "substance_process_probe_checked_at": checked_at.isoformat(),
+            "substance_active_processes": active_baker_processes,
         },
     )
     assert response.status_code == 200, response.text
-    assert response.json()["status"] == "ONLINE"
+    assert response.json()["status"] == expected_status
+    return response
 
 
 async def claim_substance_job(
     client: httpx.AsyncClient,
     settings: Settings,
     worker_id: str,
+    *,
+    generation: str = "initial",
 ) -> httpx.Response:
+    agent_instance_id = hashlib.sha256(
+        f"{worker_id}:{generation}".encode()
+    ).hexdigest()[:32]
     return await signed_post(
         client,
         settings,
         "/internal/v1/assets/jobs/claim",
         {
             "worker_id": worker_id,
+            "agent_instance_id": agent_instance_id,
             "load_1m": 0,
             "available_memory_mb": 100000,
         },
@@ -265,6 +323,122 @@ async def test_legacy_substance_agent_cannot_claim_or_stop_comfyui(
         claimed = await claim_substance_job(client, settings, worker_id)
         assert claimed.status_code == 200, claimed.text
         assert claimed.json()["job"] is None
+
+
+async def test_substance_v4_without_host_process_evidence_is_drained(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        worker_id = "asset-worker-3090-b-windows-01"
+        heartbeat = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/workers/heartbeat",
+            {
+                "worker_id": worker_id,
+                "node_id": "worker-3090-b",
+                "display_name": "incomplete v4 Windows Substance Baker",
+                "hostname": "LILITHGAMES3",
+                "blender_version": "substance-15.1.0",
+                "skill_version": "substance-baker-2026.08.03-v4",
+                "cpu_count": 128,
+                "max_concurrency": 1,
+                "current_jobs": 0,
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+            },
+        )
+        assert heartbeat.status_code == 200, heartbeat.text
+        assert heartbeat.json()["status"] == "DRAINING"
+
+        created = await create_minimal_substance_job(
+            client, "missing-host-process-evidence"
+        )
+        assert created.status_code == 202, created.text
+        claimed = await claim_substance_job(client, settings, worker_id)
+        assert claimed.json()["job"] is None
+
+
+async def test_substance_claim_is_bound_to_heartbeat_agent_generation(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        worker_id = "asset-worker-3090-b-windows-01"
+        await register_substance_worker(
+            client, settings, worker_id, generation="current"
+        )
+        created = await create_minimal_substance_job(
+            client, "claim-generation-binding"
+        )
+        assert created.status_code == 202, created.text
+
+        stale_instance = await claim_substance_job(
+            client, settings, worker_id, generation="previous"
+        )
+        assert stale_instance.status_code == 200, stale_instance.text
+        assert stale_instance.json()["job"] is None
+
+        current_instance = await claim_substance_job(
+            client, settings, worker_id, generation="current"
+        )
+        assert current_instance.status_code == 200, current_instance.text
+        assert current_instance.json()["job"]["job_id"] == created.json()["job_id"]
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            job = await db.get(AssetJob, created.json()["job_id"])
+            assert job is not None
+            assert job.worker_instance_id == hashlib.sha256(
+                f"{worker_id}:current".encode()
+            ).hexdigest()[:32]
+
+
+async def test_restarted_substance_instance_cannot_claim_over_live_assignment(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        worker_id = "asset-worker-3090-b-windows-01"
+        await register_substance_worker(
+            client, settings, worker_id, generation="original"
+        )
+        first = await create_minimal_substance_job(client, "generation-live-first")
+        first_claim = await claim_substance_job(
+            client, settings, worker_id, generation="original"
+        )
+        assert first_claim.json()["job"]["job_id"] == first.json()["job_id"]
+        second = await create_minimal_substance_job(
+            client, "generation-live-second"
+        )
+
+        # The scheduled task restarts while the original instance still owns
+        # a durable lease.  Its empty in-memory counter must not erase that
+        # assignment even though the stable worker_id is unchanged.
+        await register_substance_worker(
+            client,
+            settings,
+            worker_id,
+            generation="restarted",
+            current_jobs=0,
+            active_baker_processes=1,
+        )
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            worker = await db.get(AssetWorker, worker_id)
+            assert worker is not None
+            assert worker.current_jobs == 1
+            # Even if a counter repair or concurrent writer later regresses
+            # this field, claim has its own durable-job interlock.
+            worker.current_jobs = 0
+            await db.commit()
+
+        duplicate = await claim_substance_job(
+            client, settings, worker_id, generation="restarted"
+        )
+        assert duplicate.status_code == 200, duplicate.text
+        assert duplicate.json()["job"] is None
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            first_job = await db.get(AssetJob, first.json()["job_id"])
+            second_job = await db.get(AssetJob, second.json()["job_id"])
+            assert first_job is not None and second_job is not None
+            assert first_job.status == "CLAIMED"
+            assert second_job.status == "QUEUED"
 
 
 async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_published(
@@ -328,35 +502,12 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
         )
         assert linux_claim.json()["job"] is None
 
-        heartbeat = await signed_post(
-            client,
-            settings,
-            "/internal/v1/assets/workers/heartbeat",
-            {
-                "worker_id": "asset-worker-3090-b-windows",
-                "node_id": "worker-3090-b",
-                "display_name": "3090-B Windows Substance Baker",
-                "hostname": "LILITHGAMES3",
-                "blender_version": "substance-15.1.0",
-                "skill_version": "substance-baker-2026.08.03-v3",
-                "cpu_count": 128,
-                "max_concurrency": 32,
-                "current_jobs": 0,
-                "load_1m": 0,
-                "available_memory_mb": 100000,
-            },
+        worker_id = "asset-worker-3090-b-windows"
+        heartbeat = await register_substance_worker(
+            client, settings, worker_id
         )
         assert heartbeat.json()["status"] == "ONLINE"
-        claim = await signed_post(
-            client,
-            settings,
-            "/internal/v1/assets/jobs/claim",
-            {
-                "worker_id": "asset-worker-3090-b-windows",
-                "load_1m": 0,
-                "available_memory_mb": 100000,
-            },
-        )
+        claim = await claim_substance_job(client, settings, worker_id)
         leased = claim.json()["job"]
         assert leased["job_id"] == job_id
 
@@ -981,6 +1132,9 @@ async def test_expired_substance_lease_blocks_reclaim_until_explicit_health_evid
             assert len(recovery_entries) == 1
             assert recovery_entries[0]["job_id"] == job_id
             assert recovery_entries[0]["worker_id"] == first_worker
+            assert recovery_entries[0]["worker_instance_id"] == hashlib.sha256(
+                f"{first_worker}:initial".encode()
+            ).hexdigest()[:32]
             assert recovery_entries[0]["lease_expired_at"]
             assert follow_up.status == "QUEUED"
             assert follow_up.attempt_count == 0
@@ -989,58 +1143,49 @@ async def test_expired_substance_lease_blocks_reclaim_until_explicit_health_evid
         assert still_blocked.status_code == 200, still_blocked.text
         assert still_blocked.json()["job"] is None
 
-        # Even a fresh ONLINE heartbeat newer than lease expiry is insufficient
-        # when it predates the original worker's first observed-idle evidence.
+        # A fresh ComfyUI heartbeat that arrived before the first host-wide
+        # zero-process observation must not be reusable for recovery.
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")
             assert node is not None
             node.last_heartbeat_at = datetime.now(UTC)
             await db.commit()
+
+        # The exact Worker now establishes the first zero-process barrier, but
+        # the pre-existing ComfyUI heartbeat cannot release the fence.
         await register_substance_worker(client, settings, first_worker)
-        no_comfy_evidence = await claim_substance_job(client, settings, second_worker)
-        assert no_comfy_evidence.status_code == 200, no_comfy_evidence.text
-        assert no_comfy_evidence.json()["job"] is None
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")
             assert node is not None
             recovery_entry = node.labels["substance_bake_recovery_required"][0]
             assert recovery_entry["idle_observed_at"]
-            assert as_utc(node.last_heartbeat_at) < datetime.fromisoformat(
+            first_idle_observation = datetime.fromisoformat(
                 recovery_entry["idle_observed_at"]
             )
-            # A heartbeat newer than idle evidence but outside the configured
-            # freshness window must also remain fail-closed.
-            old_idle = datetime.now(UTC) - timedelta(
-                seconds=settings.node_heartbeat_timeout_seconds * 2
-            )
-            labels = dict(node.labels)
-            entries = list(labels["substance_bake_recovery_required"])
-            entries[0] = {
-                **entries[0],
-                "lease_expired_at": (old_idle - timedelta(seconds=1)).isoformat(),
-                "idle_observed_at": old_idle.isoformat(),
-            }
-            labels["substance_bake_recovery_required"] = entries
-            node.labels = labels
-            node.last_heartbeat_at = datetime.now(UTC) - timedelta(
-                seconds=settings.node_heartbeat_timeout_seconds + 1
-            )
-            await db.commit()
+            assert node.last_heartbeat_at is not None
+            assert as_utc(node.last_heartbeat_at) < as_utc(first_idle_observation)
 
+        # Repeated zero-process probes preserve the first barrier instead of
+        # moving it forward, but still cannot unlock against the older node
+        # observation.
         await register_substance_worker(client, settings, first_worker)
-        stale_comfy_evidence = await claim_substance_job(
-            client, settings, second_worker
-        )
-        assert stale_comfy_evidence.json()["job"] is None
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")
             assert node is not None
             assert "substance_bake_recovery_required" in node.labels
+            recovery_entry = node.labels["substance_bake_recovery_required"][0]
+            assert datetime.fromisoformat(
+                recovery_entry["idle_observed_at"]
+            ) == first_idle_observation
+
+            # Scheduler publishes a new ComfyUI observation only after the
+            # persisted zero-process barrier.
             node.last_heartbeat_at = datetime.now(UTC)
+            assert as_utc(node.last_heartbeat_at) >= as_utc(first_idle_observation)
             await db.commit()
 
-        # A fresh idle heartbeat from the same Worker plus the post-idle
-        # ComfyUI heartbeat releases the recovery interlock.
+        # A current zero-process probe now brackets the later ComfyUI evidence
+        # and releases the recovery interlock.
         await register_substance_worker(client, settings, first_worker)
         recovered = await claim_substance_job(client, settings, second_worker)
         assert recovered.status_code == 200, recovered.text
@@ -1053,6 +1198,124 @@ async def test_expired_substance_lease_blocks_reclaim_until_explicit_health_evid
             assert node.labels["substance_bake_fence_job_ids"] == [
                 follow_up_job_id
             ]
+
+
+async def test_substance_recovery_restores_asset_owned_drain_to_active(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        first_worker = "asset-worker-3090-b-windows-01"
+        second_worker = "asset-worker-3090-b-windows-02"
+        created = await create_minimal_substance_job(
+            client, "lease-expiry-restores-active"
+        )
+        job_id = created.json()["job_id"]
+        await register_substance_worker(client, settings, first_worker)
+        claimed = await claim_substance_job(client, settings, first_worker)
+        assert claimed.json()["job"]["job_id"] == job_id
+
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            job = await db.get(AssetJob, job_id)
+            assert job is not None
+            job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            await db.commit()
+
+        await register_substance_worker(client, settings, second_worker)
+        swept = await claim_substance_job(client, settings, second_worker)
+        assert swept.json()["job"] is None
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "DRAINING"
+            assert node.labels["substance_bake_drain_owner"] == "asset-api"
+            node.last_heartbeat_at = datetime.now(UTC)
+            recovery_entry = node.labels["substance_bake_recovery_required"][0]
+            lease_expired_at = datetime.fromisoformat(
+                recovery_entry["lease_expired_at"]
+            )
+            await db.commit()
+
+        # A restarted Agent has reset its in-memory current_jobs to zero, but
+        # the host-wide process probe still sees the orphaned native Baker.
+        # Recovery must remain fail-closed.
+        await register_substance_worker(
+            client,
+            settings,
+            first_worker,
+            generation="restarted",
+            active_baker_processes=1,
+        )
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "DRAINING"
+            assert "substance_bake_recovery_required" in node.labels
+
+        # A failed host process provider is unknown, never an asserted zero.
+        await register_substance_worker(
+            client,
+            settings,
+            first_worker,
+            generation="restarted",
+            process_probe_status="FAILED",
+            active_baker_processes=None,
+            expected_status="DRAINING",
+        )
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert "substance_bake_recovery_required" in node.labels
+
+        # A zero-process observation made before the ambiguous lease expiry is
+        # also insufficient, even if delivered by the current Agent instance.
+        await register_substance_worker(
+            client,
+            settings,
+            first_worker,
+            generation="restarted",
+            process_probe_checked_at=lease_expired_at - timedelta(seconds=1),
+        )
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert "substance_bake_recovery_required" in node.labels
+
+        # The first fresh, healthy host-wide zero after expiry establishes the
+        # recovery barrier.  The older ComfyUI observation cannot release it.
+        await register_substance_worker(
+            client,
+            settings,
+            first_worker,
+            generation="restarted",
+            active_baker_processes=0,
+        )
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "DRAINING"
+            recovery_entry = node.labels["substance_bake_recovery_required"][0]
+            first_idle_observation = datetime.fromisoformat(
+                recovery_entry["idle_observed_at"]
+            )
+            node.last_heartbeat_at = datetime.now(UTC)
+            assert as_utc(node.last_heartbeat_at) >= as_utc(first_idle_observation)
+            await db.commit()
+
+        # A later empty ComfyUI heartbeat followed by a current zero-process
+        # probe completes the two-phase recovery and restores ACTIVE.
+        await register_substance_worker(
+            client,
+            settings,
+            first_worker,
+            generation="restarted",
+            active_baker_processes=0,
+        )
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "ACTIVE"
+            assert "substance_bake_recovery_required" not in node.labels
+            assert "substance_bake_drain_owner" not in node.labels
 
 
 async def test_uv_asset_job_contract_worker_concurrency_and_atomic_artifacts(
@@ -1235,8 +1498,15 @@ async def test_uv_asset_rejects_unsafe_filename_and_unknown_options(tmp_path: Pa
 
 
 async def register_asset_worker(
-    client: httpx.AsyncClient, settings: Settings
+    client: httpx.AsyncClient,
+    settings: Settings,
+    *,
+    codex_auth_status: str = "AUTHENTICATED",
+    codex_probe_status: str = "HEALTHY",
+    codex_last_checked_at: datetime | None = None,
+    codex_error_code: str | None = None,
 ) -> None:
+    checked_at = codex_last_checked_at or datetime.now(UTC)
     response = await signed_post(
         client,
         settings,
@@ -1253,6 +1523,15 @@ async def register_asset_worker(
             "current_jobs": 0,
             "load_1m": 1.0,
             "available_memory_mb": 100000,
+            "codex_cli_version": "codex-cli 0.146.0-alpha.3.1",
+            "codex_auth_status": codex_auth_status,
+            "codex_probe_status": codex_probe_status,
+            "codex_probe_latency_ms": 12000,
+            "codex_last_checked_at": checked_at.isoformat(),
+            "codex_last_success_at": (
+                checked_at.isoformat() if codex_probe_status == "HEALTHY" else None
+            ),
+            "codex_error_code": codex_error_code,
         },
     )
     assert response.status_code == 200, response.text
@@ -1430,6 +1709,145 @@ async def test_cpu_asset_claim_prioritizes_production_and_keeps_pool_fifo(
         ]
 
 
+async def test_codex_unhealthy_worker_skips_process_but_keeps_cpu_queue_moving(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        now = datetime.now(UTC)
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            db.add_all(
+                [
+                    queued_asset_job(
+                        "codex-process-blocked",
+                        client_id="asset-client",
+                        job_type="RETOPOLOGY_PROCESS_V1",
+                        created_at=now - timedelta(minutes=3),
+                    ),
+                    queued_asset_job(
+                        "uv-still-runs",
+                        client_id="asset-client",
+                        job_type="UV_PROCESS_V2",
+                        created_at=now - timedelta(minutes=2),
+                    ),
+                    queued_asset_job(
+                        "audit-still-runs",
+                        client_id="asset-client",
+                        job_type="RETOPOLOGY_AUDIT",
+                        created_at=now - timedelta(minutes=1),
+                    ),
+                ]
+            )
+            await db.commit()
+
+        await register_asset_worker(
+            client,
+            settings,
+            codex_probe_status="FAILED",
+            codex_error_code="AUTH_REFRESH_REUSED",
+        )
+        claimed = [str((await claim_asset_job(client, settings))["job_id"]) for _ in range(2)]
+        assert claimed == ["uv-still-runs", "audit-still-runs"]
+
+        no_more_eligible_work = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                "worker_id": "asset-worker-3090-a",
+                "load_1m": 1.0,
+                "available_memory_mb": 100000,
+            },
+        )
+        assert no_more_eligible_work.json()["job"] is None
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            blocked = await db.get(AssetJob, "codex-process-blocked")
+            assert blocked is not None
+            assert blocked.status == "QUEUED"
+            assert blocked.worker_id is None
+
+
+async def test_codex_process_claim_requires_a_fresh_healthy_probe(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        now = datetime.now(UTC)
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            db.add(
+                queued_asset_job(
+                    "codex-process-freshness",
+                    client_id="asset-client",
+                    job_type="RETOPOLOGY_PROCESS_V1",
+                    created_at=now,
+                )
+            )
+            await db.commit()
+
+        await register_asset_worker(
+            client,
+            settings,
+            codex_last_checked_at=now
+            - timedelta(seconds=settings.asset_codex_probe_max_age_seconds + 1),
+        )
+        stale = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                "worker_id": "asset-worker-3090-a",
+                "load_1m": 1.0,
+                "available_memory_mb": 100000,
+            },
+        )
+        assert stale.json()["job"] is None
+
+        await register_asset_worker(client, settings, codex_last_checked_at=datetime.now(UTC))
+        claimed = await claim_asset_job(client, settings)
+        assert claimed["job_id"] == "codex-process-freshness"
+
+
+async def test_failed_heartbeat_preserves_historical_codex_success(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        successful_at = datetime.now(UTC) - timedelta(minutes=1)
+        await register_asset_worker(
+            client,
+            settings,
+            codex_last_checked_at=successful_at,
+        )
+        failed = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/workers/heartbeat",
+            {
+                "worker_id": "asset-worker-3090-a",
+                "node_id": "worker-3090-a",
+                "display_name": "3090-A Asset Worker",
+                "hostname": "lilithgames1",
+                "blender_version": "5.1.2",
+                "skill_version": "asset-skills-2026.07.28",
+                "cpu_count": 32,
+                "max_concurrency": 4,
+                "current_jobs": 0,
+                "load_1m": 1.0,
+                "available_memory_mb": 100000,
+                "codex_cli_version": "codex-cli 0.146.0-alpha.3.1",
+                "codex_auth_status": "AUTHENTICATED",
+                "codex_probe_status": "FAILED",
+                "codex_probe_latency_ms": 8000,
+                "codex_last_checked_at": datetime.now(UTC).isoformat(),
+                "codex_error_code": "AUTH_REFRESH_REUSED",
+            },
+        )
+        assert failed.status_code == 200, failed.text
+
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            worker = await db.get(AssetWorker, "asset-worker-3090-a")
+            assert worker is not None
+            assert worker.codex_probe_status == "FAILED"
+            assert as_utc(worker.codex_last_success_at) == successful_at
+
+
 async def test_substance_claim_prioritizes_production_and_keeps_pool_fifo(
     tmp_path: Path,
 ) -> None:
@@ -1485,35 +1903,11 @@ async def test_substance_claim_prioritizes_production_and_keeps_pool_fifo(
         claimed: list[str] = []
         for index in range(4):
             worker_id = f"asset-worker-3090-b-windows-{index:02d}"
-            heartbeat = await signed_post(
-                client,
-                settings,
-                "/internal/v1/assets/workers/heartbeat",
-                {
-                    "worker_id": worker_id,
-                    "node_id": "worker-3090-b",
-                    "display_name": f"3090-B Windows Substance Baker #{index}",
-                    "hostname": "LILITHGAMES3",
-                    "blender_version": "substance-15.1.0",
-                    "skill_version": "substance-baker-2026.08.03-v3",
-                    "cpu_count": 128,
-                    "max_concurrency": 1,
-                    "current_jobs": 0,
-                    "load_1m": 0,
-                    "available_memory_mb": 100000,
-                },
+            heartbeat = await register_substance_worker(
+                client, settings, worker_id
             )
             assert heartbeat.json()["status"] == "ONLINE"
-            response = await signed_post(
-                client,
-                settings,
-                "/internal/v1/assets/jobs/claim",
-                {
-                    "worker_id": worker_id,
-                    "load_1m": 0,
-                    "available_memory_mb": 100000,
-                },
-            )
+            response = await claim_substance_job(client, settings, worker_id)
             claimed.append(str(response.json()["job"]["job_id"]))
 
         assert claimed == [

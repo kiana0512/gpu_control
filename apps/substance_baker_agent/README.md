@@ -12,7 +12,7 @@ Required local files:
 - `C:\Program Files\Adobe\Adobe Substance 3D Designer\substance3d_baker.exe`
 
 The Asset API drains `worker-3090-b` and gives production PBR the next physical
-GPU turn after the current ComfyUI frame finishes. Agent v3 keeps
+GPU turn after the current ComfyUI frame finishes. Agent v4 keeps
 `gpu-control-node-comfyui-1` running, requests no model eviction, and verifies
 the same container ID, `StartedAt`, and `RestartCount` before and after native
 SAL + SoRa execution. It never calls ComfyUI's model-release endpoint and never
@@ -24,14 +24,21 @@ memory pressure; the next real same-workflow GPU task provides the cold/hot
 timing evidence. GPU Control's existing warm-workflow affinity remains enabled.
 
 Agent identity is fail closed. Asset API accepts Substance claims only from
-`substance-baker-2026.08.03-v3`. A continuity failure leaves 3090-B in recovery
-drain until the original Baker reports idle and a newer healthy ComfyUI
-heartbeat is observed.
+`substance-baker-2026.08.03-v4`. Every heartbeat carries a per-process Agent
+generation plus a fail-closed, host-wide `Win32_Process` probe for
+`substance3d_baker.exe`. Each stable Worker ID also holds a full-lifetime
+`Global\` named mutex, so a duplicate scheduled, manual, or reinstall-launched
+Agent fails before it can send a heartbeat. A continuity failure or ambiguous lease expiry leaves
+3090-B in recovery drain until the exact owning Worker reports a healthy host
+probe with zero native Baker processes and a newer healthy ComfyUI heartbeat is
+observed. Restarting an Agent and resetting its in-memory job counter is not
+recovery evidence.
 
 For an upgrade, first verify there are no active Asset bakes or Substance fence
 labels. Then run the installer with `-ConfirmNoActiveBakes`; it explicitly stops
 the four existing scheduled tasks before replacing/restarting them. Confirm all
-four heartbeats report v3 and `ONLINE`. This operation does not restart ComfyUI.
+four heartbeats report v4, a `HEALTHY` host-process probe, and `ONLINE`. This
+operation does not restart ComfyUI.
 
 The scheduled tasks use the current Windows user's interactive token because the
 installed Adobe license is user-scoped. The installer hides their PowerShell

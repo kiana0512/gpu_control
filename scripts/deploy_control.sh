@@ -12,7 +12,7 @@ install -d -m 0700 /srv/gpu-control/secrets
 umask 077
 printf '%s' "${alert_token}" > /srv/gpu-control/secrets/alertmanager_webhook_token
 "${compose[@]}" config --quiet
-"${compose[@]}" build api scheduler web
+"${compose[@]}" build api scheduler asset-api web
 "${compose[@]}" up -d postgres redis
 "${compose[@]}" run --rm api alembic upgrade head
 "${compose[@]}" run --rm api \

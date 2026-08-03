@@ -51,6 +51,7 @@ BLEND/FBX 仍交付；不存在人工发布门。
 35. `docs/77_2026-08-03_PBR_NEXT_TURN_AND_COMFY_CACHE_RETENTION_1_5_7.md`：1.5.7 的 PBR 下一轮预约续租修复、Windows Baker v3、ComfyUI 不显式清缓存合同、Web 等待原因、零任务发布、真实 PBR canary 和回滚证据；当前为 `DEPLOYED_NOT_ACCEPTED`。
 36. `docs/78_2026-08-03_SUBSTANCE_LONG_LEASE_AND_AGENT_RECOVERY_HOTFIX.md`：Substance 长烘焙租约续期、Windows Agent 计划任务自恢复、3090-B 安全排空与 ComfyUI 连续性证据。
 37. `docs/79_2026-08-03_CODEX_PER_NODE_AUTH_AND_PROBE_RECOVERY.md`：三节点独立持久化 Codex 认证、Worker 1.2.3 滚动更新、真实探针恢复、镜像身份限制和回滚证据。
+38. `docs/80_2026-08-03_CONTROL_PLANE_1_5_8_CANDIDATE_AND_SAFE_ROLLOUT.md`：1.5.8 源码候选的 Substance 两阶段恢复、Agent 单实例、nonce 防重放、Codex 新鲜度、离线验证和严格发布顺序；当前未部署。
 
 3090-A 的已完成部署、动态心跳、Web 修复和真实任务证据见
 `docs/34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md`。
@@ -94,6 +95,7 @@ BLEND/FBX 仍交付；不存在人工发布门。
 | 1.5.7 PBR 下一轮与缓存保持 | `77_2026-08-03_PBR_NEXT_TURN_AND_COMFY_CACHE_RETENTION_1_5_7.md` | 修复 3090-B 预约续租未提交造成的 PBR 饥饿；v3 不 stop/start/free、连续性证据、Web 解释、零任务发布与真实 canary 已完成；当前 `DEPLOYED_NOT_ACCEPTED` |
 | Substance 长租约与 Agent 恢复 | `78_2026-08-03_SUBSTANCE_LONG_LEASE_AND_AGENT_RECOVERY_HOTFIX.md` | 长烘焙持续续租、四个 Windows Agent 自恢复、安全排空和不重启 ComfyUI 的生产热修复证据 |
 | Codex 三节点探针恢复 | `79_2026-08-03_CODEX_PER_NODE_AUTH_AND_PROBE_RECOVERY.md` | 每节点独立可写认证、Worker 1.2.3、三机真实探针、构建来源限制与回滚；当前 `DEPLOYED_NOT_ACCEPTED` |
+| 1.5.8 候选与安全发布 | `80_2026-08-03_CONTROL_PLANE_1_5_8_CANDIDATE_AND_SAFE_ROLLOUT.md` | Substance 两阶段恢复、Agent v4 单实例、nonce 防重放、Codex 新鲜度与应用 CA 诊断；源码已验证但生产任务清空前不部署 |
 | 分角色安装 | `03`—`11` | 网络、准备、4090、3090、镜像、模型、工作流、首次部署 |
 | 使用手册 | `12_WEB_ADMIN_GUIDE.md`、`13_PUBLIC_API_GUIDE.md` | 管理后台和业务 API |
 | 运维 | `15`—`22` | 日志、告警、备份、升级、故障、容量和 FAQ |

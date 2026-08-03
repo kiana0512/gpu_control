@@ -3598,6 +3598,17 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         _: Annotated[Principal, Depends(admin_principal)],
         db: Annotated[AsyncSession, Depends(session)],
     ) -> list[dict[str, Any]]:
+        now = datetime.now(UTC)
+        worker_heartbeat_cutoff = now - timedelta(
+            seconds=cfg.asset_worker_heartbeat_timeout_seconds
+        )
+        codex_probe_cutoff = now - timedelta(seconds=cfg.asset_codex_probe_max_age_seconds)
+
+        def utc_value(value: datetime | None) -> datetime | None:
+            if value is None:
+                return None
+            return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
         rows = (await db.scalars(select(Node).order_by(Node.pool, Node.id))).all()
         workers = list(
             (await db.scalars(select(AssetWorker).order_by(AssetWorker.updated_at.desc()))).all()
@@ -3612,9 +3623,11 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 )
             ).all()
         )
-        worker_by_node: dict[str, AssetWorker] = {}
-        for asset_worker in workers:
-            worker_by_node.setdefault(asset_worker.node_id, asset_worker)
+        # The Linux/WSL Codex Worker has the deterministic identity
+        # ``asset-${node.id}``.  Selecting the newest heartbeat by node can
+        # accidentally surface one of 3090-B's Windows Baker processes, which
+        # shares the node_id but intentionally reports no Codex runtime.
+        worker_by_id = {asset_worker.id: asset_worker for asset_worker in workers}
         codex_task_by_worker: dict[str, AssetJob] = {}
         for job in codex_jobs:
             if not job.worker_id:
@@ -3628,19 +3641,53 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         for row in rows:
             item = {column.name: getattr(row, column.name) for column in Node.__table__.columns}
             labels = row.labels or {}
-            worker = worker_by_node.get(row.id)
+            worker = worker_by_id.get(f"asset-{row.id}")
             installed = bool(labels.get("codex_cli_installed"))
             auth_status = worker.codex_auth_status if worker else "UNKNOWN"
             probe_status = worker.codex_probe_status if worker else "NOT_RUN"
             codex_task = codex_task_by_worker.get(worker.id) if worker else None
-            if installed and auth_status == "AUTHENTICATED" and probe_status == "HEALTHY":
+            worker_heartbeat_at = utc_value(worker.last_heartbeat_at) if worker else None
+            probe_checked_at = utc_value(worker.codex_last_checked_at) if worker else None
+            heartbeat_fresh = bool(
+                worker
+                and worker.status == "ONLINE"
+                and worker_heartbeat_at
+                and worker_heartbeat_at >= worker_heartbeat_cutoff
+            )
+            probe_fresh = bool(probe_checked_at and probe_checked_at >= codex_probe_cutoff)
+            scheduler_eligible = bool(
+                heartbeat_fresh
+                and auth_status == "AUTHENTICATED"
+                and probe_status == "HEALTHY"
+                and probe_fresh
+            )
+            if scheduler_eligible:
                 health = "HEALTHY"
-            elif installed and auth_status == "AUTHENTICATED" and probe_status == "NOT_RUN":
-                health = "CHECKING"
-            elif installed:
+                eligibility_reason = "ELIGIBLE"
+            elif worker is None:
+                health = "UNAVAILABLE"
+                eligibility_reason = "ASSET_WORKER_NOT_REGISTERED"
+            elif worker.status != "ONLINE":
+                health = "UNAVAILABLE"
+                eligibility_reason = "ASSET_WORKER_OFFLINE"
+            elif not heartbeat_fresh:
+                health = "STALE"
+                eligibility_reason = "ASSET_WORKER_HEARTBEAT_STALE"
+            elif auth_status != "AUTHENTICATED":
                 health = "DEGRADED"
+                eligibility_reason = "CODEX_AUTH_NOT_READY"
+            elif probe_status == "NOT_RUN":
+                health = "CHECKING"
+                eligibility_reason = "CODEX_PROBE_NOT_RUN"
+            elif probe_status != "HEALTHY":
+                health = "DEGRADED"
+                eligibility_reason = "CODEX_PROBE_UNHEALTHY"
+            elif not probe_fresh:
+                health = "STALE"
+                eligibility_reason = "CODEX_PROBE_STALE"
             else:
                 health = "UNAVAILABLE"
+                eligibility_reason = "CODEX_RUNTIME_UNAVAILABLE"
             item["codex_cli"] = {
                 "health": health,
                 "host_entry_installed": installed,
@@ -3655,6 +3702,15 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "last_success_at": worker.codex_last_success_at.isoformat()
                 if worker and worker.codex_last_success_at
                 else None,
+                "worker_status": worker.status if worker else None,
+                "worker_last_heartbeat_at": (
+                    worker.last_heartbeat_at.isoformat()
+                    if worker and worker.last_heartbeat_at
+                    else None
+                ),
+                "heartbeat_fresh": heartbeat_fresh,
+                "probe_fresh": probe_fresh,
+                "eligibility_reason": eligibility_reason,
                 "error_code": (
                     worker.codex_error_code
                     if worker and worker.codex_error_code
@@ -3692,7 +3748,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     if codex_task
                     else None
                 ),
-                "scheduler_eligible": False,
+                "scheduler_eligible": scheduler_eligible,
             }
             payload.append(item)
         return payload

@@ -9,10 +9,38 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 
 def test_source_release_versions_are_aligned() -> None:
     assert source_versions(REPOSITORY) == {
-        "python": "1.5.7",
-        "web": "1.5.7",
-        "web_lock": "1.5.7",
+        "python": "1.5.8",
+        "web": "1.5.8",
+        "web_lock": "1.5.8",
     }
+
+
+def test_control_plane_build_defaults_match_release_version() -> None:
+    expected_version = "1.5.8"
+    for dockerfile in (
+        "apps/api/Dockerfile",
+        "apps/asset_api/Dockerfile",
+        "apps/scheduler/Dockerfile",
+        "apps/web/Dockerfile",
+    ):
+        contents = (REPOSITORY / dockerfile).read_text(encoding="utf-8")
+        assert f"ARG GPU_CONTROL_VERSION={expected_version}" in contents
+
+    environment = (REPOSITORY / ".env.example").read_text(encoding="utf-8")
+    assert f"APP_IMAGE_TAG={expected_version}" in environment
+    assert f"GPU_CONTROL_VERSION={expected_version}" in environment
+
+    compose = (REPOSITORY / "deploy/control-plane/compose.yaml").read_text(encoding="utf-8")
+    assert compose.count(f"GPU_CONTROL_VERSION: ${{GPU_CONTROL_VERSION:-{expected_version}}}") == 4
+    assert compose.count(f"APP_IMAGE_TAG:-{expected_version}") == 4
+
+
+def test_release_parts_are_tracked_by_git_lfs() -> None:
+    attributes = (REPOSITORY / ".gitattributes").read_text(encoding="utf-8")
+    assert (
+        "artifacts/control-plane/1.5.8/release-parts/*.part-* "
+        "filter=lfs diff=lfs merge=lfs -text"
+    ) in attributes
 
 
 def test_release_revision_must_be_a_full_git_sha() -> None:

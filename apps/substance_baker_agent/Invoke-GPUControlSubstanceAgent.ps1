@@ -26,6 +26,11 @@ $WslDockerExe = '/usr/bin/docker'
 $CurlExe = 'C:\Windows\System32\curl.exe'
 $CurrentJobs = 0
 $ComfyContinuityError = 'SUBSTANCE_COMFYUI_CONTINUITY_FAILED'
+$AgentInstanceId = [Guid]::NewGuid().ToString('N')
+$AgentStartedAt = [DateTimeOffset]::UtcNow.ToString('o')
+$AgentMutexName = "Global\GPUControl.SubstanceAgent.$WorkerId"
+$AgentMutex = New-Object System.Threading.Mutex($false, $AgentMutexName)
+$AgentMutexAcquired = $false
 
 function Get-HexSha256Bytes([byte[]]$Bytes) {
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -83,15 +88,46 @@ function Invoke-LeasedJsonPost([string]$Path, [string]$Lease, [System.Collection
     finally { Remove-Item -LiteralPath $bodyFile -Force -ErrorAction SilentlyContinue }
 }
 
+function Get-BakerHostProcessEvidence {
+    $checkedAt = [DateTimeOffset]::UtcNow.ToString('o')
+    try {
+        # This is deliberately a host-wide process query, not the Agent's
+        # in-memory CurrentJobs counter.  After an Agent restart an orphaned
+        # native Baker is still visible here and keeps recovery fail-closed.
+        $processes = @(Get-CimInstance -ClassName Win32_Process `
+            -Filter "Name = 'substance3d_baker.exe'" -ErrorAction Stop)
+        return [ordered]@{
+            status = 'HEALTHY'
+            active_processes = [int]$processes.Count
+            checked_at = $checkedAt
+        }
+    }
+    catch {
+        # Never turn an unavailable process provider into an asserted zero.
+        # The Asset API marks this Worker draining and will not release a
+        # recovery fence until a later HEALTHY host probe explicitly reports 0.
+        return [ordered]@{
+            status = 'FAILED'
+            active_processes = $null
+            checked_at = $checkedAt
+        }
+    }
+}
+
 function Send-Heartbeat {
     $os = Get-CimInstance Win32_OperatingSystem
     $availableMb = [int][Math]::Floor([double]$os.FreePhysicalMemory / 1024)
+    $processEvidence = Get-BakerHostProcessEvidence
     $payload = [ordered]@{
         worker_id = $WorkerId; node_id = $NodeId
         display_name = ('3090-B Windows Substance Baker #{0:D2}' -f $InstanceId); hostname = $env:COMPUTERNAME
-        blender_version = 'substance-15.1.0'; skill_version = 'substance-baker-2026.08.03-v3'
+        blender_version = 'substance-15.1.0'; skill_version = 'substance-baker-2026.08.03-v4'
         cpu_count = [Environment]::ProcessorCount; max_concurrency = 1
         current_jobs = $script:CurrentJobs; load_1m = 0; available_memory_mb = $availableMb
+        agent_instance_id = $AgentInstanceId; agent_started_at = $AgentStartedAt
+        substance_process_probe_status = [string]$processEvidence.status
+        substance_process_probe_checked_at = [string]$processEvidence.checked_at
+        substance_active_processes = $processEvidence.active_processes
     }
     $null = Invoke-SignedPost '/internal/v1/assets/workers/heartbeat' $payload
 }
@@ -479,23 +515,43 @@ function Execute-Bake($Job) {
     }
 }
 
-if (-not (Test-Path -LiteralPath $CurlExe)) { throw "curl.exe missing: $CurlExe" }
-if (-not (Test-Path -LiteralPath $CaCertificate)) { throw "CA certificate missing: $CaCertificate" }
-if (-not (Test-Path -LiteralPath $SecretFile)) { throw "worker secret missing: $SecretFile" }
-if (-not (Test-Path -LiteralPath $BakerExe)) { throw "Baker missing: $BakerExe" }
-$script:WorkerSecret = (Get-Content -LiteralPath $SecretFile -Raw).Trim()
-if ($script:WorkerSecret.Length -lt 32) { throw 'worker secret is too short' }
-New-Item -ItemType Directory -Path $JobsRoot -Force | Out-Null
-
-do {
+try {
     try {
-        Send-Heartbeat
-        $claim = Invoke-SignedPost '/internal/v1/assets/jobs/claim' ([ordered]@{
-            worker_id = $WorkerId; load_1m = 0
-            available_memory_mb = [int][Math]::Floor([double](Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1024)
-        })
-        if ($claim.job) { Execute-Bake $claim.job }
+        $AgentMutexAcquired = $AgentMutex.WaitOne(0, $false)
     }
-    catch { Write-Error -ErrorAction Continue $_ }
-    if (-not $Once) { Start-Sleep -Seconds $PollSeconds }
-} while (-not $Once)
+    catch [System.Threading.AbandonedMutexException] {
+        # The prior Agent process is gone, so mutex ownership transfers here.
+        # A surviving native Baker is still caught by the host-wide probe.
+        $AgentMutexAcquired = $true
+    }
+    if (-not $AgentMutexAcquired) {
+        throw "SUBSTANCE_AGENT_INSTANCE_ALREADY_RUNNING: $WorkerId"
+    }
+
+    if (-not (Test-Path -LiteralPath $CurlExe)) { throw "curl.exe missing: $CurlExe" }
+    if (-not (Test-Path -LiteralPath $CaCertificate)) { throw "CA certificate missing: $CaCertificate" }
+    if (-not (Test-Path -LiteralPath $SecretFile)) { throw "worker secret missing: $SecretFile" }
+    if (-not (Test-Path -LiteralPath $BakerExe)) { throw "Baker missing: $BakerExe" }
+    $script:WorkerSecret = (Get-Content -LiteralPath $SecretFile -Raw).Trim()
+    if ($script:WorkerSecret.Length -lt 32) { throw 'worker secret is too short' }
+    New-Item -ItemType Directory -Path $JobsRoot -Force | Out-Null
+
+    do {
+        try {
+            Send-Heartbeat
+            $claim = Invoke-SignedPost '/internal/v1/assets/jobs/claim' ([ordered]@{
+                worker_id = $WorkerId; agent_instance_id = $AgentInstanceId; load_1m = 0
+                available_memory_mb = [int][Math]::Floor([double](Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1024)
+            })
+            if ($claim.job) { Execute-Bake $claim.job }
+        }
+        catch { Write-Error -ErrorAction Continue $_ }
+        if (-not $Once) { Start-Sleep -Seconds $PollSeconds }
+    } while (-not $Once)
+}
+finally {
+    if ($AgentMutexAcquired) {
+        try { $AgentMutex.ReleaseMutex() } catch { Write-Warning $_ }
+    }
+    $AgentMutex.Dispose()
+}

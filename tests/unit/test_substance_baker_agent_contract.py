@@ -63,3 +63,33 @@ def test_agent_http_calls_are_bounded_below_the_lease_window() -> None:
 
     assert source.count("--connect-timeout 5 --max-time 20") == 2
     assert "Substance Baker lease renewal failed after 3 attempts" in source
+
+
+def test_agent_reports_fail_closed_host_process_and_generation_evidence() -> None:
+    source = (
+        Path(__file__).parents[2]
+        / "apps"
+        / "substance_baker_agent"
+        / "Invoke-GPUControlSubstanceAgent.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "$AgentInstanceId = [Guid]::NewGuid().ToString('N')" in source
+    assert "$AgentStartedAt = [DateTimeOffset]::UtcNow.ToString('o')" in source
+    assert "function Get-BakerHostProcessEvidence" in source
+    assert "Get-CimInstance -ClassName Win32_Process" in source
+    assert "Name = 'substance3d_baker.exe'" in source
+    assert "-ErrorAction Stop" in source
+    assert "status = 'HEALTHY'" in source
+    assert "status = 'FAILED'" in source
+    assert "active_processes = $null" in source
+    assert "agent_instance_id = $AgentInstanceId" in source
+    assert "agent_started_at = $AgentStartedAt" in source
+    assert "substance_process_probe_status" in source
+    assert "substance_process_probe_checked_at" in source
+    assert "substance_active_processes" in source
+    assert "worker_id = $WorkerId; agent_instance_id = $AgentInstanceId" in source
+    assert "substance-baker-2026.08.03-v4" in source
+    assert '$AgentMutexName = "Global\\GPUControl.SubstanceAgent.$WorkerId"' in source
+    assert "$AgentMutex.WaitOne(0, $false)" in source
+    assert "SUBSTANCE_AGENT_INSTANCE_ALREADY_RUNNING" in source
+    assert "$AgentMutex.ReleaseMutex()" in source
