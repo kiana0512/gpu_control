@@ -1,8 +1,8 @@
-# 2026-08-03 PBR 下一轮优先权与 ComfyUI 缓存保持（1.5.7 候选）
+# 2026-08-03 PBR 下一轮优先权与 ComfyUI 缓存保持（1.5.7 发布记录）
 
 记录日期：2026-08-03
 
-当前状态：`CANDIDATE_NOT_DEPLOYED`
+当前状态：`DEPLOYED_NOT_ACCEPTED`
 
 范围：GPU Control Asset API、API/Web 可观测性、Windows Substance Baker Agent、控制面版本与部署；
 不修改 ImageClip、ModelViewCreator、Retopology Skill、任何外部 workflow、模型、prompt、采样参数、
@@ -10,7 +10,7 @@
 
 ## 1. 结论与事实边界
 
-本候选解决的是 `worker-3090-b` 上 Windows Substance Baker 与 WSL2 ComfyUI 共享同一张物理 GPU 时，
+本版本解决的是 `worker-3090-b` 上 Windows Substance Baker 与 WSL2 ComfyUI 共享同一张物理 GPU 时，
 生产 PBR 已进入队列却可能持续等待的问题。目标调度语义为：
 
 1. 已经运行的 ComfyUI 当前帧安全完成，不中断真实任务；
@@ -19,20 +19,22 @@
 4. Windows Baker 完成并安全释放后，3090-B 才重新回到 ComfyUI 调度；
 5. UV、重拓扑等纯 CPU Asset Worker 使用独立队列和槽位，不因 3090-B 的 GPU 互斥而停止领取。
 
-仓库版本字段已调整为 `1.5.7`，但本文编写时改动仍在工作树中，最终 source revision、四镜像
-image ID/digest、Windows Agent 上线身份和生产运行证据均未形成。因此当前生产基线仍是 `1.5.6` /
-`310a44c70c20f7cbfc601d19e19858380a61c20a`，不得把本候选写成“已部署”、`FROZEN` 或
+`1.5.7` 已于 2026-08-03 在 GPU/批次/Asset/租约全部为 0 的窗口滚动上线，源码与 GitHub `main`
+统一为 `11844e7f2ff5ea33db7e073b3f2af5c03b22085a`。API、Asset API、Scheduler、Web 均以单服务
+`--no-deps` 方式替换；PostgreSQL、Redis、Nginx、三台 ComfyUI 和 CPU Asset Worker 未重启。
+Windows Baker 四实例已升级到精确 v3，并以一个 test 租户合成 PBR canary 验证正式 artifact、SHA 和
+ComfyUI 进程连续性。该证据只支持 `DEPLOYED_NOT_ACCEPTED`，不得写成 `FROZEN` 或
 `PRODUCTION_ACCEPTED`。
 
 | 项目 | 当前事实 |
 | --- | --- |
-| 候选版本 | `1.5.7` |
-| 候选 source revision | `PENDING_FINAL_COMMIT` |
-| 候选基于的当前 HEAD | `a98175ff33c16546cd97ff547f1d74327a683865` |
-| 数据库迁移 | 本候选代码差异中无新增 migration |
-| 四组件镜像身份 | `PENDING_REPRODUCIBLE_BUILD` |
-| Windows Agent 生产 v3 证据 | `PENDING_SAFE_INSTALL_AND_HEARTBEAT` |
-| 生产发布状态 | `NOT_DEPLOYED` |
+| 发布版本 | `1.5.7` |
+| source revision | `11844e7f2ff5ea33db7e073b3f2af5c03b22085a` |
+| GitHub | `origin/main` 已同步该 revision |
+| 数据库迁移 | 无新增 migration；数据库保持 `20260730_0011` |
+| 四组件镜像身份 | version/revision OCI label 全部一致，具体 ID 见 7.3 |
+| Windows Agent 生产 v3 证据 | 4/4 `ONLINE`，0 活动任务 |
+| 生产发布状态 | `DEPLOYED_NOT_ACCEPTED` |
 
 ## 2. 根因
 
@@ -48,7 +50,7 @@ Asset API 为排队中的生产 `SUBSTANCE_BAKE_V1` 创建
 这不是 PBR 应改为 CPU 烘焙，也不是 CPU Asset 队列被 ComfyUI 阻塞。Substance 的 SAL/SoRa 路径
 需要使用 3090-B 的物理 GPU；真正的问题是“下一轮预约续租未持久化”。
 
-## 3. 1.5.7 候选修复
+## 3. 1.5.7 修复
 
 ### 3.1 下一轮预约持久化
 
@@ -108,7 +110,7 @@ v3 Agent 的合同是“保持 ComfyUI 进程，不主动清缓存”，具体�
 - 安装 v3 只替换 Windows Baker 计划任务，不重启 WSL2 ComfyUI 容器。
 
 这里的“缓存保持”不等于承诺所有模型字节始终驻留显存。Windows Substance 与 WSL2 ComfyUI 共享
-物理 GPU，驱动、显存压力或框架自身策略仍可能让部分模型从 VRAM 移出。当前候选能够证明的是：GPU
+物理 GPU，驱动、显存压力或框架自身策略仍可能让部分模型从 VRAM 移出。当前版本能够证明的是：GPU
 Control 没有显式释放模型，且 ComfyUI 容器进程没有被停止或重启；它只能保留热缓存复用的机会，不能
 伪造显存驻留事实。
 
@@ -119,7 +121,7 @@ workflow/version 的正常 GPU Control 任务，并在真实生产任务到达�
 
 ## 5. Web/API 可观测性
 
-`/admin/asset-processing` 候选响应新增真实的 `substance_gpu` 和逐 PBR `resource_wait`：
+`/admin/asset-processing` 响应新增真实的 `substance_gpu` 和逐 PBR `resource_wait`：
 
 - `WAITING_FOR_COMFYUI_FRAME`：已获下一轮预约，等待当前帧安全结束；
 - `WAITING_FOR_BAKER_CLAIM`：GPU 已预约，等待 Windows Baker 领取；
@@ -131,15 +133,17 @@ Asset 页面文案改为“队列独立；3090-B 物理 GPU 按任务互斥”�
 不是四张 GPU。页面会展示提交、开始、结束、耗时、执行 Worker 和具体等待原因，不再把 0/4 Baker
 槽或显存缓存误写成 GPU 空闲/占用结论。
 
-## 6. 候选验证记录
+## 6. 发布前验证记录
 
-截至本文创建时，已得到以下候选验证；这些结果证明受影响代码路径，不等于生产发布：
+最终提交和镜像构建前得到以下隔离验证；生产运行证据另见 7.3：
 
 | 验证 | 结果 |
 | --- | --- |
-| PBR 预约/连续性定向回归 | `7 passed` |
-| Asset API + Admin API 受影响集成回归 | `56 passed in 96.88s` |
-| Web production Docker build | 通过；仅保留既有 `504.46 kB` 非阻断分包提示 |
+| PBR 预约/连续性、Asset API、Admin API、Agent 合同 | `57 passed in 99.60s` |
+| Scheduler 单主/loop lag/release identity | `24 passed` |
+| Ruff / mypy | 全仓受影响范围通过 / 34 个 source files 通过 |
+| Web Vitest / ESLint / Prettier / production build | `13/13`、0 warnings、通过、通过 |
+| Windows PowerShell 5.1 最终字节 parser | Agent 与 Installer 均 `PS51_PARSE_OK` |
 | Windows 实机 `docker inspect` 格式探测 | `Id~StartedAt~RestartCount~running~healthy` 可解析 |
 
 自动回归覆盖以下关键语义：
@@ -175,13 +179,12 @@ Vitest/ESLint/Prettier、四镜像可复现构建，以及最终两份 PowerShel
 
 ### 7.2 发布顺序
 
-1. 在零任务窗口先更新 Asset API，使旧 v2 Agent 立即 fail closed，健康后再继续；
-2. 逐服务更新 API、Scheduler、Web，每一步等待健康；不重启 PostgreSQL、Redis、ComfyUI、GPU Worker、
-   CPU Asset Worker，也不修改外部 pipeline；
-3. 再次确认 Asset/PBR 活动数、pending/fence/recovery 和四个 Baker current_jobs 全为 0；
-4. 仅在此时使用 `-ConfirmNoActiveBakes` 安装 Windows v3 Agent；不得运行任何 ComfyUI stop/start/free；
-5. 确认四个 Baker 心跳均为精确 v3 且 `ONLINE`，旧 v2 进程和 legacy 计划任务均不存在；
-6. 对比发布前后的 ComfyUI Id、`StartedAt`、`RestartCount`，必须完全不变并保持 healthy；
+1. 在零任务窗口将 3090-B 临时设为 `DRAINING`，先更新 Asset API，使旧 v2 Agent 立即 fail closed；
+2. 再次确认 Asset/PBR 活动数、pending/fence/recovery、四个 Baker current_jobs 和 B 的 ComfyUI 队列全为 0；
+3. 使用 `-ConfirmNoActiveBakes` 安装 Windows v3 Agent；不得运行任何 ComfyUI stop/start/free；
+4. 确认四个 Baker 心跳均为精确 v3 且 `ONLINE`，并对比 ComfyUI Id、`StartedAt`、`RestartCount`；
+5. 恢复 3090-B `ACTIVE`，再逐服务更新 API、Web、Scheduler，每一步等待健康且 Scheduler 前重查零任务；
+6. 全程不重启 PostgreSQL、Redis、Nginx、ComfyUI、GPU Worker 或 CPU Asset Worker，也不修改外部 pipeline；
 7. 在没有真实任务等待时只运行一个受控 PBR canary，验证下一轮预约、fence、正式产物 SHA 和安全释放；
 8. 不用隐藏 prompt 伪造预热。由下一次自然到达或明确批准的同 workflow canary 核对 warm affinity、
    模型加载日志和耗时；随后观察真实队列是否仍发生 PBR 饥饿。
@@ -190,18 +193,22 @@ Vitest/ESLint/Prettier、四镜像可复现构建，以及最终两份 PowerShel
 
 | 项目 | 发布后值 |
 | --- | --- |
-| source revision | `PENDING_DEPLOYMENT` |
-| API image ID / registry digest | `PENDING_DEPLOYMENT` |
-| Asset API image ID / registry digest | `PENDING_DEPLOYMENT` |
-| Scheduler image ID / registry digest | `PENDING_DEPLOYMENT` |
-| Web image ID / registry digest | `PENDING_DEPLOYMENT` |
-| 1.5.6 rollback tags | `PENDING_DEPLOYMENT` |
-| v3 四 Worker 心跳与安装时间 | `PENDING_DEPLOYMENT` |
-| ComfyUI 发布前/后身份 | `PENDING_DEPLOYMENT` |
-| PBR canary job/request/trace/artifact SHA | `PENDING_DEPLOYMENT` |
+| source revision | `11844e7f2ff5ea33db7e073b3f2af5c03b22085a` |
+| API image ID / registry digest | local `sha256:4874166e813d9d70f2703a69c6480b63a2f1f3616808866d4193daee1e7eb7c1`；registry digest 待归档 |
+| Asset API image ID / registry digest | local `sha256:9c451ac02d97e7d3c6e3e235bcc54f6eb67d0bf230424fff5f476cb76edab8a0`；registry digest 待归档 |
+| Scheduler image ID / registry digest | local `sha256:62afae64c4acc04359b22697f17bc86d329c4ea00d590f1c6e92bd09c64af3f9`；registry digest 待归档 |
+| Web image ID / registry digest | local `sha256:e45ba5201846b36e2eed764a91d51ff7d04a3a7e1e9d6d687787928c32d3838d`；registry digest 待归档 |
+| 1.5.6 rollback tags | 四组件统一后缀 `rollback-1.5.6-310a44c-20260803` |
+| v3 四 Worker 心跳与安装时间 | 2026-08-03 07:44:45Z，`asset-worker-3090-b-windows-01..04` 全部 `ONLINE` / 0 |
+| ComfyUI 发布前/后身份 | `95acf7b332f27a169c1c4de9a10b209b3bf1dd4773d2e95a3935fefcdd7cb01d~2026-08-03T06:37:16.542537267Z~0~running~healthy`，安装和 canary 后完全一致 |
+| PBR canary job/request/artifact SHA | job `14d31914-ca84-4907-8b33-46939235398f`；request `61f86047ef33f541bac59cfc91184596`；12 artifacts 全部回读 SHA 一致；result SHA `fa9346f114c263e0b9dc78ebe5ab6fbc225769667a414ca35b2db9a1ffadecfa` |
 | 下一次同 workflow cold/hot 计时 | `PENDING_RUNTIME_EVIDENCE` |
 
-上述字段没有真实值之前，本文状态保持 `CANDIDATE_NOT_DEPLOYED`。
+发布后 API 与 Asset API 的版本端点均返回 `version_aligned=true`、`provenance_complete=true`；Scheduler
+持有且仅持有一个 PostgreSQL advisory exclusive lock，并且没有 scheduler `idle in transaction`。
+Playwright 在 `1440×900` 下登录生产 `/asset-processing`，切换“PBR 烘焙”分类成功，页面无 console
+error/warning。canary 由 `asset-worker-3090-b-windows-02` 在 37 秒内完成，临时 test client 随后停用；
+任务、批次、Asset、lease、pending、fence 和 recovery 再次全部清零。
 
 ## 8. 回滚门禁
 
