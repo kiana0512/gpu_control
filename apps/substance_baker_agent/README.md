@@ -12,11 +12,13 @@ Required local files:
 - `C:\Program Files\Adobe\Adobe Substance 3D Designer\substance3d_baker.exe`
 
 The Asset API drains `worker-3090-b` and gives production PBR the next physical
-GPU turn after the current ComfyUI frame finishes. Agent v4 keeps
+GPU turn after the current ComfyUI frame finishes. Agent v5 keeps
 `gpu-control-node-comfyui-1` running, requests no model eviction, and verifies
 the same container ID, `StartedAt`, and `RestartCount` before and after native
 SAL + SoRa execution. It never calls ComfyUI's model-release endpoint and never
-stops, starts, or restarts that container.
+stops, starts, or restarts that container. Its result schema preserves an
+unavailable PowerShell exit code as unobserved/null and requires every Baker
+command's own completion marker; it never fabricates an observed zero exit.
 
 This preserves the opportunity to reuse the previous approved workflow's hot
 cache. It does not claim that every model remains in VRAM under Substance
@@ -37,7 +39,7 @@ recovery evidence.
 For an upgrade, first verify there are no active Asset bakes or Substance fence
 labels. Then run the installer with `-ConfirmNoActiveBakes`; it explicitly stops
 the four existing scheduled tasks before replacing/restarting them. Confirm all
-four heartbeats report v4, a `HEALTHY` host-process probe, and `ONLINE`. This
+four heartbeats report v5, a `HEALTHY` host-process probe, and `ONLINE`. This
 operation does not restart ComfyUI.
 
 The scheduled tasks use the current Windows user's interactive token because the
