@@ -12,7 +12,7 @@
 
 ## 1. 执行结论
 
-本轮候选实现集中在 GPU Control 自身边界内：跨 GPU/Asset 平面的生产任务优先原子准入、Worker/Agent 长上传期间的租约续期、六 API 精确产物契约与负载验收，以及五镜像可复现打包；既有 Web UI 可读性和运维入口纳入同一版本发布与复验。当前源码候选版本为 Control Plane `1.5.9`、Linux Blender Worker `1.2.5`；尚未完成最终源码门禁、正式镜像、备份、生产灰度、六 API canary、浏览器验收和正式综合压测。
+本轮候选实现集中在 GPU Control 自身边界内：跨 GPU/Asset 平面的生产任务优先原子准入、Worker/Agent 长上传期间的租约续期、六 API 精确产物契约与负载验收，以及五镜像可复现打包；既有 Web UI 可读性和运维入口纳入同一版本发布与复验。当前本地代码候选提交为 `b410a6a7994cdd06335a106ad5257eafb6378fdf`，版本为 Control Plane `1.5.9`、Linux Blender Worker `1.2.5`。五个本地 candidate 镜像、小型备份、合成素材 r2 和 plan-only 报告已经生成，但源码尚未推送，正式镜像、正式全量备份、生产灰度、六 API canary、浏览器验收和正式综合压测均未完成。
 
 当前生产仍是分组件基线，状态继续保持 `DEPLOYED_NOT_ACCEPTED`：
 
@@ -172,7 +172,7 @@ ComfyUI 运行约束：
 | 证据 | 状态 |
 |---|---|
 | 预检原始报告 | `PENDING_LOAD_PREFLIGHT` |
-| plan-only 报告 | `PENDING_LOAD_PLAN_REPORT` |
+| plan-only 报告 | `LOCAL_PLAN_ONLY_COMPLETE`；不是正式执行授权或压测结果 |
 | 正式执行 change/window/授权 | `PENDING_LOAD_AUTHORIZATION` |
 | Locust/runner 原始结果 | `PENDING_SIX_API_LOAD_RESULT` |
 | 六 API lifecycle + exact artifact 结果 | `PENDING_SIX_API_ARTIFACT_ACCEPTANCE` |
@@ -180,20 +180,63 @@ ComfyUI 运行约束：
 | 生产任务到达后拒绝新测试/停止发压证据 | `PENDING_PRODUCTION_PRIORITY_EVIDENCE` |
 | 测试 session 清理证明 | `PENDING_LOAD_TEARDOWN` |
 
+本地 plan-only 证据为 `/tmp/gpu-control-six-api-plan-b410a6a-r2.json`，文件 SHA-256 为
+`f5d265baba60e79f6fd5837b48e12e7f214ddf425446899ed1931689378eb308`。报告明确记录
+`mode=PLAN_ONLY`；该模式未发出 HTTP 请求、未创建任务，也未触碰生产。它按预期保留以下六项执行
+阻塞，不能据此启动正式压力：
+
+1. `ALLOW_LOAD_TEST` 尚未精确设为 `true`；
+2. `LOAD_TEST_CONFIRMATION_TOKEN` 与本 session/target 不匹配；
+3. 未从环境提供 `LOAD_TEST_API_KEYS`；
+4. `LOAD_TEST_TENANT_IDS` 尚未与 API keys 做唯一一一绑定；
+5. 未提供只读预检所需的 `LOAD_TEST_ADMIN_BEARER_TOKEN`；
+6. 未指定一个全新的显式 `LOAD_TEST_RESULT_DIR`。
+
 ## 7. 已验证事实与最终源码门禁
 
 ### 7.1 当前可以确认
 
 - 版本文件和候选构建入口已经统一指向 Control Plane `1.5.9`、Worker `1.2.5`。
+- 本地代码候选提交为 `b410a6a7994cdd06335a106ad5257eafb6378fdf`（提交时间
+  `2026-08-03T20:53:00+08:00`）；本地 `main` 包含该提交，但已记录的 `origin/main` 仍为
+  `56035975cd9ca4b0c904e34aca11d30b8779d2cd`，因此该候选尚未推送。
 - 源码中已存在生产优先全局准入、精确 artifact 契约、Linux Worker 长上传续租、Windows Agent 长 SHA/上传续租及五镜像发布校验实现和对应自动化用例。
 - 当前候选工作树 Python 全量结果为 `402 passed, 5 skipped`；5 条 skip 全部是必须连接 PostgreSQL 的 Scheduler 锁测试，同一代码随后在一次性 PostgreSQL 17.5 上单独得到 `5 passed`。Asset API 全文件结果为 `55 passed`。
 - Ruff 全仓、Mypy `36 source files`、compileall、`git diff --check`、SQLite 从 `0001` 到 `0012` 的完整迁移和控制面/GPU 节点两套 Compose 解析均通过。
 - Web 当前候选工作树结果：测试 `16/16`，ESLint、Prettier、`vue-tsc` 和 Vite build 均通过；Vite 仅报告既有大 chunk advisory，不是构建失败。
 - 最终独立安全审计结果为 `P0=0 / P1=0`。审计覆盖全局/tenant/Node/Job/Worker 锁顺序、幂等过期重用、提交回执丢失后的输入与正式产物保全、精确压测清场、UV/拓扑 advisory 正式交付以及 Substance 恢复闭锁。
-- 上述是提交前候选工作树证据；最终 commit 确定后仍须在该完整 commit 上复跑并归档原始输出。因此当前状态继续保持 `PENDING_FINAL_SOURCE_GATES`。
+- 上述源码与候选镜像绑定 `b410a6a7994cdd06335a106ad5257eafb6378fdf`；本文证据回填发生在该提交之后，最终可推送提交确定后仍须在完整 commit 上复跑并归档原始输出。因此当前状态继续保持 `PENDING_FINAL_SOURCE_GATES`。
 - 1.5.8 生产基线此前已记录真实 PBR、UV 和重拓扑成功任务；这些仅证明旧基线部分能力，不是 1.5.9 canary，也不能替代本轮六 API 验收。
 
-### 7.2 最终门禁必须回填
+### 7.2 本地 candidate 镜像、备份与素材证据
+
+以下五个镜像只是在本机从上述代码候选构建出的 candidate identity。它们没有 registry digest、
+SBOM 或正式归档，未部署到任何生产组件，不能填入正式发布 digest：
+
+| 镜像 | 本地 candidate image ID |
+|---|---|
+| `gpu-control-api:1.5.9-candidate-b410a6a` | `sha256:8e5ca3b3326d5d4ce5bbe15137a038c281a69454ebf083e02020b381c4f8d047` |
+| `gpu-control-scheduler:1.5.9-candidate-b410a6a` | `sha256:8ae8602003be2d36f1bbf201efefe92ce58c501ae0985c4e42fe18d390ff7ffc` |
+| `unified-scheduler-asset-api:1.5.9-candidate-b410a6a` | `sha256:31511e02d2c2aad07f379639b94df6474296bae113f5560dd4577c5a54bd44ed` |
+| `gpu-control-web:1.5.9-candidate-b410a6a` | `sha256:1e7d86bfc26cb4b896d0c4480a8b83b2de54157f8509e2ac622232811b5047b1` |
+| `li3d/blender-worker:1.2.5-candidate-b410a6a` | `sha256:90d9c60e1d29bf3c1c123b787540c131049b7e2d7f31634954898b4492b2df6a` |
+
+本地小型备份位于 `/srv/gpu-control/backups/20260803T130246Z-small`，绑定 Git commit
+`b410a6a7994cdd06335a106ad5257eafb6378fdf`。`BACKUP_COMPLETE` 状态为 `COMPLETE`，其记录的
+`SHA256SUMS_SHA256` 与实算值均为
+`f3ed94fc180ed7897c04d275305ce4acf67b7f4e8bf3fe158a3c48841a6220ca`，清单内 `14/14` 项复验通过。
+该备份明确记录 `MODE=small`、`QUIESCE_CHECK=NOT_ENFORCED`，所以只作为本地恢复辅助证据，不能替代
+正式压测要求的空闲窗口、强制 quiesce、restore verify 和 24 小时内完整备份。
+
+六 API 合成素材 r2 位于 `/tmp/gpu-control-six-api-b410a6a-r2`，生成过程不读取生产用户素材且不需要
+网络。素材 manifest SHA-256 为
+`573fbfe1926f440199cd89db8fc52b4ec49aa3f50bc67eca20943e0d21dc3d1b`，`SHA256SUMS` 文件 SHA-256 为
+`a4f76bdd6ca833ee259f273586d57df0163a76ad561b84872fadc3f15a5785a7`，清单内 `26/26` 项全部通过。
+Blender 5.1.2 验证报告 `passed=true`，报告 SHA-256 为
+`dae142590c97e5823182da7a1aa052c0fef5c1a5c1fc8ca733f706434eaae51e`。这些结果只证明素材完整可读，
+不等于六 API 已完成真实 canary 或压力验收。
+
+### 7.3 最终门禁必须回填
 
 | 门禁 | 状态 |
 |---|---|
@@ -210,7 +253,8 @@ ComfyUI 运行约束：
 
 | 字段 | 必填值 |
 |---|---|
-| 最终完整 Git commit | `PENDING_FINAL_COMMIT` |
+| 本地代码候选 Git commit | `b410a6a7994cdd06335a106ad5257eafb6378fdf`；`LOCAL_CANDIDATE_ONLY` |
+| 最终可推送完整 Git commit | `PENDING_FINAL_COMMIT` |
 | 完整仓库/历史推送到指定 GitHub `origin/main` 的精确授权 | `PENDING_SOURCE_PUSH_AUTHORIZATION` |
 | GitHub `main` 包含该 commit | `PENDING_GITHUB_MAIN` |
 | API image digest / SBOM | `PENDING_API_DIGEST` / `PENDING_API_SBOM` |
@@ -220,6 +264,7 @@ ComfyUI 运行约束：
 | Worker image digest / SBOM | `PENDING_WORKER_DIGEST` / `PENDING_WORKER_SBOM` |
 | OCI/Docker config digest 对照 | `PENDING_CONFIG_DIGEST_MATCH` |
 | release archive 与 Git LFS 证据 | `PENDING_RELEASE_ARCHIVE_LFS` |
+| 小型候选备份 | `/srv/gpu-control/backups/20260803T130246Z-small`；清单 SHA `f3ed94fc...a6220ca`；`LOCAL_SMALL_BACKUP_ONLY` |
 | 全量备份路径、SHA、恢复验证 | `PENDING_BACKUP_AND_RESTORE_VERIFY` |
 | 回滚版本和镜像 digest | `PENDING_ROLLBACK_IDENTITY` |
 
