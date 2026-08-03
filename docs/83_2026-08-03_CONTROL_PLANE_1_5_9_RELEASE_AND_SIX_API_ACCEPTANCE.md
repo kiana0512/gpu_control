@@ -12,7 +12,7 @@
 
 ## 1. 执行结论
 
-本轮候选实现集中在 GPU Control 自身边界内：跨 GPU/Asset 平面的生产任务优先原子准入、Worker/Agent 长上传期间的租约续期、六 API 精确产物契约与负载验收，以及五镜像可复现打包；既有 Web UI 可读性和运维入口纳入同一版本发布与复验。当前本地代码候选提交为 `b410a6a7994cdd06335a106ad5257eafb6378fdf`，版本为 Control Plane `1.5.9`、Linux Blender Worker `1.2.5`。五个本地 candidate 镜像、小型备份、合成素材 r2 和 plan-only 报告已经生成，但源码尚未推送，正式镜像、正式全量备份、生产灰度、六 API canary、浏览器验收和正式综合压测均未完成。
+本轮候选实现集中在 GPU Control 自身边界内：跨 GPU/Asset 平面的生产任务优先原子准入、Worker 进程代际与节点绑定、锁竞争快速失败、统一容量/ETA 口径、Worker/Agent 长上传期间的租约续期、六 API 精确产物契约与负载验收，以及五镜像可复现打包；既有 Web UI 可读性和运维入口纳入同一版本发布与复验。版本目标为 Control Plane `1.5.9`、Linux Blender Worker `1.2.5`；本轮实现已冻结为 `dac30c039f692cf8274eaff5430ca7ebfd97b201`，最终文档/发布 evidence commit 尚待冻结。早期 `b410a6a` 五个本地 candidate 镜像已被后续修复取代，禁止部署。小型备份、合成素材 r2 和 plan-only 报告可以继续作为辅助证据，但源码尚未推送，正式镜像、正式全量备份、生产灰度、六 API canary、浏览器验收和正式综合压测均未完成。
 
 当前生产仍是分组件基线，状态继续保持 `DEPLOYED_NOT_ACCEPTED`：
 
@@ -62,6 +62,19 @@
 当前仍缺少对“将 `/opt/gpu-control` 当前完整 `main` 源码与提交历史推送到
 `https://github.com/kiana0512/gpu_control.git` 的 `origin/main`”的精确授权。授权前不得执行
 源码 push、Git LFS 发布或依赖已推送 SHA 的正式打包；本地只读验证与候选修复可以继续。
+
+### 2.4 Worker 代际、节点绑定与容量真相
+
+- Linux Asset Worker 每个进程生成唯一 `agent_instance_id` 和 `agent_started_at`；heartbeat、claim、job lease 绑定同一节点和进程代际，旧进程或错误节点不能继续领取。
+- heartbeat 采用稳定的 Node/Worker/AssetJob 锁序；与续租、完成或 reaper 竞争时使用 PostgreSQL `NOWAIT` 快速返回可重试 `409 ASSET_WORKER_HEARTBEAT_BUSY_RETRY`，不等待成死锁。
+- 节点 interrupt 对 Batch/Job 使用稳定排序与 `NOWAIT`；锁竞争返回 `409 NODE_INTERRUPT_BUSY_RETRY` 并写审计，不会部分取消或静默改写任务。
+- Linux CPU 任务与 ComfyUI/GPU health 解耦，只服从节点 mode、人工保留及 Asset Worker 自身健康/容量；因此 GPU 忙不应让纯 CPU UV/拓扑任务错误排队。
+- 3090-B 的 Linux CPU Worker 与 Windows Substance 槽使用各自容量门禁；Asset API 所有的 Substance drain/pending/fence/recovery 保持物理 GPU 互斥，operator 接管仍然优先。
+- 公共 capacity、队列 ETA、管理页和实际 claim 共用同一 eligibility 计算；Codex 重拓扑只计入认证有效且探针新鲜健康的槽，Substance `total = used + available` 受四个物理槽和 fence 数共同约束。
+
+### 2.5 已知发布兼容窗口
+
+生产 Asset API `1.5.8` 的 `WorkerClaim` 使用 `extra="forbid"` 且不接受 `node_id`；Worker `1.2.5` 会发送 `node_id`，所以不能先升级 Worker，否则旧 API 会返回 HTTP 422。反向情况下，Asset API `1.5.9` 面对 Worker `1.2.4` 会返回 `200 / job=None` 并 fail closed，不会误领任务。故本次必须在零任务和外部 intake 冻结窗口中先升级 Asset API，再逐台升级 Worker；窗口内新的 Asset CPU 请求只允许排队，不得宣称完全无缝领取。
 
 ## 3. 所有权边界与明确不变项
 
@@ -197,29 +210,27 @@ ComfyUI 运行约束：
 ### 7.1 当前可以确认
 
 - 版本文件和候选构建入口已经统一指向 Control Plane `1.5.9`、Worker `1.2.5`。
-- 本地代码候选提交为 `b410a6a7994cdd06335a106ad5257eafb6378fdf`（提交时间
-  `2026-08-03T20:53:00+08:00`）；本地 `main` 包含该提交，但已记录的 `origin/main` 仍为
-  `56035975cd9ca4b0c904e34aca11d30b8779d2cd`，因此该候选尚未推送。
-- 源码中已存在生产优先全局准入、精确 artifact 契约、Linux Worker 长上传续租、Windows Agent 长 SHA/上传续租及五镜像发布校验实现和对应自动化用例。
-- 当前候选工作树 Python 全量结果为 `402 passed, 5 skipped`；5 条 skip 全部是必须连接 PostgreSQL 的 Scheduler 锁测试，同一代码随后在一次性 PostgreSQL 17.5 上单独得到 `5 passed`。Asset API 全文件结果为 `55 passed`。
+- 最终实现已冻结为 `dac30c039f692cf8274eaff5430ca7ebfd97b201`（提交时间 `2026-08-03T22:13:27+08:00`）；当前其上只有 README、CHANGELOG 和本文 evidence 回填。已记录的 `origin/main` 仍为 `56035975cd9ca4b0c904e34aca11d30b8779d2cd`，因此这些修复尚未推送。
+- 源码中已存在生产优先全局准入、精确 artifact 契约、Linux Worker 长上传续租与进程代际绑定、Windows Agent 长 SHA/上传续租、统一容量/ETA、锁竞争快速失败及五镜像发布校验实现和对应自动化用例。
+- 当前最终修复工作树 Python 全量结果为 `425 passed, 9 skipped`；其中 8 条 skip 是必须连接 PostgreSQL 的锁竞争专项，另 1 条是基础质量镜像未安装可选 Locust 依赖。相同代码在一次性 PostgreSQL 17.5、loopback 且数据库名为 `gpu_control_test_*` 的隔离测试库上串行运行 Scheduler 锁、节点 interrupt、Worker generation/lease 并发用例，结果为 `8 passed`；该库使用 tmpfs，验证后已停止并自动移除。另在一次性容器安装项目锁定的 Locust `2.37.14` 后，负载工具专项为 `66 passed`。这些都是工作树证据，最终 commit 冻结后仍需复跑。
+- 工作树原始 JUnit 暂存于 `/tmp/gpu-control-1.5.9-gates.Mmmdes/`：`python-full-current.xml` 为 63,543 bytes、SHA-256 `ae4dad58005934878386220b20e8b576f4e1368eef114869d2ee339011b541a9`；`postgres-concurrency.xml` 为 1,495 bytes、SHA-256 `f411d834aeafb5fd2e42380cf985f8dd5462c63a5484e8afe03c8921b4ddbbe0`。最终 commit 上的报告必须重新生成并进入正式 release archive，不能仅依赖 `/tmp`。
 - Ruff 全仓、Mypy `36 source files`、compileall、`git diff --check`、SQLite 从 `0001` 到 `0012` 的完整迁移和控制面/GPU 节点两套 Compose 解析均通过。
 - Web 当前候选工作树结果：测试 `16/16`，ESLint、Prettier、`vue-tsc` 和 Vite build 均通过；Vite 仅报告既有大 chunk advisory，不是构建失败。
-- 最终独立安全审计结果为 `P0=0 / P1=0`。审计覆盖全局/tenant/Node/Job/Worker 锁顺序、幂等过期重用、提交回执丢失后的输入与正式产物保全、精确压测清场、UV/拓扑 advisory 正式交付以及 Substance 恢复闭锁。
-- 上述源码与候选镜像绑定 `b410a6a7994cdd06335a106ad5257eafb6378fdf`；本文证据回填发生在该提交之后，最终可推送提交确定后仍须在完整 commit 上复跑并归档原始输出。因此当前状态继续保持 `PENDING_FINAL_SOURCE_GATES`。
+- 最终独立安全审计结果为 `P0=0 / P1=0`。审计覆盖全局/tenant/Node/Batch/Job/Worker 锁顺序、heartbeat/claim 进程代际、幂等过期重用、提交回执丢失后的输入与正式产物保全、实际 claim 与容量口径、精确压测清场、UV/拓扑 advisory 正式交付以及 Substance 恢复闭锁。
+- 已知 P2/运维约束：时间轴仍依赖客户端提交的 `started_at`；1.5.8/1.2.4 到 1.5.9/1.2.5 存在上述短领取冻结窗；ETA 仍是队列近似值；两组 PostgreSQL 并发文件共用隔离测试库，禁止并行执行。最终可推送提交确定后仍须在完整 commit 上复跑并归档原始输出。因此当前状态继续保持 `PENDING_FINAL_SOURCE_GATES`。
 - 1.5.8 生产基线此前已记录真实 PBR、UV 和重拓扑成功任务；这些仅证明旧基线部分能力，不是 1.5.9 canary，也不能替代本轮六 API 验收。
 
 ### 7.2 本地 candidate 镜像、备份与素材证据
 
-以下五个镜像只是在本机从上述代码候选构建出的 candidate identity。它们没有 registry digest、
-SBOM 或正式归档，未部署到任何生产组件，不能填入正式发布 digest：
+以下五个镜像是在后续代际/锁序/容量修复之前从 `b410a6a` 构建的本地 candidate identity。它们没有 registry digest、SBOM 或正式归档，未部署到任何生产组件，且已统一标记为 `SUPERSEDED_REBUILD_REQUIRED`；不得填入正式发布 digest，也不得部署：
 
 | 镜像 | 本地 candidate image ID |
 |---|---|
-| `gpu-control-api:1.5.9-candidate-b410a6a` | `sha256:8e5ca3b3326d5d4ce5bbe15137a038c281a69454ebf083e02020b381c4f8d047` |
-| `gpu-control-scheduler:1.5.9-candidate-b410a6a` | `sha256:8ae8602003be2d36f1bbf201efefe92ce58c501ae0985c4e42fe18d390ff7ffc` |
-| `unified-scheduler-asset-api:1.5.9-candidate-b410a6a` | `sha256:31511e02d2c2aad07f379639b94df6474296bae113f5560dd4577c5a54bd44ed` |
-| `gpu-control-web:1.5.9-candidate-b410a6a` | `sha256:1e7d86bfc26cb4b896d0c4480a8b83b2de54157f8509e2ac622232811b5047b1` |
-| `li3d/blender-worker:1.2.5-candidate-b410a6a` | `sha256:90d9c60e1d29bf3c1c123b787540c131049b7e2d7f31634954898b4492b2df6a` |
+| `gpu-control-api:1.5.9-candidate-b410a6a` | `sha256:8e5ca3b3326d5d4ce5bbe15137a038c281a69454ebf083e02020b381c4f8d047` · `SUPERSEDED_REBUILD_REQUIRED` |
+| `gpu-control-scheduler:1.5.9-candidate-b410a6a` | `sha256:8ae8602003be2d36f1bbf201efefe92ce58c501ae0985c4e42fe18d390ff7ffc` · `SUPERSEDED_REBUILD_REQUIRED` |
+| `unified-scheduler-asset-api:1.5.9-candidate-b410a6a` | `sha256:31511e02d2c2aad07f379639b94df6474296bae113f5560dd4577c5a54bd44ed` · `SUPERSEDED_REBUILD_REQUIRED` |
+| `gpu-control-web:1.5.9-candidate-b410a6a` | `sha256:1e7d86bfc26cb4b896d0c4480a8b83b2de54157f8509e2ac622232811b5047b1` · `SUPERSEDED_REBUILD_REQUIRED` |
+| `li3d/blender-worker:1.2.5-candidate-b410a6a` | `sha256:90d9c60e1d29bf3c1c123b787540c131049b7e2d7f31634954898b4492b2df6a` · `SUPERSEDED_REBUILD_REQUIRED` |
 
 本地小型备份位于 `/srv/gpu-control/backups/20260803T130246Z-small`，绑定 Git commit
 `b410a6a7994cdd06335a106ad5257eafb6378fdf`。`BACKUP_COMPLETE` 状态为 `COMPLETE`，其记录的
@@ -234,7 +245,8 @@ SBOM 或正式归档，未部署到任何生产组件，不能填入正式发布
 `a4f76bdd6ca833ee259f273586d57df0163a76ad561b84872fadc3f15a5785a7`，清单内 `26/26` 项全部通过。
 Blender 5.1.2 验证报告 `passed=true`，报告 SHA-256 为
 `dae142590c97e5823182da7a1aa052c0fef5c1a5c1fc8ca733f706434eaae51e`。这些结果只证明素材完整可读，
-不等于六 API 已完成真实 canary 或压力验收。
+不等于六 API 已完成真实 canary 或压力验收。素材内容可复用，但该目录的 provenance 仍绑定历史
+`b410a6a`；正式压测前必须以最终 source identity 重新生成索引/provenance，不能把旧路径冒充最终发布证据。
 
 ### 7.3 最终门禁必须回填
 
@@ -253,7 +265,8 @@ Blender 5.1.2 验证报告 `passed=true`，报告 SHA-256 为
 
 | 字段 | 必填值 |
 |---|---|
-| 本地代码候选 Git commit | `b410a6a7994cdd06335a106ad5257eafb6378fdf`；`LOCAL_CANDIDATE_ONLY` |
+| 最早本地代码候选 Git commit | `b410a6a7994cdd06335a106ad5257eafb6378fdf`；已被后续修复取代，`SUPERSEDED` |
+| 本轮实现 Git commit | `dac30c039f692cf8274eaff5430ca7ebfd97b201`；`LOCAL_COMMITTED_NOT_PUSHED` |
 | 最终可推送完整 Git commit | `PENDING_FINAL_COMMIT` |
 | 完整仓库/历史推送到指定 GitHub `origin/main` 的精确授权 | `PENDING_SOURCE_PUSH_AUTHORIZATION` |
 | GitHub `main` 包含该 commit | `PENDING_GITHUB_MAIN` |
@@ -270,19 +283,22 @@ Blender 5.1.2 验证报告 `passed=true`，报告 SHA-256 为
 
 ### 8.2 灰度顺序
 
-1. 冻结发布身份，完成最终门禁、备份及恢复抽检。
-2. 确认所有生产任务/租约/队列归零；对单个 Linux Worker 进入 `DRAINING`，无运行任务后升级到 `1.2.5`，做健康和最小 canary，再回 `ACTIVE`；逐节点重复。
-3. 依次滚动 Asset API、API、Web；每一步检查健康、版本和零任务，再继续。Scheduler 最后替换，避免旧/新准入语义并行扩大窗口。
-4. Windows Agent 如需安装新候选，先 drain Substance 槽并确认无 PBR/外来进程；安装后验证 parser、heartbeat、长上传和恢复。不得触碰 ComfyUI 容器或缓存。
-5. 六 API 各跑一个真实 canary，逐项校验终态、request/trace ID、时间字段和精确 artifact 三重 SHA。
-6. 浏览器对任务分类、开始/结束时间、分析、调度说明、advisory warning、产物下载和响应式布局做正式 QA。
-7. 只有上述通过，且生产窗口无异常，才允许进入受控综合压测。
+1. 冻结发布身份，完成最终门禁、备份及恢复抽检；预拉取全部镜像，但不 recreate 服务。
+2. 在调用方/网关冻结新的 Asset 提交，保存三节点原始 mode；将三节点设为 operator-owned `DRAINING`，确认 GPU jobs/batches、Asset jobs、lease、Comfy 队列、Windows Baker/native process 全部归零。
+3. 仅替换 Asset API 为 `1.5.9`，检查健康、完整 source SHA、数据库 head、日志和零 lease。此时旧 Worker `1.2.4` 必须只得到 `200 / job=None` 并安全停止领取；不得把这个短领取冻结窗宣称为无缝服务。
+4. 三节点保持 `DRAINING`，按 `control-4090 → worker-3090-a → worker-3090-b` 逐台只替换 Linux Worker 为 `1.2.5`；每步验证 Worker revision、fresh heartbeat、唯一 `agent_instance_id`、节点绑定、零 current job/lease。Worker 没有 Compose healthcheck，不能只看 `compose ps`。
+5. 三个 Worker 全部兼容后，只恢复一个节点的原 schedulable mode，跑受控 UV/拓扑 CPU canary，核对终态、正式产物、SHA 和租约归零；逐节点重复并恢复原 mode。
+6. 依次只替换 API、Web、Scheduler；Scheduler 最后。每一步检查健康、版本、完整 SHA、日志、零任务和零异常锁等待。
+7. 所有 Compose 更新必须指定单个目标 service，并使用 `--no-deps --no-build --pull never --force-recreate`；禁止调用会全栈 reconcile 的部署脚本。发布前后保存三台 ComfyUI 的 container ID、StartedAt、RestartCount、队列和 workflow SHA，证明没有停止、重启、`/free` 或清缓存。
+8. Windows Agent 如需安装新候选，作为单独变更处理：先 drain Substance 槽并确认无 PBR/外来进程；安装后验证 parser、heartbeat、长上传和恢复。不得与五镜像滚动混在同一步。
+9. 六 API 各跑一个真实 canary，逐项校验终态、request/trace ID、时间字段和精确 artifact 三重 SHA；随后完成浏览器正式 QA。
+10. 只有上述通过、解除 intake freeze 且生产窗口无异常，才允许进入受控综合压测。
 
 当前发布结果：`PENDING_ROLLOUT`。
 
 ### 8.3 回滚
 
-- 控制面按已归档的上一组件镜像回滚；Worker 逐节点 drain 后回 `1.2.4`。
+- 保持 intake freeze 和三节点 operator-owned `DRAINING`，按 `Scheduler → Web → API → Linux Worker 逐台回 1.2.4 → Asset API 最后回 1.5.8` 反向回滚。Worker `1.2.4` 在 Asset API `1.5.9` 下只会 fail closed；Asset API 最后回旧后才恢复旧协议领取。
 - 本候选未增加 migration，仍需在操作前确认数据库 head 为 `20260803_0012`；不得随意回滚数据库。
 - 不回滚、修改或重写外部 ImageClip/ModelView/UV/Retopo pipeline。
 - 若 Windows v5 新候选异常，优先隔离/drain 3090-B 对应槽位并保留证据；禁止恢复会驱逐 ComfyUI 缓存的旧行为。

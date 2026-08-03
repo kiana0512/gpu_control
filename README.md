@@ -27,10 +27,13 @@ Scheduler 和 Web 仍运行 `1.5.7`；Asset API 已滚动到 `1.5.8`，生产镜
 `docs/82_2026-08-03_ASSET_FAILURES_UV_ADVISORY_AND_RELEASE_ACCEPTANCE.md`。
 
 仓库下一统一发布候选版本为控制面 `1.5.9`、Blender Worker `1.2.5`；最终 commit/digest 冻结后才构成不可变发布目标。它补齐 PBR/Blender 大文件哈希与
-最终 multipart 上传期间的租约续期，并把五个一方镜像纳入同一 40 位 Git SHA、镜像身份和 SBOM
-门禁。该候选只有在三节点空闲时才允许逐节点滚动；真实六 API canary、递增压力、精确清场和回滚
-证据完成前，不能把源码候选写成已部署版本。统一候选、灰度、精确产物合同、压测和动画管家回执
-入口见 `docs/83_2026-08-03_CONTROL_PLANE_1_5_9_RELEASE_AND_SIX_API_ACCEPTANCE.md`。
+最终 multipart 上传期间的租约续期、Worker generation/node claim binding、真实 schedulable capacity、
+Substance drain 下 CPU 独立调度和管理员 interrupt `NOWAIT`，并把五个一方镜像纳入同一 40 位 Git
+SHA、镜像身份和 SBOM 门禁。先前 `b410a6a` 五个本地镜像已被后续安全修复取代，必须从最终 SHA
+重建。该候选只有在三节点空闲、冻结新任务并按兼容顺序滚动时才允许部署；真实六 API canary、
+递增压力、精确清场和回滚证据完成前，不能把源码候选写成已部署版本。统一候选、灰度、精确产物
+合同、压测和动画管家回执入口见
+`docs/83_2026-08-03_CONTROL_PLANE_1_5_9_RELEASE_AND_SIX_API_ACCEPTANCE.md`。
 
 六 API、120 VU 的独立 R8 有界压力已以退出码 0 完成：`39,778` 个 HTTP 请求、0 失败，六 API、
 七项阈值、`120/120` 清场、三 GPU 饱和和 379 个连续遥测样本全部通过。该结果只验收综合有界压力，

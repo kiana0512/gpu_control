@@ -16,6 +16,14 @@
   测试流量，返回 `503 LOAD_TEST_PREEMPTED`，未知租户或未知状态按生产流量 fail closed。
 - 六 API 正式压测仅认 `SUCCEEDED`，并按 API 固定 kind 集合和基数逐件校验非零 size、metadata
   SHA、`X-Artifact-SHA256` 与下载 body SHA；缺件、多件、重复 kind 或三重 SHA 漂移整轮失败。
+- Linux Worker heartbeat、claim 和任务租约绑定物理 `node_id` 与唯一进程代际；活跃持久租约禁止
+  旧进程、重复实例或节点迁移造成二次领取，过期租约只能经受控对账后恢复。
+- Linux CPU claim 不依赖 ComfyUI/GPU health，但仍遵守管理员 mode 和 manual reservation；实际 claim、
+  capacity 与 ETA 共用门禁，Asset API 自有 Substance drain 不会错误阻塞 CPU UV/重拓扑。
+- 管理员接管 drain 时保留 Substance pending/fence/recovery；节点 interrupt 使用稳定 Batch/Job 锁序和
+  PostgreSQL `NOWAIT`，锁竞争返回可重试 409，不再等待成调度死锁或产生部分取消。
+- 1.5.8 Asset API 不接受 Worker 1.2.5 新增的 `node_id` claim 字段；正式滚动必须在零任务窗口先升级
+  Asset API，再逐台升级 Worker。先前 `b410a6a` 五个本地镜像已作废，最终 SHA 冻结后全部重建。
 - 不修改 ImageClip、ModelViewCreator、UV/重拓扑 Skill、工作流、模型、prompt、参数、图拓扑或
   输出语义；三节点空闲滚动、真实六 API 验收和观察完成前保持候选状态。
 
