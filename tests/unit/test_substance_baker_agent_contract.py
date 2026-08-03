@@ -66,6 +66,72 @@ def test_long_substance_commands_renew_the_lease_and_worker_heartbeat() -> None:
     assert all("$jobId $lease" in line for line in command_calls)
 
 
+def test_hashing_large_substance_artifacts_keeps_the_lease_alive() -> None:
+    source = (
+        Path(__file__).parents[2]
+        / "apps"
+        / "substance_baker_agent"
+        / "Invoke-GPUControlSubstanceAgent.ps1"
+    ).read_text(encoding="utf-8")
+    hash_function = source.split(
+        "function Get-FileSha256WithLeaseRenewal(", maxsplit=1
+    )[1].split("\nfunction Stop-BakerProcess(", maxsplit=1)[0]
+
+    assert "New-Object byte[] (4 * 1024 * 1024)" in hash_function
+    assert "$stream.Read($buffer, 0, $buffer.Length)" in hash_function
+    assert hash_function.count(
+        "Invoke-BakerLeaseRenewal $JobId $Lease $Progress"
+    ) == 2
+    assert "$nextRenewal = [DateTimeOffset]::UtcNow.AddSeconds" in hash_function
+    assert "cancelled while hashing artifacts" in hash_function
+    assert "$crypto.FlushFinalBlock()" in hash_function
+    assert "$crypto.Dispose()" in hash_function
+    assert "$stream.Dispose()" in hash_function
+    assert "Get-FileSha256WithLeaseRenewal $outputFile $jobId $lease" in source
+    assert "Get-FileHash $outputFile -Algorithm SHA256" not in source
+
+
+def test_substance_completion_upload_renews_lease_and_cleans_up() -> None:
+    source = (
+        Path(__file__).parents[2]
+        / "apps"
+        / "substance_baker_agent"
+        / "Invoke-GPUControlSubstanceAgent.ps1"
+    ).read_text(encoding="utf-8")
+    upload_function = source.split(
+        "function Invoke-LeasedMultipartUpload(", maxsplit=1
+    )[1].split("\nfunction Execute-Bake(", maxsplit=1)[0]
+
+    first_renewal = upload_function.index(
+        "Invoke-BakerLeaseRenewal $JobId $Lease 95"
+    )
+    process_start = upload_function.index("Start-Process -FilePath $CurlExe")
+    assert first_renewal < process_start
+    assert "$process.WaitForExit($LeaseRenewalSeconds * 1000)" in upload_function
+    assert upload_function.count(
+        "Invoke-BakerLeaseRenewal $JobId $Lease 95"
+    ) == 2
+    assert "'UPLOADING_ARTIFACTS'" in upload_function
+    assert "try { Send-Heartbeat }" in upload_function
+    assert "cancel_requested" in upload_function
+    assert "Stop-CompletionUploadProcess $process" in upload_function
+    assert "if ($process.WaitForExit(2000)) { break }" in upload_function
+    assert "RedirectStandardOutput $stdoutPath" in upload_function
+    assert "RedirectStandardError $stderrPath" in upload_function
+    assert upload_function.count("Remove-Item -LiteralPath") == 2
+    assert "$process.Dispose()" in upload_function
+
+    assert "if ($null -eq $exitCode)" in upload_function
+    assert "if ([int]$exitCode -ne 0)" in upload_function
+    assert "ConvertFrom-Json" in upload_function
+    assert "$status -eq 'SUCCEEDED' -and $accepted" in upload_function
+    assert "$status -eq 'CANCELLED'" in upload_function
+    assert "if (-not $Process.WaitForExit(10000))" in source
+    assert "curl completion upload process did not terminate" in source
+    assert "Invoke-LeasedMultipartUpload $curlArgs $jobId $lease $logPath" in source
+    assert "$response = & $CurlExe @curlArgs" not in source
+
+
 @pytest.mark.parametrize(
     ("exit_code", "has_success_marker", "expected"),
     [

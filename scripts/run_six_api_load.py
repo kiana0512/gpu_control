@@ -17,7 +17,14 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
-from packages.gpu_control_core.load_testing import (
+# Direct script execution sets sys.path[0] to ``scripts/`` rather than the
+# repository root.  Bind imports to this checkout explicitly so the plan-only
+# safety gate works before a development editable install exists.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from packages.gpu_control_core.load_testing import (  # noqa: E402
     LoadTestConfigurationError,
     RuntimeSettings,
     build_plan,
@@ -26,7 +33,6 @@ from packages.gpu_control_core.load_testing import (
     write_result_manifest,
 )
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCENARIO = REPOSITORY_ROOT / "tests/load/scenarios/six_api_120.example.yaml"
 DEFAULT_FIXTURES = REPOSITORY_ROOT / "tests/load/fixtures/six_api.example.yaml"
 SAFE_LOCUST_STOP_TIMEOUT_SECONDS = 30

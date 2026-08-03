@@ -8,6 +8,7 @@ import pytest
 
 from scripts.package_control_plane_release import (
     COMPONENTS,
+    DEFAULT_ASSET_WORKER_VERSION,
     ReleasePackagingError,
     _assert_empty_destination,
     _run,
@@ -19,6 +20,7 @@ from scripts.package_control_plane_release import (
     oci_build_command,
     plan,
     select_repo_digest,
+    source_worker_versions,
     validate_docker_oci_config_identity,
 )
 
@@ -145,6 +147,9 @@ def _docker_fixture(path: Path, reference: str) -> str:
 
 def test_confirmation_token_binds_version_and_full_revision() -> None:
     assert confirmation_token("1.5.5", REVISION) == f"PACKAGE_CONTROL_PLANE_1.5.5_{REVISION}"
+    assert confirmation_token("1.5.9", REVISION, "1.2.5") == (
+        f"PACKAGE_GPU_CONTROL_1.5.9_WORKER_1.2.5_{REVISION}"
+    )
 
 
 def test_base_image_resolution_requires_one_matching_digest() -> None:
@@ -161,6 +166,7 @@ def test_split_build_commands_are_source_bound_and_never_deploy_or_push(tmp_path
         "PYTHON_BASE_IMAGE": f"python@sha256:{'1' * 64}",
         "NODE_BASE_IMAGE": f"node@sha256:{'2' * 64}",
         "NGINX_BASE_IMAGE": f"nginx@sha256:{'3' * 64}",
+        "BLENDER_BASE_IMAGE": f"li3d/blender-runtime@sha256:{'5' * 64}",
     }
     generator = f"example/sbom-generator@sha256:{'4' * 64}"
     for component in COMPONENTS:
@@ -190,7 +196,12 @@ def test_split_build_commands_are_source_bound_and_never_deploy_or_push(tmp_path
         for command in (oci_command, docker_command):
             joined = " ".join(command)
             assert command[:3] == ["/usr/bin/docker", "buildx", "build"]
-            assert "GPU_CONTROL_VERSION=1.5.5" in command
+            expected_version_argument = (
+                f"ASSET_WORKER_VERSION={DEFAULT_ASSET_WORKER_VERSION}"
+                if component.key == "blender-worker"
+                else "GPU_CONTROL_VERSION=1.5.5"
+            )
+            assert expected_version_argument in command
             assert f"GPU_CONTROL_REVISION={REVISION}" in command
             for forbidden in (" compose ", " up ", " restart ", "--push", " lfs "):
                 assert forbidden not in f" {joined} "
@@ -273,6 +284,17 @@ def test_plan_exposes_two_safe_solves_per_component(tmp_path: Path) -> None:
     )
     assert payload["schema_version"] == "gpu-control-release-packaging-plan.v2"
     assert payload["mode"] == "PLAN_ONLY_NO_MUTATIONS"
+    assert payload["worker_version"] == DEFAULT_ASSET_WORKER_VERSION
+    assert payload["confirmation_token"] == confirmation_token(
+        "1.5.5", REVISION, DEFAULT_ASSET_WORKER_VERSION
+    )
+    assert set(payload["build_commands"]) == {
+        "api",
+        "scheduler",
+        "asset-api",
+        "web",
+        "blender-worker",
+    }
     for commands in payload["build_commands"].values():
         assert set(commands) == {"oci_attested", "docker_loadable"}
         oci_joined = " ".join(commands["oci_attested"])
@@ -318,6 +340,7 @@ def test_release_dockerfiles_allow_digest_pinned_base_images() -> None:
         "apps/scheduler/Dockerfile": "ARG PYTHON_BASE_IMAGE=",
         "apps/asset_api/Dockerfile": "ARG PYTHON_BASE_IMAGE=",
         "apps/web/Dockerfile": "ARG NODE_BASE_IMAGE=",
+        "apps/blender_worker/Dockerfile": "ARG BLENDER_BASE_IMAGE=",
     }
     for relative, marker in expected.items():
         dockerfile = (REPOSITORY / relative).read_text(encoding="utf-8")
@@ -326,6 +349,12 @@ def test_release_dockerfiles_allow_digest_pinned_base_images() -> None:
     assert "ARG NGINX_BASE_IMAGE=" in (REPOSITORY / "apps/web/Dockerfile").read_text(
         encoding="utf-8"
     )
+
+
+def test_worker_source_release_selectors_are_aligned() -> None:
+    versions = source_worker_versions(REPOSITORY)
+    assert len(versions) == 9
+    assert len(set(versions.values())) == 1
 
 
 def test_default_lfs_directory_preserves_existing_evidence(

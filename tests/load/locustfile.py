@@ -16,6 +16,7 @@ import json
 import math
 import os
 import random
+import sys
 import threading
 import time
 from collections import Counter
@@ -25,11 +26,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import gevent
-import httpx
-from locust import HttpUser, LoadTestShape, between, events, task
+# Locust console entrypoints do not guarantee that the checkout root is on
+# sys.path.  Pin imports to the same source tree whose scenario and immutable
+# plan are verified below.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from packages.gpu_control_core.load_testing import (
+import gevent  # noqa: E402
+import httpx  # noqa: E402
+from locust import HttpUser, LoadTestShape, between, events, task  # noqa: E402
+
+from packages.gpu_control_core.load_testing import (  # noqa: E402
     API_CONTRACTS,
     API_NAMES,
     LOAD_SUCCESS_STATUSES,
@@ -58,7 +66,6 @@ from packages.gpu_control_core.load_testing import (
     write_result_manifest,
 )
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 SCENARIO_FILE = Path(
     os.environ.get(
         "LOAD_TEST_SCENARIO_FILE",

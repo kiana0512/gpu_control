@@ -33,7 +33,7 @@ frontend-build:
 
 compose-validate:
 	docker compose --env-file .env.example -f deploy/control-plane/compose.yaml config --quiet
-	docker compose --env-file .env.example -f deploy/gpu-node/compose.yaml config --quiet
+	docker compose --env-file .env.node.example -f deploy/gpu-node/compose.yaml config --quiet
 
 load-test:
 	$(VENV_BIN)/python scripts/run_six_api_load.py \
@@ -51,6 +51,7 @@ release-package-plan:
 	@: "$${RELEASE_REVISION:?set RELEASE_REVISION to the pushed 40-character source SHA}"
 	$(PYTHON) scripts/package_control_plane_release.py \
 		--version "$${RELEASE_VERSION}" \
+		--worker-version "$${RELEASE_WORKER_VERSION:-1.2.5}" \
 		--revision "$${RELEASE_REVISION}"
 
 release-package-execute:
@@ -60,6 +61,7 @@ release-package-execute:
 	@: "$${RELEASE_PACKAGE_CONFIRM:?copy the exact confirmation token from release-package-plan}"
 	$(PYTHON) scripts/package_control_plane_release.py \
 		--version "$${RELEASE_VERSION}" \
+		--worker-version "$${RELEASE_WORKER_VERSION:-1.2.5}" \
 		--revision "$${RELEASE_REVISION}" \
 		--sbom-generator "$${RELEASE_SBOM_GENERATOR}" \
 		--execute \
@@ -74,17 +76,21 @@ verify-release-identity:
 	@: "$${RELEASE_SCHEDULER_IMAGE:?set RELEASE_SCHEDULER_IMAGE}"
 	@: "$${RELEASE_ASSET_API_IMAGE:?set RELEASE_ASSET_API_IMAGE}"
 	@: "$${RELEASE_WEB_IMAGE:?set RELEASE_WEB_IMAGE}"
+	@: "$${RELEASE_BLENDER_WORKER_IMAGE:?set RELEASE_BLENDER_WORKER_IMAGE}"
 	@: "$${RELEASE_SBOM_DIR:?set RELEASE_SBOM_DIR}"
 	$(PYTHON) scripts/verify_release_identity.py \
 		--expected-version "$${RELEASE_VERSION}" \
+		--expected-worker-version "$${RELEASE_WORKER_VERSION:-1.2.5}" \
 		--expected-revision "$${RELEASE_REVISION}" \
 		--remote-ref "$${RELEASE_REMOTE_REF:-origin/main}" \
 		--image "api=$${RELEASE_API_IMAGE}" \
 		--image "scheduler=$${RELEASE_SCHEDULER_IMAGE}" \
 		--image "asset-api=$${RELEASE_ASSET_API_IMAGE}" \
 		--image "web=$${RELEASE_WEB_IMAGE}" \
+		--image "blender-worker=$${RELEASE_BLENDER_WORKER_IMAGE}" \
 		--sbom "api=$${RELEASE_SBOM_DIR}/api.intoto.json" \
 		--sbom "scheduler=$${RELEASE_SBOM_DIR}/scheduler.intoto.json" \
 		--sbom "asset-api=$${RELEASE_SBOM_DIR}/asset-api.intoto.json" \
 		--sbom "web=$${RELEASE_SBOM_DIR}/web.intoto.json" \
+		--sbom "blender-worker=$${RELEASE_SBOM_DIR}/blender-worker.intoto.json" \
 		--output "$${RELEASE_SBOM_DIR}/release-identity.json"

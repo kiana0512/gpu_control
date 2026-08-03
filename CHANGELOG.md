@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.5.9（候选）— 2026-08-03
+
+- UV 与自动重拓扑的生产默认策略统一为 `advisory`：几何质量未达标保留结构化告警，但通过身份、
+  manifest、文件完整性、租约和 SHA 门禁的正式 BLEND/FBX 继续原子交付；完整性错误仍硬失败。
+- Blender Worker 1.2.5 在最终 multipart 上传期间持续续租，取消或续租失败会安全终止上传，避免
+  大文件或拥塞时出现“计算成功但交付失败”。
+- Windows Substance Baker Agent v5 在大文件分块哈希、最终上传和服务端校验阶段持续续租与心跳；
+  curl 退出码或服务端响应异常继续 fail closed，且不会清理或重启 ComfyUI 模型缓存。
+- 发布打包和身份验证扩展为五个一方镜像：API、Scheduler、Asset API、Web 与 Blender Worker；
+  控制面 1.5.9 和 Worker 1.2.5 必须绑定同一个已推送的 40 位 Git SHA、不可变镜像身份和 SBOM。
+- 六 API 压测入口修复独立脚本导入路径，保留真实业务优先、空闲窗口、备份、凭据、allowlist、
+  fixtures、逐级升压和精确清场门禁；未显式 `--execute` 时不会发出任何 HTTP 请求。
+- 不修改 ImageClip、ModelViewCreator、UV/重拓扑 Skill、工作流、模型、prompt、参数、图拓扑或
+  输出语义；三节点空闲滚动、真实六 API 验收和观察完成前保持候选状态。
+
 ## 1.5.8（候选）— 2026-08-03
 
 - 三台 Asset Worker 改用各自独立、可写且持久化的 Codex home；真实探针、认证轮换、TLS 环境、

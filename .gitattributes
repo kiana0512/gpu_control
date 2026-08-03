@@ -1,4 +1,8 @@
 * text=auto
+# Release archives are versioned directories.  Keep future immutable release
+# parts on LFS without requiring a source change for every version bump.
+artifacts/control-plane/**/release-parts/*.part-* filter=lfs diff=lfs merge=lfs -text
+artifacts/asset-worker/**/*.part-* filter=lfs diff=lfs merge=lfs -text
 *.sh text eol=lf
 scripts/gpuctl text eol=lf
 *.py text eol=lf

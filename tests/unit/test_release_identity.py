@@ -2,21 +2,28 @@ import hashlib
 import json
 from pathlib import Path
 
-from scripts.verify_release_identity import _bound_sbom, _named_values, source_versions, verify
+from scripts.verify_release_identity import (
+    REQUIRED_IMAGE_COMPONENTS,
+    _bound_sbom,
+    _named_values,
+    source_versions,
+    source_worker_versions,
+    verify,
+)
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 
 
 def test_source_release_versions_are_aligned() -> None:
     assert source_versions(REPOSITORY) == {
-        "python": "1.5.8",
-        "web": "1.5.8",
-        "web_lock": "1.5.8",
+        "python": "1.5.9",
+        "web": "1.5.9",
+        "web_lock": "1.5.9",
     }
 
 
 def test_control_plane_build_defaults_match_release_version() -> None:
-    expected_version = "1.5.8"
+    expected_version = "1.5.9"
     for dockerfile in (
         "apps/api/Dockerfile",
         "apps/asset_api/Dockerfile",
@@ -35,10 +42,27 @@ def test_control_plane_build_defaults_match_release_version() -> None:
     assert compose.count(f"APP_IMAGE_TAG:-{expected_version}") == 4
 
 
+def test_worker_release_versions_and_evidence_contract_are_aligned() -> None:
+    versions = source_worker_versions(REPOSITORY)
+    assert len(versions) == 9
+    assert len(set(versions.values())) == 1
+    assert REQUIRED_IMAGE_COMPONENTS == {
+        "api",
+        "scheduler",
+        "asset-api",
+        "web",
+        "blender-worker",
+    }
+
+
 def test_release_parts_are_tracked_by_git_lfs() -> None:
     attributes = (REPOSITORY / ".gitattributes").read_text(encoding="utf-8")
     assert (
-        "artifacts/control-plane/1.5.8/release-parts/*.part-* "
+        "artifacts/control-plane/**/release-parts/*.part-* "
+        "filter=lfs diff=lfs merge=lfs -text"
+    ) in attributes
+    assert (
+        "artifacts/asset-worker/**/*.part-* "
         "filter=lfs diff=lfs merge=lfs -text"
     ) in attributes
 

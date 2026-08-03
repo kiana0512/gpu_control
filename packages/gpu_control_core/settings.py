@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     asset_job_max_attempts: int = Field(2, ge=1, le=10)
     substance_pending_reservation_seconds: int = Field(60, ge=30, le=86_400)
     uv_qa_enforcement: Literal["strict", "advisory"] = "advisory"
-    retopology_qa_enforcement: Literal["strict", "advisory"] = "strict"
+    retopology_qa_enforcement: Literal["strict", "advisory"] = "advisory"
 
     @field_validator(
         "jwt_secret",

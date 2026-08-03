@@ -55,9 +55,9 @@ services:
       dockerfile: apps/blender_worker/Dockerfile
       args:
         BLENDER_BASE_IMAGE: ${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}
-        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.2.4}
+        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.2.5}
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
-    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.2.4}
+    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.2.5}
     restart: unless-stopped
     environment:
       ASSET_API_URL: https://${CONTROL_HOST}

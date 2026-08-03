@@ -28,6 +28,8 @@ LOG = logging.getLogger("gpu_control_blender_worker")
 CODEX_EXEC_LOCK = asyncio.Lock()
 CODEX_ERROR_CAPTURE_LIMIT = 64 * 1024
 SUBPROCESS_OUTPUT_LIMIT = 16 * 1024 * 1024
+COMPLETION_UPLOAD_KEEPALIVE_SECONDS = 15.0
+COMPLETION_UPLOAD_RENEWAL_GRACE_SECONDS = 2.0
 
 UV_UNWRAP_SCRIPT_SHA256 = "ebfa3546d61c548a11c0e7561c75f93b6ef93308d8da9f27788bf35643303758"
 UV_QA_SCRIPT_SHA256 = "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
@@ -117,6 +119,78 @@ async def signed_post(
     return await client.post(
         path, content=body, headers=signed_headers(settings, "POST", path, body)
     )
+
+
+async def post_completion_with_lease_keepalive(
+    client: httpx.AsyncClient,
+    job_id: str,
+    lease_headers: dict[str, str],
+    complete_path: str,
+    files: dict[str, tuple[str, Any, str]],
+    *,
+    keepalive_seconds: float = COMPLETION_UPLOAD_KEEPALIVE_SECONDS,
+    renewal_grace_seconds: float = COMPLETION_UPLOAD_RENEWAL_GRACE_SECONDS,
+) -> httpx.Response:
+    """Upload final artifacts while retaining exclusive ownership of the job.
+
+    Final multipart uploads can take longer than the server lease when artifacts
+    are large or storage validation is slow.  A second request periodically
+    advances the existing progress record, which atomically renews that lease.
+    The upload is cancelled fail-closed if ownership can no longer be renewed.
+    """
+    if keepalive_seconds <= 0:
+        raise ValueError("completion upload keepalive must be positive")
+    if renewal_grace_seconds < 0:
+        raise ValueError("completion upload renewal grace must not be negative")
+
+    upload_task = asyncio.create_task(
+        client.post(
+            complete_path,
+            headers=lease_headers,
+            files=files,
+            timeout=3600,
+        )
+    )
+    try:
+        while True:
+            completed, _ = await asyncio.wait(
+                {upload_task}, timeout=keepalive_seconds
+            )
+            if completed:
+                return await upload_task
+
+            try:
+                renewal = await client.post(
+                    f"/internal/v1/assets/jobs/{job_id}/progress",
+                    headers=lease_headers,
+                    json={
+                        "progress": 95,
+                        "stage": "UPLOADING_ARTIFACTS",
+                        "message": "正在上传并由服务端校验最终制品",
+                        "estimated_remaining_seconds": 60,
+                    },
+                    timeout=10,
+                )
+                renewal.raise_for_status()
+            except Exception as exc:
+                # Completion may have committed and cleared the lease while the
+                # progress request was in flight.  Prefer its authoritative
+                # response when it arrives within a small bounded grace period.
+                completed, _ = await asyncio.wait(
+                    {upload_task}, timeout=renewal_grace_seconds
+                )
+                if completed:
+                    return await upload_task
+                raise RuntimeError(
+                    "completion upload lease renewal failed before commit"
+                ) from exc
+
+            if renewal.json().get("cancel_requested"):
+                raise RuntimeError("asset job cancelled during completion upload")
+    finally:
+        if not upload_task.done():
+            upload_task.cancel()
+            await asyncio.gather(upload_task, return_exceptions=True)
 
 
 async def heartbeat(
@@ -1700,11 +1774,12 @@ async def process_job(
                 else:
                     content_type = "application/octet-stream"
                 files[kind] = (filename, handle, content_type)
-            completed = await client.post(
+            completed = await post_completion_with_lease_keepalive(
+                client,
+                job_id,
+                lease_headers,
                 complete_path,
-                headers=lease_headers,
-                files=files,
-                timeout=3600,
+                files,
             )
             if completed.is_error and job["job_type"] == "UV_PROCESS_V2":
                 raise RuntimeError(

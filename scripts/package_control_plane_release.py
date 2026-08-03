@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and archive a source-bound control-plane release without deploying it.
+"""Build and archive a source-bound first-party release without deploying it.
 
 The default mode is a read-only plan.  ``--execute`` is deliberately gated by
 an exact confirmation token and a clean, remotely published Git revision.  The
@@ -37,6 +37,7 @@ ACCEPTED_ORIGIN_URLS = frozenset(
 REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_REFERENCE_PATTERN = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
+DEFAULT_ASSET_WORKER_VERSION = "1.2.5"
 OCI_MANIFEST_MEDIA_TYPES = frozenset(
     {
         "application/vnd.oci.image.manifest.v1+json",
@@ -72,9 +73,14 @@ class Component:
     context: str
     dockerfile: str
     base_arguments: tuple[str, ...]
+    version_argument: str = "GPU_CONTROL_VERSION"
+    runtime_version_environment: str | None = "GPU_CONTROL_BUILD_VERSION"
 
-    def image_reference(self, version: str) -> str:
-        return f"{self.image_repository}:{version}"
+    def release_version(self, version: str, worker_version: str) -> str:
+        return worker_version if self.key == "blender-worker" else version
+
+    def image_reference(self, version: str, worker_version: str = DEFAULT_ASSET_WORKER_VERSION) -> str:
+        return f"{self.image_repository}:{self.release_version(version, worker_version)}"
 
 
 COMPONENTS = (
@@ -109,6 +115,17 @@ COMPONENTS = (
         context="apps/web",
         dockerfile="apps/web/Dockerfile",
         base_arguments=("NODE_BASE_IMAGE", "NGINX_BASE_IMAGE"),
+        runtime_version_environment=None,
+    ),
+    Component(
+        key="blender-worker",
+        image_repository="li3d/blender-worker",
+        title="GPU Control Blender Worker",
+        context=".",
+        dockerfile="apps/blender_worker/Dockerfile",
+        base_arguments=("BLENDER_BASE_IMAGE",),
+        version_argument="ASSET_WORKER_VERSION",
+        runtime_version_environment="ASSET_WORKER_BUILD_VERSION",
     ),
 )
 
@@ -116,6 +133,7 @@ BASE_IMAGE_TAGS = {
     "PYTHON_BASE_IMAGE": "python:3.11.13-slim-bookworm",
     "NODE_BASE_IMAGE": "node:22.17.1-alpine3.22",
     "NGINX_BASE_IMAGE": "nginx:1.28.0-alpine",
+    "BLENDER_BASE_IMAGE": "li3d/blender-runtime:5.1.2",
 }
 
 
@@ -206,8 +224,20 @@ def _json_bytes(value: Any) -> bytes:
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
 
 
-def confirmation_token(version: str, revision: str) -> str:
-    return f"PACKAGE_CONTROL_PLANE_{version}_{revision}"
+def confirmation_token(
+    version: str,
+    revision: str,
+    worker_version: str | None = None,
+) -> str:
+    """Bind an execution confirmation to every first-party image version.
+
+    ``None`` retains the historical helper result for callers that only render
+    old records.  Current CLI paths always pass the explicit Worker version.
+    """
+
+    if worker_version is None:
+        return f"PACKAGE_CONTROL_PLANE_{version}_{revision}"
+    return f"PACKAGE_GPU_CONTROL_{version}_WORKER_{worker_version}_{revision}"
 
 
 def _reference_repository(reference: str) -> str:
@@ -262,6 +292,104 @@ def committed_source_versions(repository: Path, revision: str) -> dict[str, str]
         for path in ("pyproject.toml", "apps/web/package.json", "apps/web/package-lock.json")
     ]
     return _versions_from_text(*values)
+
+
+def _required_version(text: str, pattern: str, label: str) -> str:
+    match = re.search(pattern, text, re.MULTILINE)
+    if match is None:
+        raise ReleasePackagingError(f"worker release metadata is missing {label}")
+    return match.group(1)
+
+
+def _worker_versions_from_text(
+    dockerfile: str,
+    environment: str,
+    node_environment: str,
+    control_compose: str,
+    node_compose: str,
+) -> dict[str, str]:
+    """Return every source-controlled Worker version selector.
+
+    A tag alone is not release identity.  Requiring the Docker build argument,
+    both environment templates and both Compose defaults to agree prevents a
+    rebuilt node from silently falling back to an older or ``unknown`` Worker.
+    """
+
+    return {
+        "dockerfile": _required_version(
+            dockerfile,
+            r"^ARG ASSET_WORKER_VERSION=([^\s]+)$",
+            "Dockerfile ASSET_WORKER_VERSION",
+        ),
+        "environment_version": _required_version(
+            environment,
+            r"^ASSET_WORKER_VERSION=([^\s]+)$",
+            ".env.example ASSET_WORKER_VERSION",
+        ),
+        "environment_tag": _required_version(
+            environment,
+            r"^ASSET_WORKER_IMAGE_TAG=([^\s]+)$",
+            ".env.example ASSET_WORKER_IMAGE_TAG",
+        ),
+        "node_environment_version": _required_version(
+            node_environment,
+            r"^ASSET_WORKER_VERSION=([^\s]+)$",
+            ".env.node.example ASSET_WORKER_VERSION",
+        ),
+        "node_environment_tag": _required_version(
+            node_environment,
+            r"^ASSET_WORKER_IMAGE_TAG=([^\s]+)$",
+            ".env.node.example ASSET_WORKER_IMAGE_TAG",
+        ),
+        "control_compose_version": _required_version(
+            control_compose,
+            r"ASSET_WORKER_VERSION: \$\{ASSET_WORKER_VERSION:-([^}]+)\}",
+            "control Compose ASSET_WORKER_VERSION",
+        ),
+        "control_compose_tag": _required_version(
+            control_compose,
+            r"li3d/blender-worker:\$\{ASSET_WORKER_IMAGE_TAG:-([^}]+)\}",
+            "control Compose ASSET_WORKER_IMAGE_TAG",
+        ),
+        "node_compose_version": _required_version(
+            node_compose,
+            r"ASSET_WORKER_VERSION: \$\{ASSET_WORKER_VERSION:-([^}]+)\}",
+            "node Compose ASSET_WORKER_VERSION",
+        ),
+        "node_compose_tag": _required_version(
+            node_compose,
+            r"li3d/blender-worker:\$\{ASSET_WORKER_IMAGE_TAG:-([^}]+)\}",
+            "node Compose ASSET_WORKER_IMAGE_TAG",
+        ),
+    }
+
+
+def source_worker_versions(repository: Path) -> dict[str, str]:
+    paths = (
+        "apps/blender_worker/Dockerfile",
+        ".env.example",
+        ".env.node.example",
+        "deploy/control-plane/compose.yaml",
+        "deploy/gpu-node/compose.yaml",
+    )
+    values = tuple((repository / path).read_text(encoding="utf-8") for path in paths)
+    return _worker_versions_from_text(
+        values[0], values[1], values[2], values[3], values[4]
+    )
+
+
+def committed_source_worker_versions(repository: Path, revision: str) -> dict[str, str]:
+    paths = (
+        "apps/blender_worker/Dockerfile",
+        ".env.example",
+        ".env.node.example",
+        "deploy/control-plane/compose.yaml",
+        "deploy/gpu-node/compose.yaml",
+    )
+    values = tuple(_git(repository, "show", f"{revision}:{path}") for path in paths)
+    return _worker_versions_from_text(
+        values[0], values[1], values[2], values[3], values[4]
+    )
 
 
 def _inspect_image(reference: str) -> dict[str, Any]:
@@ -320,9 +448,12 @@ def preflight(
     builder: str,
     sbom_generator: str | None,
     allow_pending_sbom: bool,
+    worker_version: str = DEFAULT_ASSET_WORKER_VERSION,
 ) -> dict[str, Any]:
     if not VERSION_PATTERN.fullmatch(version):
         raise ReleasePackagingError("version must be a concrete semantic version")
+    if not VERSION_PATTERN.fullmatch(worker_version):
+        raise ReleasePackagingError("worker version must be a concrete semantic version")
     if not REVISION_PATTERN.fullmatch(revision):
         raise ReleasePackagingError("revision must be a full lowercase 40-character Git SHA")
     repository = repository.resolve()
@@ -359,6 +490,13 @@ def preflight(
         raise ReleasePackagingError(
             f"source versions are not aligned: working={versions!r}, committed={committed_versions!r}"
         )
+    worker_versions = source_worker_versions(repository)
+    committed_worker_versions = committed_source_worker_versions(repository, revision)
+    if set(worker_versions.values()) != {worker_version} or committed_worker_versions != worker_versions:
+        raise ReleasePackagingError(
+            "Worker source versions are not aligned: "
+            f"working={worker_versions!r}, committed={committed_worker_versions!r}"
+        )
     archive_dir = archive_dir.resolve()
     lfs_dir = lfs_dir.resolve()
     _assert_empty_destination(archive_dir, "archive output")
@@ -385,7 +523,7 @@ def preflight(
             raise ReleasePackagingError("SBOM generator must be an immutable name@sha256 reference")
         _inspect_image(sbom_generator)
     for component in COMPONENTS:
-        reference = component.image_reference(version)
+        reference = component.image_reference(version, worker_version)
         existing = _run(
             [DOCKER_EXECUTABLE, "image", "inspect", reference],
             check=False,
@@ -398,12 +536,14 @@ def preflight(
     return {
         "schema_version": "gpu-control-release-packaging-preflight.v1",
         "version": version,
+        "worker_version": worker_version,
         "revision": revision,
         "origin_url": origin_url,
         "remote_ref": remote_ref,
         "remote_head": remote_head,
         "remote_sha": remote_sha,
         "source_versions": versions,
+        "worker_source_versions": worker_versions,
         "buildx_version": buildx_version,
         "builder": builder,
         "base_images": base_images,
@@ -420,7 +560,9 @@ def _build_command_prefix(
     revision: str,
     builder: str,
     base_images: dict[str, str],
+    worker_version: str = DEFAULT_ASSET_WORKER_VERSION,
 ) -> list[str]:
+    component_version = component.release_version(version, worker_version)
     command = [
         DOCKER_EXECUTABLE,
         "buildx",
@@ -432,9 +574,9 @@ def _build_command_prefix(
         "--file",
         str(repository / component.dockerfile),
         "--tag",
-        component.image_reference(version),
+        component.image_reference(version, worker_version),
         "--build-arg",
-        f"GPU_CONTROL_VERSION={version}",
+        f"{component.version_argument}={component_version}",
         "--build-arg",
         f"GPU_CONTROL_REVISION={revision}",
     ]
@@ -454,6 +596,7 @@ def oci_build_command(
     metadata_path: Path,
     cache_dir: Path,
     sbom_generator: str | None,
+    worker_version: str = DEFAULT_ASSET_WORKER_VERSION,
 ) -> list[str]:
     """Create the attested OCI export and populate a reusable local build cache."""
 
@@ -464,6 +607,7 @@ def oci_build_command(
         revision,
         builder,
         base_images,
+        worker_version,
     )
     command.append("--provenance=mode=max")
     if sbom_generator is not None:
@@ -488,6 +632,7 @@ def docker_build_command(
     base_images: dict[str, str],
     docker_tar: Path,
     cache_dir: Path,
+    worker_version: str = DEFAULT_ASSET_WORKER_VERSION,
 ) -> list[str]:
     """Create a Docker-loadable tar without an attestation manifest list."""
 
@@ -498,6 +643,7 @@ def docker_build_command(
         revision,
         builder,
         base_images,
+        worker_version,
     )
     command.extend(
         [
@@ -716,12 +862,14 @@ def _validate_image(
     inspected: dict[str, Any],
     version: str,
     revision: str,
+    worker_version: str = DEFAULT_ASSET_WORKER_VERSION,
 ) -> dict[str, Any]:
+    component_version = component.release_version(version, worker_version)
     config = dict(inspected.get("Config") or {})
     labels = dict(config.get("Labels") or {})
     expected_labels = {
         "org.opencontainers.image.title": component.title,
-        "org.opencontainers.image.version": version,
+        "org.opencontainers.image.version": component_version,
         "org.opencontainers.image.revision": revision,
         "org.opencontainers.image.source": OCI_SOURCE,
     }
@@ -735,8 +883,9 @@ def _validate_image(
         for value in config.get("Env") or []
         if "=" in value
     }
-    if component.key != "web":
-        if environment.get("GPU_CONTROL_BUILD_VERSION") != version:
+    runtime_version_environment = component.runtime_version_environment
+    if runtime_version_environment is not None:
+        if environment.get(runtime_version_environment) != component_version:
             raise ReleasePackagingError(f"{reference} runtime build version is not aligned")
         if environment.get("GPU_CONTROL_BUILD_REVISION") != revision:
             raise ReleasePackagingError(f"{reference} runtime build revision is not aligned")
@@ -750,7 +899,11 @@ def _validate_image(
         "oci_labels": expected_labels,
         "runtime_version_env": {
             key: environment.get(key)
-            for key in ("GPU_CONTROL_BUILD_VERSION", "GPU_CONTROL_BUILD_REVISION")
+            for key in (
+                "GPU_CONTROL_BUILD_VERSION",
+                "ASSET_WORKER_BUILD_VERSION",
+                "GPU_CONTROL_BUILD_REVISION",
+            )
             if key in environment
         },
         "registry_manifest_digest": "PENDING_REGISTRY_PUSH",
@@ -830,12 +983,14 @@ def _release_readme(evidence: dict[str, Any]) -> str:
 |---|---|---|
 {images}
 
-All four images were built from the same clean, pushed full Git SHA. Each component uses one
+All five first-party images were built from the same clean, pushed full Git SHA. Control-plane
+components use release `{evidence["version"]}` and the Blender Worker uses
+`{evidence["worker_version"]}`. Each component uses one
 attested OCI solve followed by a Docker-loadable solve that imports the first solve's local cache.
 The config bytes inside each Docker archive must hash to the attested OCI config digest; a mismatch
 fails closed. Docker Engine 29 with the containerd image store may expose a local manifest/content
 identity as `.Id`, so that engine-local value is recorded but is not misidentified as a config digest.
-OCI labels and the Python runtime build-version environment were checked before the combined
+OCI labels and each applicable runtime build-version environment were checked before the combined
 `docker image save` archive was created. No Compose command, service restart, production migration,
 registry push, or Git LFS push is performed by the packager.
 
@@ -881,6 +1036,7 @@ def execute_package(
     builder: str,
     preflight_evidence: dict[str, Any],
     sbom_generator: str | None,
+    worker_version: str = DEFAULT_ASSET_WORKER_VERSION,
 ) -> dict[str, Any]:
     archive_dir = archive_dir.resolve()
     lfs_dir = lfs_dir.resolve()
@@ -906,6 +1062,7 @@ def execute_package(
                 metadata_path,
                 cache_dir,
                 sbom_generator,
+                worker_version,
             )
             _run(oci_command, cwd=repository)
             for path in (oci_tar, metadata_path):
@@ -928,16 +1085,17 @@ def execute_package(
                 base_images,
                 docker_tar,
                 cache_dir,
+                worker_version,
             )
             _run(docker_command, cwd=repository)
             if not docker_tar.is_file() or docker_tar.stat().st_size < 1:
                 raise ReleasePackagingError(f"Buildx did not create {docker_tar.name}")
             docker_config_digest = docker_archive_config_digest(
                 docker_tar,
-                component.image_reference(version),
+                component.image_reference(version, worker_version),
             )
             validate_docker_oci_config_identity(
-                component.image_reference(version),
+                component.image_reference(version, worker_version),
                 docker_config_digest,
                 offline_oci.config_digest,
             )
@@ -970,9 +1128,16 @@ def execute_package(
         image_ids: set[str] = set()
         inspect_payloads: dict[str, bytes] = {}
         for component in COMPONENTS:
-            reference = component.image_reference(version)
+            reference = component.image_reference(version, worker_version)
             inspected = _inspect_image(reference)
-            validated = _validate_image(component, reference, inspected, version, revision)
+            validated = _validate_image(
+                component,
+                reference,
+                inspected,
+                version,
+                revision,
+                worker_version,
+            )
             component_details = component_evidence[component.key]
             oci_config_digest = str(component_details["oci_config_digest"])
             if validated["local_image_id"] in image_ids:
@@ -1023,7 +1188,10 @@ def execute_package(
                     "save",
                     "--output",
                     str(uncompressed),
-                    *[component.image_reference(version) for component in COMPONENTS],
+                    *[
+                        component.image_reference(version, worker_version)
+                        for component in COMPONENTS
+                    ],
                 ]
             )
             if not uncompressed.is_file() or uncompressed.stat().st_size < 1:
@@ -1037,6 +1205,7 @@ def execute_package(
                 "production_accepted": False,
                 "deployed": False,
                 "version": version,
+                "worker_version": worker_version,
                 "revision": revision,
                 "built_at": built_at,
                 "source": {
@@ -1044,6 +1213,7 @@ def execute_package(
                     "remote_ref": preflight_evidence["remote_ref"],
                     "remote_sha": preflight_evidence["remote_sha"],
                     "versions": preflight_evidence["source_versions"],
+                    "worker_versions": preflight_evidence["worker_source_versions"],
                 },
                 "builder": {
                     "name": builder,
@@ -1113,6 +1283,7 @@ def plan(
     lfs_dir: Path,
     builder: str,
     sbom_generator: str | None,
+    worker_version: str = DEFAULT_ASSET_WORKER_VERSION,
 ) -> dict[str, Any]:
     placeholder_bases = {
         key: f"<{tag}-resolved-to-name@sha256>" for key, tag in BASE_IMAGE_TAGS.items()
@@ -1132,6 +1303,7 @@ def plan(
                 Path(f"<temporary>/{component.key}.build-metadata.json"),
                 cache_dir,
                 sbom_generator,
+                worker_version,
             ),
             "docker_loadable": docker_build_command(
                 repository,
@@ -1142,14 +1314,16 @@ def plan(
                 placeholder_bases,
                 Path(f"<temporary>/{component.key}.docker.tar"),
                 cache_dir,
+                worker_version,
             ),
         }
     return {
         "schema_version": "gpu-control-release-packaging-plan.v2",
         "mode": "PLAN_ONLY_NO_MUTATIONS",
         "version": version,
+        "worker_version": worker_version,
         "revision": revision,
-        "confirmation_token": confirmation_token(version, revision),
+        "confirmation_token": confirmation_token(version, revision, worker_version),
         "archive_dir": str(archive_dir),
         "git_lfs_dir": str(lfs_dir),
         "builder": builder,
@@ -1158,10 +1332,10 @@ def plan(
         "post_build_actions": [
             "validate OCI provenance and optional SBOM subjects",
             "extract the OCI image config digest",
-            "load four candidate image tars without starting containers",
+            "load five candidate image tars without starting containers",
             "require every Docker archive config digest to equal its OCI config digest",
             "validate OCI labels and build-version metadata",
-            "docker image save four images, deterministic gzip, split into 128 MiB parts",
+            "docker image save five images, deterministic gzip, split into 128 MiB parts",
             "write SHA256SUMS, evidence, README, and Git LFS candidate paths",
         ],
         "never_performed": [
@@ -1186,6 +1360,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", type=Path, default=repository_default)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--worker-version", default=DEFAULT_ASSET_WORKER_VERSION)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--remote-ref", default="origin/main")
     parser.add_argument("--remote-head", default="refs/heads/main")
@@ -1218,9 +1393,14 @@ def main() -> int:
                 lfs_dir,
                 args.builder,
                 args.sbom_generator,
+                args.worker_version,
             )
         else:
-            if args.execute and args.confirm != confirmation_token(args.version, args.revision):
+            if args.execute and args.confirm != confirmation_token(
+                args.version,
+                args.revision,
+                args.worker_version,
+            ):
                 raise ReleasePackagingError("--execute requires the exact plan confirmation token")
             preflight_evidence = preflight(
                 repository,
@@ -1233,6 +1413,7 @@ def main() -> int:
                 args.builder,
                 args.sbom_generator,
                 bool(args.allow_pending_sbom),
+                args.worker_version,
             )
             payload = (
                 execute_package(
@@ -1244,6 +1425,7 @@ def main() -> int:
                     args.builder,
                     preflight_evidence,
                     args.sbom_generator,
+                    args.worker_version,
                 )
                 if args.execute
                 else preflight_evidence

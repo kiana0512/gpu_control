@@ -232,6 +232,58 @@ function Invoke-BakerLeaseRenewal(
     throw "Substance Baker lease renewal failed after 3 attempts: $lastFailure"
 }
 
+function Get-FileSha256WithLeaseRenewal(
+    [string]$Path,
+    [string]$JobId,
+    [string]$Lease,
+    [double]$Progress,
+    [string]$Stage,
+    [string]$Message,
+    [int]$EstimatedRemainingSeconds
+) {
+    # Get-FileHash is synchronous and can outlive a lease for multi-gigabyte
+    # artifacts.  Hash in bounded chunks so the same job remains exclusively
+    # owned while local output evidence is produced.
+    $renewal = Invoke-BakerLeaseRenewal $JobId $Lease $Progress $Stage $Message $EstimatedRemainingSeconds
+    if ([bool](Get-OptionalProperty $renewal 'cancel_requested')) {
+        throw 'Substance Baker stopped because the job was cancelled while hashing artifacts'
+    }
+    try { Send-Heartbeat } catch { Write-Warning $_ }
+
+    $stream = $null
+    $sha = $null
+    $crypto = $null
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $sha = [Security.Cryptography.SHA256]::Create()
+        $crypto = New-Object Security.Cryptography.CryptoStream(
+            [IO.Stream]::Null,
+            $sha,
+            [Security.Cryptography.CryptoStreamMode]::Write
+        )
+        $buffer = New-Object byte[] (4 * 1024 * 1024)
+        $nextRenewal = [DateTimeOffset]::UtcNow.AddSeconds($LeaseRenewalSeconds)
+        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $crypto.Write($buffer, 0, $read)
+            if ([DateTimeOffset]::UtcNow -ge $nextRenewal) {
+                $renewal = Invoke-BakerLeaseRenewal $JobId $Lease $Progress $Stage $Message $EstimatedRemainingSeconds
+                if ([bool](Get-OptionalProperty $renewal 'cancel_requested')) {
+                    throw 'Substance Baker stopped because the job was cancelled while hashing artifacts'
+                }
+                try { Send-Heartbeat } catch { Write-Warning $_ }
+                $nextRenewal = [DateTimeOffset]::UtcNow.AddSeconds($LeaseRenewalSeconds)
+            }
+        }
+        $crypto.FlushFinalBlock()
+        return ([BitConverter]::ToString($sha.Hash)).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        if ($null -ne $crypto) { $crypto.Dispose() }
+        if ($null -ne $sha) { $sha.Dispose() }
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
 function Stop-BakerProcess($Process) {
     if ($null -eq $Process) { return }
     try {
@@ -241,6 +293,16 @@ function Stop-BakerProcess($Process) {
         }
     }
     catch { Write-Warning "failed to stop Substance Baker process: $($_.Exception.Message)" }
+}
+
+function Stop-CompletionUploadProcess($Process) {
+    if ($null -eq $Process) { return }
+    if (-not $Process.HasExited) {
+        $Process.Kill()
+        if (-not $Process.WaitForExit(10000)) {
+            throw 'curl completion upload process did not terminate after Kill()'
+        }
+    }
 }
 
 function Assert-BakerCommandResult($ExitCode, [string[]]$OutputLines) {
@@ -342,6 +404,107 @@ function Invoke-BakerCommand(
         exit_code = $verified.exit_code
         success_marker_present = [bool]$verified.success_marker_present
     }
+}
+
+function Invoke-LeasedMultipartUpload(
+    [string[]]$Arguments,
+    [string]$JobId,
+    [string]$Lease,
+    [string]$LogPath
+) {
+    # FastAPI parses the complete multipart body before the completion handler
+    # can renew the lease.  Keep curl asynchronous and renew through the
+    # independent progress endpoint for the whole transfer and server-side
+    # validation window.
+    $stdoutPath = Join-Path $env:TEMP ("gpu-control-upload-stdout-" + [Guid]::NewGuid().ToString('N') + '.json')
+    $stderrPath = Join-Path $env:TEMP ("gpu-control-upload-stderr-" + [Guid]::NewGuid().ToString('N') + '.log')
+    $process = $null
+    $exitCode = $null
+    $stdoutText = ''
+    $stderrText = ''
+    try {
+        $renewal = Invoke-BakerLeaseRenewal $JobId $Lease 95 'UPLOADING_ARTIFACTS' `
+            'Uploading and validating final Substance artifacts' 120
+        if ([bool](Get-OptionalProperty $renewal 'cancel_requested')) {
+            throw 'Substance result upload was not started because the job was cancelled'
+        }
+        try { Send-Heartbeat }
+        catch {
+            "heartbeat warning during UPLOADING_ARTIFACTS: $($_.Exception.Message)" | `
+                Add-Content -LiteralPath $LogPath -Encoding UTF8
+            Write-Warning $_
+        }
+
+        $argumentLine = (($Arguments | ForEach-Object {
+            ConvertTo-NativeProcessArgument ([string]$_)
+        }) -join ' ')
+        $process = Start-Process -FilePath $CurlExe -ArgumentList $argumentLine `
+            -NoNewWindow -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+
+        while (-not $process.WaitForExit($LeaseRenewalSeconds * 1000)) {
+            try {
+                $renewal = Invoke-BakerLeaseRenewal $JobId $Lease 95 'UPLOADING_ARTIFACTS' `
+                    'Uploading and validating final Substance artifacts' 120
+            }
+            catch {
+                # The completion transaction can clear the lease just before
+                # curl receives its successful response.  Give that response a
+                # short bounded opportunity to win this race.
+                if ($process.WaitForExit(2000)) { break }
+                throw
+            }
+            if ([bool](Get-OptionalProperty $renewal 'cancel_requested')) {
+                Stop-CompletionUploadProcess $process
+                throw 'Substance result upload stopped because the job was cancelled'
+            }
+            try { Send-Heartbeat }
+            catch {
+                "heartbeat warning during UPLOADING_ARTIFACTS: $($_.Exception.Message)" | `
+                    Add-Content -LiteralPath $LogPath -Encoding UTF8
+                Write-Warning $_
+            }
+        }
+        $process.WaitForExit()
+        $process.Refresh()
+        $exitCode = $process.ExitCode
+    }
+    catch {
+        Stop-CompletionUploadProcess $process
+        throw
+    }
+    finally {
+        if (Test-Path -LiteralPath $stdoutPath) {
+            $stdoutText = [IO.File]::ReadAllText($stdoutPath)
+            Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $stderrPath) {
+            $stderrText = [IO.File]::ReadAllText($stderrPath)
+            Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+        }
+        if ($null -ne $process) { $process.Dispose() }
+    }
+
+    if ($null -eq $exitCode) {
+        throw 'result upload failed: curl exit code was unavailable'
+    }
+    if ([int]$exitCode -ne 0) {
+        $failureTail = if ($stderrText.Length -gt 2000) {
+            $stderrText.Substring($stderrText.Length - 2000)
+        } else { $stderrText }
+        throw "result upload failed: curl exited with code ${exitCode}: $failureTail"
+    }
+    try { $completion = $stdoutText | ConvertFrom-Json }
+    catch { throw "result upload returned invalid JSON: $($_.Exception.Message)" }
+    if ($null -eq $completion) { throw 'result upload returned an empty response' }
+
+    $status = [string](Get-OptionalProperty $completion 'status')
+    $accepted = [bool](Get-OptionalProperty $completion 'accepted')
+    $cancelRequested = [bool](Get-OptionalProperty $completion 'cancel_requested')
+    if ($status -eq 'SUCCEEDED' -and $accepted) { return $completion }
+    if ($status -eq 'CANCELLED' -and -not $accepted -and $cancelRequested) {
+        return $completion
+    }
+    throw "result upload response was not terminally accepted: status=$status accepted=$accepted cancel_requested=$cancelRequested"
 }
 
 function Execute-Bake($Job) {
@@ -488,7 +651,8 @@ function Execute-Bake($Job) {
         foreach ($outputRole in @('base_color', 'roughness', 'metallic', 'ao', 'normal_dx', 'normal_gl', 'world_normal', 'curvature', 'thickness', 'position')) {
             $outputFile = Join-Path $outputRoot "asset_$outputRole.png"
             if (Test-Path $outputFile) {
-                $hashes[$outputRole] = (Get-FileHash $outputFile -Algorithm SHA256).Hash.ToLowerInvariant()
+                $hashes[$outputRole] = Get-FileSha256WithLeaseRenewal $outputFile $jobId $lease `
+                    94.8 'HASHING_ARTIFACTS' 'Hashing final Substance artifacts' 120
             }
         }
 
@@ -522,14 +686,14 @@ function Execute-Bake($Job) {
         [IO.File]::WriteAllText($resultPath, $resultJson, (New-Object Text.UTF8Encoding($false)))
 
         $curlArgs = @('--silent', '--show-error', '--fail', '--cacert', $CaCertificate, '--ssl-no-revoke',
+            '--connect-timeout', '5',
             '-X', 'POST', ($ControlBaseUrl + "/internal/v1/assets/jobs/$jobId/substance-complete"),
             '-H', "X-Asset-Lease: $lease", '-F', "result=@$resultPath;type=application/json",
             '-F', "log=@$logPath;type=text/plain")
         foreach ($outputRole in $hashes.Keys) {
             $curlArgs += @('-F', "$outputRole=@$(Join-Path $outputRoot "asset_$outputRole.png");type=image/png")
         }
-        $response = & $CurlExe @curlArgs
-        if ($LASTEXITCODE -ne 0) { throw "result upload failed: $response" }
+        $null = Invoke-LeasedMultipartUpload $curlArgs $jobId $lease $logPath
     }
     catch {
         $failureMessage = $_.Exception.Message
