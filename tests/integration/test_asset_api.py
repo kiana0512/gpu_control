@@ -2238,6 +2238,28 @@ async def test_uv_process_v2_advisory_keeps_integrity_failures_hard(
         assert list((settings.asset_root / str(job["job_id"])).glob(".outputs-*")) == []
 
 
+async def test_uv_process_v2_rejects_non_object_qa_json_as_422(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(
+        tmp_path, uv_qa_enforcement="advisory"
+    ):
+        job = await create_and_claim_uv_process_v2(
+            client, settings, "asset:chair:uv:v2:scalar-qa"
+        )
+        files = uv_process_v2_completion_files(job)
+        qa_filename, _, qa_content_type = files["qa"]
+        files["qa"] = (qa_filename, b"[]", qa_content_type)
+        completed = await client.post(
+            f"/internal/v1/assets/jobs/{job['job_id']}/uv-v2-complete",
+            headers={"X-Asset-Lease": str(job["lease_token"])},
+            files=files,
+        )
+        assert completed.status_code == 422, completed.text
+        assert completed.json()["detail"] == {"code": "ASSET_QA_INVALID"}
+        assert list((settings.asset_root / str(job["job_id"])).glob(".outputs-*")) == []
+
+
 async def test_retopology_audit_stops_at_review_gate_and_exposes_audit_artifacts(
     tmp_path: Path,
 ) -> None:

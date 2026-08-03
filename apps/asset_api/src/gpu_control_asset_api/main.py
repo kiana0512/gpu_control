@@ -3113,6 +3113,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             except (OSError, ValueError) as exc:
                 raise HTTPException(422, detail={"code": "ASSET_QA_INVALID"}) from exc
+            if not all(
+                isinstance(payload, dict)
+                for payload in (report_payload, blend_qa_payload, fbx_qa_payload)
+            ):
+                raise HTTPException(422, detail={"code": "ASSET_QA_INVALID"})
             if report_payload.get("input") not in {None, snapshot.source_filename} and Path(
                 str(report_payload.get("input"))
             ).name != snapshot.source_filename:
