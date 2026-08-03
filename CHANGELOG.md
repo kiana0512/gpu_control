@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.5.7 — 2026-08-03
+
+- 修复 Windows Substance Baker 等待当前 ComfyUI 帧时 reservation 续租未提交的问题；PBR 取得
+  3090-B 下一轮优先权后，Scheduler 不会在 TTL 回滚窗口继续派入新帧，CPU Asset Worker 仍独立接单。
+- Windows Baker 升级为精确 v3 身份：不调用 `/free`，不停止或重启 ComfyUI；每次烘焙前后硬校验
+  ComfyUI 容器 `Id`、`StartedAt`、`RestartCount`、运行状态与健康状态。
+- 连续性异常进入持久 `recovery_required` 闭锁，成功回执必须携带 no-explicit-eviction 和进程连续性
+  证据；旧 v2 Agent fail closed，不能继续领取任务。
+- Asset Web/API 展示真实 3090-B 共享关系、PBR 等待原因、Baker 进程槽位和下一轮预约；恢复、离线、
+  管理员保留、外部 GPU 活动与未纳管队列不会误报为可切换烘焙。
+- 版本、Compose 默认镜像和 release identity 门禁统一为 1.5.7；未修改任何外部 workflow、模型、
+  prompt、采样参数或输出语义。
+
 ## 1.5.6 — 2026-07-30
 
 - Retopology advisory 模式把通过完整性门禁的候选 BLEND/FBX 以正式 `blend`/`fbx` artifact 合同交付；几何 QA 告警与诊断证据保留，不再把用户需要的模型文件隐藏为诊断件。

@@ -25,6 +25,11 @@ from packages.gpu_control_core.models import (
     JobBatch,
     Node,
 )
+from packages.gpu_control_core.scheduling import (
+    OverflowGuard,
+    QueueSnapshot,
+    choose_node,
+)
 from packages.gpu_control_core.security import hash_api_secret, sign_agent_request
 from packages.gpu_control_core.settings import Settings
 
@@ -195,7 +200,7 @@ async def register_substance_worker(
             "display_name": worker_id,
             "hostname": "LILITHGAMES3",
             "blender_version": "substance-15.1.0",
-            "skill_version": "substance-baker-2026.07.29-v1",
+            "skill_version": "substance-baker-2026.08.03-v3",
             "cpu_count": 128,
             "max_concurrency": 1,
             "current_jobs": 0,
@@ -228,6 +233,38 @@ def png_bytes(size: int) -> bytes:
     output = io.BytesIO()
     Image.new("RGB", (size, size), (128, 128, 255)).save(output, format="PNG")
     return output.getvalue()
+
+
+async def test_legacy_substance_agent_cannot_claim_or_stop_comfyui(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        worker_id = "asset-worker-3090-b-windows-01"
+        heartbeat = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/workers/heartbeat",
+            {
+                "worker_id": worker_id,
+                "node_id": "worker-3090-b",
+                "display_name": "legacy Windows Substance Baker",
+                "hostname": "LILITHGAMES3",
+                "blender_version": "substance-15.1.0",
+                "skill_version": "substance-baker-2026.07.29-v2",
+                "cpu_count": 128,
+                "max_concurrency": 1,
+                "current_jobs": 0,
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+            },
+        )
+        assert heartbeat.status_code == 200, heartbeat.text
+        assert heartbeat.json()["status"] == "DRAINING"
+        created = await create_minimal_substance_job(client, "legacy-agent-blocked")
+        assert created.status_code == 202, created.text
+        claimed = await claim_substance_job(client, settings, worker_id)
+        assert claimed.status_code == 200, claimed.text
+        assert claimed.json()["job"] is None
 
 
 async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_published(
@@ -301,7 +338,7 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
                 "display_name": "3090-B Windows Substance Baker",
                 "hostname": "LILITHGAMES3",
                 "blender_version": "substance-15.1.0",
-                "skill_version": "substance-baker-2026.07.29-v1",
+                "skill_version": "substance-baker-2026.08.03-v3",
                 "cpu_count": 128,
                 "max_concurrency": 32,
                 "current_jobs": 0,
@@ -355,21 +392,54 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
                     "version": "15.1.0",
                     "exe_sha256": "7B920FC6EE6005FAAB072C9280B1772F03D694FF04AA91C5A4DB516F7C9FEC6D",
                 },
-                "execution": {"exit_code": 0},
+                "execution": {
+                    "exit_code": 0,
+                    "comfyui_cache_policy": "no_explicit_eviction_process_preserved",
+                    "comfyui_container_restarted": False,
+                    "comfyui_process_continuity_verified": True,
+                },
                 "output_sha256": {kind: baked_sha for kind in output_kinds},
             }
         ).encode()
+
+        def completion_files(
+            result_bytes: bytes,
+            baked_bytes: bytes,
+            kinds: set[str],
+            log_bytes: bytes,
+        ) -> dict[str, tuple[str, bytes, str]]:
+            return {
+                **{
+                    kind: (f"asset_{kind}.png", baked_bytes, "image/png")
+                    for kind in kinds
+                },
+                "result": ("baker_result.json", result_bytes, "application/json"),
+                "log": ("baker.log", log_bytes, "text/plain"),
+            }
+
+        valid_payload = json.loads(result)
+        for invalid_execution in (
+            {"exit_code": 0},
+            {
+                **valid_payload["execution"],
+                "comfyui_process_continuity_verified": False,
+            },
+        ):
+            invalid_payload = {**valid_payload, "execution": invalid_execution}
+            rejected = await client.post(
+                f"/internal/v1/assets/jobs/{job_id}/substance-complete",
+                headers={"X-Asset-Lease": leased["lease_token"]},
+                files=completion_files(
+                    json.dumps(invalid_payload).encode(), baked, output_kinds, log
+                ),
+            )
+            assert rejected.status_code == 422, rejected.text
+            assert rejected.json()["detail"]["code"] == "SUBSTANCE_RESULT_INVALID"
+
         completed = await client.post(
             f"/internal/v1/assets/jobs/{job_id}/substance-complete",
             headers={"X-Asset-Lease": leased["lease_token"]},
-            files={
-                **{
-                    kind: (f"asset_{kind}.png", baked, "image/png")
-                    for kind in output_kinds
-                },
-                "result": ("baker_result.json", result, "application/json"),
-                "log": ("baker.log", log, "text/plain"),
-            },
+            files=completion_files(result, baked, output_kinds, log),
         )
         assert completed.status_code == 200, completed.text
         status = await client.get(
@@ -423,7 +493,12 @@ async def test_substance_completion_honors_cancel_before_artifact_publication(
                         "7B920FC6EE6005FAAB072C9280B1772F03D694FF04AA91C5A4DB516F7C9FEC6D"
                     ),
                 },
-                "execution": {"exit_code": 0},
+                "execution": {
+                    "exit_code": 0,
+                    "comfyui_cache_policy": "no_explicit_eviction_process_preserved",
+                    "comfyui_container_restarted": False,
+                    "comfyui_process_continuity_verified": True,
+                },
                 "output_sha256": {"ao": baked_sha},
             }
         ).encode()
@@ -490,6 +565,80 @@ async def test_production_substance_queue_reserves_next_gpu_turn_and_cancel_rele
         blocked = await claim_substance_job(client, settings, worker_id)
         assert blocked.status_code == 200, blocked.text
         assert blocked.json()["job"] is None
+
+        # Reproduce a poll after the original 60-second reservation expired
+        # while a long ComfyUI frame was still running.  The claim response is
+        # still empty, but reconciliation must durably renew the reservation;
+        # otherwise Scheduler can reactivate 3090-B and starve the bake.
+        expired_at = datetime.now(UTC) - timedelta(seconds=1)
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            labels = dict(node.labels or {})
+            pending = dict(labels["substance_bake_pending_reservation"])
+            pending["expires_at"] = expired_at.isoformat()
+            labels["substance_bake_pending_reservation"] = pending
+            node.labels = labels
+            await db.commit()
+
+        renewed = await claim_substance_job(client, settings, worker_id)
+        assert renewed.status_code == 200, renewed.text
+        assert renewed.json()["job"] is None
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "DRAINING"
+            pending = node.labels["substance_bake_pending_reservation"]
+            assert pending["job_ids"] == [job_id]
+            scheduler_now = datetime.now(UTC)
+            assert datetime.fromisoformat(pending["expires_at"]) > scheduler_now
+
+            # This is the exact selection path used by Scheduler.  Even
+            # though the current ComfyUI frame is still running, the durable
+            # reservation must win over the generic no-slot reason and keep
+            # 3090-B unavailable for another GPU frame after it finishes.
+            running_jobs = node.current_jobs
+            node.current_jobs = 0
+            chosen, excluded = choose_node(
+                [node],
+                QueueSnapshot(depth=1, oldest_wait_seconds=0),
+                OverflowGuard(
+                    queue_threshold=20,
+                    wait_threshold_seconds=120,
+                    max_gpu_util_percent=20,
+                    min_free_vram_mb=20_000,
+                    sentinel=tmp_path / "reserved",
+                ),
+                settings.node_heartbeat_timeout_seconds,
+                scheduler_now,
+            )
+            node.current_jobs = running_jobs
+            assert chosen is None
+            assert excluded == {"worker-3090-b": "substance_reserved"}
+
+            # The native Baker owns only the physical 3090-B GPU turn.  CPU
+            # UV/retopology work remains in an independent worker pool and
+            # must continue to claim while that GPU reservation is active.
+            db.add(
+                queued_asset_job(
+                    "cpu-independent-during-substance-drain",
+                    client_id="asset-client",
+                    job_type="UV_PROCESS_V2",
+                    created_at=scheduler_now,
+                )
+            )
+            await db.commit()
+
+        await register_asset_worker(client, settings)
+        cpu_claim = await claim_asset_job(client, settings)
+        assert cpu_claim["job_id"] == "cpu-independent-during-substance-drain"
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "DRAINING"
+            assert node.labels["substance_bake_pending_reservation"]["job_ids"] == [
+                job_id
+            ]
 
         cancelled = await client.post(
             f"/api/v1/assets/jobs/{job_id}/cancel",
@@ -744,6 +893,48 @@ async def test_test_substance_claim_waits_for_production_gpu_jobs_and_batches(
             client, settings, "asset-worker-3090-b-windows-01"
         )
         assert claimed.json()["job"]["job_id"] == created.json()["job_id"]
+
+
+async def test_substance_comfyui_continuity_failure_keeps_gpu_recovery_fence(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        worker_id = "asset-worker-3090-b-windows-01"
+        await register_substance_worker(client, settings, worker_id)
+        created = await create_minimal_substance_job(
+            client, "comfyui-continuity-fail-closed"
+        )
+        assert created.status_code == 202, created.text
+        job_id = created.json()["job_id"]
+        claimed = await claim_substance_job(client, settings, worker_id)
+        assert claimed.status_code == 200, claimed.text
+        lease = claimed.json()["job"]["lease_token"]
+
+        failed = await client.post(
+            f"/internal/v1/assets/jobs/{job_id}/fail",
+            headers={"X-Asset-Lease": lease},
+            json={
+                "code": "SUBSTANCE_COMFYUI_CONTINUITY_FAILED",
+                "message": "ComfyUI container identity changed during native bake",
+                "retryable": False,
+            },
+        )
+        assert failed.status_code == 200, failed.text
+        assert failed.json() == {"accepted": True, "status": "FAILED"}
+
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            job = await db.get(AssetJob, job_id)
+            node = await db.get(Node, "worker-3090-b")
+            assert job is not None and node is not None
+            assert job.status == "FAILED"
+            assert job.error_code == "SUBSTANCE_COMFYUI_CONTINUITY_FAILED"
+            assert node.mode == "DRAINING"
+            assert "substance_bake_fence_job_ids" not in node.labels
+            recovery = node.labels["substance_bake_recovery_required"]
+            assert len(recovery) == 1
+            assert recovery[0]["job_id"] == job_id
+            assert recovery[0]["worker_id"] == worker_id
+            assert recovery[0]["lease_expired_at"]
 
 
 async def test_expired_substance_lease_blocks_reclaim_until_explicit_health_evidence(
@@ -1304,7 +1495,7 @@ async def test_substance_claim_prioritizes_production_and_keeps_pool_fifo(
                     "display_name": f"3090-B Windows Substance Baker #{index}",
                     "hostname": "LILITHGAMES3",
                     "blender_version": "substance-15.1.0",
-                    "skill_version": "substance-baker-2026.07.29-v1",
+                    "skill_version": "substance-baker-2026.08.03-v3",
                     "cpu_count": 128,
                     "max_concurrency": 1,
                     "current_jobs": 0,
@@ -2201,7 +2392,12 @@ async def test_substance_completion_staging_does_not_hold_gpu_node_lock(
                         "7B920FC6EE6005FAAB072C9280B1772F03D694FF04AA91C5A4DB516F7C9FEC6D"
                     ),
                 },
-                "execution": {"exit_code": 0},
+                "execution": {
+                    "exit_code": 0,
+                    "comfyui_cache_policy": "no_explicit_eviction_process_preserved",
+                    "comfyui_container_restarted": False,
+                    "comfyui_process_continuity_verified": True,
+                },
                 "output_sha256": {"ao": baked_sha},
             }
         ).encode()

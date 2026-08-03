@@ -11,7 +11,24 @@ Required local files:
 - `D:\GPUControl\secrets\asset_worker_hmac_secret.txt` (ACL: the service user only)
 - `C:\Program Files\Adobe\Adobe Substance 3D Designer\substance3d_baker.exe`
 
-The agent drains `worker-3090-b`, stops only
-`gpu-control-node-comfyui-1`, runs SAL + SoRa, validates the approved output,
-restores ComfyUI to `healthy`, uploads the result, and only then lets the
-control plane release the GPU fence.
+The Asset API drains `worker-3090-b` and gives production PBR the next physical
+GPU turn after the current ComfyUI frame finishes. Agent v3 keeps
+`gpu-control-node-comfyui-1` running, requests no model eviction, and verifies
+the same container ID, `StartedAt`, and `RestartCount` before and after native
+SAL + SoRa execution. It never calls ComfyUI's model-release endpoint and never
+stops, starts, or restarts that container.
+
+This preserves the opportunity to reuse the previous approved workflow's hot
+cache. It does not claim that every model remains in VRAM under Substance
+memory pressure; the next real same-workflow GPU task provides the cold/hot
+timing evidence. GPU Control's existing warm-workflow affinity remains enabled.
+
+Agent identity is fail closed. Asset API accepts Substance claims only from
+`substance-baker-2026.08.03-v3`. A continuity failure leaves 3090-B in recovery
+drain until the original Baker reports idle and a newer healthy ComfyUI
+heartbeat is observed.
+
+For an upgrade, first verify there are no active Asset bakes or Substance fence
+labels. Then run the installer with `-ConfirmNoActiveBakes`; it explicitly stops
+the four existing scheduled tasks before replacing/restarting them. Confirm all
+four heartbeats report v3 and `ONLINE`. This operation does not restart ComfyUI.

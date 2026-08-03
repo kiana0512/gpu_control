@@ -184,6 +184,14 @@ export interface AssetJobInfo {
   progress: number;
   stage: string;
   stage_message: string;
+  resource_wait?: {
+    code: string;
+    message: string;
+    node_id: string;
+    reservation_active: boolean;
+    fence_active: boolean;
+    comfyui_current_jobs: number;
+  } | null;
   timing: {
     elapsed_seconds: number;
     estimated_remaining_seconds: number | null;
@@ -209,6 +217,23 @@ export interface AssetProcessingOverview {
     total_slots: number;
     used_slots: number;
     qa_failed: number;
+  };
+  substance_gpu?: {
+    node_id: string;
+    health: string;
+    mode: string;
+    sharing_policy: "exclusive_turn_with_comfyui";
+    queue_policy: "production_bake_next_turn_priority";
+    comfyui_current_jobs: number;
+    reserved_job_ids: string[];
+    reservation_expires_at: string | null;
+    active_bake_job_ids: string[];
+    recovery_required: boolean;
+    manual_reserved: boolean;
+    external_busy: boolean;
+    foreign_queue_detected: boolean;
+    free_vram_mb: number | null;
+    total_vram_mb: number | null;
   };
   workers: AssetWorkerInfo[];
   jobs: AssetJobInfo[];

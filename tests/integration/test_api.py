@@ -1484,6 +1484,69 @@ async def test_admin_asset_processing_reports_real_workers_jobs_and_artifacts(
         assert payload["contracts"]["uv"]["artifact_count"] == 5
 
 
+async def test_admin_asset_processing_explains_substance_next_turn_reservation(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        now = datetime.now(UTC)
+        job_id = str(uuid.uuid4())
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            node.mode = "DRAINING"
+            node.current_jobs = 1
+            node.labels = {
+                **dict(node.labels or {}),
+                "substance_bake_drain_owner": "asset-api",
+                "substance_bake_pending_reservation": {
+                    "job_ids": [job_id],
+                    "worker_ids": ["asset-worker-3090-b-windows-01"],
+                    "expires_at": (now + timedelta(minutes=5)).isoformat(),
+                    "max_parallel": 4,
+                },
+            }
+            db.add(
+                AssetJob(
+                    id=job_id,
+                    client_id="tenant",
+                    external_asset_id="asset:chair:bake:v1",
+                    job_type="SUBSTANCE_BAKE_V1",
+                    status="QUEUED",
+                    source_filename="substance_bake_input.zip",
+                    input_path="/tmp/substance_bake_input.zip",
+                    input_sha256="d" * 64,
+                    input_size_bytes=123,
+                    options={"profile": "li3d-pbr-full-v2"},
+                    request_hash="e" * 64,
+                    request_id="asset-admin-substance-wait-test",
+                    created_at=now,
+                )
+            )
+            await db.commit()
+
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        response = await client.get("/admin/asset-processing", headers=auth)
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        job = next(row for row in payload["jobs"] if row["job_id"] == job_id)
+
+        assert job["resource_wait"] == {
+            "code": "WAITING_FOR_COMFYUI_FRAME",
+            "message": ("已获 3090-B 下一轮优先权，等待当前 ComfyUI 帧安全结束后切换烘焙"),
+            "node_id": "worker-3090-b",
+            "reservation_active": True,
+            "fence_active": False,
+            "comfyui_current_jobs": 1,
+        }
+        assert payload["substance_gpu"]["sharing_policy"] == ("exclusive_turn_with_comfyui")
+        assert payload["substance_gpu"]["reserved_job_ids"] == [job_id]
+        assert payload["substance_gpu"]["comfyui_current_jobs"] == 1
+
+
 async def test_admin_views_separate_production_and_test_traffic(tmp_path: Path) -> None:
     async for app, client in prepared_app(tmp_path):
         login = await client.post(

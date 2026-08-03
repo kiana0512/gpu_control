@@ -79,6 +79,13 @@ from packages.gpu_control_core.models import (
     WorkflowVersion,
 )
 from packages.gpu_control_core.repository import ACTIVE_STATUSES, transition_job
+from packages.gpu_control_core.scheduling import (
+    SUBSTANCE_DRAIN_OWNER,
+    SUBSTANCE_DRAIN_OWNER_LABEL,
+    SUBSTANCE_RECOVERY_REQUIRED_LABEL,
+    substance_fence_job_ids,
+    substance_pending_reservation,
+)
 from packages.gpu_control_core.security import (
     create_access_token,
     create_refresh_token,
@@ -2996,6 +3003,72 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 )
             ).all()
         )
+        substance_node = await db.get(Node, "worker-3090-b")
+        substance_labels = dict(substance_node.labels or {}) if substance_node is not None else {}
+        pending_substance_job_ids, pending_substance_expires_at = substance_pending_reservation(
+            substance_labels, now
+        )
+        substance_reservation_owned = (
+            substance_node is not None
+            and substance_labels.get(SUBSTANCE_DRAIN_OWNER_LABEL) == SUBSTANCE_DRAIN_OWNER
+        )
+        if not substance_reservation_owned:
+            pending_substance_job_ids = []
+        fenced_substance_job_ids = substance_fence_job_ids(substance_labels)
+
+        def substance_resource_wait(job: AssetJob) -> dict[str, Any] | None:
+            if job.job_type != "SUBSTANCE_BAKE_V1" or job.status not in {
+                "QUEUED",
+                "CLAIMED",
+                "RUNNING",
+            }:
+                return None
+
+            comfyui_current_jobs = (
+                int(substance_node.current_jobs) if substance_node is not None else 0
+            )
+            reservation_active = job.id in pending_substance_job_ids
+            fence_active = job.id in fenced_substance_job_ids
+            if fence_active:
+                code = "SUBSTANCE_GPU_ACTIVE"
+                message = "3090-B 已切换至 Windows Substance Baker，烘焙正在执行"
+            elif reservation_active and comfyui_current_jobs > 0:
+                code = "WAITING_FOR_COMFYUI_FRAME"
+                message = "已获 3090-B 下一轮优先权，等待当前 ComfyUI 帧安全结束后切换烘焙"
+            elif reservation_active:
+                code = "WAITING_FOR_BAKER_CLAIM"
+                message = "已获 3090-B 下一轮优先权，等待 Windows Baker 领取任务"
+            elif substance_node is None or substance_node.health != "ONLINE":
+                code = "WAITING_FOR_3090B_ONLINE"
+                message = "等待 3090-B 恢复在线；尚未取得物理 GPU 执行权"
+            elif substance_labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL):
+                code = "WAITING_FOR_3090B_RECOVERY"
+                message = "等待 3090-B 完成安全恢复确认；尚未取得物理 GPU 执行权"
+            elif substance_node.manual_reserved:
+                code = "WAITING_FOR_ADMINISTRATIVE_RELEASE"
+                message = "3090-B 当前由管理员保留；等待释放后取得烘焙执行权"
+            elif substance_node.external_busy:
+                code = "WAITING_FOR_EXTERNAL_GPU_ACTIVITY"
+                message = "3090-B 检测到外部 GPU 活动；等待资源安全释放"
+            elif substance_node.foreign_queue_detected:
+                code = "WAITING_FOR_FOREIGN_COMFYUI_QUEUE"
+                message = "3090-B 检测到未纳管的 ComfyUI 队列；等待队列安全收口"
+            elif comfyui_current_jobs > 0:
+                code = "WAITING_FOR_3090B_RESERVATION"
+                message = "等待取得 3090-B 下一轮执行权；当前 ComfyUI 帧仍在运行"
+            else:
+                code = "WAITING_FOR_BAKER_CLAIM"
+                message = "等待 3090-B Windows Baker 领取任务"
+
+            return {
+                "code": code,
+                "message": message,
+                "node_id": "worker-3090-b",
+                "reservation_active": reservation_active,
+                "fence_active": fence_active,
+                "comfyui_current_jobs": comfyui_current_jobs,
+            }
+
         job_ids = [job.id for job in jobs]
         artifacts = (
             list(
@@ -3051,6 +3124,35 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "used_slots": sum(worker.current_jobs for worker in online_workers),
                 "qa_failed": counts.get("FAILED", 0),
             },
+            "substance_gpu": {
+                "node_id": "worker-3090-b",
+                "health": substance_node.health if substance_node else "OFFLINE",
+                "mode": substance_node.mode if substance_node else "UNKNOWN",
+                "sharing_policy": "exclusive_turn_with_comfyui",
+                "queue_policy": "production_bake_next_turn_priority",
+                "comfyui_current_jobs": (int(substance_node.current_jobs) if substance_node else 0),
+                "reserved_job_ids": pending_substance_job_ids,
+                "reservation_expires_at": (
+                    pending_substance_expires_at.isoformat()
+                    if pending_substance_job_ids and pending_substance_expires_at is not None
+                    else None
+                ),
+                "active_bake_job_ids": fenced_substance_job_ids,
+                "recovery_required": bool(
+                    substance_labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL)
+                ),
+                "manual_reserved": bool(
+                    substance_node.manual_reserved if substance_node else False
+                ),
+                "external_busy": bool(
+                    substance_node.external_busy if substance_node else False
+                ),
+                "foreign_queue_detected": bool(
+                    substance_node.foreign_queue_detected if substance_node else False
+                ),
+                "free_vram_mb": (int(substance_node.free_vram_mb) if substance_node else None),
+                "total_vram_mb": (int(substance_node.total_vram_mb) if substance_node else None),
+            },
             "workers": [
                 {
                     "id": worker.id,
@@ -3103,6 +3205,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     "progress": job.progress,
                     "stage": job.stage,
                     "stage_message": job.stage_message,
+                    "resource_wait": substance_resource_wait(job),
                     "timing": {
                         "elapsed_seconds": elapsed_seconds(job),
                         "estimated_remaining_seconds": job.estimated_remaining_seconds,

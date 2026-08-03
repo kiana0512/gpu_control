@@ -48,6 +48,7 @@ BLEND/FBX 仍交付；不存在人工发布门。
 32. `docs/74_2026-07-30_SCHEDULER_AND_SUBSTANCE_STABILITY_HOTFIX.md`：Scheduler 单主锁、leader epoch、Substance 物理 GPU fence/recovery 的 1.5.6 已部署证据。
 33. `docs/75_2026-07-30_CONTROL_PLANE_1_5_6_DEPLOYMENT_AND_ARCHIVE.md`：1.5.6 四镜像身份、零任务热更新、回滚标签、离线归档/LFS 和尚未通过的正式验收门禁。
 34. `docs/76_2026-07-31_SIX_API_120VU_FINAL_ACCEPTANCE.md`：R8 退出码 0、六 API/七阈值、120/120 清场、GPU/Asset 峰值、Substance 自动 fence 恢复、379 样本与持久 SHA 证据；不替代 B97、故障矩阵和七天验收。
+35. `docs/77_2026-08-03_PBR_NEXT_TURN_AND_COMFY_CACHE_RETENTION_1_5_7.md`：1.5.7 候选的 PBR 下一轮预约续租修复、Windows Baker v3、ComfyUI 不显式清缓存合同、Web 等待原因、零任务发布和回滚门禁；当前尚未部署。
 
 3090-A 的已完成部署、动态心跳、Web 修复和真实任务证据见
 `docs/34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md`。
@@ -88,6 +89,7 @@ BLEND/FBX 仍交付；不存在人工发布门。
 | 动画管家 1.5.5 联测前回执 | `69_2026-07-30_ASSETCLAW_1_5_5_SPEED_STABILITY_PREJOINT_RECEIPT.md` | 本轮最终源码、性能稳定修复、WebUI、素材输入阻断和发布/压测未执行边界；联合测试前按此对账 |
 | Retopology / 六 API / 稳定性热修复 | `70_2026-07-30_RETOPOLOGY_QA_ADVISORY_HOTFIX_AND_LOAD_READINESS.md`、`73_2026-07-30_SIX_API_120VU_LOAD_RESULT.md`、`74_2026-07-30_SCHEDULER_AND_SUBSTANCE_STABILITY_HOTFIX.md`、`76_2026-07-31_SIX_API_120VU_FINAL_ACCEPTANCE.md` | 正式 BLEND/FBX advisory 交付、r5/r7 历史、R8 最终有界压力结果，以及已随 1.5.6 部署的 Scheduler/Substance 并发修复 |
 | 1.5.6 部署与归档 | `75_2026-07-30_CONTROL_PLANE_1_5_6_DEPLOYMENT_AND_ARCHIVE.md` | 四镜像 source identity、热更新、回滚、离线归档/LFS 和 `DEPLOYED_NOT_ACCEPTED` 边界 |
+| 1.5.7 PBR 下一轮与缓存保持候选 | `77_2026-08-03_PBR_NEXT_TURN_AND_COMFY_CACHE_RETENTION_1_5_7.md` | 修复 3090-B 预约续租未提交造成的 PBR 饥饿；冻结 v3 不 stop/start/free、连续性证据、Web 解释、零任务发布与回滚门禁；当前 `CANDIDATE_NOT_DEPLOYED` |
 | 分角色安装 | `03`—`11` | 网络、准备、4090、3090、镜像、模型、工作流、首次部署 |
 | 使用手册 | `12_WEB_ADMIN_GUIDE.md`、`13_PUBLIC_API_GUIDE.md` | 管理后台和业务 API |
 | 运维 | `15`—`22` | 日志、告警、备份、升级、故障、容量和 FAQ |

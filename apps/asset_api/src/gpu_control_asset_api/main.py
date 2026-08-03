@@ -164,6 +164,7 @@ def fsync_completion_staging(staging: Path) -> None:
     finally:
         os.close(descriptor)
 SUBSTANCE_VERSION = "substance-15.1.0"
+SUBSTANCE_SKILL_VERSION = "substance-baker-2026.08.03-v3"
 SUBSTANCE_MAX_PARALLEL = 4
 RETOPOLOGY_AUDIT_ARTIFACTS = {
     "audit": ("retopology_audit.json", "application/json"),
@@ -813,6 +814,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "SUBSTANCE_LEASE_EXPIRED_RECOVERY_REQUIRED": (
                 "Substance 3D Baker 租约失效；为防止重复执行，3090-B 已保持恢复闭锁，"
                 "等待 Worker 空闲与 ComfyUI 恢复证据。"
+            ),
+            "SUBSTANCE_COMFYUI_CONTINUITY_FAILED": (
+                "烘焙期间 ComfyUI 进程身份或健康状态发生变化；3090-B 已保持恢复闭锁，"
+                "未发布本次结果。"
             ),
         }
         return {
@@ -1814,6 +1819,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         runtime_version_ok = (
             body.blender_version == SUBSTANCE_VERSION
+            and body.skill_version == SUBSTANCE_SKILL_VERSION
             if is_substance_worker_id(body.worker_id)
             else body.blender_version == "5.1.2"
         )
@@ -2022,6 +2028,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or substance_node.external_busy
                 or substance_node.foreign_queue_detected
             ):
+                # Reservation reconciliation is a durable scheduling action.
+                # In particular, a production bake waiting for the currently
+                # running ComfyUI frame must keep 3090-B drained past the
+                # initial reservation TTL.  Returning without a commit here
+                # rolls the renewed expiry back and lets the GPU scheduler
+                # assign another frame, starving the native Baker queue.
+                await db.commit()
                 return JSONResponse({"job": None}, 200)
 
         claim_query = (
@@ -3053,6 +3066,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or tool.get("exe_sha256")
                 != "7B920FC6EE6005FAAB072C9280B1772F03D694FF04AA91C5A4DB516F7C9FEC6D"
                 or execution.get("exit_code") != 0
+                or execution.get("comfyui_cache_policy")
+                != "no_explicit_eviction_process_preserved"
+                or execution.get("comfyui_container_restarted") is not False
+                or execution.get("comfyui_process_continuity_verified") is not True
                 or any(output_hashes.get(kind) != actual_sha[kind] for kind in contract if kind not in {"result", "log"})
                 or "Bake finished successfully" not in log_text
             ):
@@ -3107,6 +3124,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job = await leased_job(
             job_id, lease, db, lock_substance_node=True
         )
+        previous_worker_id = job.worker_id
+        requires_runtime_recovery = (
+            job.job_type == "SUBSTANCE_BAKE_V1"
+            and body.code == "SUBSTANCE_COMFYUI_CONTINUITY_FAILED"
+            and previous_worker_id is not None
+        )
         worker = await db.get(AssetWorker, job.worker_id) if job.worker_id else None
         if worker is not None:
             worker.current_jobs = max(0, worker.current_jobs - 1)
@@ -3133,12 +3156,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job.lease_token_hash = None
         job.lease_expires_at = None
         job.last_progress_at = datetime.now(UTC)
-        await release_substance_gpu_fence(
-            db,
-            job,
-            cfg.substance_pending_reservation_seconds,
-            cfg.asset_worker_heartbeat_timeout_seconds,
-        )
+        if requires_runtime_recovery and previous_worker_id is not None:
+            await mark_substance_gpu_recovery_required(
+                db,
+                job,
+                previous_worker_id,
+                job.last_progress_at,
+            )
+        else:
+            await release_substance_gpu_fence(
+                db,
+                job,
+                cfg.substance_pending_reservation_seconds,
+                cfg.asset_worker_heartbeat_timeout_seconds,
+            )
         await append_asset_event(
             db,
             job,
@@ -3152,6 +3183,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ),
                 "error_code": body.code,
                 "retryable": body.retryable,
+                "recovery_required": requires_runtime_recovery,
             },
         )
         await db.commit()

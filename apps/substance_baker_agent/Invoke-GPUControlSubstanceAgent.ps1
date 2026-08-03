@@ -7,7 +7,6 @@ param(
     [string]$BakerExe = 'C:\Program Files\Adobe\Adobe Substance 3D Designer\substance3d_baker.exe',
     [string]$WslDistribution = 'Ubuntu-22.04',
     [string]$WslComfyContainer = 'gpu-control-node-comfyui-1',
-    [string]$FenceRoot = 'D:\GPUControl\state',
     [ValidateRange(1, 16)][int]$InstanceId = 1,
     [ValidateRange(1, 16)][int]$InstanceCount = 4,
     [int]$PollSeconds = 2,
@@ -22,10 +21,10 @@ $WorkerId = 'asset-worker-3090-b-windows-{0:D2}' -f $InstanceId
 $NodeId = 'worker-3090-b'
 $ExpectedBakerSha256 = '7B920FC6EE6005FAAB072C9280B1772F03D694FF04AA91C5A4DB516F7C9FEC6D'
 $WslExe = 'C:\Windows\System32\wsl.exe'
+$WslDockerExe = '/usr/bin/docker'
 $CurlExe = 'C:\Windows\System32\curl.exe'
 $CurrentJobs = 0
-$FenceStatePath = Join-Path $FenceRoot 'substance_baker_fence.json'
-$FenceMutexName = 'Global\GPUControl-Substance-Baker-Fence-v2'
+$ComfyContinuityError = 'SUBSTANCE_COMFYUI_CONTINUITY_FAILED'
 
 function Get-HexSha256Bytes([byte[]]$Bytes) {
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -87,86 +86,44 @@ function Send-Heartbeat {
     $payload = [ordered]@{
         worker_id = $WorkerId; node_id = $NodeId
         display_name = ('3090-B Windows Substance Baker #{0:D2}' -f $InstanceId); hostname = $env:COMPUTERNAME
-        blender_version = 'substance-15.1.0'; skill_version = 'substance-baker-2026.07.29-v2'
+        blender_version = 'substance-15.1.0'; skill_version = 'substance-baker-2026.08.03-v3'
         cpu_count = [Environment]::ProcessorCount; max_concurrency = 1
         current_jobs = $script:CurrentJobs; load_1m = 0; available_memory_mb = $availableMb
     }
     $null = Invoke-SignedPost '/internal/v1/assets/workers/heartbeat' $payload
 }
 
-function Set-ComfyUiRunning([bool]$Running) {
-    $verb = if ($Running) { 'start' } else { 'stop' }
-    $arguments = @('-d', $WslDistribution, '-u', 'gpucontrol', '--', 'docker', $verb)
-    if (-not $Running) { $arguments += @('--time', '60') }
-    $arguments += $WslComfyContainer
-    $output = & $WslExe @arguments 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "WSL docker $verb failed: $output" }
-    if ($Running) {
-        $deadline = (Get-Date).AddMinutes(3)
-        do {
-            Start-Sleep -Seconds 3
-            $state = & $WslExe -d $WslDistribution -u gpucontrol -- docker inspect `
-                --format '{{.State.Health.Status}}' $WslComfyContainer 2>$null
-            if ($state -eq 'healthy') { return }
-        } while ((Get-Date) -lt $deadline)
-        throw 'ComfyUI did not become healthy after native Baker execution'
+function Assert-ComfyUiProcessStable([string]$ExpectedIdentity = '') {
+    # The control plane has already drained 3090-B and waited for its current
+    # prompt to finish before a Baker can claim.  Keep the idle ComfyUI process
+    # alive, request no model eviction, and preserve the opportunity to reuse
+    # its hot cache. Actual VRAM residency is verified by the next real job.
+    $probeLines = @(& $WslExe -d $WslDistribution -u gpucontrol -- $WslDockerExe inspect `
+        --format '{{.Id}}~{{.State.StartedAt}}~{{.RestartCount}}~{{.State.Status}}~{{.State.Health.Status}}' `
+        $WslComfyContainer 2>$null | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ })
+    $probeExitCode = $LASTEXITCODE
+    $identity = @($probeLines | Where-Object {
+        $_ -match '^[0-9a-f]{64}~[^~]+~[0-9]+~running~healthy$'
+    } | Select-Object -Last 1)
+    if ($probeExitCode -ne 0 -or $identity.Count -ne 1) {
+        throw "${ComfyContinuityError}: ComfyUI identity/health probe failed: $($probeLines -join '; ')"
     }
-}
-
-function Read-BakerFenceJobs {
-    if (-not (Test-Path -LiteralPath $FenceStatePath)) { return @() }
-    try {
-        $payload = Get-Content -LiteralPath $FenceStatePath -Raw | ConvertFrom-Json
-        return @($payload.active_job_ids | ForEach-Object { [string]$_ } | Where-Object { $_ })
+    $identityToken = [string]$identity[0]
+    if ($ExpectedIdentity -and $identityToken -ne $ExpectedIdentity) {
+        throw "${ComfyContinuityError}: ComfyUI process changed during native Baker fence: expected=$ExpectedIdentity actual=$identityToken"
     }
-    catch {
-        throw "invalid shared Baker fence state: $FenceStatePath"
-    }
-}
-
-function Write-BakerFenceJobs([string[]]$JobIds) {
-    New-Item -ItemType Directory -Path $FenceRoot -Force | Out-Null
-    $temporary = "$FenceStatePath.$([Guid]::NewGuid().ToString('N')).tmp"
-    $payload = [ordered]@{
-        schema_version = 2
-        active_job_ids = @($JobIds)
-        updated_at = [DateTimeOffset]::UtcNow.ToString('o')
-    } | ConvertTo-Json -Depth 4
-    [IO.File]::WriteAllText($temporary, $payload, (New-Object Text.UTF8Encoding($false)))
-    Move-Item -LiteralPath $temporary -Destination $FenceStatePath -Force
+    return $identityToken
 }
 
 function Enter-BakerGpuFence([string]$JobId) {
-    $mutex = New-Object Threading.Mutex($false, $FenceMutexName)
-    $acquired = $false
-    try {
-        $acquired = $mutex.WaitOne([TimeSpan]::FromMinutes(5))
-        if (-not $acquired) { throw 'timed out acquiring shared Baker GPU fence' }
-        $active = @(Read-BakerFenceJobs)
-        if ($active.Count -eq 0) { Set-ComfyUiRunning $false }
-        if ($active -notcontains $JobId) { $active += $JobId }
-        Write-BakerFenceJobs $active
-    }
-    finally {
-        if ($acquired) { $mutex.ReleaseMutex() }
-        $mutex.Dispose()
-    }
+    # The durable, multi-worker fence is owned by Asset API in PostgreSQL.
+    # Keep only this attempt's ComfyUI identity locally so a dead process or
+    # host reboot cannot leave a stale shared file that poisons later claims.
+    return Assert-ComfyUiProcessStable
 }
 
-function Exit-BakerGpuFence([string]$JobId) {
-    $mutex = New-Object Threading.Mutex($false, $FenceMutexName)
-    $acquired = $false
-    try {
-        $acquired = $mutex.WaitOne([TimeSpan]::FromMinutes(5))
-        if (-not $acquired) { throw 'timed out releasing shared Baker GPU fence' }
-        $active = @(Read-BakerFenceJobs | Where-Object { $_ -ne $JobId })
-        Write-BakerFenceJobs $active
-        if ($active.Count -eq 0) { Set-ComfyUiRunning $true }
-    }
-    finally {
-        if ($acquired) { $mutex.ReleaseMutex() }
-        $mutex.Dispose()
-    }
+function Exit-BakerGpuFence([string]$JobId, [string]$ExpectedIdentity) {
+    $null = Assert-ComfyUiProcessStable $ExpectedIdentity
 }
 
 function Assert-FileHash([string]$Path, [string]$Expected) {
@@ -212,6 +169,8 @@ function Execute-Bake($Job) {
     $outputRoot = Join-Path $jobRoot 'output'
     New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
     $fenceEntered = $false
+    $comfyProcessIdentity = ''
+    $comfyProcessContinuityVerified = $false
     try {
         & $CurlExe --silent --show-error --fail --cacert $CaCertificate --ssl-no-revoke `
             -H ("X-Asset-Lease: $lease") -o $inputZip ($ControlBaseUrl + [string]$Job.input_url)
@@ -232,9 +191,9 @@ function Execute-Bake($Job) {
         if ($LASTEXITCODE -ne 0 -or $version -notmatch '15\.1\.0') { throw 'Baker version mismatch' }
 
         $null = Invoke-LeasedJsonPost "/internal/v1/assets/jobs/$jobId/progress" $lease ([ordered]@{
-            progress = 5; stage = 'GPU_FENCING'; message = '3090-B WSL inference fenced; switching to native Windows Baker'; estimated_remaining_seconds = 540
+            progress = 5; stage = 'GPU_FENCING'; message = '3090-B inference drained; ComfyUI stays running and no model eviction is requested while native Windows Baker runs'; estimated_remaining_seconds = 540
         })
-        Enter-BakerGpuFence $jobId
+        $comfyProcessIdentity = Enter-BakerGpuFence $jobId
         $fenceEntered = $true
         $script:CurrentJobs = 1
         Send-Heartbeat
@@ -342,13 +301,20 @@ function Execute-Bake($Job) {
             }
         }
 
-        Exit-BakerGpuFence $jobId
+        Exit-BakerGpuFence $jobId $comfyProcessIdentity
         $fenceEntered = $false
+        $comfyProcessContinuityVerified = $true
         $resultPath = Join-Path $outputRoot 'baker_result.json'
         $resultJson = [ordered]@{
             schema_version = 1; job_id = $jobId; status = 'SUCCEEDED'; profile = $profile
             tool = [ordered]@{ version = '15.1.0'; exe_sha256 = $ExpectedBakerSha256 }
-            execution = [ordered]@{ exit_code = 0; gpu_backends = @('SAL', 'SoRa'); gpu_uuid = 'GPU-092a5184-5857-d196-5df2-efa9503368aa' }
+            execution = [ordered]@{
+                exit_code = 0; gpu_backends = @('SAL', 'SoRa')
+                gpu_uuid = 'GPU-092a5184-5857-d196-5df2-efa9503368aa'
+                comfyui_cache_policy = 'no_explicit_eviction_process_preserved'
+                comfyui_container_restarted = $false
+                comfyui_process_continuity_verified = $comfyProcessContinuityVerified
+            }
             output_sha256 = $hashes
         } | ConvertTo-Json -Depth 8
         # Windows PowerShell 5.1 Set-Content -Encoding UTF8 writes a BOM.  The
@@ -366,15 +332,28 @@ function Execute-Bake($Job) {
         if ($LASTEXITCODE -ne 0) { throw "result upload failed: $response" }
     }
     catch {
+        $failureMessage = $_.Exception.Message
+        $cacheContinuityFailure = $failureMessage.StartsWith($ComfyContinuityError)
         if ($fenceEntered) {
-            try { Exit-BakerGpuFence $jobId; $fenceEntered = $false } catch { Write-Error $_ }
+            try {
+                Exit-BakerGpuFence $jobId $comfyProcessIdentity
+                $fenceEntered = $false
+            }
+            catch {
+                $cacheContinuityFailure = $true
+                $failureMessage = $_.Exception.Message
+                Write-Error -ErrorAction Continue $_
+            }
         }
         try {
+            $failureCode = if ($cacheContinuityFailure) { $ComfyContinuityError } else { 'SUBSTANCE_EXECUTION_FAILED' }
             $null = Invoke-LeasedJsonPost "/internal/v1/assets/jobs/$jobId/fail" $lease ([ordered]@{
-                code = 'SUBSTANCE_EXECUTION_FAILED'; message = $_.Exception.Message.Substring(0, [Math]::Min(3900, $_.Exception.Message.Length)); retryable = $true
+                code = $failureCode
+                message = $failureMessage.Substring(0, [Math]::Min(3900, $failureMessage.Length))
+                retryable = -not $cacheContinuityFailure
             })
         } catch { Write-Error $_ }
-        throw
+        throw $failureMessage
     }
     finally {
         $script:CurrentJobs = 0
@@ -389,7 +368,6 @@ if (-not (Test-Path -LiteralPath $BakerExe)) { throw "Baker missing: $BakerExe" 
 $script:WorkerSecret = (Get-Content -LiteralPath $SecretFile -Raw).Trim()
 if ($script:WorkerSecret.Length -lt 32) { throw 'worker secret is too short' }
 New-Item -ItemType Directory -Path $JobsRoot -Force | Out-Null
-New-Item -ItemType Directory -Path $FenceRoot -Force | Out-Null
 
 do {
     try {

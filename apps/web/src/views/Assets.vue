@@ -7,7 +7,14 @@ import type {
   AssetProcessingOverview,
   AssetWorkerInfo,
 } from "../types";
-import { assetDeliveryPolicy } from "../assetPresentation";
+import {
+  assetDeliveryPolicy,
+  assetExecutionTarget,
+  assetProgressMessage,
+  assetWorkerState,
+  isSubstanceWorker,
+  substanceGpuStateSummary,
+} from "../assetPresentation";
 import { useAutoRefresh } from "../composables/useAutoRefresh";
 
 const overview = ref<AssetProcessingOverview | null>(null);
@@ -23,10 +30,6 @@ const jobState = ref<"ALL" | "ACTIVE" | "SUCCEEDED" | "FAILED">("ALL");
 const jobSearch = ref("");
 const selectedJob = ref<AssetJobInfo | null>(null);
 const cancellingJobId = ref("");
-
-const isSubstanceWorker = (worker: AssetWorkerInfo) =>
-  worker.id === "asset-worker-3090-b-windows" ||
-  worker.id.startsWith("asset-worker-3090-b-windows-");
 
 const workers = computed(() => {
   const raw = overview.value?.workers ?? [];
@@ -119,6 +122,9 @@ const activeJobs = computed(
     (counts.value.CLAIMED ?? 0) +
     (counts.value.RUNNING ?? 0),
 );
+const substanceGpuSummary = computed(() =>
+  substanceGpuStateSummary(overview.value?.substance_gpu),
+);
 const selectedEvidenceArtifacts = computed(() =>
   (selectedJob.value?.artifacts ?? []).filter(
     (artifact) =>
@@ -176,11 +182,6 @@ async function load() {
       cause instanceof Error ? cause.message : "资产处理状态加载失败";
     throw cause;
   }
-}
-
-function workerState(worker: AssetWorkerInfo) {
-  if (worker.status !== "ONLINE") return "心跳离线";
-  return `${worker.current_jobs} / ${worker.max_concurrency} 槽位使用中`;
 }
 
 function codexProbeClass(worker: AssetWorkerInfo) {
@@ -411,7 +412,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
         <div class="task-plane-switch" aria-label="任务平面">
           <router-link to="/jobs">GPU 推理任务</router-link>
           <router-link class="active" to="/asset-processing"
-            >CPU 资产任务</router-link
+            >资产任务</router-link
           >
           <router-link to="/clients">查看 API 调用示例</router-link>
         </div>
@@ -437,13 +438,14 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 
     <section class="asset-notice">
       <div>
-        <strong>与 GPU 推理任务完全隔离</strong>
+        <strong>队列独立；3090-B 物理 GPU 按任务互斥</strong>
         <p>
-          CPU 资产队列与 GPU 推理队列相互隔离；UV、重拓扑和烘焙均只发布
-          通过完整性与质量门禁的最终交付物。粗糙度使用独立 GPU API 调度。
+          UV 与重拓扑使用 CPU Worker；Substance Baker 与 ComfyUI 共享同一张
+          3090-B，但不会并行争抢 GPU。生产 PBR 到达后取得下一轮优先权，等待当前
+          ComfyUI 帧安全结束再切换；显存缓存驻留本身不等于任务占用。
         </p>
       </div>
-      <span>{{ activeJobs }} 个资产任务处理中</span>
+      <span>{{ substanceGpuSummary }} · {{ activeJobs }} 个资产任务处理中</span>
     </section>
 
     <div class="asset-summary">
@@ -452,8 +454,8 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
         ><small>{{ workers.length }} 个已登记</small>
       </section>
       <section>
-        <span>资产执行槽位</span><strong>{{ totalAssetSlots }}</strong
-        ><small>{{ usedAssetSlots }} 个正在使用</small>
+        <span>逻辑 Worker 槽位</span><strong>{{ totalAssetSlots }}</strong
+        ><small>{{ usedAssetSlots }} 个使用中；Baker 共享 1 张 3090-B</small>
       </section>
       <section>
         <span>严格 QA 失败</span
@@ -470,8 +472,8 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
       <section class="asset-card worker-card">
         <header>
           <div>
-            <h2>CPU Worker</h2>
-            <p>按真实心跳、CPU、内存和租约动态限流</p>
+            <h2>资产 Worker</h2>
+            <p>CPU 槽位与 Windows Baker 进程分列；Baker 共享 3090-B 物理 GPU</p>
           </div>
           <span>{{ onlineWorkerCount }} 在线</span>
         </header>
@@ -490,7 +492,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           <div>
             <span>{{
               isSubstanceWorker(worker)
-                ? "Windows / Substance"
+                ? "Windows / Substance · 3090-B"
                 : "CPU / Blender"
             }}</span
             ><strong
@@ -498,7 +500,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             >
           </div>
           <em>
-            {{ workerState(worker) }}
+            {{ assetWorkerState(worker) }}
             <small>{{ worker.skill_version }}</small>
             <small
               v-if="!isSubstanceWorker(worker)"
@@ -516,7 +518,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
               {{ retopoflowProbeLabel(worker) }}
             </small>
             <small v-else class="worker-codex healthy">
-              Windows 原生多进程 · 共享 GPU 隔离锁
+              Windows 原生多进程 · {{ substanceGpuSummary }}
             </small>
           </em>
         </div>
@@ -701,7 +703,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           <span class="asset-status" :class="job.status.toLowerCase()">{{
             statusLabel(job.status)
           }}</span>
-          <span>{{ job.worker_id ?? "尚未分配" }}</span>
+          <span>{{ assetExecutionTarget(job) }}</span>
           <div class="asset-time-stack">
             <span>提交 {{ formatDateTime(job.created_at) }}</span>
             <span>开始 {{ formatDateTime(job.started_at) }}</span>
@@ -712,7 +714,8 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           <div class="asset-progress">
             <i><b :style="{ width: `${job.progress}%` }"></b></i
             ><small
-              >{{ Math.round(job.progress) }}% · {{ job.stage_message }}</small
+              >{{ Math.round(job.progress) }}% ·
+              {{ assetProgressMessage(job) }}</small
             >
             <em>{{ timingSummary(job) }}</em>
           </div>
@@ -802,7 +805,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           <section class="asset-key-facts">
             <div>
               <span>执行节点</span
-              ><strong>{{ selectedJob.worker_id ?? "尚未分配" }}</strong>
+              ><strong>{{ assetExecutionTarget(selectedJob) }}</strong>
             </div>
             <div>
               <span>当前阶段</span
@@ -827,7 +830,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           </section>
           <section class="asset-stage-message">
             <h3>{{ isTerminal(selectedJob) ? "处理结果" : "实时进度" }}</h3>
-            <p>{{ selectedJob.stage_message }}</p>
+            <p>{{ assetProgressMessage(selectedJob) }}</p>
             <span
               class="asset-delivery-policy"
               :class="assetDeliveryPolicy(selectedJob).className"
