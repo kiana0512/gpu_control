@@ -21,6 +21,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from packages.gpu_control_core.security import sign_agent_request
 
 LOG = logging.getLogger("gpu_control_blender_worker")
+CODEX_EXEC_LOCK = asyncio.Lock()
+CODEX_ERROR_CAPTURE_LIMIT = 64 * 1024
+SUBPROCESS_OUTPUT_LIMIT = 16 * 1024 * 1024
 
 UV_UNWRAP_SCRIPT_SHA256 = "ebfa3546d61c548a11c0e7561c75f93b6ef93308d8da9f27788bf35643303758"
 UV_QA_SCRIPT_SHA256 = "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
@@ -74,8 +77,11 @@ class WorkerSettings(BaseSettings):
     retopoflow_probe_timeout_seconds: int = Field(120, ge=30, le=300)
     codex_binary: str = "/usr/local/bin/codex"
     codex_auth_source: Path = Path("/run/secrets/codex-auth.json")
+    codex_runtime_home: Path = Path("/home/assetworker/.codex")
     codex_health_probe_interval_seconds: int = Field(1800, ge=300, le=86400)
     codex_health_probe_timeout_seconds: int = Field(90, ge=20, le=300)
+    codex_job_timeout_seconds: int = Field(600, ge=60, le=3600)
+    codex_health_probe_jitter_seconds: int = Field(120, ge=0, le=900)
     asset_poll_seconds: float = 1.0
 
 
@@ -137,6 +143,89 @@ async def heartbeat(
     response.raise_for_status()
 
 
+def prepare_codex_runtime_home(settings: WorkerSettings) -> Path:
+    """Return a private, persistent Codex home and bootstrap it only once."""
+    codex_home = settings.codex_runtime_home
+    codex_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(codex_home, 0o700)
+    auth_path = codex_home / "auth.json"
+    if not auth_path.is_file():
+        if not settings.codex_auth_source.is_file():
+            raise FileNotFoundError("Codex auth is not provisioned")
+        bootstrap_path = codex_home / f".auth.bootstrap.{os.getpid()}"
+        try:
+            shutil.copyfile(settings.codex_auth_source, bootstrap_path)
+            os.chmod(bootstrap_path, 0o600)
+            os.replace(bootstrap_path, auth_path)
+        finally:
+            bootstrap_path.unlink(missing_ok=True)
+    os.chmod(auth_path, 0o600)
+    return codex_home
+
+
+def codex_environment(settings: WorkerSettings) -> dict[str, str]:
+    environment = dict(os.environ)
+    environment["CODEX_HOME"] = str(prepare_codex_runtime_home(settings))
+    # SSL_CERT_FILE is the private control-plane CA on GPU nodes.  Passing that
+    # single-root bundle to Codex breaks public OpenAI TLS validation.  The
+    # worker process keeps using it for Asset API; Codex uses the image's
+    # system trust store.
+    if environment.get("SSL_CERT_FILE") == "/run/certs/lan-ca.crt":
+        environment.pop("SSL_CERT_FILE")
+    return environment
+
+
+def classify_codex_error(stderr: bytes) -> tuple[str, str]:
+    diagnostic = stderr[-CODEX_ERROR_CAPTURE_LIMIT:].decode("utf-8", "replace").lower()
+    if "refresh token was already used" in diagnostic:
+        return "EXPIRED", "AUTH_REFRESH_REUSED"
+    if "token_expired" in diagnostic or "401 unauthorized" in diagnostic:
+        return "EXPIRED", "AUTH_UNAUTHORIZED"
+    if "429" in diagnostic or "rate limit" in diagnostic:
+        return "PRESENT", "RATE_LIMITED"
+    if "unknownissuer" in diagnostic or "invalid peer certificate" in diagnostic:
+        return "PRESENT", "NETWORK_TLS"
+    if "timed out" in diagnostic or "timeout" in diagnostic:
+        return "PRESENT", "NETWORK_TIMEOUT"
+    return "PRESENT", "PROBE_FAILED"
+
+
+async def terminate_subprocess(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        await process.wait()
+        return
+    try:
+        await asyncio.wait_for(process.wait(), timeout=5)
+    except TimeoutError:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        await process.wait()
+
+
+async def read_subprocess_output(
+    stream: asyncio.StreamReader | None,
+) -> tuple[bytes, bool]:
+    if stream is None:
+        return b"", False
+    chunks: list[bytes] = []
+    size = 0
+    truncated = False
+    while chunk := await stream.read(64 * 1024):
+        chunks.append(chunk)
+        size += len(chunk)
+        while size > SUBPROCESS_OUTPUT_LIMIT and chunks:
+            removed = chunks.pop(0)
+            size -= len(removed)
+            truncated = True
+    return b"".join(chunks), truncated
+
+
 async def inspect_codex_runtime(settings: WorkerSettings) -> dict[str, Any]:
     """Validate the exact CLI/auth pair mounted into the production worker."""
     checked_at = datetime.now(UTC).isoformat()
@@ -152,10 +241,11 @@ async def inspect_codex_runtime(settings: WorkerSettings) -> dict[str, Any]:
             "codex_error_code": "BINARY_UNAVAILABLE",
         }
     try:
-        auth = json.loads(settings.codex_auth_source.read_text("utf-8"))
+        auth_path = prepare_codex_runtime_home(settings) / "auth.json"
+        auth = json.loads(auth_path.read_text("utf-8"))
         if not isinstance(auth, dict) or not auth:
             raise ValueError("empty auth object")
-        auth_status = "AUTHENTICATED"
+        auth_status = "PRESENT"
     except (OSError, ValueError, json.JSONDecodeError):
         auth_status = "INVALID"
     try:
@@ -182,11 +272,11 @@ async def inspect_codex_runtime(settings: WorkerSettings) -> dict[str, Any]:
     return {
         "codex_cli_version": version,
         "codex_auth_status": auth_status,
-        "codex_probe_status": "NOT_RUN" if auth_status == "AUTHENTICATED" else "BLOCKED",
+        "codex_probe_status": "NOT_RUN" if auth_status == "PRESENT" else "BLOCKED",
         "codex_probe_latency_ms": None,
         "codex_last_checked_at": checked_at,
         "codex_last_success_at": None,
-        "codex_error_code": None if auth_status == "AUTHENTICATED" else "AUTH_INVALID",
+        "codex_error_code": None if auth_status == "PRESENT" else "AUTH_INVALID",
     }
 
 
@@ -194,59 +284,83 @@ async def run_codex_health_probe(
     settings: WorkerSettings, health: dict[str, Any]
 ) -> None:
     """Run a bounded, read-only model round-trip; never expose auth or response text."""
-    if health.get("codex_auth_status") != "AUTHENTICATED":
-        return
     started = time.monotonic()
     checked_at = datetime.now(UTC).isoformat()
+    process: asyncio.subprocess.Process | None = None
     try:
+        auth_path = prepare_codex_runtime_home(settings) / "auth.json"
+        auth = json.loads(auth_path.read_text("utf-8"))
+        if not isinstance(auth, dict) or not auth:
+            raise ValueError("empty auth object")
         with tempfile.TemporaryDirectory(prefix="codex-health-") as temporary:
             root = Path(temporary)
-            codex_home = root / "home"
-            codex_home.mkdir(mode=0o700)
-            shutil.copyfile(settings.codex_auth_source, codex_home / "auth.json")
-            os.chmod(codex_home / "auth.json", 0o600)
             result = root / "result.txt"
-            environment = dict(os.environ)
-            environment["CODEX_HOME"] = str(codex_home)
-            process = await asyncio.create_subprocess_exec(
-                settings.codex_binary,
-                "exec",
-                "--ephemeral",
-                "--skip-git-repo-check",
-                "--sandbox",
-                "read-only",
-                "--ignore-user-config",
-                "--output-last-message",
-                str(result),
-                "-C",
-                str(root),
-                "Return exactly CODEX_HEALTH_OK. Do not call tools or read files.",
-                env=environment,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(
-                process.communicate(), timeout=settings.codex_health_probe_timeout_seconds
-            )
+            async with CODEX_EXEC_LOCK:
+                process = await asyncio.create_subprocess_exec(
+                    settings.codex_binary,
+                    "exec",
+                    "--ephemeral",
+                    "--skip-git-repo-check",
+                    "--sandbox",
+                    "read-only",
+                    "--ignore-user-config",
+                    "--output-last-message",
+                    str(result),
+                    "-C",
+                    str(root),
+                    "Return exactly CODEX_HEALTH_OK. Do not call tools or read files.",
+                    env=codex_environment(settings),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=settings.codex_health_probe_timeout_seconds
+                )
             message = result.read_text("utf-8").strip() if result.is_file() else ""
-            if process.returncode != 0 or message != "CODEX_HEALTH_OK":
-                raise RuntimeError("unexpected probe response")
+            if process.returncode != 0:
+                auth_status, error_code = classify_codex_error(stderr)
+                health.update(
+                    codex_auth_status=auth_status,
+                    codex_probe_status="FAILED",
+                    codex_error_code=error_code,
+                    codex_last_checked_at=checked_at,
+                    codex_probe_latency_ms=int((time.monotonic() - started) * 1000),
+                )
+                return
+            if message != "CODEX_HEALTH_OK":
+                health.update(
+                    codex_auth_status="PRESENT",
+                    codex_probe_status="FAILED",
+                    codex_error_code="PROBE_OUTPUT_MISMATCH",
+                    codex_last_checked_at=checked_at,
+                    codex_probe_latency_ms=int((time.monotonic() - started) * 1000),
+                )
+                return
     except TimeoutError:
+        if process is not None:
+            await terminate_subprocess(process)
         health.update(
+            codex_auth_status="PRESENT",
             codex_probe_status="FAILED",
             codex_error_code="PROBE_TIMEOUT",
             codex_last_checked_at=checked_at,
             codex_probe_latency_ms=int((time.monotonic() - started) * 1000),
         )
-    except (OSError, RuntimeError):
+    except asyncio.CancelledError:
+        if process is not None:
+            await terminate_subprocess(process)
+        raise
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
         health.update(
+            codex_auth_status="INVALID",
             codex_probe_status="FAILED",
-            codex_error_code="PROBE_FAILED",
+            codex_error_code="AUTH_INVALID",
             codex_last_checked_at=checked_at,
             codex_probe_latency_ms=int((time.monotonic() - started) * 1000),
         )
     else:
         health.update(
+            codex_auth_status="AUTHENTICATED",
             codex_probe_status="HEALTHY",
             codex_error_code=None,
             codex_last_checked_at=checked_at,
@@ -258,10 +372,13 @@ async def run_codex_health_probe(
 async def codex_health_loop(
     settings: WorkerSettings, health: dict[str, Any], runtime: dict[str, int]
 ) -> None:
+    jitter = int.from_bytes(
+        hashlib.sha256(settings.asset_worker_id.encode("utf-8")).digest()[:2], "big"
+    ) % (settings.codex_health_probe_jitter_seconds + 1)
     while True:
         if runtime["running"] == 0:
             await run_codex_health_probe(settings, health)
-        await asyncio.sleep(settings.codex_health_probe_interval_seconds)
+        await asyncio.sleep(settings.codex_health_probe_interval_seconds + jitter)
 
 
 def retopoflow_revision(root: Path) -> str | None:
@@ -556,14 +673,19 @@ async def run_retopology_agent_plan(
     codex = Path(settings.codex_binary)
     if not codex.is_file() or not os.access(codex, os.X_OK):
         raise RuntimeError("Codex CLI is required for retopology planning but is unavailable")
-    if not settings.codex_auth_source.is_file():
-        raise RuntimeError("Codex CLI auth secret is not mounted")
-    codex_home = workspace / ".codex-runtime"
-    codex_home.mkdir(mode=0o700)
-    shutil.copyfile(settings.codex_auth_source, codex_home / "auth.json")
-    os.chmod(codex_home / "auth.json", 0o600)
+    try:
+        codex_home = prepare_codex_runtime_home(settings)
+    except OSError as exc:
+        raise RuntimeError("Codex CLI persistent auth is unavailable") from exc
     skill_source = settings.retopology_skill_root.parent
-    os.symlink(skill_source, codex_home / "skills", target_is_directory=True)
+    skill_link = codex_home / "skills"
+    if not skill_link.exists() and not skill_link.is_symlink():
+        try:
+            os.symlink(skill_source, skill_link, target_is_directory=True)
+        except FileExistsError:
+            pass
+    if not skill_link.is_symlink() or skill_link.resolve() != skill_source.resolve():
+        raise RuntimeError("Codex CLI persistent skill mount is invalid")
 
     schema = {
         "type": "object",
@@ -645,31 +767,32 @@ Real baseline Blender audit:
             ("--image", str(workspace / "references" / str(reference["filename"])))
         )
     command.append("-")
-    environment = dict(os.environ)
-    environment["CODEX_HOME"] = str(codex_home)
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        env=environment,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    if process.stdin is None:
-        raise RuntimeError("Codex CLI stdin is unavailable")
-    process.stdin.write(prompt.encode("utf-8"))
-    await process.stdin.drain()
-    process.stdin.close()
-    events = await wait_for_blender(
-        client,
-        job_id,
-        lease_headers,
-        process,
-        18,
-        38,
-        "RETOPOLOGY_AGENT_PLANNING",
-        "Codex 正在结合高模、参考低模、当前低模及多视角参考图制定候选方案",
-        180,
-    )
+    async with CODEX_EXEC_LOCK:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            env=codex_environment(settings),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        if process.stdin is None:
+            await terminate_subprocess(process)
+            raise RuntimeError("Codex CLI stdin is unavailable")
+        process.stdin.write(prompt.encode("utf-8"))
+        await process.stdin.drain()
+        process.stdin.close()
+        events = await wait_for_blender(
+            client,
+            job_id,
+            lease_headers,
+            process,
+            18,
+            38,
+            "RETOPOLOGY_AGENT_PLANNING",
+            "Codex 正在结合高模、参考低模、当前低模及多视角参考图制定候选方案",
+            180,
+            hard_timeout_seconds=settings.codex_job_timeout_seconds,
+        )
     events_path.write_bytes(events)
     try:
         plan = json.loads(plan_path.read_text("utf-8"))
@@ -708,47 +831,69 @@ async def wait_for_blender(
     stage: str,
     message: str,
     estimated_stage_seconds: int,
+    *,
+    hard_timeout_seconds: int | None = None,
 ) -> bytes:
     progress = progress_start
     started = time.monotonic()
-    status = await client.post(
-        f"/internal/v1/assets/jobs/{job_id}/progress",
-        headers=lease_headers,
-        json={
-            "progress": progress,
-            "stage": stage,
-            "message": message,
-            "estimated_remaining_seconds": estimated_stage_seconds,
-        },
-    )
-    status.raise_for_status()
-    if status.json().get("cancel_requested"):
-        process.terminate()
-        await process.wait()
-        raise RuntimeError("asset job cancelled")
-    while process.returncode is None:
-        try:
-            await asyncio.wait_for(process.wait(), timeout=15)
-        except TimeoutError as exc:
-            progress = min(progress_end, progress + max(1.0, (progress_end - progress_start) / 8))
-            status = await client.post(
-                f"/internal/v1/assets/jobs/{job_id}/progress",
-                headers=lease_headers,
-                json={
-                    "progress": progress,
-                    "stage": stage,
-                    "message": message,
-                    "estimated_remaining_seconds": max(
-                        0, estimated_stage_seconds - int(time.monotonic() - started)
-                    ),
-                },
-            )
-            status.raise_for_status()
-            if status.json().get("cancel_requested"):
-                process.terminate()
-                await process.wait()
-                raise RuntimeError("asset job cancelled") from exc
-    output = await process.stdout.read() if process.stdout else b""
+    output_task = asyncio.create_task(read_subprocess_output(process.stdout))
+    try:
+        status = await client.post(
+            f"/internal/v1/assets/jobs/{job_id}/progress",
+            headers=lease_headers,
+            json={
+                "progress": progress,
+                "stage": stage,
+                "message": message,
+                "estimated_remaining_seconds": estimated_stage_seconds,
+            },
+        )
+        status.raise_for_status()
+        if status.json().get("cancel_requested"):
+            await terminate_subprocess(process)
+            raise RuntimeError("asset job cancelled")
+        while process.returncode is None:
+            elapsed = time.monotonic() - started
+            if hard_timeout_seconds is not None and elapsed >= hard_timeout_seconds:
+                await terminate_subprocess(process)
+                raise RuntimeError("subprocess hard timeout exceeded")
+            wait_seconds = 15.0
+            if hard_timeout_seconds is not None:
+                wait_seconds = min(wait_seconds, max(0.1, hard_timeout_seconds - elapsed))
+            try:
+                await asyncio.wait_for(process.wait(), timeout=wait_seconds)
+            except TimeoutError as exc:
+                progress = min(
+                    progress_end,
+                    progress + max(1.0, (progress_end - progress_start) / 8),
+                )
+                status = await client.post(
+                    f"/internal/v1/assets/jobs/{job_id}/progress",
+                    headers=lease_headers,
+                    json={
+                        "progress": progress,
+                        "stage": stage,
+                        "message": message,
+                        "estimated_remaining_seconds": max(
+                            0, estimated_stage_seconds - int(time.monotonic() - started)
+                        ),
+                    },
+                )
+                status.raise_for_status()
+                if status.json().get("cancel_requested"):
+                    await terminate_subprocess(process)
+                    raise RuntimeError("asset job cancelled") from exc
+    except asyncio.CancelledError:
+        await terminate_subprocess(process)
+        await output_task
+        raise
+    except Exception:
+        await terminate_subprocess(process)
+        await output_task
+        raise
+    output, truncated = await output_task
+    if truncated:
+        raise RuntimeError("subprocess output exceeded the 16 MiB safety limit")
     if process.returncode != 0:
         raise RuntimeError(output.decode("utf-8", "replace")[-4000:])
     return output

@@ -70,12 +70,14 @@ services:
       RETOPOFLOW_ADDON_ROOT: /opt/blender-addons/RetopoFlow
       CODEX_BINARY: /usr/local/bin/codex
       CODEX_AUTH_SOURCE: /run/secrets/codex-auth.json
+      CODEX_RUNTIME_HOME: /home/assetworker/.codex
       SSL_CERT_FILE: /run/certs/lan-ca.crt
     volumes:
       - ${LAN_CA_PATH:-/opt/gpu-control/deploy/control-plane/nginx/certs/lan-ca.crt}:/run/certs/lan-ca.crt:ro
       - ${CODEX_SKILL_ROOT:-/opt/gpu-control/runtime/asset-skills}:/opt/codex/skills:ro
       - ${CODEX_BINARY_PATH:-/opt/gpu-control/runtime/codex/codex}:/usr/local/bin/codex:ro
       - ${CODEX_ASSET_AUTH_PATH:-/home/lilithgames/.codex/auth.json}:/run/secrets/codex-auth.json:ro
+      - ${CODEX_RUNTIME_ROOT:-/opt/gpu-control/runtime/codex}/${NODE_ID}-home:/home/assetworker/.codex
       - ${RETOPOFLOW_RUNTIME_ROOT:-/opt/gpu-control/runtime/retopoflow/RetopoFlow}:/opt/blender-addons/RetopoFlow:ro
     logging: *default-logging
 
