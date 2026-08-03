@@ -24,6 +24,8 @@
   PostgreSQL `NOWAIT`，锁竞争返回可重试 409，不再等待成调度死锁或产生部分取消。
 - 1.5.8 Asset API 不接受 Worker 1.2.5 新增的 `node_id` claim 字段；正式滚动必须在零任务窗口先升级
   Asset API，再逐台升级 Worker。先前 `b410a6a` 五个本地镜像已作废，最终 SHA 冻结后全部重建。
+- Web lockfile 将仅开发链路中的 `brace-expansion` 更新到修复版本；完整 npm audit 与生产依赖 audit
+  均为 0 vulnerability，业务依赖、页面行为和运行时镜像内容不变。
 - 不修改 ImageClip、ModelViewCreator、UV/重拓扑 Skill、工作流、模型、prompt、参数、图拓扑或
   输出语义；三节点空闲滚动、真实六 API 验收和观察完成前保持候选状态。
 

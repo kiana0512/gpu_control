@@ -210,12 +210,12 @@ ComfyUI 运行约束：
 ### 7.1 当前可以确认
 
 - 版本文件和候选构建入口已经统一指向 Control Plane `1.5.9`、Worker `1.2.5`。
-- 最终实现已冻结为 `dac30c039f692cf8274eaff5430ca7ebfd97b201`（提交时间 `2026-08-03T22:13:27+08:00`）；当前其上只有 README、CHANGELOG 和本文 evidence 回填。已记录的 `origin/main` 仍为 `56035975cd9ca4b0c904e34aca11d30b8779d2cd`，因此这些修复尚未推送。
+- 核心实现已冻结为 `dac30c039f692cf8274eaff5430ca7ebfd97b201`（提交时间 `2026-08-03T22:13:27+08:00`）；其上只有 Web dev-dependency lockfile 安全修复以及 README、CHANGELOG 和本文 evidence 回填，不改变后端运行语义。已记录的 `origin/main` 仍为 `56035975cd9ca4b0c904e34aca11d30b8779d2cd`，因此这些修复尚未推送。
 - 源码中已存在生产优先全局准入、精确 artifact 契约、Linux Worker 长上传续租与进程代际绑定、Windows Agent 长 SHA/上传续租、统一容量/ETA、锁竞争快速失败及五镜像发布校验实现和对应自动化用例。
 - 当前最终修复工作树 Python 全量结果为 `425 passed, 9 skipped`；其中 8 条 skip 是必须连接 PostgreSQL 的锁竞争专项，另 1 条是基础质量镜像未安装可选 Locust 依赖。相同代码在一次性 PostgreSQL 17.5、loopback 且数据库名为 `gpu_control_test_*` 的隔离测试库上串行运行 Scheduler 锁、节点 interrupt、Worker generation/lease 并发用例，结果为 `8 passed`；该库使用 tmpfs，验证后已停止并自动移除。另在一次性容器安装项目锁定的 Locust `2.37.14` 后，负载工具专项为 `66 passed`。这些都是工作树证据，最终 commit 冻结后仍需复跑。
 - 工作树原始 JUnit 暂存于 `/tmp/gpu-control-1.5.9-gates.Mmmdes/`：`python-full-current.xml` 为 63,543 bytes、SHA-256 `ae4dad58005934878386220b20e8b576f4e1368eef114869d2ee339011b541a9`；`postgres-concurrency.xml` 为 1,495 bytes、SHA-256 `f411d834aeafb5fd2e42380cf985f8dd5462c63a5484e8afe03c8921b4ddbbe0`。最终 commit 上的报告必须重新生成并进入正式 release archive，不能仅依赖 `/tmp`。
 - Ruff 全仓、Mypy `36 source files`、compileall、`git diff --check`、SQLite 从 `0001` 到 `0012` 的完整迁移和控制面/GPU 节点两套 Compose 解析均通过。
-- Web 当前候选工作树结果：测试 `16/16`，ESLint、Prettier、`vue-tsc` 和 Vite build 均通过；Vite 仅报告既有大 chunk advisory，不是构建失败。
+- Web 当前候选工作树结果：测试 `16/16`，ESLint、Prettier、`vue-tsc` 和 Vite build 均通过；Vite 仅报告既有大 chunk advisory，不是构建失败。构建时发现的 `brace-expansion` high advisory 只存在于 dev dependency，已用 lockfile-only 补丁升级到修复版本；重新 `npm ci` 后完整 npm audit 和 `--omit=dev` audit 均为 0 vulnerability。
 - 最终独立安全审计结果为 `P0=0 / P1=0`。审计覆盖全局/tenant/Node/Batch/Job/Worker 锁顺序、heartbeat/claim 进程代际、幂等过期重用、提交回执丢失后的输入与正式产物保全、实际 claim 与容量口径、精确压测清场、UV/拓扑 advisory 正式交付以及 Substance 恢复闭锁。
 - 已知 P2/运维约束：时间轴仍依赖客户端提交的 `started_at`；1.5.8/1.2.4 到 1.5.9/1.2.5 存在上述短领取冻结窗；ETA 仍是队列近似值；两组 PostgreSQL 并发文件共用隔离测试库，禁止并行执行。最终可推送提交确定后仍须在完整 commit 上复跑并归档原始输出。因此当前状态继续保持 `PENDING_FINAL_SOURCE_GATES`。
 - 1.5.8 生产基线此前已记录真实 PBR、UV 和重拓扑成功任务；这些仅证明旧基线部分能力，不是 1.5.9 canary，也不能替代本轮六 API 验收。
