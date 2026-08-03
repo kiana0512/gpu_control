@@ -121,7 +121,7 @@ function Send-Heartbeat {
     $payload = [ordered]@{
         worker_id = $WorkerId; node_id = $NodeId
         display_name = ('3090-B Windows Substance Baker #{0:D2}' -f $InstanceId); hostname = $env:COMPUTERNAME
-        blender_version = 'substance-15.1.0'; skill_version = 'substance-baker-2026.08.03-v4'
+        blender_version = 'substance-15.1.0'; skill_version = 'substance-baker-2026.08.03-v5'
         cpu_count = [Environment]::ProcessorCount; max_concurrency = 1
         current_jobs = $script:CurrentJobs; load_1m = 0; available_memory_mb = $availableMb
         agent_instance_id = $AgentInstanceId; agent_started_at = $AgentStartedAt
@@ -243,6 +243,31 @@ function Stop-BakerProcess($Process) {
     catch { Write-Warning "failed to stop Substance Baker process: $($_.Exception.Message)" }
 }
 
+function Assert-BakerCommandResult($ExitCode, [string[]]$OutputLines) {
+    $successMarkerPresent = (($OutputLines -join "`n") -match 'Bake finished successfully')
+
+    # Windows PowerShell 5.1 can occasionally expose a null ExitCode for an
+    # already completed Start-Process handle.  A real, observable non-zero
+    # value always fails closed.  A null value is accepted only when Baker's
+    # own completion marker is present in the fully flushed output.
+    if ($null -ne $ExitCode -and [int]$ExitCode -ne 0) {
+        throw "Substance Baker exited with code $ExitCode"
+    }
+    if (-not $successMarkerPresent) {
+        if ($null -eq $ExitCode) {
+            throw 'Substance Baker exit code unavailable and success marker missing'
+        }
+        throw 'Substance Baker success marker missing'
+    }
+    $exitCodeObserved = ($null -ne $ExitCode)
+    $normalizedExitCode = if ($exitCodeObserved) { [int]$ExitCode } else { $null }
+    return [ordered]@{
+        exit_code_observed = $exitCodeObserved
+        exit_code = $normalizedExitCode
+        success_marker_present = $true
+    }
+}
+
 function Invoke-BakerCommand(
     [string[]]$Arguments,
     [string]$LogPath,
@@ -286,6 +311,7 @@ function Invoke-BakerCommand(
         # Ensure asynchronous output redirection is completely flushed before
         # the log files are read and the process handle is disposed.
         $process.WaitForExit()
+        $process.Refresh()
         $exitCode = $process.ExitCode
     }
     catch {
@@ -302,9 +328,19 @@ function Invoke-BakerCommand(
         if ($null -ne $process) { $process.Dispose() }
         if ($lines.Count -gt 0) { $lines | Add-Content -LiteralPath $LogPath -Encoding UTF8 }
     }
-    if ($exitCode -ne 0) { throw "Substance Baker exited with code $exitCode" }
-    if (-not (($lines -join "`n") -match 'Bake finished successfully')) {
-        throw 'Substance Baker success marker missing'
+    $verified = Assert-BakerCommandResult -ExitCode $exitCode -OutputLines $lines
+    $outputName = $null
+    $outputNameIndex = [Array]::IndexOf([object[]]$Arguments, '--output_name')
+    if ($outputNameIndex -ge 0 -and ($outputNameIndex + 1) -lt $Arguments.Count) {
+        $outputName = [string]$Arguments[$outputNameIndex + 1]
+    }
+    $bakerName = if ($Arguments.Count -gt 1) { [string]$Arguments[1] } else { $null }
+    return [ordered]@{
+        baker = $bakerName
+        output_name = $outputName
+        exit_code_observed = [bool]$verified.exit_code_observed
+        exit_code = $verified.exit_code
+        success_marker_present = [bool]$verified.success_marker_present
     }
 }
 
@@ -356,6 +392,7 @@ function Execute-Bake($Job) {
         $high = if ($highName) { Join-Path (Join-Path $inputRoot 'input') ([string]$highName) } else { $null }
         $cage = if ($cageName) { Join-Path (Join-Path $inputRoot 'input') ([string]$cageName) } else { $null }
         $logPath = Join-Path $outputRoot 'baker.log'
+        $commandEvidence = @()
         "GPU Control job=$jobId profile=$profile" | Set-Content -LiteralPath $logPath -Encoding UTF8
         # Substance 3D Baker 15.1 declares output_size as QPoint and accepts
         # the two dimensions as a comma-separated uint pair (for example
@@ -372,8 +409,8 @@ function Execute-Bake($Job) {
                 '--output_size', $sizeArg, '--secondary.sample_count', '64',
                 '--projection.sampling_rate', '2x2', '--texture_cache_size', $cache.ToString())
             if ($cage) { $args += @('--use_cage', 'true', '--cage_scene_path', $cage) }
-            Invoke-BakerCommand $args $logPath $jobId $lease 20 'BAKING_AO' `
-                'SAL + SoRa is generating ambient occlusion' 420
+            $commandEvidence += @(Invoke-BakerCommand $args $logPath $jobId $lease 20 `
+                'BAKING_AO' 'SAL + SoRa is generating ambient occlusion' 420)
         }
         if ($profile -in @('normal-dx-v1', 'pbr-core-v1')) {
             $null = Invoke-LeasedJsonPost "/internal/v1/assets/jobs/$jobId/progress" $lease ([ordered]@{
@@ -388,8 +425,8 @@ function Execute-Bake($Job) {
                 '--projection.sampling_rate', '4x4', '--output_texture_orientation', 'directx',
                 '--output_texture_space', 'tangent_space', '--texture_cache_size', $cache.ToString())
             if ($cage) { $args += @('--use_cage', 'true', '--cage_scene_path', $cage) }
-            Invoke-BakerCommand $args $logPath $jobId $lease 55 'BAKING_NORMAL' `
-                'SAL + SoRa is generating a DirectX tangent-space normal map' 300
+            $commandEvidence += @(Invoke-BakerCommand $args $logPath $jobId $lease 55 `
+                'BAKING_NORMAL' 'SAL + SoRa is generating a DirectX tangent-space normal map' 300)
         }
 
         if ($profile -eq 'li3d-pbr-full-v2') {
@@ -412,8 +449,8 @@ function Execute-Bake($Job) {
                 $args = @('--verbose', 'TextureTransfer.Raytraced') + $commonProjection + @(
                     '--output_name', "asset_$textureRole", '--source_texture_path', $sourcePath,
                     '--filtering_mode', 'bilinear', '--padding_radius', '16')
-                Invoke-BakerCommand $args $logPath $jobId $lease 15 'BAKING_TEXTURE_TRANSFER' `
-                    'Projecting Base Color, Roughness, and Metallic' 480
+                $commandEvidence += @(Invoke-BakerCommand $args $logPath $jobId $lease 15 `
+                    'BAKING_TEXTURE_TRANSFER' 'Projecting Base Color, Roughness, and Metallic' 480)
             }
 
             $null = Invoke-LeasedJsonPost "/internal/v1/assets/jobs/$jobId/progress" $lease ([ordered]@{
@@ -427,8 +464,8 @@ function Execute-Bake($Job) {
             )
             foreach ($bake in $geometryBakes) {
                 $args = @('--verbose', $bake[0]) + $commonProjection + @('--output_name', $bake[1])
-                Invoke-BakerCommand $args $logPath $jobId $lease 40 'BAKING_GEOMETRY_MAPS' `
-                    'Generating AO, Curvature, Thickness, and Position maps' 330
+                $commandEvidence += @(Invoke-BakerCommand $args $logPath $jobId $lease 40 `
+                    'BAKING_GEOMETRY_MAPS' 'Generating AO, Curvature, Thickness, and Position maps' 330)
             }
 
             $null = Invoke-LeasedJsonPost "/internal/v1/assets/jobs/$jobId/progress" $lease ([ordered]@{
@@ -442,8 +479,8 @@ function Execute-Bake($Job) {
                 $args = @('--verbose', 'Normal.Raytraced') + $commonProjection + @(
                     '--output_name', $normalSpec[0], '--output_texture_space', $normalSpec[1],
                     '--output_texture_orientation', $normalSpec[2])
-                Invoke-BakerCommand $args $logPath $jobId $lease 72 'BAKING_NORMALS' `
-                    'Generating DirectX, OpenGL, and world-space normal maps' 180
+                $commandEvidence += @(Invoke-BakerCommand $args $logPath $jobId $lease 72 `
+                    'BAKING_NORMALS' 'Generating DirectX, OpenGL, and world-space normal maps' 180)
             }
         }
 
@@ -459,11 +496,20 @@ function Execute-Bake($Job) {
         $fenceEntered = $false
         $comfyProcessContinuityVerified = $true
         $resultPath = Join-Path $outputRoot 'baker_result.json'
+        $allExitCodesObserved = @(
+            $commandEvidence | Where-Object { -not [bool]$_.exit_code_observed }
+        ).Count -eq 0
+        $summaryExitCode = if ($allExitCodesObserved) { 0 } else { $null }
         $resultJson = [ordered]@{
-            schema_version = 1; job_id = $jobId; status = 'SUCCEEDED'; profile = $profile
+            schema_version = 2; job_id = $jobId; status = 'SUCCEEDED'; profile = $profile
             tool = [ordered]@{ version = '15.1.0'; exe_sha256 = $ExpectedBakerSha256 }
             execution = [ordered]@{
-                exit_code = 0; gpu_backends = @('SAL', 'SoRa')
+                exit_code = $summaryExitCode
+                exit_code_observed = $allExitCodesObserved
+                success_marker_verified = $true
+                command_count = $commandEvidence.Count
+                commands = $commandEvidence
+                gpu_backends = @('SAL', 'SoRa')
                 gpu_uuid = 'GPU-092a5184-5857-d196-5df2-efa9503368aa'
                 comfyui_cache_policy = 'no_explicit_eviction_process_preserved'
                 comfyui_container_restarted = $false

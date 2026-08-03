@@ -24,7 +24,7 @@ memory pressure; the next real same-workflow GPU task provides the cold/hot
 timing evidence. GPU Control's existing warm-workflow affinity remains enabled.
 
 Agent identity is fail closed. Asset API accepts Substance claims only from
-`substance-baker-2026.08.03-v4`. Every heartbeat carries a per-process Agent
+`substance-baker-2026.08.03-v5`. Every heartbeat carries a per-process Agent
 generation plus a fail-closed, host-wide `Win32_Process` probe for
 `substance3d_baker.exe`. Each stable Worker ID also holds a full-lifetime
 `Global\` named mutex, so a duplicate scheduled, manual, or reinstall-launched

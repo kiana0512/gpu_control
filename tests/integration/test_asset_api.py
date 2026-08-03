@@ -58,6 +58,7 @@ async def test_asset_api_version_exposes_aligned_immutable_provenance(
 async def prepared_asset_app(
     tmp_path: Path,
     *,
+    uv_qa_enforcement: Literal["strict", "advisory"] = "strict",
     retopology_qa_enforcement: Literal["strict", "advisory"] = "strict",
 ):
     settings = Settings(
@@ -72,6 +73,7 @@ async def prepared_asset_app(
         asset_worker_hmac_secret="asset-worker-secret-that-is-long-enough",
         alertmanager_webhook_token="test-alert-token",
         asset_worker_min_available_memory_mb=1024,
+        uv_qa_enforcement=uv_qa_enforcement,
         retopology_qa_enforcement=retopology_qa_enforcement,
     )
     app = create_app(settings)
@@ -246,7 +248,7 @@ async def register_substance_worker(
             "display_name": worker_id,
             "hostname": "LILITHGAMES3",
             "blender_version": "substance-15.1.0",
-            "skill_version": "substance-baker-2026.08.03-v4",
+            "skill_version": "substance-baker-2026.08.03-v5",
             "cpu_count": 128,
             "max_concurrency": 1,
             "current_jobs": current_jobs,
@@ -340,7 +342,7 @@ async def test_substance_v4_without_host_process_evidence_is_drained(
                 "display_name": "incomplete v4 Windows Substance Baker",
                 "hostname": "LILITHGAMES3",
                 "blender_version": "substance-15.1.0",
-                "skill_version": "substance-baker-2026.08.03-v4",
+                "skill_version": "substance-baker-2026.08.03-v5",
                 "cpu_count": 128,
                 "max_concurrency": 1,
                 "current_jobs": 0,
@@ -532,10 +534,10 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
             "thickness",
             "position",
         }
-        log = b"SAL,SoRa\nBake finished successfully\n"
+        log = b"SAL,SoRa\n" + b"Bake finished successfully\n" * 10
         result = json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "job_id": job_id,
                 "status": "SUCCEEDED",
                 "profile": "li3d-pbr-full-v2",
@@ -544,7 +546,20 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
                     "exe_sha256": "7B920FC6EE6005FAAB072C9280B1772F03D694FF04AA91C5A4DB516F7C9FEC6D",
                 },
                 "execution": {
-                    "exit_code": 0,
+                    "exit_code": None,
+                    "exit_code_observed": False,
+                    "success_marker_verified": True,
+                    "command_count": 10,
+                    "commands": [
+                        {
+                            "baker": "Synthetic.Test",
+                            "output_name": f"asset_{kind}",
+                            "exit_code_observed": False,
+                            "exit_code": None,
+                            "success_marker_present": True,
+                        }
+                        for kind in sorted(output_kinds)
+                    ],
                     "comfyui_cache_policy": "no_explicit_eviction_process_preserved",
                     "comfyui_container_restarted": False,
                     "comfyui_process_continuity_verified": True,
@@ -2011,6 +2026,216 @@ async def test_uv_process_v2_preserves_stem_and_publishes_five_verified_artifact
             "chair.source_PBR_UV_QA.json",
             "chair.source_PBR_UV_FBX_QA.json",
         }
+
+
+async def create_and_claim_uv_process_v2(
+    client: httpx.AsyncClient,
+    settings: Settings,
+    external_asset_id: str,
+) -> dict[str, object]:
+    metadata = {
+        "external_asset_id": external_asset_id,
+        "options": {
+            "resolution": 2048,
+            "padding_px": 10,
+            "hard_edge_angle_degrees": 75,
+            "hidden_axis": "y+",
+            "texel_density_mode": "uniform",
+            "qa_profile": "pbr-v1",
+        },
+    }
+    created = await client.post(
+        "/api/v1/assets/uv/process",
+        headers={
+            "X-API-Key": "gpc_assetkey_secret",
+            "Idempotency-Key": external_asset_id,
+        },
+        files={
+            "asset": ("chair.source.fbx", b"fbx-v2", "application/octet-stream"),
+            "metadata": (None, json.dumps(metadata)),
+        },
+    )
+    assert created.status_code == 202, created.text
+    await register_asset_worker(client, settings)
+    job = await claim_asset_job(client, settings)
+    assert job["job_id"] == created.json()["job_id"]
+    assert job["job_type"] == "UV_PROCESS_V2"
+    return job
+
+
+def uv_process_v2_completion_files(
+    job: dict[str, object],
+    *,
+    blend_failures: list[object] | None = None,
+    fbx_failures: list[object] | None = None,
+    report_input: str = "chair.source.fbx",
+    empty_artifact: str | None = None,
+) -> dict[str, tuple[str, bytes, str]]:
+    stem = Path(str(job["source_filename"])).stem
+    blend_failures = blend_failures or []
+    fbx_failures = fbx_failures or []
+    blend_qa = {
+        "schema_version": "2",
+        "passed": not blend_failures,
+        "hard_failures": blend_failures,
+    }
+    fbx_qa = {
+        "schema_version": "2",
+        "passed": not fbx_failures,
+        "hard_failures": fbx_failures,
+    }
+    payloads: dict[str, tuple[str, bytes, str]] = {
+        "blend": (
+            f"{stem}_PBR_UV.blend",
+            b"blend-v2",
+            "application/octet-stream",
+        ),
+        "fbx": (
+            f"{stem}_PBR_UV.fbx",
+            b"fbx-result-v2",
+            "application/octet-stream",
+        ),
+        "report": (
+            f"{stem}_PBR_UV_report.json",
+            json.dumps({"input": report_input}).encode(),
+            "application/json",
+        ),
+        "qa": (
+            f"{stem}_PBR_UV_QA.json",
+            json.dumps(blend_qa).encode(),
+            "application/json",
+        ),
+        "fbx_qa": (
+            f"{stem}_PBR_UV_FBX_QA.json",
+            json.dumps(fbx_qa).encode(),
+            "application/json",
+        ),
+    }
+    if empty_artifact is not None:
+        filename, _, content_type = payloads[empty_artifact]
+        payloads[empty_artifact] = (filename, b"", content_type)
+    return payloads
+
+
+async def test_uv_process_v2_advisory_delivers_five_artifacts_with_warning(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(
+        tmp_path, uv_qa_enforcement="advisory"
+    ):
+        job = await create_and_claim_uv_process_v2(
+            client, settings, "asset:chair:uv:v2:advisory"
+        )
+        completed = await client.post(
+            f"/internal/v1/assets/jobs/{job['job_id']}/uv-v2-complete",
+            headers={"X-Asset-Lease": str(job["lease_token"])},
+            files=uv_process_v2_completion_files(
+                job,
+                blend_failures=["overlap_triangle_pairs=2"],
+                fbx_failures=[{"code": "FLIPPED_UV", "faces": 1}],
+            ),
+        )
+        assert completed.status_code == 200, completed.text
+        assert completed.json() == {
+            "accepted": True,
+            "status": "SUCCEEDED",
+            "quality_gate_passed": False,
+            "qa_enforcement": "advisory",
+            "delivered_with_warnings": True,
+        }
+
+        status = await client.get(
+            f"/api/v1/assets/jobs/{job['job_id']}",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        payload = status.json()
+        assert payload["status"] == "SUCCEEDED"
+        assert payload["delivery_ready"] is True
+        assert payload["artifacts_role"] == "delivery"
+        assert payload["error"] is None
+        assert {artifact["kind"] for artifact in payload["artifacts"]} == {
+            "blend",
+            "fbx",
+            "report",
+            "qa",
+            "fbx_qa",
+        }
+        warning = payload["options"]["qa_warning"]
+        assert warning == {
+            "code": "UV_QUALITY_GATE_WARNING",
+            "enforcement": "advisory",
+            "failed_qa": ["blend", "fbx_readback"],
+            "failures": [
+                "blend: overlap_triangle_pairs=2",
+                'fbx_readback: {"code": "FLIPPED_UV", "faces": 1}',
+            ],
+        }
+        events = await client.get(
+            f"/api/v1/assets/jobs/{job['job_id']}/events",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert events.status_code == 200
+        assert "asset.succeeded_with_warnings" in events.text
+        assert "UV_QUALITY_GATE_WARNING" in events.text
+        assert "overlap_triangle_pairs=2" in events.text
+
+
+async def test_uv_process_v2_strict_still_rejects_geometry_qa_failure(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        job = await create_and_claim_uv_process_v2(
+            client, settings, "asset:chair:uv:v2:strict"
+        )
+        completed = await client.post(
+            f"/internal/v1/assets/jobs/{job['job_id']}/uv-v2-complete",
+            headers={"X-Asset-Lease": str(job["lease_token"])},
+            files=uv_process_v2_completion_files(
+                job, blend_failures=["overlap_triangle_pairs=2"]
+            ),
+        )
+        assert completed.status_code == 422, completed.text
+        assert completed.json()["detail"] == {
+            "code": "ASSET_QA_FAILED",
+            "qa": "blend",
+        }
+        assert list((settings.asset_root / str(job["job_id"])).glob(".outputs-*")) == []
+
+
+@pytest.mark.parametrize(
+    ("completion_overrides", "expected_detail"),
+    [
+        (
+            {"report_input": "different-source.fbx"},
+            {"code": "ASSET_REPORT_INPUT_MISMATCH"},
+        ),
+        (
+            {"empty_artifact": "blend"},
+            {"code": "ASSET_ARTIFACT_EMPTY", "kind": "blend"},
+        ),
+    ],
+)
+async def test_uv_process_v2_advisory_keeps_integrity_failures_hard(
+    tmp_path: Path,
+    completion_overrides: dict[str, str],
+    expected_detail: dict[str, str],
+) -> None:
+    async for settings, client in prepared_asset_app(
+        tmp_path, uv_qa_enforcement="advisory"
+    ):
+        job = await create_and_claim_uv_process_v2(
+            client,
+            settings,
+            f"asset:chair:uv:v2:integrity:{next(iter(completion_overrides))}",
+        )
+        completed = await client.post(
+            f"/internal/v1/assets/jobs/{job['job_id']}/uv-v2-complete",
+            headers={"X-Asset-Lease": str(job["lease_token"])},
+            files=uv_process_v2_completion_files(job, **completion_overrides),
+        )
+        assert completed.status_code == 422, completed.text
+        assert completed.json()["detail"] == expected_detail
+        assert list((settings.asset_root / str(job["job_id"])).glob(".outputs-*")) == []
 
 
 async def test_retopology_audit_stops_at_review_gate_and_exposes_audit_artifacts(

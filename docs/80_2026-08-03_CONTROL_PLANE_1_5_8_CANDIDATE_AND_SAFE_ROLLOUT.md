@@ -21,6 +21,11 @@
 - UV 和拓扑审计不得被 Codex 状态误伤；只有依赖 Codex 的自动重拓扑领取需要健康门禁；
 - Web 必须区分 `HEALTHY`、`STALE`、认证失败和真实调用失败，统计只使用可调度节点；
 - 标准发布脚本必须同时构建 API、Scheduler、Asset API 和 Web，避免迁移后仍运行旧 Asset API。
+- Substance Baker 已成功但 PowerShell 5.1 暴露空 `ExitCode` 时不能误判失败；真实非零退出或缺少
+  `Bake finished successfully` marker 仍必须失败；
+- UV V2 在 `advisory` 策略下应交付完整五件套并保留质量告警，不能在 Worker 内提前 strict 退出；
+- Codex 运行时只管理批准的业务 Skill 子链接并保留 `CODEX_HOME/skills/.system`；挂载漂移必须以
+  `SKILL_MOUNT_INVALID` fail closed，而不是让任务运行后才报模糊执行错误。
 
 ## 2. Substance 恢复安全模型
 
@@ -83,7 +88,8 @@ Agent v4 与旧 Asset API 双向不兼容：旧 API 会拒绝 v4 新字段，新
 
 ## 6. 发布门禁与待回填证据
 
-以下源码门禁已在与生产网络隔离、源码只读挂载且最多 2 CPU/2 GiB 的容器中完成：
+以下源码门禁已在与生产网络隔离、源码只读挂载且最多 2 CPU/2 GiB 的容器中完成。这里的精确数量对应
+前序候选 `52ecad10…`，早于随后加入的 UV/PBR/Skill 修复，不能作为最终 release commit 的全量通过数：
 
 - [x] Python 全量单元/集成测试：`315 passed, 6 skipped`；
 - [x] Asset API 全量：`38 passed`；Substance 专项：`19 passed`；Agent、调度与 DB claim：`40 passed`；
@@ -91,6 +97,14 @@ Agent v4 与旧 Asset API 双向不兼容：旧 API 会拒绝 v4 新字段，新
 - [x] Web：`16 passed`，`vue-tsc`、ESLint、Prettier 和 Vite 生产构建全部通过；
 - [x] Ruff、Compose config 和 `git diff --check` 通过；PowerShell 仅有预期的 LF→CRLF 属性提示；
 - [x] 一次性 SQLite 从空库升级到 migration head `20260803_0012`；
+
+本轮新增源码已经配套增加 PBR 退出码真值表、UV advisory/strict/完整性、Skill 子链接 bootstrap/漂移
+探针和 Worker `1.2.4` 镜像身份测试；最终候选仍必须重新完成并回填：
+
+- [ ] 最终干净 release commit 上的全量 Python、Ruff、mypy 与 migration 测试；
+- [ ] 最终 Web 类型、lint、格式和生产构建；
+- [ ] Compose config 与 `git diff --check`；
+- [ ] 真实 PBR、UV advisory 和重拓扑 canary，以及全部 artifact SHA。
 
 以下发布和生产证据仍未完成，状态必须保持 `SOURCE_CANDIDATE_NOT_DEPLOYED`：
 
@@ -102,5 +116,8 @@ Agent v4 与旧 Asset API 双向不兼容：旧 API 会拒绝 v4 新字段，新
 Web 生产构建只有既有的第三方 PURE 注释和 `Dashboard` 约 504 KiB chunk 警告；没有类型、lint、格式或
 构建错误。当前环境没有可用 Browser 插件或仓库内 Playwright 配置，因此浏览器 DOM/响应式视觉回归仍
 需在 canary 前补做，不能用 Vite 构建替代真实浏览器验收。
+
+本轮三类失败的证据、精确候选合同、组件配套关系和回填表见
+[82_2026-08-03_ASSET_FAILURES_UV_ADVISORY_AND_RELEASE_ACCEPTANCE.md](82_2026-08-03_ASSET_FAILURES_UV_ADVISORY_AND_RELEASE_ACCEPTANCE.md)。
 
 本文件不构成 `FROZEN` 或 `PRODUCTION_ACCEPTED`，也不声称候选代码已经上线。

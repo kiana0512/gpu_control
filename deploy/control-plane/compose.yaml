@@ -65,6 +65,7 @@ services:
     environment:
       TMPDIR: /srv/gpu-control/assets
       ASSET_ROOT: ${ASSET_ROOT:-/srv/gpu-control/assets}
+      UV_QA_ENFORCEMENT: ${UV_QA_ENFORCEMENT:-advisory}
       RETOPOLOGY_QA_ENFORCEMENT: ${RETOPOLOGY_QA_ENFORCEMENT:-strict}
     volumes:
       - ${ASSET_ROOT:-/srv/gpu-control/assets}:/srv/gpu-control/assets
@@ -77,8 +78,11 @@ services:
     build:
       context: ../..
       dockerfile: apps/blender_worker/Dockerfile
-      args: {BLENDER_BASE_IMAGE: "${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}"}
-    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.2.2}
+      args:
+        BLENDER_BASE_IMAGE: ${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}
+        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.2.4}
+        GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
+    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.2.4}
     restart: unless-stopped
     environment:
       ASSET_API_URL: http://asset-api:8010
@@ -91,6 +95,7 @@ services:
       BLENDER_SKILL_VERSION: ${BLENDER_SKILL_VERSION:-asset-skills-2026.07.28}
       UV_SKILL_ROOT: /opt/codex/skills/blender-pbr-uv
       RETOPOLOGY_SKILL_ROOT: /opt/codex/skills/blender-retopology-compare-iterate
+      CODEX_SKILLS_ROOT: /opt/codex/skills
       RETOPOFLOW_ADDON_ROOT: /opt/blender-addons/RetopoFlow
       CODEX_BINARY: /usr/local/bin/codex
       CODEX_AUTH_SOURCE: /run/secrets/codex-auth.json

@@ -116,6 +116,12 @@ SUBSTANCE_BAKE_OUTPUTS = {
         "log": ("baker.log", "text/plain; charset=utf-8"),
     },
 }
+SUBSTANCE_BAKE_COMMAND_COUNTS = {
+    "ao-self-v1": 1,
+    "normal-dx-v1": 1,
+    "pbr-core-v1": 2,
+    "li3d-pbr-full-v2": 10,
+}
 SUBSTANCE_WORKER_ID = "asset-worker-3090-b-windows"
 SUBSTANCE_WORKER_ID_PREFIX = f"{SUBSTANCE_WORKER_ID}-"
 SUBSTANCE_GPU_NODE_ID = "worker-3090-b"
@@ -165,7 +171,7 @@ def fsync_completion_staging(staging: Path) -> None:
     finally:
         os.close(descriptor)
 SUBSTANCE_VERSION = "substance-15.1.0"
-SUBSTANCE_SKILL_VERSION = "substance-baker-2026.08.03-v4"
+SUBSTANCE_SKILL_VERSION = "substance-baker-2026.08.03-v5"
 SUBSTANCE_MAX_PARALLEL = 4
 RETOPOLOGY_AUDIT_ARTIFACTS = {
     "audit": ("retopology_audit.json", "application/json"),
@@ -3111,6 +3117,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 str(report_payload.get("input"))
             ).name != snapshot.source_filename:
                 raise HTTPException(422, detail={"code": "ASSET_REPORT_INPUT_MISMATCH"})
+            quality_failures: list[str] = []
+            failed_qa: list[str] = []
             for label, payload in (
                 ("blend", blend_qa_payload),
                 ("fbx_readback", fbx_qa_payload),
@@ -3120,31 +3128,95 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     raise HTTPException(
                         422, detail={"code": "ASSET_QA_INVALID", "qa": label}
                     )
-                if hard_failures or payload.get("passed") is not True:
+                passed = payload.get("passed")
+                if not isinstance(passed, bool):
                     raise HTTPException(
-                        422, detail={"code": "ASSET_QA_FAILED", "qa": label}
+                        422, detail={"code": "ASSET_QA_INVALID", "qa": label}
                     )
+                if hard_failures or not passed:
+                    failed_qa.append(label)
+                    if hard_failures:
+                        for failure in hard_failures:
+                            rendered = (
+                                failure
+                                if isinstance(failure, str)
+                                else json.dumps(
+                                    failure,
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                )
+                            )
+                            quality_failures.append(f"{label}: {rendered}")
+                    else:
+                        quality_failures.append(f"{label}: passed=false")
+            quality_failures = list(dict.fromkeys(quality_failures))
+            quality_passed = not failed_qa
+            advisory_warning = (
+                cfg.uv_qa_enforcement == "advisory" and not quality_passed
+            )
+            if not quality_passed and not advisory_warning:
+                raise HTTPException(
+                    422, detail={"code": "ASSET_QA_FAILED", "qa": failed_qa[0]}
+                )
             fsync_completion_staging(staging)
             job, worker = await lock_asset_completion_for_publish(snapshot, lease, db)
             cancelled = await cancel_at_completion_safe_point(db, job, worker)
             if cancelled is not None:
                 return cancelled
             db.add_all(created)
+            if advisory_warning:
+                job.options = {
+                    **job.options,
+                    "qa_warning": {
+                        "code": "UV_QUALITY_GATE_WARNING",
+                        "enforcement": cfg.uv_qa_enforcement,
+                        "failed_qa": failed_qa,
+                        "failures": quality_failures,
+                    },
+                }
             job.status = "SUCCEEDED"
             job.progress = 100
             job.stage = "SUCCEEDED"
-            job.stage_message = "PBR UV、FBX 回读与双重 QA 已通过并发布"
+            if quality_passed:
+                job.stage_message = "PBR UV、FBX 回读与双重 QA 已通过并发布"
+                completion_event = "asset.succeeded"
+            else:
+                job.stage_message = (
+                    "PBR UV 五件套已发布；几何 QA 未通过，告警与完整报告已保留"
+                )
+                completion_event = "asset.succeeded_with_warnings"
             job.estimated_remaining_seconds = 0
             job.last_progress_at = datetime.now(UTC)
             job.finished_at = datetime.now(UTC)
+            job.error_code = None
+            job.error_message = None
             job.lease_expires_at = None
             job.lease_token_hash = None
             if worker is not None:
                 worker.current_jobs = max(0, worker.current_jobs - 1)
-            await append_asset_event(db, job, details={"event": "asset.succeeded"})
+            await append_asset_event(
+                db,
+                job,
+                details={
+                    "event": completion_event,
+                    "warning_code": (
+                        "UV_QUALITY_GATE_WARNING" if advisory_warning else None
+                    ),
+                    "qa_enforcement": cfg.uv_qa_enforcement,
+                    "quality_gate_passed": quality_passed,
+                    "quality_failures": quality_failures,
+                    "failed_qa": failed_qa,
+                },
+            )
             await db.commit()
             committed = True
-            return {"accepted": True, "status": job.status}
+            return {
+                "accepted": True,
+                "status": job.status,
+                "quality_gate_passed": quality_passed,
+                "qa_enforcement": cfg.uv_qa_enforcement,
+                "delivered_with_warnings": advisory_warning,
+            }
         finally:
             if not committed and staging.exists():
                 shutil.rmtree(staging)
@@ -3262,15 +3334,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             tool = result_payload.get("tool") or {}
             execution = result_payload.get("execution") or {}
             output_hashes = result_payload.get("output_sha256") or {}
+            schema_version = result_payload.get("schema_version")
+            legacy_exit_evidence_valid = (
+                schema_version == 1 and execution.get("exit_code") == 0
+            )
+            commands = execution.get("commands")
+            expected_command_count = SUBSTANCE_BAKE_COMMAND_COUNTS[profile]
+            all_exit_codes_observed = isinstance(commands, list) and all(
+                isinstance(command, dict)
+                and command.get("exit_code_observed") is True
+                for command in commands
+            )
+            command_evidence_valid = (
+                schema_version == 2
+                and isinstance(commands, list)
+                and len(commands) == expected_command_count
+                and execution.get("command_count") == expected_command_count
+                and execution.get("success_marker_verified") is True
+                and all(
+                    isinstance(command, dict)
+                    and command.get("success_marker_present") is True
+                    and isinstance(command.get("exit_code_observed"), bool)
+                    and (
+                        command.get("exit_code") == 0
+                        if command.get("exit_code_observed") is True
+                        else command.get("exit_code") is None
+                    )
+                    for command in commands
+                )
+                and execution.get("exit_code_observed")
+                is all_exit_codes_observed
+                and execution.get("exit_code")
+                == (0 if all_exit_codes_observed else None)
+                and log_text.count("Bake finished successfully")
+                >= expected_command_count
+            )
             if (
-                result_payload.get("schema_version") != 1
+                not (legacy_exit_evidence_valid or command_evidence_valid)
                 or result_payload.get("job_id") != snapshot.id
                 or result_payload.get("status") != "SUCCEEDED"
                 or result_payload.get("profile") != profile
                 or tool.get("version") != "15.1.0"
                 or tool.get("exe_sha256")
                 != "7B920FC6EE6005FAAB072C9280B1772F03D694FF04AA91C5A4DB516F7C9FEC6D"
-                or execution.get("exit_code") != 0
                 or execution.get("comfyui_cache_policy")
                 != "no_explicit_eviction_process_preserved"
                 or execution.get("comfyui_container_restarted") is not False

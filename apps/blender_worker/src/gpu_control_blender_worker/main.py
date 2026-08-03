@@ -18,6 +18,10 @@ from PIL import Image, ImageDraw
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from gpu_control_blender_worker.bootstrap import (
+    BootstrapError,
+    validate_codex_skill_link,
+)
 from packages.gpu_control_core.security import sign_agent_request
 
 LOG = logging.getLogger("gpu_control_blender_worker")
@@ -122,6 +126,17 @@ async def heartbeat(
     codex_health: dict[str, Any],
     retopoflow_health: dict[str, Any],
 ) -> None:
+    skill_mount_valid = update_codex_skill_mount_health(settings, codex_health)
+    # A repaired exact Skill link is necessary but not sufficient to call the
+    # Codex runtime healthy.  Re-run the authenticated exec probe immediately
+    # while the worker is idle instead of retaining a stale failure until the
+    # normal 30-minute probe interval elapses.
+    if (
+        skill_mount_valid
+        and running == 0
+        and codex_health.get("codex_probe_status") == "RECOVERY_PENDING"
+    ):
+        await run_codex_health_probe(settings, codex_health)
     payload = {
         "worker_id": settings.asset_worker_id,
         "node_id": settings.asset_node_id,
@@ -173,6 +188,54 @@ def codex_environment(settings: WorkerSettings) -> dict[str, str]:
     if environment.get("SSL_CERT_FILE") == "/run/certs/lan-ca.crt":
         environment.pop("SSL_CERT_FILE")
     return environment
+
+
+def validate_codex_business_skill_links(
+    settings: WorkerSettings, codex_home: Path | None = None
+) -> None:
+    """Require exact, managed child links for both business Skills."""
+    home = codex_home or settings.codex_runtime_home
+    validate_codex_skill_link(home, settings.uv_skill_root)
+    validate_codex_skill_link(home, settings.retopology_skill_root)
+
+
+def validate_job_skill_contract(settings: WorkerSettings, job_type: str) -> None:
+    """Recheck the exact relevant Skill link and file manifest before each job."""
+
+    approved_skill: Path | None = None
+    if job_type in {"UV_UNWRAP", "UV_PROCESS_V2"}:
+        approved_skill = settings.uv_skill_root
+    elif job_type in {
+        "RETOPOLOGY_AUDIT",
+        "RETOPOLOGY_PROCESS_V1",
+    }:
+        approved_skill = settings.retopology_skill_root
+    if approved_skill is not None:
+        validate_codex_skill_link(settings.codex_runtime_home, approved_skill)
+
+
+def update_codex_skill_mount_health(
+    settings: WorkerSettings, health: dict[str, Any]
+) -> bool:
+    """Fail the reported probe immediately when a business Skill drifts."""
+    try:
+        validate_codex_business_skill_links(settings)
+    except BootstrapError:
+        health.update(
+            codex_probe_status="FAILED",
+            codex_error_code="SKILL_MOUNT_INVALID",
+            codex_last_checked_at=datetime.now(UTC).isoformat(),
+            codex_probe_latency_ms=None,
+        )
+        return False
+    if health.get("codex_error_code") == "SKILL_MOUNT_INVALID":
+        health.update(
+            codex_probe_status="RECOVERY_PENDING",
+            codex_error_code=None,
+            codex_last_checked_at=datetime.now(UTC).isoformat(),
+            codex_probe_latency_ms=None,
+        )
+    return True
 
 
 def classify_codex_error(stderr: bytes) -> tuple[str, str]:
@@ -240,14 +303,23 @@ async def inspect_codex_runtime(settings: WorkerSettings) -> dict[str, Any]:
             "codex_last_success_at": None,
             "codex_error_code": "BINARY_UNAVAILABLE",
         }
+    codex_home: Path | None = None
     try:
-        auth_path = prepare_codex_runtime_home(settings) / "auth.json"
+        codex_home = prepare_codex_runtime_home(settings)
+        auth_path = codex_home / "auth.json"
         auth = json.loads(auth_path.read_text("utf-8"))
         if not isinstance(auth, dict) or not auth:
             raise ValueError("empty auth object")
         auth_status = "PRESENT"
     except (OSError, ValueError, json.JSONDecodeError):
         auth_status = "INVALID"
+    skill_mount_valid = False
+    if codex_home is not None:
+        try:
+            validate_codex_business_skill_links(settings, codex_home)
+            skill_mount_valid = True
+        except BootstrapError:
+            pass
     try:
         process = await asyncio.create_subprocess_exec(
             str(binary),
@@ -269,6 +341,16 @@ async def inspect_codex_runtime(settings: WorkerSettings) -> dict[str, Any]:
             "codex_last_success_at": None,
             "codex_error_code": "VERSION_FAILED",
         }
+    if not skill_mount_valid:
+        return {
+            "codex_cli_version": version,
+            "codex_auth_status": auth_status,
+            "codex_probe_status": "FAILED",
+            "codex_probe_latency_ms": None,
+            "codex_last_checked_at": checked_at,
+            "codex_last_success_at": None,
+            "codex_error_code": "SKILL_MOUNT_INVALID",
+        }
     return {
         "codex_cli_version": version,
         "codex_auth_status": auth_status,
@@ -288,10 +370,22 @@ async def run_codex_health_probe(
     checked_at = datetime.now(UTC).isoformat()
     process: asyncio.subprocess.Process | None = None
     try:
-        auth_path = prepare_codex_runtime_home(settings) / "auth.json"
+        codex_home = prepare_codex_runtime_home(settings)
+        auth_path = codex_home / "auth.json"
         auth = json.loads(auth_path.read_text("utf-8"))
         if not isinstance(auth, dict) or not auth:
             raise ValueError("empty auth object")
+        try:
+            validate_codex_business_skill_links(settings, codex_home)
+        except BootstrapError:
+            health.update(
+                codex_auth_status="PRESENT",
+                codex_probe_status="FAILED",
+                codex_error_code="SKILL_MOUNT_INVALID",
+                codex_last_checked_at=checked_at,
+                codex_probe_latency_ms=int((time.monotonic() - started) * 1000),
+            )
+            return
         with tempfile.TemporaryDirectory(prefix="codex-health-") as temporary:
             root = Path(temporary)
             result = root / "result.txt"
@@ -336,6 +430,17 @@ async def run_codex_health_probe(
                     codex_probe_latency_ms=int((time.monotonic() - started) * 1000),
                 )
                 return
+        try:
+            validate_codex_business_skill_links(settings, codex_home)
+        except BootstrapError:
+            health.update(
+                codex_auth_status="PRESENT",
+                codex_probe_status="FAILED",
+                codex_error_code="SKILL_MOUNT_INVALID",
+                codex_last_checked_at=checked_at,
+                codex_probe_latency_ms=int((time.monotonic() - started) * 1000),
+            )
+            return
     except TimeoutError:
         if process is not None:
             await terminate_subprocess(process)
@@ -677,15 +782,10 @@ async def run_retopology_agent_plan(
         codex_home = prepare_codex_runtime_home(settings)
     except OSError as exc:
         raise RuntimeError("Codex CLI persistent auth is unavailable") from exc
-    skill_source = settings.retopology_skill_root.parent
-    skill_link = codex_home / "skills"
-    if not skill_link.exists() and not skill_link.is_symlink():
-        try:
-            os.symlink(skill_source, skill_link, target_is_directory=True)
-        except FileExistsError:
-            pass
-    if not skill_link.is_symlink() or skill_link.resolve() != skill_source.resolve():
-        raise RuntimeError("Codex CLI persistent skill mount is invalid")
+    try:
+        validate_codex_skill_link(codex_home, settings.retopology_skill_root)
+    except BootstrapError as exc:
+        raise RuntimeError("Codex CLI persistent skill mount is invalid") from exc
 
     schema = {
         "type": "object",
@@ -899,6 +999,34 @@ async def wait_for_blender(
     return output
 
 
+def uv_qa_blender_arguments(
+    qa_adapter: Path,
+    source: Path,
+    qa_path: Path,
+    job_type: str,
+) -> list[str]:
+    arguments = [
+        "--background",
+        "--factory-startup",
+        "--disable-autoexec",
+        "--python-exit-code",
+        "1",
+        "--python",
+        str(qa_adapter),
+        "--",
+        "--input",
+        str(source),
+        "--output",
+        str(qa_path),
+    ]
+    # UV_PROCESS_V2 must upload the measured QA reports even when geometry
+    # quality does not pass. Asset API is the authoritative strict/advisory
+    # delivery gate. The legacy UV_UNWRAP contract remains fail-fast.
+    if job_type != "UV_PROCESS_V2":
+        arguments.append("--strict")
+    return arguments
+
+
 async def run_uv_skill(
     client: httpx.AsyncClient,
     settings: WorkerSettings,
@@ -979,19 +1107,7 @@ async def run_uv_skill(
     ):
         process = await start_blender(
             settings,
-            "--background",
-            "--factory-startup",
-            "--disable-autoexec",
-            "--python-exit-code",
-            "1",
-            "--python",
-            str(qa_adapter),
-            "--",
-            "--input",
-            str(source),
-            "--output",
-            str(qa_path),
-            "--strict",
+            *uv_qa_blender_arguments(qa_adapter, source, qa_path, job_type),
         )
         await wait_for_blender(
             client,
@@ -1477,6 +1593,7 @@ async def process_job(
     job_id = str(job["job_id"])
     lease = str(job["lease_token"])
     lease_headers = {"X-Asset-Lease": lease}
+    validate_job_skill_contract(settings, str(job["job_type"]))
     with tempfile.TemporaryDirectory(prefix=f"asset-{job_id}-") as temporary:
         root = Path(temporary)
         input_path = root / str(job["source_filename"])
@@ -1589,6 +1706,11 @@ async def process_job(
                 files=files,
                 timeout=3600,
             )
+            if completed.is_error and job["job_type"] == "UV_PROCESS_V2":
+                raise RuntimeError(
+                    "UV_PROCESS_V2 completion rejected "
+                    f"with HTTP {completed.status_code}: {completed.text[-3000:]}"
+                )
             completed.raise_for_status()
         finally:
             for handle in handles:
@@ -1602,16 +1724,23 @@ async def execute_job(
         await process_job(client, settings, job)
     except Exception as exc:
         diagnostic = str(exc)[-4000:] or type(exc).__name__
-        error_code = (
-            "UV_QA_FAILED"
-            if job.get("job_type") in {"UV_UNWRAP", "UV_PROCESS_V2"}
-            and (
-                "BLENDER_PBR_UV_QA" in diagnostic
-                or "hard_failures" in diagnostic
-                or "degenerate_uv_faces" in diagnostic
+        if isinstance(exc, BootstrapError) or any(
+            marker in diagnostic
+            for marker in (
+                "Skill script SHA-256 mismatch",
+                "persistent skill mount is invalid",
             )
-            else "BLENDER_EXECUTION_FAILED"
-        )
+        ):
+            error_code = "SKILL_MOUNT_INVALID"
+        elif job.get("job_type") in {"UV_UNWRAP", "UV_PROCESS_V2"} and (
+            "BLENDER_PBR_UV_QA" in diagnostic
+            or "ASSET_QA_FAILED" in diagnostic
+            or "hard_failures" in diagnostic
+            or "degenerate_uv_faces" in diagnostic
+        ):
+            error_code = "UV_QA_FAILED"
+        else:
+            error_code = "BLENDER_EXECUTION_FAILED"
         try:
             response = await client.post(
                 f"/internal/v1/assets/jobs/{job['job_id']}/fail",

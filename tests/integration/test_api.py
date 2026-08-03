@@ -1454,7 +1454,7 @@ async def test_admin_nodes_selects_linux_codex_worker_not_newer_windows_baker(
                         hostname="LILITHGAMES3",
                         status="ONLINE",
                         blender_version="substance-15.1.0",
-                        skill_version="substance-baker-2026.08.03-v4",
+                        skill_version="substance-baker-2026.08.03-v5",
                         max_concurrency=1,
                         current_jobs=0,
                         cpu_count=64,
