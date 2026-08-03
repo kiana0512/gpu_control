@@ -5,29 +5,31 @@
 面向两台 RTX 3090 工作节点和一台 RTX 4090 控制中心的统一任务调度、运维与可观测平台；GPU
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
-生产在线版本：`1.5.7`，控制面镜像统一绑定源码
-`11844e7f2ff5ea33db7e073b3f2af5c03b22085a`，最后核验的生产数据库修订为
-`20260730_0011`。当前发布状态为 `DEPLOYED_NOT_ACCEPTED`：四个控制面服务已在零活动任务窗口完成
-热更新并通过健康、版本和单主锁核对，但固定 B 系列速度基准、完整故障注入、registry/SBOM 证据及
-连续七天观察尚未全部完成，不能写成 `FROZEN` 或 `PRODUCTION_ACCEPTED`。三机 ComfyUI 固定镜像仍为
-`projects-0.2.3`。GPU 推理平面继续提供三机图片 API 与分布式序列帧调度；独立 CPU Asset
-平面提供 Blender PBR UV、AI 重拓扑和 Windows Substance 烘焙 API。当前生产配置
-`RETOPOLOGY_QA_ENFORCEMENT=advisory`：几何质量不达标会保留告警和诊断报告，但通过输入身份、
-manifest、文件完整性与 SHA 硬门禁的 BLEND/FBX 仍以正式 `blend`/`fbx` 交付；源文件保护与
-完整性失败仍拒绝交付。两个平面使用独立队列与租约，生产任务优先于测试任务。
+当前是分组件生产基线，不能用一个统一的“1.5.8 已全量上线”概括：GPU Control API、
+Scheduler 和 Web 仍运行 `1.5.7`；Asset API 已滚动到 `1.5.8`，生产镜像 source revision 为
+`7f7fd197f86288ffbeeab622cc39199335e22c61`；数据库已升级到 `20260803_0012`。当前总状态为
+`DEPLOYED_NOT_ACCEPTED`：控制面统一版本、registry digest/SBOM、artifact API 三重 SHA、固定基准、
+完整故障矩阵和连续七天观察尚未闭环，禁止标记 `FROZEN` 或 `PRODUCTION_ACCEPTED`。
 
-`1.5.7` 已修复 PBR 的 3090-B 下一轮预约续租；Windows Baker v3 保持 ComfyUI 进程且不主动调用
-`/free` 清缓存，并在 WebUI 展示真实等待原因。零任务滚动发布后，单次合成 PBR canary 已以正式
-12 项 artifact、逐件 SHA 和容器连续性证据通过；设计边界、发布证据与回滚门禁见
-`docs/77_2026-08-03_PBR_NEXT_TURN_AND_COMFY_CACHE_RETENTION_1_5_7.md`。
+生产 `UV_QA_ENFORCEMENT=advisory` 和 `RETOPOLOGY_QA_ENFORCEMENT=advisory` 已生效：几何质量不达标
+只保留告警与诊断，通过输入身份、manifest、文件完整性和 SHA 硬门禁的正式制品仍交付；
+缺失、空文件、非法 JSON、身份、租约或 SHA 失败仍硬拒绝。Linux Blender Worker 均使用 tag
+`1.2.4`；4090 Worker revision 为 `7f7fd197…`，3090-A/3090-B 为 `e2cab4c8…`，但 Worker
+相关源码和三项批准 Skill 文件 SHA 已逐节点校验一致；统一 OCI image digest/SBOM 仍待归档。
 
-`1.5.8` 当前仅为源码候选，尚未迁移或部署。它收紧 Substance 租约恢复的宿主进程/后续 ComfyUI
-心跳证据，增加 Windows Agent 单实例锁和 Worker nonce 防重放，并统一 Codex 新鲜度门禁与 Web 展示。
-本轮工作区又加入 PBR 空 ExitCode 假失败修复、UV V2 advisory 五件套告警交付，以及保留
-`skills/.system` 的 Codex 业务 Skill 子链接 bootstrap；最终 release commit、全量测试、镜像身份和
-真实 canary 尚待回填。生产任务清空并完成 drain/canary 前继续运行 1.5.7；候选验证与强制升级顺序见
-`docs/80_2026-08-03_CONTROL_PLANE_1_5_8_CANDIDATE_AND_SAFE_ROLLOUT.md`，故障证据与发布验收表见
+3090-B 上四个 Windows Substance Baker Agent 已更新为
+`substance-baker-2026.08.03-v5`，均为 `ONLINE/HEALTHY`，用 PBR 成功 marker、逐命令证据和制品完整性
+消除 PowerShell 空 `ExitCode` 假失败，但不放行真实非零退出或缺少 marker。三节点 ComfyUI 仍是同一
+`projects-0.2.3` 镜像，健康、`RestartCount=0`；本轮未停止/重启 ComfyUI，也未调用 `/free` 或
+清理模型缓存。本轮没有注入额外合成流量，而是使用现有真实任务完成 PBR、UV warning、UV clean
+以及连续两笔自动重拓扑 canary；均成功交付，质量未达项仅以 advisory 告警返回。分阶段发布、回滚与剩余门禁见
+`docs/80_2026-08-03_CONTROL_PLANE_1_5_8_CANDIDATE_AND_SAFE_ROLLOUT.md`，故障证据与验收表见
 `docs/82_2026-08-03_ASSET_FAILURES_UV_ADVISORY_AND_RELEASE_ACCEPTANCE.md`。
+
+仓库下一不可变候选为控制面 `1.5.9`、Blender Worker `1.2.5`。它补齐 PBR/Blender 大文件哈希与
+最终 multipart 上传期间的租约续期，并把五个一方镜像纳入同一 40 位 Git SHA、镜像身份和 SBOM
+门禁。该候选只有在三节点空闲时才允许逐节点滚动；真实六 API canary、递增压力、精确清场和回滚
+证据完成前，不能把源码候选写成已部署版本。
 
 六 API、120 VU 的独立 R8 有界压力已以退出码 0 完成：`39,778` 个 HTTP 请求、0 失败，六 API、
 七项阈值、`120/120` 清场、三 GPU 饱和和 379 个连续遥测样本全部通过。该结果只验收综合有界压力，

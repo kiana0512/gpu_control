@@ -2,17 +2,20 @@
 
 本页是仓库文档导航。今天部署时不要从 30 多份文档逐一翻找，按下面的“现场主线”执行即可；其余文档是遇到具体问题时的细节手册。
 
-当前生产基线：GPU Control `1.5.7`、源码 revision
-`11844e7f2ff5ea33db7e073b3f2af5c03b22085a`、数据库 `20260730_0011`、ComfyUI
-`projects-0.2.3`。四个控制面服务已在零任务窗口完成热更新，状态为
-`DEPLOYED_NOT_ACCEPTED`；固定 B 系列速度基准、故障注入、registry/SBOM 和七天观察未闭环前，禁止
-标记 `FROZEN / PRODUCTION_ACCEPTED`。最近一次清场核对时三个 GPU 节点在线、活动任务为 0，具体
-状态仍必须以运行时 API/数据库为准。
-断电或重启后必须重新执行只读健康检查，不能把本文档导航当作实时监控。Retopology 当前为
-advisory 质量模式：质量不达标保留告警，但通过身份、manifest、完整性和 SHA 硬门禁的正式
-BLEND/FBX 仍交付；不存在人工发布门。
-生产 UV 当前仍是 strict；UV advisory 五件套告警交付只存在于 1.5.8/Worker 1.2.4 源码候选，完成
-82 号记录的滚动发布和真实 canary 前不能写成已上线。
+当前是分组件生产基线：GPU Control API、Scheduler 和 Web 仍为 `1.5.7`；Asset API 已更新到
+`1.5.8`，生产镜像 revision 为 `7f7fd197f86288ffbeeab622cc39199335e22c61`；数据库为
+`20260803_0012`。总状态为 `DEPLOYED_NOT_ACCEPTED`，不能写成整套 1.5.8 控制面已部署。Linux
+Blender Worker 均使用 tag `1.2.4`；4090 revision 为 `7f7fd197…`，3090-A/3090-B 为
+`e2cab4c8…`，但 Worker 相关源码和批准 Skill SHA 已逐节点核对一致；统一 OCI image digest/SBOM
+仍待归档。
+
+生产 UV 和 Retopology 都是 `advisory`：几何质量告警不阻断正式制品交付，但身份、manifest、
+文件完整性、租约和 SHA 仍为硬门禁。四个 Windows Substance Baker Agent v5 均为
+`ONLINE/HEALTHY`。三节点 ComfyUI 使用同一 `projects-0.2.3` 镜像，健康、`RestartCount=0`，本轮未
+停止/重启 ComfyUI，也未清理模型缓存。没有注入额外合成流量；现有真实任务已完成 PBR、UV warning、
+UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重 SHA、registry/SBOM、固定基准、
+完整故障矩阵和七天观察未完成前，禁止标记
+`FROZEN / PRODUCTION_ACCEPTED`。断电或重启后仍必须以运行时 API/数据库只读检查为准。
 
 ## 1. 当前现场主线
 
@@ -53,9 +56,9 @@ BLEND/FBX 仍交付；不存在人工发布门。
 35. `docs/77_2026-08-03_PBR_NEXT_TURN_AND_COMFY_CACHE_RETENTION_1_5_7.md`：1.5.7 的 PBR 下一轮预约续租修复、Windows Baker v3、ComfyUI 不显式清缓存合同、Web 等待原因、零任务发布、真实 PBR canary 和回滚证据；当前为 `DEPLOYED_NOT_ACCEPTED`。
 36. `docs/78_2026-08-03_SUBSTANCE_LONG_LEASE_AND_AGENT_RECOVERY_HOTFIX.md`：Substance 长烘焙租约续期、Windows Agent 计划任务自恢复、3090-B 安全排空与 ComfyUI 连续性证据。
 37. `docs/79_2026-08-03_CODEX_PER_NODE_AUTH_AND_PROBE_RECOVERY.md`：三节点独立持久化 Codex 认证、Worker 1.2.3 滚动更新、真实探针恢复、镜像身份限制和回滚证据。
-38. `docs/80_2026-08-03_CONTROL_PLANE_1_5_8_CANDIDATE_AND_SAFE_ROLLOUT.md`：1.5.8 源码候选的 Substance 两阶段恢复、Agent 单实例、nonce 防重放、Codex 新鲜度、离线验证和严格发布顺序；当前未部署。
-39. `docs/81_2026-08-03_ASSET_V4_UV_RETOPOLOGY_LATEST_HANDOFF.md`：Li3D/动画管家当前 UV 与自动重拓扑唯一最新应用端合同，包含 CA、幂等、仅 BLEND、QA advisory、正式 BLEND/FBX、SSE、SHA 和 1.5.8 未部署边界。
-40. `docs/82_2026-08-03_ASSET_FAILURES_UV_ADVISORY_AND_RELEASE_ACCEPTANCE.md`：PBR 空 ExitCode 假失败、UV V2 advisory 五件套交付、Codex Skill 子链接修复的候选事实、发布顺序、canary 与证据回填表；当前未部署。
+38. `docs/80_2026-08-03_CONTROL_PLANE_1_5_8_CANDIDATE_AND_SAFE_ROLLOUT.md`：1.5.8 分阶段部署记录；Asset API/DB/Worker/Agent 已局部上线，API/Scheduler/Web 仍为 1.5.7，三 Worker 镜像身份待对齐。
+39. `docs/81_2026-08-03_ASSET_V4_UV_RETOPOLOGY_LATEST_HANDOFF.md`：Li3D/动画管家当前 UV 与自动重拓扑唯一最新应用端合同，包含 CA、幂等、仅 BLEND、双 advisory、正式制品、SSE、SHA 和当前分组件部署边界。
+40. `docs/82_2026-08-03_ASSET_FAILURES_UV_ADVISORY_AND_RELEASE_ACCEPTANCE.md`：PBR 空 ExitCode 假失败、UV advisory 五件套交付、Codex Skill 子链接修复的局部生产事实、剩余 canary 与证据回填表。
 
 3090-A 的已完成部署、动态心跳、Web 修复和真实任务证据见
 `docs/34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md`。
@@ -99,9 +102,9 @@ BLEND/FBX 仍交付；不存在人工发布门。
 | 1.5.7 PBR 下一轮与缓存保持 | `77_2026-08-03_PBR_NEXT_TURN_AND_COMFY_CACHE_RETENTION_1_5_7.md` | 修复 3090-B 预约续租未提交造成的 PBR 饥饿；v3 不 stop/start/free、连续性证据、Web 解释、零任务发布与真实 canary 已完成；当前 `DEPLOYED_NOT_ACCEPTED` |
 | Substance 长租约与 Agent 恢复 | `78_2026-08-03_SUBSTANCE_LONG_LEASE_AND_AGENT_RECOVERY_HOTFIX.md` | 长烘焙持续续租、四个 Windows Agent 自恢复、安全排空和不重启 ComfyUI 的生产热修复证据 |
 | Codex 三节点探针恢复 | `79_2026-08-03_CODEX_PER_NODE_AUTH_AND_PROBE_RECOVERY.md` | 每节点独立可写认证、Worker 1.2.3、三机真实探针、构建来源限制与回滚；当前 `DEPLOYED_NOT_ACCEPTED` |
-| 1.5.8 候选与安全发布 | `80_2026-08-03_CONTROL_PLANE_1_5_8_CANDIDATE_AND_SAFE_ROLLOUT.md` | Substance 两阶段恢复、Agent v4 单实例、nonce 防重放、Codex 新鲜度与应用 CA 诊断；源码已验证但生产任务清空前不部署 |
-| Asset V4 UV/自动拓扑最新合同 | `81_2026-08-03_ASSET_V4_UV_RETOPOLOGY_LATEST_HANDOFF.md` | 当前 1.5.7/Worker 1.2.3 与下一候选的双层合同：CA、幂等、仅 BLEND、生产 strict UV、候选 UV advisory、advisory 拓扑、正式制品与 SHA；未部署边界单列 |
-| Asset 失败修复与发布验收 | `82_2026-08-03_ASSET_FAILURES_UV_ADVISORY_AND_RELEASE_ACCEPTANCE.md` | PBR 假失败、UV advisory 五件套、Codex Skill 子链接的根因和源码候选；配套版本、强制顺序、真实 canary、回滚及待回填证据 |
+| 1.5.8 分阶段发布 | `80_2026-08-03_CONTROL_PLANE_1_5_8_CANDIDATE_AND_SAFE_ROLLOUT.md` | Asset API/DB/Worker/Agent 局部部署、ComfyUI 连续性、三 Worker 身份差异与剩余验收门禁 |
+| Asset V4 UV/自动拓扑最新合同 | `81_2026-08-03_ASSET_V4_UV_RETOPOLOGY_LATEST_HANDOFF.md` | 当前分组件基线：CA、幂等、仅 BLEND、UV/拓扑双 advisory、正式制品、SSE、SHA 和真实 canary |
+| Asset 失败修复与发布验收 | `82_2026-08-03_ASSET_FAILURES_UV_ADVISORY_AND_RELEASE_ACCEPTANCE.md` | PBR 假失败、UV advisory 五件套、Codex Skill 子链接与真实 canary；统一 OCI/SBOM、API 三重 SHA 与观察待回填 |
 | 分角色安装 | `03`—`11` | 网络、准备、4090、3090、镜像、模型、工作流、首次部署 |
 | 使用手册 | `12_WEB_ADMIN_GUIDE.md`、`13_PUBLIC_API_GUIDE.md` | 管理后台和业务 API |
 | 运维 | `15`—`22` | 日志、告警、备份、升级、故障、容量和 FAQ |

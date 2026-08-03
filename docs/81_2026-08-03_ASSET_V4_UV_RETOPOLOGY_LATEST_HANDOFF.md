@@ -1,6 +1,6 @@
 # Li3D Asset V4：UV 与自动重拓扑最新应用端对接合同
 
-文档版本：`V4.2026-08-03-r2`
+文档版本：`V4.2026-08-03-r3`
 
 生效日期：2026-08-03（Asia/Singapore）
 
@@ -12,14 +12,14 @@
 
 | 项目 | 当前事实 |
 | --- | --- |
-| 生产控制面 | GPU Control `1.5.7`，source `11844e7f2ff5ea33db7e073b3f2af5c03b22085a` |
-| 生产数据库 | `20260730_0011` |
-| Linux Asset Worker | 三节点均为 `li3d/blender-worker:1.2.3` |
-| 生产 UV QA 策略 | strict；QA 未通过仍会失败，advisory 候选尚未部署 |
+| 生产控制面 | API/Scheduler/Web 仍为 `1.5.7`；Asset API 为 `1.5.8`，image revision `7f7fd197f86288ffbeeab622cc39199335e22c61` |
+| 生产数据库 | `20260803_0012` |
+| Linux Asset Worker | 三节点 tag 均为 `1.2.4`；镜像 revision 不同，但 Worker 相关源码与三项批准 Skill 文件 SHA 一致；统一 OCI image digest/SBOM 待归档 |
+| 生产 UV QA 策略 | `UV_QA_ENFORCEMENT=advisory` |
 | 重拓扑 QA 策略 | `RETOPOLOGY_QA_ENFORCEMENT=advisory` |
-| 发布状态 | `DEPLOYED_NOT_ACCEPTED`，尚未完成七天观察和全部联合基准 |
-| 1.5.8 | 前序候选为 `52ecad10cb41589e78ba49ff6a0cf526e6b97d6f`；本轮 UV/PBR/Skill 修复的最终 release commit 待生成，**尚未部署** |
-| Worker 1.2.4 / Agent v4 | 源码候选，**尚未部署**；生产仍为 Worker 1.2.3 / Agent v3 |
+| 发布状态 | `DEPLOYED_NOT_ACCEPTED`；五条真实任务（PBR、两条 UV、两条重拓扑）已成功，但尚未统一全控制面版本并完成长期观察 |
+| 1.5.8 | 仅 Asset API 局部部署；不代表整套控制面已升级 |
+| Worker 1.2.4 / Agent v5 | Linux Worker 与四个 Baker Agent v5 已滚动；统一 OCI image digest/SBOM 和已安装脚本 SHA 待归档 |
 
 本文件取代旧 58/60 号文档作为应用端最新 UV/自动重拓扑合同，但不改写旧文档中的历史测试和发布
 事实。最重要的变化是：
@@ -27,13 +27,14 @@
 - 自动重拓扑当前只接受一个 `.blend` 项目；旧文档中的 FBX/OBJ/GLB 提交方式已失效；
 - `target_faces` 服务端硬范围为 `50～5,000,000`；
 - 生产重拓扑采用 `advisory`：几何 QA 告警不再隐藏用户需要的 BLEND/FBX；
-- 生产 UV 当前仍执行严格双 QA；1.5.8 + Worker 1.2.4 候选增加独立的 UV `advisory`，部署后
-  几何 QA 未通过也会返回 BLEND、FBX 和三份报告并附带告警；
+- 生产 UV 已为 `advisory`；几何 QA 未通过仍返回 BLEND、FBX 和三份报告并附带告警；
+- 真实 PBR、UV warning、UV clean 与连续两笔重拓扑任务均已成功，告警和正式制品按合同交付；
 - 当前 Li3D 页面提示“公司 CA 未配置或文件不可用”属于应用端 TLS 信任包问题，不是 GPU/Worker 授权失败；
 - Asset CPU 队列与 ComfyUI GPU 推理队列隔离，UV 不应因 Codex 或 ComfyUI 状态被应用端禁用。
 
-本文件同时写明“生产当前事实”和“下一候选合同”。应用可以提前兼容
-`UV_QUALITY_GATE_WARNING`，但在 82 号记录中的发布证据回填前，不得把 UV advisory 当成已上线能力。
+应用端应把 `UV_QUALITY_GATE_WARNING` 显示为“已交付·质量告警”，不得隐藏五件套下载。
+当前仍为 `DEPLOYED_NOT_ACCEPTED`；上述五条真实任务验收已完成，但控制面统一、API artifact
+三重 SHA、统一 OCI image digest/SBOM、回滚和观察未闭环前不构成全量 SLA 验收。
 
 ## 2. 服务地址、CA 与身份认证
 
@@ -178,10 +179,8 @@ curl --fail-with-body --show-error \
 3. 重新导入导出的 FBX；
 4. FBX 回读 UV QA。
 
-生产 1.5.7 当前仍为严格门禁。任何 `hard_failures` 非空或任一 QA 的 `passed != true`，任务都会失败。
-
-1.5.8 + Worker 1.2.4 候选把 V2 的质量决策统一收敛到 Asset API，并增加
-`UV_QA_ENFORCEMENT=strict|advisory`：
+生产 Asset API 1.5.8 + Worker 1.2.4 已把 V2 质量决策收敛到 Asset API，并使用
+`UV_QA_ENFORCEMENT=advisory`：
 
 | 场景 | job status | warning | 五件套 |
 | --- | --- | --- | --- |
@@ -190,8 +189,7 @@ curl --fail-with-body --show-error \
 | QA 未通过、`strict` | `FAILED` | `UV_QA_FAILED` | 不发布 |
 | 文件/身份/JSON/租约/SHA 完整性失败 | `4xx` / `FAILED` | 不是质量 warning | 不发布 |
 
-候选源码默认仍是 `strict`；只有完成 Asset API 与 Worker 的配套滚动更新并显式设置
-`UV_QA_ENFORCEMENT=advisory` 后，第二行才成为生产行为。不能只改配置或只换一端。
+但完整性门禁不随 advisory 放宽；非法/非对象 QA JSON、空制品、身份、租约或 SHA 错误仍硬失败。
 
 成功（包括 advisory 告警成功）固定返回：
 
@@ -526,23 +524,22 @@ SHA256(response body) == artifact.sha256 == X-Artifact-SHA256
 | `404 ASSET_JOB_NOT_FOUND` | 当前身份无权访问或 job 不存在 |
 | `409 ASSET_NOT_COMPLETE` | 等待终态后再下载 |
 | `404 ASSET_ARTIFACT_NOT_FOUND` | 刷新 job，使用最新 artifact ID |
-| job `UV_QA_FAILED` | 当前生产或 strict 模式的 UV QA 失败；advisory 候选上线后，纯几何 QA 应改为成功告警并交付五件套 |
+| job `UV_QA_FAILED` | 仅 strict 模式或非质量类硬门禁失败；生产 advisory 下纯几何 QA 应为成功告警并交付五件套 |
 | job `RETOPOLOGY_QUALITY_GATE_FAILED` | strict 质量失败，仅诊断；生产 advisory 正常情况下会改为成功告警交付 |
 | job `BLENDER_EXECUTION_FAILED` | 保存 job/request ID，交由 GPU Control 管理端查高级诊断 |
 
-## 14. 1.5.8 / Worker 1.2.4 候选说明（尚未上线）
+## 14. 1.5.8 Asset API / Worker 1.2.4 分阶段部署边界
 
-1.5.8 将把新鲜健康 Codex 探针精确门禁到 `RETOPOLOGY_PROCESS_V1` 的 Worker 领取：
+当前 Asset API/Worker 已把新鲜健康 Codex 探针精确门禁到 `RETOPOLOGY_PROCESS_V1` 的 Worker 领取：
 
 - 只有 `AUTHENTICATED + HEALTHY + 未超过 3600 秒` 的 Linux Asset Worker 才领取自动重拓扑；
 - UV 和独立拓扑审计不受该 Codex 门禁影响；
 - 提交接口仍可返回 `202`，暂时没有合格 Worker 时任务保持 `QUEUED`，不是 `AUTH_FAILED`；
 - Web 会区分 `HEALTHY/STALE/认证失败/探针失败`，Windows Baker 心跳不再覆盖 Linux Codex 状态。
 
-这些内容已经通过源码测试，但在生产 1.5.7 上尚未部署。应用端不能提前把它写成已上线 SLA；其对外
-请求和 artifact 合同不变。
-
-当前工作区在上述前序候选基础上又增加三项修复，最终 release commit 尚未生成：
+这些能力已局部上线。三 Worker 镜像 revision 不同，但 Worker 相关源码与三项批准 Skill 文件 SHA
+一致；统一 OCI image digest/SBOM 仍待归档。真实 PBR、UV warning、UV clean 和连续两笔重拓扑
+canary 均已成功，但当前仍标记为 `DEPLOYED_NOT_ACCEPTED`。已部署修复包括：
 
 - `UV_PROCESS_V2` 由 Worker 上传完整实测报告，再由 Asset API 按
   `UV_QA_ENFORCEMENT` 执行 strict/advisory；advisory 失败质量项不会隐藏五件套；
@@ -551,8 +548,8 @@ SHA256(response body) == artifact.sha256 == X-Artifact-SHA256
 - Worker 启动时只为两个批准业务 Skill 建立精确子链接，保留 Codex 自有 `skills/.system`；inspect、
   probe、heartbeat 发现链接漂移时统一上报 `SKILL_MOUNT_INVALID`。
 
-这三项必须按 [82 号发布验收记录](82_2026-08-03_ASSET_FAILURES_UV_ADVISORY_AND_RELEASE_ACCEPTANCE.md)
-完成全量回归、镜像身份、零任务滚动、真实 canary 和 SHA 回填后，才能从候选改写为生产事实。
+按 [82 号发布验收记录](82_2026-08-03_ASSET_FAILURES_UV_ADVISORY_AND_RELEASE_ACCEPTANCE.md)
+完成控制面统一、API artifact 三重 SHA、统一 OCI image digest/SBOM、回滚和观察回填后，才能全量生产验收。
 
 ## 15. 最新测试证据与边界
 
@@ -560,8 +557,10 @@ SHA256(response body) == artifact.sha256 == X-Artifact-SHA256
 - 自动重拓扑：10/10 `SUCCEEDED`，每单 23 件制品，共 230 次下载和 SHA 校验通过；
 - 前序 1.5.8 候选 `52ecad10…` 的源码回归：Python `315 passed / 6 skipped`；Web `16 passed`，
   类型、lint、格式和构建通过；该数字早于本轮 UV/PBR/Skill 修改，不能冒充最终候选全量结果；
-- 本轮候选已补充 PBR 退出码真值表、UV advisory/strict/完整性、Skill 子链接/bootstrap/漂移探针和
-  Worker 镜像身份测试；最终全量结果与真实 canary 尚待 82 号记录回填；
+- 本轮全量 unit `233 passed, 1 skipped`；全量 integration `116 passed, 5 skipped`；Ruff 全部通过；
+  本轮相关 4 个文件 mypy 通过（不代表全仓 mypy 通过）；两份 Compose config 均可解析；
+- 真实 PBR、UV warning、UV clean 与连续两笔重拓扑 canary 均已成功；数据库 artifact SHA 已记录，
+  API body/header 三重下载校验仍待回填；
 - 三节点 2026-08-03 Codex 探针快照均为 `AUTHENTICATED/HEALTHY`，但该快照不是永久 SLA；
 - 尚未完成固定素材全部联合基准、完整故障矩阵、registry/SBOM 证据和连续七天观察，因此整体状态不是
   `FROZEN` 或 `PRODUCTION_ACCEPTED`。

@@ -1,8 +1,8 @@
-# 2026-08-03 GPU Control 1.5.8 候选修复与安全发布计划
+# 2026-08-03 GPU Control 1.5.8 分阶段修复与安全发布记录
 
 日期：2026-08-03（Asia/Singapore）
 
-状态：`SOURCE_CANDIDATE_NOT_DEPLOYED`
+状态：`DEPLOYED_NOT_ACCEPTED`（仅 Asset 组件局部部署）
 
 范围：GPU Control API、Asset API、Scheduler、Web、Substance Agent、数据库迁移与发布脚本。
 
@@ -11,8 +11,15 @@
 
 ## 1. 当前结论
 
-1.5.8 正在完成源码级修复和离线验证。由于生产后端仍有真实任务，本候选版本尚未执行数据库迁移、
-容器替换、服务重启或节点 drain，也没有对生产 API 发起压力测试。当前生产控制平面继续运行 1.5.7。
+本轮已完成受控的局部滚动：Asset API 已为 `1.5.8`，生产镜像 revision 为
+`7f7fd197f86288ffbeeab622cc39199335e22c61`，数据库已迁移到 `20260803_0012`；GPU Control
+API、Scheduler 和 Web 仍是 `1.5.7`。Linux Worker 均为 tag `1.2.4`；4090 revision 为
+`7f7fd197…`，3090-A/3090-B 为 `e2cab4c8…`，但 Worker 相关源码和批准 Skill SHA 已逐节点核对
+一致；统一 OCI image digest/SBOM 仍待归档。不得声称整套 1.5.8 控制面已部署。
+
+四个 Substance Baker Agent v5 均为 `ONLINE/HEALTHY`，生产 UV/重拓扑均为 advisory。三节点
+ComfyUI 使用同一镜像，健康且 `RestartCount=0`；本轮未停止/重启 ComfyUI，也未清缓存。
+没有注入额外合成流量；现有真实任务已完成 PBR、UV warning、UV clean 和连续两笔重拓扑 canary。
 
 候选版本要解决的核心问题：
 
@@ -33,7 +40,7 @@
 必须同时满足：
 
 1. 旧租约已经过期，且相关 job 已进入明确终态；
-2. Agent v4 使用新的 `agent_instance_id`，并报告自己的启动时间；
+2. Agent v5 使用新的 `agent_instance_id`，并报告自己的启动时间；
 3. Windows 主机全局命名互斥锁证明同一稳定 Worker 同时只有一个 Agent；
 4. 主机级进程探针返回 `HEALTHY` 且 `substance3d_baker.exe` 数量为 0；
 5. 服务端先记录零进程观察时间，再等待一次严格晚于该时间的新 GPU 节点心跳；
@@ -71,7 +78,7 @@ Li3D 仓库修复配置和资源打包。
 
 ## 5. 强制发布顺序
 
-Agent v4 与旧 Asset API 双向不兼容：旧 API 会拒绝 v4 新字段，新 API 会把 v3 Agent 保持为
+Agent v5 与旧 Asset API 双向不兼容：旧 API 会拒绝 v5 新字段，新 API 会把旧 Agent 保持为
 `DRAINING`。因此禁止直接热替换 Agent，必须在真实任务清空后按以下顺序执行：
 
 1. 停止新的 Substance 接单，只 drain 3090-B Windows Baker；
@@ -79,7 +86,7 @@ Agent v4 与旧 Asset API 双向不兼容：旧 API 会拒绝 v4 新字段，新
 3. 备份数据库与当前 1.5.7 配置、镜像身份；
 4. 执行迁移 `20260803_0012`；
 5. 更新控制平面四镜像，尤其是 Asset API；
-6. 安装 Agent v4，确认四个稳定 Windows Worker 全部 ONLINE、进程探针健康；
+6. 安装 Agent v5，确认四个稳定 Windows Worker 全部 ONLINE、进程探针健康；
 7. 先以单个 Baker 槽位 canary，再恢复其余槽位；
 8. 验证 UV、重拓扑、PBR、GPU 推理队列互不误阻塞后再恢复正常接单。
 
@@ -98,19 +105,19 @@ Agent v4 与旧 Asset API 双向不兼容：旧 API 会拒绝 v4 新字段，新
 - [x] Ruff、Compose config 和 `git diff --check` 通过；PowerShell 仅有预期的 LF→CRLF 属性提示；
 - [x] 一次性 SQLite 从空库升级到 migration head `20260803_0012`；
 
-本轮新增源码已经配套增加 PBR 退出码真值表、UV advisory/strict/完整性、Skill 子链接 bootstrap/漂移
-探针和 Worker `1.2.4` 镜像身份测试；最终候选仍必须重新完成并回填：
+本轮新增源码已配套增加 PBR 退出码真值表、UV advisory/strict/完整性、Skill 子链接 bootstrap/漂移
+探针和 Worker `1.2.4` 镜像身份测试。最终工作树全量 unit 为 `234 passed`，全量 integration 为
+`116 passed, 5 skipped`；Ruff 全部通过，本轮相关 4 个文件的 mypy 通过，两份 Compose config 均可
+解析。全仓 mypy 仍有既有无关问题，不能写成全仓通过。仍须回填：
 
-- [ ] 最终干净 release commit 上的全量 Python、Ruff、mypy 与 migration 测试；
 - [ ] 最终 Web 类型、lint、格式和生产构建；
-- [ ] Compose config 与 `git diff --check`；
-- [ ] 真实 PBR、UV advisory 和重拓扑 canary，以及全部 artifact SHA。
+- [ ] API artifact body SHA、job JSON SHA 与 `X-Artifact-SHA256` 三重下载校验。
 
-以下发布和生产证据仍未完成，状态必须保持 `SOURCE_CANDIDATE_NOT_DEPLOYED`：
+以下发布和生产证据仍未完成，总状态必须保持 `DEPLOYED_NOT_ACCEPTED`：
 
 - [ ] 四个 1.5.8 镜像的 source revision、image ID/digest、SBOM 和归档 SHA-256；
 - [ ] 已发布 source commit 与远端分支证据；
-- [ ] 生产任务清空、drain、canary、回滚演练和发布后状态 JSON；
+- [ ] 三台 Worker 统一 OCI image digest/SBOM，以及回滚演练和 artifact 三重 SHA；
 - [ ] 连续观察窗口内无重复执行、无错误解锁、无队列能力串扰。
 
 Web 生产构建只有既有的第三方 PURE 注释和 `Dashboard` 约 504 KiB chunk 警告；没有类型、lint、格式或
@@ -120,4 +127,5 @@ Web 生产构建只有既有的第三方 PURE 注释和 `Dashboard` 约 504 KiB 
 本轮三类失败的证据、精确候选合同、组件配套关系和回填表见
 [82_2026-08-03_ASSET_FAILURES_UV_ADVISORY_AND_RELEASE_ACCEPTANCE.md](82_2026-08-03_ASSET_FAILURES_UV_ADVISORY_AND_RELEASE_ACCEPTANCE.md)。
 
-本文件不构成 `FROZEN` 或 `PRODUCTION_ACCEPTED`，也不声称候选代码已经上线。
+本文件不构成 `FROZEN` 或 `PRODUCTION_ACCEPTED`；它只记录 Asset 组件局部上线，不声称
+整套 1.5.8 控制面或三 Worker 同一镜像已完成部署验收。
