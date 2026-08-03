@@ -10,6 +10,7 @@ param(
     [ValidateRange(1, 16)][int]$InstanceId = 1,
     [ValidateRange(1, 16)][int]$InstanceCount = 4,
     [int]$PollSeconds = 2,
+    [ValidateRange(10, 240)][int]$LeaseRenewalSeconds = 60,
     [switch]$Once
 )
 
@@ -54,6 +55,7 @@ function Invoke-SignedPost([string]$Path, [System.Collections.IDictionary]$Paylo
     try {
         [IO.File]::WriteAllText($bodyFile, $body, (New-Object Text.UTF8Encoding($false)))
         $response = & $CurlExe --silent --show-error --fail --cacert $CaCertificate --ssl-no-revoke `
+            --connect-timeout 5 --max-time 20 `
             -X POST ($ControlBaseUrl + $Path) `
             -H 'Content-Type: application/json' `
             -H ("X-Asset-Timestamp: $timestamp") `
@@ -72,6 +74,7 @@ function Invoke-LeasedJsonPost([string]$Path, [string]$Lease, [System.Collection
     try {
         [IO.File]::WriteAllText($bodyFile, $body, (New-Object Text.UTF8Encoding($false)))
         $response = & $CurlExe --silent --show-error --fail --cacert $CaCertificate --ssl-no-revoke `
+            --connect-timeout 5 --max-time 20 `
             -X POST ($ControlBaseUrl + $Path) -H 'Content-Type: application/json' `
             -H ("X-Asset-Lease: $Lease") --data-binary ("@$bodyFile")
         if ($LASTEXITCODE -ne 0) { throw "leased POST failed: $Path ($LASTEXITCODE)" }
@@ -137,22 +140,132 @@ function Get-OptionalProperty($Object, [string]$Name) {
     return $property.Value
 }
 
-function Invoke-BakerCommand([string[]]$Arguments, [string]$LogPath) {
+function ConvertTo-NativeProcessArgument([string]$Value) {
+    if ($Value.IndexOf([char]0) -ge 0) { throw 'native process argument contains a NUL byte' }
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') { return $Value }
+
+    # Start-Process ultimately constructs one Windows command line.  Quote
+    # every argument with whitespace using the CommandLineToArgvW escaping
+    # rules so input/output paths cannot be split into additional arguments.
+    $quoted = New-Object Text.StringBuilder
+    [void]$quoted.Append('"')
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq [char]92) {
+            $backslashes += 1
+            continue
+        }
+        if ($character -eq [char]34) {
+            [void]$quoted.Append([char]92, (($backslashes * 2) + 1))
+            [void]$quoted.Append([char]34)
+            $backslashes = 0
+            continue
+        }
+        if ($backslashes -gt 0) {
+            [void]$quoted.Append([char]92, $backslashes)
+            $backslashes = 0
+        }
+        [void]$quoted.Append($character)
+    }
+    if ($backslashes -gt 0) { [void]$quoted.Append([char]92, ($backslashes * 2)) }
+    [void]$quoted.Append('"')
+    return $quoted.ToString()
+}
+
+function Invoke-BakerLeaseRenewal(
+    [string]$JobId,
+    [string]$Lease,
+    [double]$Progress,
+    [string]$Stage,
+    [string]$Message,
+    [int]$EstimatedRemainingSeconds
+) {
+    $lastFailure = ''
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            return Invoke-LeasedJsonPost "/internal/v1/assets/jobs/$JobId/progress" $Lease ([ordered]@{
+                progress = $Progress; stage = $Stage; message = $Message
+                estimated_remaining_seconds = $EstimatedRemainingSeconds
+            })
+        }
+        catch {
+            $lastFailure = $_.Exception.Message
+            if ($attempt -lt 3) { Start-Sleep -Seconds 2 }
+        }
+    }
+    throw "Substance Baker lease renewal failed after 3 attempts: $lastFailure"
+}
+
+function Stop-BakerProcess($Process) {
+    if ($null -eq $Process) { return }
+    try {
+        if (-not $Process.HasExited) {
+            $Process.Kill()
+            $null = $Process.WaitForExit(10000)
+        }
+    }
+    catch { Write-Warning "failed to stop Substance Baker process: $($_.Exception.Message)" }
+}
+
+function Invoke-BakerCommand(
+    [string[]]$Arguments,
+    [string]$LogPath,
+    [string]$JobId,
+    [string]$Lease,
+    [double]$Progress,
+    [string]$Stage,
+    [string]$Message,
+    [int]$EstimatedRemainingSeconds
+) {
     # Substance writes ordinary INFO records to stderr.  With the agent-wide
     # ErrorActionPreference=Stop, PowerShell 5.1 otherwise promotes the first
     # INFO line to a terminating NativeCommandError and kills a healthy bake.
-    # Continue only for the native invocation, then decide success from its
-    # exit code and the Baker success marker below.
-    $previousErrorActionPreference = $ErrorActionPreference
+    # Run it as an asynchronous native process instead.  This also leaves the
+    # agent free to renew the 300-second control-plane lease and heartbeat while
+    # a large bake is still using the GPU.
+    $stdoutPath = Join-Path $env:TEMP ("gpu-control-baker-stdout-" + [Guid]::NewGuid().ToString('N') + '.log')
+    $stderrPath = Join-Path $env:TEMP ("gpu-control-baker-stderr-" + [Guid]::NewGuid().ToString('N') + '.log')
+    $process = $null
+    $exitCode = $null
+    $lines = @()
     try {
-        $ErrorActionPreference = 'Continue'
-        $lines = & $BakerExe @Arguments 2>&1 | ForEach-Object { $_.ToString() }
-        $exitCode = $LASTEXITCODE
+        $argumentLine = (($Arguments | ForEach-Object {
+            ConvertTo-NativeProcessArgument ([string]$_)
+        }) -join ' ')
+        $process = Start-Process -FilePath $BakerExe -ArgumentList $argumentLine `
+            -NoNewWindow -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+
+        while (-not $process.WaitForExit($LeaseRenewalSeconds * 1000)) {
+            $renewal = Invoke-BakerLeaseRenewal $JobId $Lease $Progress $Stage $Message $EstimatedRemainingSeconds
+            if ([bool](Get-OptionalProperty $renewal 'cancel_requested')) {
+                Stop-BakerProcess $process
+                throw 'Substance Baker stopped because the job was cancelled'
+            }
+            try { Send-Heartbeat }
+            catch {
+                "heartbeat warning during $Stage`: $($_.Exception.Message)" | Add-Content -LiteralPath $LogPath -Encoding UTF8
+                Write-Warning $_
+            }
+        }
+        # Ensure asynchronous output redirection is completely flushed before
+        # the log files are read and the process handle is disposed.
+        $process.WaitForExit()
+        $exitCode = $process.ExitCode
+    }
+    catch {
+        Stop-BakerProcess $process
+        throw
     }
     finally {
-        $ErrorActionPreference = $previousErrorActionPreference
+        foreach ($processLog in @($stdoutPath, $stderrPath)) {
+            if (Test-Path -LiteralPath $processLog) {
+                $lines += @(Get-Content -LiteralPath $processLog -ErrorAction SilentlyContinue | ForEach-Object { $_.ToString() })
+                Remove-Item -LiteralPath $processLog -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if ($null -ne $process) { $process.Dispose() }
+        if ($lines.Count -gt 0) { $lines | Add-Content -LiteralPath $LogPath -Encoding UTF8 }
     }
-    $lines | Add-Content -LiteralPath $LogPath -Encoding UTF8
     if ($exitCode -ne 0) { throw "Substance Baker exited with code $exitCode" }
     if (-not (($lines -join "`n") -match 'Bake finished successfully')) {
         throw 'Substance Baker success marker missing'
@@ -223,7 +336,8 @@ function Execute-Bake($Job) {
                 '--output_size', $sizeArg, '--secondary.sample_count', '64',
                 '--projection.sampling_rate', '2x2', '--texture_cache_size', $cache.ToString())
             if ($cage) { $args += @('--use_cage', 'true', '--cage_scene_path', $cage) }
-            Invoke-BakerCommand $args $logPath
+            Invoke-BakerCommand $args $logPath $jobId $lease 20 'BAKING_AO' `
+                'SAL + SoRa is generating ambient occlusion' 420
         }
         if ($profile -in @('normal-dx-v1', 'pbr-core-v1')) {
             $null = Invoke-LeasedJsonPost "/internal/v1/assets/jobs/$jobId/progress" $lease ([ordered]@{
@@ -238,7 +352,8 @@ function Execute-Bake($Job) {
                 '--projection.sampling_rate', '4x4', '--output_texture_orientation', 'directx',
                 '--output_texture_space', 'tangent_space', '--texture_cache_size', $cache.ToString())
             if ($cage) { $args += @('--use_cage', 'true', '--cage_scene_path', $cage) }
-            Invoke-BakerCommand $args $logPath
+            Invoke-BakerCommand $args $logPath $jobId $lease 55 'BAKING_NORMAL' `
+                'SAL + SoRa is generating a DirectX tangent-space normal map' 300
         }
 
         if ($profile -eq 'li3d-pbr-full-v2') {
@@ -261,7 +376,8 @@ function Execute-Bake($Job) {
                 $args = @('--verbose', 'TextureTransfer.Raytraced') + $commonProjection + @(
                     '--output_name', "asset_$textureRole", '--source_texture_path', $sourcePath,
                     '--filtering_mode', 'bilinear', '--padding_radius', '16')
-                Invoke-BakerCommand $args $logPath
+                Invoke-BakerCommand $args $logPath $jobId $lease 15 'BAKING_TEXTURE_TRANSFER' `
+                    'Projecting Base Color, Roughness, and Metallic' 480
             }
 
             $null = Invoke-LeasedJsonPost "/internal/v1/assets/jobs/$jobId/progress" $lease ([ordered]@{
@@ -275,7 +391,8 @@ function Execute-Bake($Job) {
             )
             foreach ($bake in $geometryBakes) {
                 $args = @('--verbose', $bake[0]) + $commonProjection + @('--output_name', $bake[1])
-                Invoke-BakerCommand $args $logPath
+                Invoke-BakerCommand $args $logPath $jobId $lease 40 'BAKING_GEOMETRY_MAPS' `
+                    'Generating AO, Curvature, Thickness, and Position maps' 330
             }
 
             $null = Invoke-LeasedJsonPost "/internal/v1/assets/jobs/$jobId/progress" $lease ([ordered]@{
@@ -289,7 +406,8 @@ function Execute-Bake($Job) {
                 $args = @('--verbose', 'Normal.Raytraced') + $commonProjection + @(
                     '--output_name', $normalSpec[0], '--output_texture_space', $normalSpec[1],
                     '--output_texture_orientation', $normalSpec[2])
-                Invoke-BakerCommand $args $logPath
+                Invoke-BakerCommand $args $logPath $jobId $lease 72 'BAKING_NORMALS' `
+                    'Generating DirectX, OpenGL, and world-space normal maps' 180
             }
         }
 

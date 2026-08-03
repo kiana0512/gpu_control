@@ -32,3 +32,15 @@ For an upgrade, first verify there are no active Asset bakes or Substance fence
 labels. Then run the installer with `-ConfirmNoActiveBakes`; it explicitly stops
 the four existing scheduled tasks before replacing/restarting them. Confirm all
 four heartbeats report v3 and `ONLINE`. This operation does not restart ComfyUI.
+
+The scheduled tasks use the current Windows user's interactive token because the
+installed Adobe license is user-scoped. The installer hides their PowerShell
+windows so an operator cannot accidentally close an Agent console. It also adds
+an idempotent one-minute liveness trigger (`MultipleInstances=IgnoreNew`), keeps
+the tasks alive across desktop idle/power-source transitions, and verifies that
+all four tasks remain `Running` before installation succeeds. A normal running
+Agent ignores the recovery trigger; an Agent that exits with Windows console
+status `0xC000013A` is offered again within one minute. A Windows logoff still
+removes an interactive token, so the agents resume at the next logon; converting
+the Adobe runtime to a dedicated non-interactive service identity requires a
+separate license and secret-ACL acceptance and must not be inferred here.
