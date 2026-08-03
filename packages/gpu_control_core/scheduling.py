@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from .enums import NodeHealth, NodeMode, NodePool
 
@@ -12,6 +12,10 @@ SUBSTANCE_PENDING_RESERVATION_LABEL = "substance_bake_pending_reservation"
 SUBSTANCE_RECOVERY_REQUIRED_LABEL = "substance_bake_recovery_required"
 SUBSTANCE_DRAIN_OWNER_LABEL = "substance_bake_drain_owner"
 SUBSTANCE_DRAIN_OWNER = "asset-api"
+SUBSTANCE_GPU_NODE_ID = "worker-3090-b"
+SUBSTANCE_WORKER_ID = "asset-worker-3090-b-windows"
+SUBSTANCE_WORKER_ID_PREFIX = f"{SUBSTANCE_WORKER_ID}-"
+SUBSTANCE_MAX_PARALLEL = 4
 
 
 class NodeLike(Protocol):
@@ -28,6 +32,7 @@ class NodeLike(Protocol):
     free_vram_mb: int
     last_heartbeat_at: datetime | None
     last_assigned_at: datetime | None
+    labels: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -115,6 +120,40 @@ def substance_owned_drain_is_expired(node: NodeLike, now: datetime) -> bool:
         return False
     pending_ids, _ = substance_pending_reservation(labels, now)
     return not pending_ids
+
+
+def linux_asset_claim_allowed(
+    node: NodeLike,
+    now: datetime,
+    *,
+    substance_node_id: str = SUBSTANCE_GPU_NODE_ID,
+) -> bool:
+    """Return whether an independent Linux CPU Worker may claim on ``node``.
+
+    GPU/ComfyUI health and occupancy are intentionally not considered: the
+    AssetWorker heartbeat is the CPU-runtime authority.  Explicit operator
+    maintenance is still authoritative.  The sole DRAINING exception is an
+    Asset API-owned native Substance interlock on 3090-B, where Linux CPU work
+    can continue without using the fenced GPU.
+    """
+
+    if node.manual_reserved:
+        return False
+    if node.mode in {NodeMode.ACTIVE.value, NodeMode.OVERFLOW.value}:
+        return True
+    if node.id != substance_node_id or node.mode != NodeMode.DRAINING.value:
+        return False
+    labels = getattr(node, "labels", {})
+    if not isinstance(labels, dict) or labels.get(SUBSTANCE_DRAIN_OWNER_LABEL) != (
+        SUBSTANCE_DRAIN_OWNER
+    ):
+        return False
+    pending_ids, _ = substance_pending_reservation(labels, now)
+    return bool(
+        pending_ids
+        or substance_fence_job_ids(labels)
+        or labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL)
+    )
 
 
 def base_exclusion(node: NodeLike, now: datetime, heartbeat_timeout_seconds: int) -> str | None:

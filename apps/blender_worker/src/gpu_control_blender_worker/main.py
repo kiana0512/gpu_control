@@ -199,6 +199,8 @@ async def heartbeat(
     running: int,
     codex_health: dict[str, Any],
     retopoflow_health: dict[str, Any],
+    agent_instance_id: str,
+    agent_started_at: datetime,
 ) -> None:
     skill_mount_valid = update_codex_skill_mount_health(settings, codex_health)
     # A repaired exact Skill link is necessary but not sufficient to call the
@@ -223,6 +225,8 @@ async def heartbeat(
         "current_jobs": running,
         "load_1m": os.getloadavg()[0],
         "available_memory_mb": available_memory_mb(),
+        "agent_instance_id": agent_instance_id,
+        "agent_started_at": agent_started_at.isoformat(),
         **codex_health,
         **retopoflow_health,
     }
@@ -1843,6 +1847,8 @@ async def worker_loop(settings: WorkerSettings) -> None:
         "retopoflow_last_checked_at": None,
         "retopoflow_error_code": None,
     }
+    agent_instance_id = uuid.uuid4().hex
+    agent_started_at = datetime.now(UTC)
     runtime = {"running": 0}
     probe_task = asyncio.create_task(codex_health_loop(settings, codex_health, runtime))
     retopoflow_probe_task = asyncio.create_task(
@@ -1862,6 +1868,8 @@ async def worker_loop(settings: WorkerSettings) -> None:
                         len(running),
                         codex_health,
                         retopoflow_health,
+                        agent_instance_id,
+                        agent_started_at,
                     )
                     while len(running) < settings.asset_worker_max_concurrency:
                         response = await signed_post(
@@ -1870,6 +1878,8 @@ async def worker_loop(settings: WorkerSettings) -> None:
                             "/internal/v1/assets/jobs/claim",
                             {
                                 "worker_id": settings.asset_worker_id,
+                                "node_id": settings.asset_node_id,
+                                "agent_instance_id": agent_instance_id,
                                 "load_1m": os.getloadavg()[0],
                                 "available_memory_mb": available_memory_mb(),
                             },

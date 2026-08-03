@@ -27,7 +27,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from redis.asyncio import Redis
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.comfy_client import ComfyClient, ComfyError
@@ -87,7 +87,12 @@ from packages.gpu_control_core.repository import ACTIVE_STATUSES, transition_job
 from packages.gpu_control_core.scheduling import (
     SUBSTANCE_DRAIN_OWNER,
     SUBSTANCE_DRAIN_OWNER_LABEL,
+    SUBSTANCE_GPU_NODE_ID,
+    SUBSTANCE_MAX_PARALLEL,
     SUBSTANCE_RECOVERY_REQUIRED_LABEL,
+    SUBSTANCE_WORKER_ID,
+    SUBSTANCE_WORKER_ID_PREFIX,
+    linux_asset_claim_allowed,
     substance_fence_job_ids,
     substance_pending_reservation,
 )
@@ -118,6 +123,16 @@ def sha256_file(path: Path) -> str:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def is_postgres_lock_not_available(exc: DBAPIError) -> bool:
+    """Recognize PostgreSQL NOWAIT lock conflicts without hiding other DB errors."""
+
+    original = exc.orig
+    return (
+        getattr(original, "sqlstate", None) == "55P03"
+        or getattr(original, "pgcode", None) == "55P03"
+    )
 
 
 REQUESTS = Counter(
@@ -398,6 +413,31 @@ async def _notify(app: FastAPI, channel: str, payload: dict[str, Any]) -> None:
             error_code="REDIS_UNAVAILABLE",
             error_type=type(exc).__name__,
         )
+
+
+def substance_gpu_interlock(node: Node, now: datetime) -> dict[str, Any]:
+    """Describe durable native-Baker interlocks without mutating ownership."""
+
+    labels = dict(node.labels or {})
+    pending_ids, _ = substance_pending_reservation(labels, now)
+    fence_ids = substance_fence_job_ids(labels)
+    recovery_required = bool(labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL))
+    return {
+        "active": bool(pending_ids or fence_ids or recovery_required),
+        "pending_job_ids": pending_ids,
+        "fence_job_ids": fence_ids,
+        "recovery_required": recovery_required,
+    }
+
+
+def take_operator_drain_ownership(node: Node) -> bool:
+    """Transfer DRAINING ownership while retaining every physical-GPU fence."""
+
+    labels = dict(node.labels or {})
+    owned = labels.get(SUBSTANCE_DRAIN_OWNER_LABEL) == SUBSTANCE_DRAIN_OWNER
+    labels.pop(SUBSTANCE_DRAIN_OWNER_LABEL, None)
+    node.labels = labels
+    return owned
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -3171,7 +3211,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 )
             ).all()
         )
-        substance_node = await db.get(Node, "worker-3090-b")
+        substance_node = await db.get(Node, SUBSTANCE_GPU_NODE_ID)
         substance_labels = dict(substance_node.labels or {}) if substance_node is not None else {}
         pending_substance_job_ids, pending_substance_expires_at = substance_pending_reservation(
             substance_labels, now
@@ -3231,7 +3271,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             return {
                 "code": code,
                 "message": message,
-                "node_id": "worker-3090-b",
+                "node_id": SUBSTANCE_GPU_NODE_ID,
                 "reservation_active": reservation_active,
                 "fence_active": fence_active,
                 "comfyui_current_jobs": comfyui_current_jobs,
@@ -3282,14 +3322,96 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             return worker.status == "ONLINE" and heartbeat >= heartbeat_cutoff
 
         online_workers = [worker for worker in workers if worker_online(worker)]
+        node_ids = {worker.node_id for worker in online_workers if worker.node_id}
+        worker_nodes = (
+            list((await db.scalars(select(Node).where(Node.id.in_(node_ids)))).all())
+            if node_ids
+            else []
+        )
+        nodes_by_id = {node.id: node for node in worker_nodes}
+
+        def is_substance_worker(worker: AssetWorker) -> bool:
+            return worker.id == SUBSTANCE_WORKER_ID or worker.id.startswith(
+                SUBSTANCE_WORKER_ID_PREFIX
+            )
+
+        schedulable_cpu_workers = [
+            worker
+            for worker in online_workers
+            if not is_substance_worker(worker)
+            and worker.node_id in nodes_by_id
+            and worker.agent_instance_id is not None
+            and worker.agent_started_at is not None
+            and linux_asset_claim_allowed(nodes_by_id[worker.node_id], now)
+        ]
+        substance_physical_available = bool(
+            substance_node is not None
+            and (
+                substance_node.mode == NodeMode.ACTIVE.value
+                or (
+                    substance_node.mode == NodeMode.DRAINING.value
+                    and substance_reservation_owned
+                    and (pending_substance_job_ids or fenced_substance_job_ids)
+                )
+            )
+            and substance_node.health == "ONLINE"
+            and substance_node.current_jobs == 0
+            and not substance_labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL)
+            and not substance_node.manual_reserved
+            and not substance_node.external_busy
+            and not substance_node.foreign_queue_detected
+        )
+        schedulable_substance_workers = (
+            [
+                worker
+                for worker in online_workers
+                if is_substance_worker(worker)
+                and worker.node_id == SUBSTANCE_GPU_NODE_ID
+                and worker.agent_instance_id is not None
+                and worker.agent_started_at is not None
+            ]
+            if substance_physical_available
+            else []
+        )
+        cpu_total_slots = sum(
+            worker.max_concurrency for worker in schedulable_cpu_workers
+        )
+        cpu_used_slots = sum(worker.current_jobs for worker in schedulable_cpu_workers)
+        substance_physical_slots = max(
+            0, SUBSTANCE_MAX_PARALLEL - len(fenced_substance_job_ids)
+        )
+        substance_total_slots = min(
+            sum(worker.max_concurrency for worker in schedulable_substance_workers),
+            SUBSTANCE_MAX_PARALLEL,
+        )
+        substance_used_slots = min(
+            max(
+                sum(worker.current_jobs for worker in schedulable_substance_workers),
+                len(fenced_substance_job_ids),
+            ),
+            substance_total_slots,
+        )
+        schedulable_workers = [
+            *schedulable_cpu_workers,
+            *schedulable_substance_workers,
+        ]
         return {
             "schema_version": "asset-admin.v4",
             "as_of": now.isoformat(),
             "summary": {
                 "counts": counts,
                 "online_workers": len(online_workers),
-                "total_slots": sum(worker.max_concurrency for worker in online_workers),
-                "used_slots": sum(worker.current_jobs for worker in online_workers),
+                "schedulable_workers": len(schedulable_workers),
+                "reported_total_slots": sum(
+                    worker.max_concurrency for worker in online_workers
+                ),
+                "total_slots": cpu_total_slots + substance_total_slots,
+                "used_slots": cpu_used_slots + substance_used_slots,
+                "available_slots": max(0, cpu_total_slots - cpu_used_slots)
+                + min(
+                    max(0, substance_total_slots - substance_used_slots),
+                    substance_physical_slots,
+                ),
                 "qa_failed": counts.get("FAILED", 0),
             },
             "jobs_scope": {
@@ -3299,7 +3421,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "saturated": len(jobs) >= bounded_limit,
             },
             "substance_gpu": {
-                "node_id": "worker-3090-b",
+                "node_id": SUBSTANCE_GPU_NODE_ID,
                 "health": substance_node.health if substance_node else "OFFLINE",
                 "mode": substance_node.mode if substance_node else "UNKNOWN",
                 "sharing_policy": "exclusive_turn_with_comfyui",
@@ -3939,6 +4061,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             "current_jobs": node.current_jobs,
             "manual_reserved": node.manual_reserved,
         }
+        substance_interlock = substance_gpu_interlock(node, datetime.now(UTC))
+        substance_owner_transferred = take_operator_drain_ownership(node)
         node.mode = NodeMode.DRAINING.value
         node.manual_reserved = False
         active_leases = int(
@@ -3957,15 +4081,22 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             "node",
             node_id,
             before,
-            {"mode": node.mode, "active_leases": active_leases, "reason": reason},
+            {
+                "mode": node.mode,
+                "active_leases": active_leases,
+                "substance_interlock": substance_interlock,
+                "substance_owner_transferred": substance_owner_transferred,
+                "reason": reason,
+            },
         )
         await db.commit()
-        if active_leases or node.current_jobs:
+        if active_leases or node.current_jobs or substance_interlock["active"]:
             raise HTTPException(
                 409,
                 detail={
                     "code": "NODE_DRAINING",
                     "message": "节点已进入 DRAINING；等待活动任务结束后再次执行操作",
+                    "substance_interlock": substance_interlock,
                 },
             )
         return node
@@ -4017,6 +4148,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         if node is None:
             raise HTTPException(404, detail={"code": "NODE_NOT_FOUND"})
         before = {"mode": node.mode, "manual_reserved": node.manual_reserved}
+        substance_owner_transferred = take_operator_drain_ownership(node)
         node.mode = body.mode.value
         node.manual_reserved = body.mode == NodeMode.RESERVED
         await audit(
@@ -4027,7 +4159,11 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             "node",
             node_id,
             before,
-            {"mode": node.mode, "reason": body.reason},
+            {
+                "mode": node.mode,
+                "substance_owner_transferred": substance_owner_transferred,
+                "reason": body.reason,
+            },
         )
         await db.commit()
         await _notify(request.app, "gpu-control:wakeup", {"event": "node.mode", "node_id": node_id})
@@ -4101,33 +4237,116 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         if node is None:
             raise HTTPException(404, detail={"code": "NODE_NOT_FOUND"})
         before = {"mode": node.mode, "current_jobs": node.current_jobs}
-        jobs = list(
-            (
+        # Discover parent ids without locking child rows, then take locks in
+        # the same parent-before-child order used by Scheduler batch sync.
+        # Locking Job first and JobBatch second creates a PostgreSQL cycle with
+        # Scheduler's JobBatch -> Job transaction.
+        hinted_batch_ids = {
+            str(batch_id)
+            for batch_id in (
                 await db.scalars(
-                    select(Job)
-                    .where(Job.node_id == node_id, Job.status.in_(ACTIVE_STATUSES))
-                    .with_for_update()
+                    select(Job.batch_id).where(
+                        Job.node_id == node_id,
+                        Job.status.in_(ACTIVE_STATUSES),
+                        Job.batch_id.is_not(None),
+                    )
                 )
             ).all()
-        )
-        batch_ids = {str(job.batch_id) for job in jobs if job.batch_id is not None}
-        if batch_ids:
-            parent_batches = list(
-                (
-                    await db.scalars(
-                        select(JobBatch).where(JobBatch.id.in_(batch_ids)).with_for_update()
-                    )
-                ).all()
-            )
-            cancel_operations = list(
-                (
-                    await db.scalars(
-                        select(BatchCancelOperation).where(
-                            BatchCancelOperation.batch_id.in_(batch_ids)
+            if batch_id is not None
+        }
+        parent_batches: list[JobBatch] = []
+        cancel_operations: list[BatchCancelOperation] = []
+        try:
+            if hinted_batch_ids:
+                parent_batches = list(
+                    (
+                        await db.scalars(
+                            select(JobBatch)
+                            .where(JobBatch.id.in_(hinted_batch_ids))
+                            .order_by(JobBatch.id)
+                            .with_for_update(nowait=True)
                         )
+                    ).all()
+                )
+                cancel_operations = list(
+                    (
+                        await db.scalars(
+                            select(BatchCancelOperation).where(
+                                BatchCancelOperation.batch_id.in_(hinted_batch_ids)
+                            )
+                        )
+                    ).all()
+                )
+            jobs = list(
+                (
+                    await db.scalars(
+                        select(Job)
+                        .where(Job.node_id == node_id, Job.status.in_(ACTIVE_STATUSES))
+                        .order_by(Job.id)
+                        .with_for_update(nowait=True)
                     )
                 ).all()
             )
+        except DBAPIError as exc:
+            if not is_postgres_lock_not_available(exc):
+                raise
+            # Holding Node while waiting on Scheduler-owned Batch/Job rows can
+            # form Node <-> Job or Node <-> Batch lock cycles. Fail fast and
+            # let the operator retry after the in-flight state transition.
+            await db.rollback()
+            await audit(
+                db,
+                request,
+                principal,
+                "node.interrupt.busy_retry",
+                "node",
+                node_id,
+                before,
+                {
+                    "result": "REJECTED",
+                    "reason": "scheduler-owned batch/job row lock",
+                },
+                result="REJECTED",
+            )
+            await db.commit()
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "NODE_INTERRUPT_BUSY_RETRY",
+                    "message": "节点任务正在提交状态，请稍后重试",
+                },
+            ) from exc
+        batch_ids = {str(job.batch_id) for job in jobs if job.batch_id is not None}
+        unexpected_batch_ids = sorted(batch_ids - hinted_batch_ids)
+        if unexpected_batch_ids:
+            # Never acquire a newly discovered parent lock after child locks.
+            # The caller can retry; no task or node state has been mutated.
+            await db.rollback()
+            await audit(
+                db,
+                request,
+                principal,
+                "node.interrupt.retry_required",
+                "node",
+                node_id,
+                before,
+                {
+                    "result": "REJECTED",
+                    "reason": "active batch set changed during lock acquisition",
+                    "batch_ids": unexpected_batch_ids,
+                },
+                result="REJECTED",
+            )
+            await db.commit()
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "NODE_INTERRUPT_RETRY_REQUIRED",
+                    "message": "节点任务集合在锁定期间发生变化，请重试",
+                    "batch_ids": unexpected_batch_ids,
+                },
+            )
+        if batch_ids:
             parents_by_id = {batch.id: batch for batch in parent_batches}
             operation_batch_ids = {operation.batch_id for operation in cancel_operations}
             unsafe_batch_ids = sorted(
@@ -4165,6 +4384,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                         "job_ids": unsafe_job_ids,
                     },
                 )
+        substance_owner_transferred = take_operator_drain_ownership(node)
         node.mode = NodeMode.DRAINING.value
         node.manual_reserved = False
         for job in jobs:
@@ -4179,7 +4399,12 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             "node",
             node_id,
             before,
-            {"mode": node.mode, "jobs": [job.id for job in jobs], "reason": body.reason},
+            {
+                "mode": node.mode,
+                "jobs": [job.id for job in jobs],
+                "substance_owner_transferred": substance_owner_transferred,
+                "reason": body.reason,
+            },
         )
         await db.commit()
         try:

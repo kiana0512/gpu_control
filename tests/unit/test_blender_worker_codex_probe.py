@@ -4,6 +4,7 @@ import hashlib
 import json
 import stat
 import textwrap
+from datetime import UTC, datetime
 from pathlib import Path
 
 import gpu_control_blender_worker.bootstrap as bootstrap_module
@@ -204,10 +205,20 @@ async def test_heartbeat_reports_runtime_skill_mount_drift(
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(handler), base_url="http://asset-api"
     ) as client:
-        await heartbeat(client, settings, 0, health, {})
+        await heartbeat(
+            client,
+            settings,
+            0,
+            health,
+            {},
+            "a" * 32,
+            datetime(2026, 8, 3, tzinfo=UTC),
+        )
 
     assert captured["codex_probe_status"] == "FAILED"
     assert captured["codex_error_code"] == "SKILL_MOUNT_INVALID"
+    assert captured["agent_instance_id"] == "a" * 32
+    assert captured["agent_started_at"] == "2026-08-03T00:00:00+00:00"
     assert health["codex_probe_status"] == "FAILED"
     assert health["codex_error_code"] == "SKILL_MOUNT_INVALID"
 
@@ -232,7 +243,15 @@ async def test_heartbeat_reports_in_place_skill_sha_drift(tmp_path: Path) -> Non
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(handler), base_url="http://asset-api"
     ) as client:
-        await heartbeat(client, settings, 0, health, {})
+        await heartbeat(
+            client,
+            settings,
+            0,
+            health,
+            {},
+            "b" * 32,
+            datetime(2026, 8, 3, tzinfo=UTC),
+        )
 
     assert captured["codex_probe_status"] == "FAILED"
     assert captured["codex_error_code"] == "SKILL_MOUNT_INVALID"
@@ -267,7 +286,15 @@ async def test_idle_heartbeat_reprobes_immediately_after_skill_mount_recovery(
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(handler), base_url="http://asset-api"
     ) as client:
-        await heartbeat(client, settings, 0, health, {})
+        await heartbeat(
+            client,
+            settings,
+            0,
+            health,
+            {},
+            "c" * 32,
+            datetime(2026, 8, 3, tzinfo=UTC),
+        )
 
     assert captured["codex_probe_status"] == "HEALTHY"
     assert captured["codex_error_code"] is None

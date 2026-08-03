@@ -219,8 +219,11 @@ export interface AssetProcessingOverview {
   summary: {
     counts: Record<string, number>;
     online_workers: number;
+    schedulable_workers: number;
+    reported_total_slots: number;
     total_slots: number;
     used_slots: number;
+    available_slots: number;
     qa_failed: number;
   };
   substance_gpu?: {

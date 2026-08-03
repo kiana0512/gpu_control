@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import case, func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
@@ -69,9 +69,14 @@ from packages.gpu_control_core.scheduling import (
     SUBSTANCE_DRAIN_OWNER,
     SUBSTANCE_DRAIN_OWNER_LABEL,
     SUBSTANCE_FENCE_LABEL,
+    SUBSTANCE_GPU_NODE_ID,
     SUBSTANCE_LEGACY_FENCE_LABEL,
+    SUBSTANCE_MAX_PARALLEL,
     SUBSTANCE_PENDING_RESERVATION_LABEL,
     SUBSTANCE_RECOVERY_REQUIRED_LABEL,
+    SUBSTANCE_WORKER_ID,
+    SUBSTANCE_WORKER_ID_PREFIX,
+    linux_asset_claim_allowed,
     substance_fence_job_ids,
     substance_pending_reservation,
 )
@@ -124,9 +129,6 @@ SUBSTANCE_BAKE_COMMAND_COUNTS = {
     "pbr-core-v1": 2,
     "li3d-pbr-full-v2": 10,
 }
-SUBSTANCE_WORKER_ID = "asset-worker-3090-b-windows"
-SUBSTANCE_WORKER_ID_PREFIX = f"{SUBSTANCE_WORKER_ID}-"
-SUBSTANCE_GPU_NODE_ID = "worker-3090-b"
 CODEX_REQUIRED_JOB_TYPES = frozenset({"RETOPOLOGY_PROCESS_V1"})
 
 
@@ -176,7 +178,6 @@ def fsync_completion_staging(staging: Path) -> None:
 
 SUBSTANCE_VERSION = "substance-15.1.0"
 SUBSTANCE_SKILL_VERSION = "substance-baker-2026.08.03-v5"
-SUBSTANCE_MAX_PARALLEL = 4
 RETOPOLOGY_AUDIT_ARTIFACTS = {
     "audit": ("retopology_audit.json", "application/json"),
     "manifest": ("retopology_manifest.json", "application/json"),
@@ -221,6 +222,14 @@ RETOPOLOGY_DIAGNOSTIC_ERROR_CODES = frozenset(
 def as_utc(value: datetime) -> datetime:
     """Normalize SQLite's timezone-naive test values and PostgreSQL values."""
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def is_postgres_lock_not_available(exc: DBAPIError) -> bool:
+    original = exc.orig
+    return (
+        getattr(original, "sqlstate", None) == "55P03"
+        or getattr(original, "pgcode", None) == "55P03"
+    )
 
 
 def sha256_path(path: Path) -> str:
@@ -708,6 +717,11 @@ class WorkerHeartbeat(BaseModel):
 class WorkerClaim(BaseModel):
     model_config = ConfigDict(extra="forbid")
     worker_id: str = Field(min_length=1, max_length=64)
+    node_id: str | None = Field(
+        default=None,
+        pattern=r"^(?:control|worker)-[a-z0-9-]+$",
+        max_length=64,
+    )
     agent_instance_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$", max_length=32)
     load_1m: float = Field(ge=0, le=4096)
     available_memory_mb: int = Field(ge=0)
@@ -978,6 +992,132 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         )
 
+    async def asset_slot_snapshot(
+        db: AsyncSession,
+        now: datetime,
+        *,
+        substance: bool,
+        job_type: str | None = None,
+        client_kind: str = "production",
+    ) -> dict[str, int]:
+        """Use the same resource gates for capacity, ETA, and actual claim."""
+
+        heartbeat_cutoff = now - timedelta(
+            seconds=cfg.asset_worker_heartbeat_timeout_seconds
+        )
+        worker_filter = (
+            (AssetWorker.id == SUBSTANCE_WORKER_ID)
+            | AssetWorker.id.startswith(SUBSTANCE_WORKER_ID_PREFIX)
+            if substance
+            else (
+                (AssetWorker.id != SUBSTANCE_WORKER_ID)
+                & ~AssetWorker.id.startswith(SUBSTANCE_WORKER_ID_PREFIX)
+            )
+        )
+        online_workers = list(
+            (
+                await db.scalars(
+                    select(AssetWorker).where(
+                        AssetWorker.status == "ONLINE",
+                        AssetWorker.last_heartbeat_at >= heartbeat_cutoff,
+                        worker_filter,
+                    )
+                )
+            ).all()
+        )
+        eligible_workers: list[AssetWorker] = []
+        physical_total_limit: int | None = None
+        physical_available_limit: int | None = None
+        physical_used_floor = 0
+        if substance:
+            node = await db.get(Node, SUBSTANCE_GPU_NODE_ID)
+            labels = dict(node.labels or {}) if node is not None else {}
+            fenced_job_ids = substance_fence_job_ids(labels)
+            pending_ids, _ = substance_pending_reservation(labels, now)
+            owned_drain = bool(
+                node is not None
+                and node.mode == "DRAINING"
+                and labels.get(SUBSTANCE_DRAIN_OWNER_LABEL) == SUBSTANCE_DRAIN_OWNER
+            )
+            pending_owned = bool(pending_ids) and owned_drain
+            physical_available = bool(
+                node is not None
+                and (
+                    node.mode == "ACTIVE"
+                    or (owned_drain and (fenced_job_ids or pending_owned))
+                )
+                and node.health == "ONLINE"
+                and node.current_jobs == 0
+                and not labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL)
+                and not node.manual_reserved
+                and not node.external_busy
+                and not node.foreign_queue_detected
+            )
+            if physical_available and not (
+                client_kind == "test" and await production_gpu_work_active(db)
+            ):
+                eligible_workers = [
+                    worker
+                    for worker in online_workers
+                    if worker.node_id == SUBSTANCE_GPU_NODE_ID
+                    and worker.agent_instance_id is not None
+                    and worker.agent_started_at is not None
+                ]
+                physical_total_limit = SUBSTANCE_MAX_PARALLEL
+                physical_available_limit = max(
+                    0, SUBSTANCE_MAX_PARALLEL - len(fenced_job_ids)
+                )
+                physical_used_floor = len(fenced_job_ids)
+        else:
+            node_ids = {worker.node_id for worker in online_workers if worker.node_id}
+            nodes = (
+                list((await db.scalars(select(Node).where(Node.id.in_(node_ids)))).all())
+                if node_ids
+                else []
+            )
+            nodes_by_id = {node.id: node for node in nodes}
+            eligible_workers = [
+                worker
+                for worker in online_workers
+                if worker.node_id in nodes_by_id
+                and worker.agent_instance_id is not None
+                and worker.agent_started_at is not None
+                and linux_asset_claim_allowed(nodes_by_id[worker.node_id], now)
+            ]
+            if job_type in CODEX_REQUIRED_JOB_TYPES:
+                codex_probe_cutoff = now - timedelta(
+                    seconds=cfg.asset_codex_probe_max_age_seconds
+                )
+                eligible_workers = [
+                    worker
+                    for worker in eligible_workers
+                    if worker.codex_auth_status == "AUTHENTICATED"
+                    and worker.codex_probe_status == "HEALTHY"
+                    and worker.codex_last_checked_at is not None
+                    and as_utc(worker.codex_last_checked_at) >= codex_probe_cutoff
+                ]
+        total_slots = sum(worker.max_concurrency for worker in eligible_workers)
+        used_slots = sum(worker.current_jobs for worker in eligible_workers)
+        available_slots = sum(
+            max(0, worker.max_concurrency - worker.current_jobs)
+            for worker in eligible_workers
+        )
+        if physical_total_limit is not None and physical_available_limit is not None:
+            total_slots = min(total_slots, physical_total_limit)
+            used_slots = min(max(used_slots, physical_used_floor), total_slots)
+            available_slots = min(
+                available_slots,
+                physical_available_limit,
+                max(0, total_slots - used_slots),
+            )
+        return {
+            "online_workers": len(online_workers),
+            "schedulable_workers": len(eligible_workers),
+            "total_slots": total_slots,
+            "used_slots": used_slots,
+            "available_slots": available_slots,
+        }
+
     async def queue_timing(job: AssetJob, db: AsyncSession) -> dict[str, Any]:
         now = datetime.now(UTC)
         terminal_at = job.finished_at or job.last_progress_at
@@ -994,31 +1134,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         queue_position: int | None = None
         estimated_start_seconds: int | None = None
         if job.status == "QUEUED":
-            heartbeat_cutoff = now - timedelta(seconds=cfg.asset_worker_heartbeat_timeout_seconds)
             queue_query = select(func.count(AssetJob.id)).where(
                 AssetJob.status == "QUEUED",
                 AssetJob.created_at <= job.created_at,
             )
-            worker_query = select(
-                func.coalesce(func.sum(AssetWorker.max_concurrency - AssetWorker.current_jobs), 0)
-            ).where(
-                AssetWorker.status == "ONLINE",
-                AssetWorker.last_heartbeat_at >= heartbeat_cutoff,
-            )
             if job.job_type == "SUBSTANCE_BAKE_V1":
                 queue_query = queue_query.where(AssetJob.job_type == "SUBSTANCE_BAKE_V1")
-                worker_query = worker_query.where(
-                    (AssetWorker.id == SUBSTANCE_WORKER_ID)
-                    | AssetWorker.id.startswith(SUBSTANCE_WORKER_ID_PREFIX)
-                )
             else:
                 queue_query = queue_query.where(AssetJob.job_type != "SUBSTANCE_BAKE_V1")
-                worker_query = worker_query.where(
-                    AssetWorker.id != SUBSTANCE_WORKER_ID,
-                    ~AssetWorker.id.startswith(SUBSTANCE_WORKER_ID_PREFIX),
-                )
             queue_position = int(await db.scalar(queue_query) or 1)
-            slots = int(await db.scalar(worker_query) or 0)
+            slot_snapshot = await asset_slot_snapshot(
+                db,
+                now,
+                substance=job.job_type == "SUBSTANCE_BAKE_V1",
+                job_type=job.job_type,
+                client_kind=str(
+                    await db.scalar(
+                        select(ApiClient.client_kind).where(ApiClient.id == job.client_id)
+                    )
+                    or "production"
+                ),
+            )
+            slots = slot_snapshot["available_slots"]
             typical_seconds = {
                 "UV_UNWRAP": 180,
                 "UV_PROCESS_V2": 240,
@@ -1026,11 +1163,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "RETOPOLOGY_PROCESS_V1": 900,
                 "SUBSTANCE_BAKE_V1": 600,
             }.get(job.job_type, 300)
-            estimated_start_seconds = (
-                0
-                if slots > 0 and queue_position <= slots
-                else ((queue_position - 1) // max(slots, 1)) * typical_seconds
-            )
+            if slots > 0:
+                estimated_start_seconds = (
+                    0
+                    if queue_position <= slots
+                    else ((queue_position - 1) // slots) * typical_seconds
+                )
         return {
             "queue_position": queue_position,
             "estimated_start_seconds": estimated_start_seconds,
@@ -1940,28 +2078,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         principal: Annotated[Principal, Depends(api_principal)],
         db: Annotated[AsyncSession, Depends(session)],
     ) -> dict[str, Any]:
-        cutoff = datetime.now(UTC) - timedelta(seconds=cfg.asset_worker_heartbeat_timeout_seconds)
-        workers = list(
-            (
-                await db.scalars(
-                    select(AssetWorker).where(
-                        AssetWorker.status == "ONLINE",
-                        AssetWorker.last_heartbeat_at >= cutoff,
-                    )
-                )
-            ).all()
+        now = datetime.now(UTC)
+        cpu = await asset_slot_snapshot(
+            db,
+            now,
+            substance=False,
+            client_kind=principal.client_kind,
+        )
+        substance = await asset_slot_snapshot(
+            db,
+            now,
+            substance=True,
+            client_kind=principal.client_kind,
         )
         return {
             "schema_version": "1.0",
             "advisory": True,
-            "online_workers": len(workers),
-            "total_slots": sum(worker.max_concurrency for worker in workers),
-            "used_slots": sum(worker.current_jobs for worker in workers),
-            "available_slots": sum(
-                max(0, worker.max_concurrency - worker.current_jobs) for worker in workers
+            "online_workers": cpu["online_workers"] + substance["online_workers"],
+            "schedulable_workers": (
+                cpu["schedulable_workers"] + substance["schedulable_workers"]
             ),
+            "total_slots": cpu["total_slots"] + substance["total_slots"],
+            "used_slots": cpu["used_slots"] + substance["used_slots"],
+            "available_slots": cpu["available_slots"] + substance["available_slots"],
+            "resources": {"cpu": cpu, "substance": substance},
             "client": {"id": principal.id, "kind": principal.client_kind},
-            "as_of": datetime.now(UTC).isoformat(),
+            "as_of": now.isoformat(),
         }
 
     @app.post("/internal/v1/assets/workers/heartbeat")
@@ -1971,12 +2113,85 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Annotated[AsyncSession, Depends(session)],
     ) -> dict[str, Any]:
         await verify_worker(request, await request.body(), body.worker_id)
+        heartbeat_at = datetime.now(UTC)
+        body_started_at = (
+            as_utc(body.agent_started_at) if body.agent_started_at is not None else None
+        )
+        if body_started_at is not None and body_started_at > heartbeat_at + timedelta(seconds=30):
+            raise HTTPException(
+                409,
+                detail={"code": "ASSET_WORKER_GENERATION_TIME_INVALID"},
+            )
+        if is_substance_worker_id(body.worker_id) and body.node_id != SUBSTANCE_GPU_NODE_ID:
+            raise HTTPException(
+                409,
+                detail={"code": "SUBSTANCE_WORKER_NODE_MISMATCH"},
+            )
         substance_heartbeat_node: Node | None = None
         if is_substance_worker_id(body.worker_id):
             substance_heartbeat_node = await db.scalar(
                 select(Node).where(Node.id == SUBSTANCE_GPU_NODE_ID).with_for_update()
             )
         worker = await db.get(AssetWorker, body.worker_id, with_for_update=True)
+        # Worker-first prevents a concurrent old-generation claim from
+        # appearing after the active-lease snapshot. Job locks are NOWAIT:
+        # progress/completion/reaping may already own Job then need Worker, so
+        # waiting here would create Worker <-> Job deadlocks. A busy heartbeat
+        # is safely retried by the Worker loop without changing generation.
+        try:
+            durable_jobs = list(
+                (
+                    await db.scalars(
+                        select(AssetJob)
+                        .where(
+                            AssetJob.worker_id == body.worker_id,
+                            AssetJob.status.in_(["CLAIMED", "RUNNING", "CANCELLING"]),
+                        )
+                        .order_by(AssetJob.id)
+                        .with_for_update(nowait=True)
+                    )
+                ).all()
+            )
+        except DBAPIError as exc:
+            if not is_postgres_lock_not_available(exc):
+                raise
+            await db.rollback()
+            raise HTTPException(
+                409,
+                detail={"code": "ASSET_WORKER_HEARTBEAT_BUSY_RETRY"},
+            ) from exc
+        # Only a still-live durable lease may pin a Worker generation. An
+        # expired lease is reconciled at the beginning of the next claim.
+        durable_current_jobs = sum(
+            1
+            for job in durable_jobs
+            if job.lease_expires_at is None
+            or as_utc(job.lease_expires_at) >= heartbeat_at
+        )
+        if worker is not None:
+            stored_started_at = (
+                as_utc(worker.agent_started_at) if worker.agent_started_at is not None else None
+            )
+            generation_changed = worker.agent_instance_id != body.agent_instance_id
+            node_changed = worker.node_id != body.node_id
+            stale_or_legacy_generation = generation_changed and (
+                body.agent_instance_id is None
+                or body_started_at is None
+                or (
+                    stored_started_at is not None
+                    and body_started_at <= stored_started_at
+                )
+            )
+            if stale_or_legacy_generation or (
+                durable_current_jobs > 0 and (generation_changed or node_changed)
+            ):
+                raise HTTPException(
+                    409,
+                    detail={
+                        "code": "ASSET_WORKER_GENERATION_CONFLICT",
+                        "active_jobs": durable_current_jobs,
+                    },
+                )
         if worker is None:
             worker = AssetWorker(
                 id=body.worker_id,
@@ -1999,20 +2214,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         worker.max_concurrency = (
             1 if is_substance_worker_id(body.worker_id) else body.max_concurrency
         )
-        durable_current_jobs = 0
-        if is_substance_worker_id(body.worker_id):
-            durable_current_jobs = int(
-                await db.scalar(
-                    select(func.count(AssetJob.id)).where(
-                        AssetJob.worker_id == body.worker_id,
-                        AssetJob.status.in_(["CLAIMED", "RUNNING", "CANCELLING"]),
-                    )
-                )
-                or 0
-            )
-        # A restarted scheduled task has an empty in-memory counter.  Never
-        # let that overwrite a durable lease still assigned to the same
-        # stable worker_id.
+        # A restarted process has an empty in-memory counter.  Never let that
+        # overwrite durable leases still assigned to the stable worker_id.
         worker.current_jobs = max(body.current_jobs, durable_current_jobs)
         worker.agent_instance_id = body.agent_instance_id
         worker.agent_started_at = body.agent_started_at
@@ -2036,7 +2239,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         worker.retopoflow_probe_latency_ms = body.retopoflow_probe_latency_ms
         worker.retopoflow_last_checked_at = body.retopoflow_last_checked_at
         worker.retopoflow_error_code = body.retopoflow_error_code
-        heartbeat_at = datetime.now(UTC)
         worker.last_heartbeat_at = heartbeat_at
         resource_ok = (
             body.available_memory_mb >= cfg.asset_worker_min_available_memory_mb
@@ -2067,9 +2269,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             >= heartbeat_at - timedelta(seconds=cfg.asset_worker_heartbeat_timeout_seconds)
             and process_checked_at <= heartbeat_at + timedelta(seconds=30)
         )
+        generation_evidence_ok = (
+            body.agent_instance_id is not None
+            and body_started_at is not None
+            and body_started_at <= heartbeat_at + timedelta(seconds=30)
+        )
         worker.status = (
             "ONLINE"
-            if runtime_version_ok and resource_ok and substance_process_evidence_ok
+            if runtime_version_ok
+            and resource_ok
+            and substance_process_evidence_ok
+            and generation_evidence_ok
             else "DRAINING"
         )
         if is_substance_worker_id(worker.id):
@@ -2097,6 +2307,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> JSONResponse:
         await verify_worker(request, await request.body(), body.worker_id)
         substance_claim = is_substance_worker_id(body.worker_id)
+        if not substance_claim and (body.node_id is None or body.agent_instance_id is None):
+            return JSONResponse({"job": None}, 200)
         if substance_claim:
             # Serialize a Baker claim with every new-work admission before
             # taking the physical 3090-B row.  This closes the window where a
@@ -2236,9 +2448,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 # Node lock so the ordering remains global -> Node -> Job.
                 await request.app.state.db.acquire_global_admission_transaction_lock(db)
         substance_node: Node | None = None
+        worker_node: Node | None = None
+        worker_node_id_hint: str | None = None
         if substance_claim:
             substance_node = await db.scalar(
                 select(Node).where(Node.id == SUBSTANCE_GPU_NODE_ID).with_for_update()
+            )
+            worker_node = substance_node
+        else:
+            # The Worker heartbeat is allowed to refresh independently of the
+            # GPU node heartbeat. CPU Asset claims intentionally ignore the
+            # ComfyUI/GPU health signal, while still requiring the bound node to
+            # be operator-schedulable (mode/reservation gates). Read the binding
+            # as a hint, then lock Node -> Worker -> AssetJob and
+            # revalidate the binding below so a concurrent heartbeat cannot
+            # move the Worker between nodes inside the claim transaction.
+            worker_node_id_hint = body.node_id
+            worker_node = await db.scalar(
+                select(Node).where(Node.id == worker_node_id_hint).with_for_update()
             )
         worker = await db.get(AssetWorker, body.worker_id, with_for_update=True)
         cutoff = datetime.now(UTC) - timedelta(seconds=cfg.asset_worker_heartbeat_timeout_seconds)
@@ -2252,8 +2479,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             or body.load_1m / max(worker.cpu_count, 1) > cfg.asset_worker_max_load_per_cpu
         ):
             return JSONResponse({"job": None}, 200)
+        if not substance_claim and (
+            worker_node is None
+            or worker.node_id != worker_node_id_hint
+            or worker_node.id != worker.node_id
+            or worker.agent_instance_id != body.agent_instance_id
+            or not linux_asset_claim_allowed(worker_node, datetime.now(UTC))
+        ):
+            # The node binding and process generation are part of the claim
+            # identity.  GPU current_jobs/utilisation/health remain independent
+            # from Blender CPU capacity.
+            return JSONResponse({"job": None}, 200)
         if is_substance_worker_id(worker.id) and (
-            body.agent_instance_id is None or body.agent_instance_id != worker.agent_instance_id
+            worker.node_id != SUBSTANCE_GPU_NODE_ID
+            or body.agent_instance_id is None
+            or body.agent_instance_id != worker.agent_instance_id
         ):
             # A restarted scheduled task must heartbeat its new generation
             # before it can claim.  This prevents an older process with the
@@ -2400,9 +2640,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         now = datetime.now(UTC)
         job.status = "CLAIMED"
         job.worker_id = worker.id
-        job.worker_instance_id = (
-            body.agent_instance_id if is_substance_worker_id(worker.id) else None
-        )
+        job.worker_instance_id = body.agent_instance_id
         job.lease_token_hash = lease_token_hash(token)
         job.lease_expires_at = now + timedelta(seconds=cfg.asset_worker_lease_seconds)
         job.attempt_count += 1

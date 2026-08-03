@@ -104,6 +104,19 @@ async def prepared_asset_app(
             )
             db.add(
                 Node(
+                    id="worker-3090-a",
+                    display_name="3090-A",
+                    base_url="http://10.3.34.13:8188",
+                    pool="PRIMARY",
+                    mode="ACTIVE",
+                    health="ONLINE",
+                    current_jobs=0,
+                    max_concurrency=1,
+                    labels={},
+                )
+            )
+            db.add(
+                Node(
                     id="worker-3090-b",
                     display_name="3090-B",
                     base_url="http://10.3.34.14:8188",
@@ -280,6 +293,34 @@ async def signed_post(
     return await client.post(path, content=body, headers=worker_headers(settings, path, body))
 
 
+def asset_worker_generation(
+    worker_id: str,
+    generation: str = "initial",
+    *,
+    started_at: datetime | None = None,
+) -> dict[str, str]:
+    return {
+        "agent_instance_id": hashlib.sha256(
+            f"{worker_id}:{generation}".encode()
+        ).hexdigest()[:32],
+        "agent_started_at": (started_at or datetime.now(UTC)).isoformat(),
+    }
+
+
+def asset_worker_claim_identity(
+    worker_id: str = "asset-worker-3090-a",
+    node_id: str = "worker-3090-a",
+    generation: str = "initial",
+) -> dict[str, str]:
+    return {
+        "worker_id": worker_id,
+        "node_id": node_id,
+        "agent_instance_id": asset_worker_generation(worker_id, generation)[
+            "agent_instance_id"
+        ],
+    }
+
+
 async def test_asset_worker_signed_request_replay_is_rejected(
     tmp_path: Path,
 ) -> None:
@@ -297,6 +338,7 @@ async def test_asset_worker_signed_request_replay_is_rejected(
             "current_jobs": 0,
             "load_1m": 0,
             "available_memory_mb": 100000,
+            **asset_worker_generation("asset-worker-3090-a"),
         }
         body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         headers = worker_headers(settings, path, body)
@@ -600,12 +642,14 @@ async def register_substance_worker(
     settings: Settings,
     worker_id: str,
     *,
+    node_id: str = "worker-3090-b",
     generation: str = "initial",
     current_jobs: int = 0,
     process_probe_status: str = "HEALTHY",
     active_baker_processes: int | None = 0,
     process_probe_checked_at: datetime | None = None,
     expected_status: str = "ONLINE",
+    expected_status_code: int = 200,
 ) -> httpx.Response:
     checked_at = process_probe_checked_at or datetime.now(UTC)
     agent_instance_id = hashlib.sha256(f"{worker_id}:{generation}".encode()).hexdigest()[:32]
@@ -615,7 +659,7 @@ async def register_substance_worker(
         "/internal/v1/assets/workers/heartbeat",
         {
             "worker_id": worker_id,
-            "node_id": "worker-3090-b",
+            "node_id": node_id,
             "display_name": worker_id,
             "hostname": "LILITHGAMES3",
             "blender_version": "substance-15.1.0",
@@ -632,9 +676,24 @@ async def register_substance_worker(
             "substance_active_processes": active_baker_processes,
         },
     )
-    assert response.status_code == 200, response.text
-    assert response.json()["status"] == expected_status
+    assert response.status_code == expected_status_code, response.text
+    if expected_status_code == 200:
+        assert response.json()["status"] == expected_status
     return response
+
+
+async def test_substance_worker_heartbeat_rejects_wrong_physical_node(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        response = await register_substance_worker(
+            client,
+            settings,
+            "asset-worker-3090-b-windows-01",
+            node_id="worker-3090-a",
+            expected_status_code=409,
+        )
+        assert response.json()["detail"]["code"] == "SUBSTANCE_WORKER_NODE_MISMATCH"
 
 
 async def claim_substance_job(
@@ -816,14 +875,16 @@ async def test_restarted_substance_instance_cannot_claim_over_live_assignment(
         # The scheduled task restarts while the original instance still owns
         # a durable lease.  Its empty in-memory counter must not erase that
         # assignment even though the stable worker_id is unchanged.
-        await register_substance_worker(
+        conflict = await register_substance_worker(
             client,
             settings,
             worker_id,
             generation="restarted",
             current_jobs=0,
             active_baker_processes=1,
+            expected_status_code=409,
         )
+        assert conflict.json()["detail"]["code"] == "ASSET_WORKER_GENERATION_CONFLICT"
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             worker = await db.get(AssetWorker, worker_id)
             assert worker is not None
@@ -891,6 +952,7 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
                 "current_jobs": 0,
                 "load_1m": 0.1,
                 "available_memory_mb": 100000,
+                **asset_worker_generation("asset-worker-3090-a"),
             },
         )
         linux_claim = await signed_post(
@@ -898,7 +960,7 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
             settings,
             "/internal/v1/assets/jobs/claim",
             {
-                "worker_id": "asset-worker-3090-a",
+                **asset_worker_claim_identity(),
                 "load_1m": 0.1,
                 "available_memory_mb": 100000,
             },
@@ -1767,6 +1829,7 @@ async def test_uv_asset_job_contract_worker_concurrency_and_atomic_artifacts(
                 "current_jobs": 0,
                 "load_1m": 1.0,
                 "available_memory_mb": 100000,
+                **asset_worker_generation("asset-worker-3090-a"),
             },
         )
         assert heartbeat.status_code == 200, heartbeat.text
@@ -1788,7 +1851,7 @@ async def test_uv_asset_job_contract_worker_concurrency_and_atomic_artifacts(
             settings,
             "/internal/v1/assets/jobs/claim",
             {
-                "worker_id": "asset-worker-3090-a",
+                **asset_worker_claim_identity(),
                 "load_1m": 1.0,
                 "available_memory_mb": 100000,
             },
@@ -1889,28 +1952,40 @@ async def register_asset_worker(
     client: httpx.AsyncClient,
     settings: Settings,
     *,
+    worker_id: str = "asset-worker-3090-a",
+    node_id: str = "worker-3090-a",
+    generation: str = "initial",
+    agent_started_at: datetime | None = None,
+    max_concurrency: int = 4,
+    current_jobs: int = 0,
+    expected_status_code: int = 200,
     codex_auth_status: str = "AUTHENTICATED",
     codex_probe_status: str = "HEALTHY",
     codex_last_checked_at: datetime | None = None,
     codex_error_code: str | None = None,
-) -> None:
+) -> httpx.Response:
     checked_at = codex_last_checked_at or datetime.now(UTC)
     response = await signed_post(
         client,
         settings,
         "/internal/v1/assets/workers/heartbeat",
         {
-            "worker_id": "asset-worker-3090-a",
-            "node_id": "worker-3090-a",
+            "worker_id": worker_id,
+            "node_id": node_id,
             "display_name": "3090-A Asset Worker",
             "hostname": "lilithgames1",
             "blender_version": "5.1.2",
             "skill_version": "asset-skills-2026.07.28",
             "cpu_count": 32,
-            "max_concurrency": 4,
-            "current_jobs": 0,
+            "max_concurrency": max_concurrency,
+            "current_jobs": current_jobs,
             "load_1m": 1.0,
             "available_memory_mb": 100000,
+            **asset_worker_generation(
+                worker_id,
+                generation,
+                started_at=agent_started_at,
+            ),
             "codex_cli_version": "codex-cli 0.146.0-alpha.3.1",
             "codex_auth_status": codex_auth_status,
             "codex_probe_status": codex_probe_status,
@@ -1922,16 +1997,24 @@ async def register_asset_worker(
             "codex_error_code": codex_error_code,
         },
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == expected_status_code, response.text
+    return response
 
 
-async def claim_asset_job(client: httpx.AsyncClient, settings: Settings) -> dict[str, object]:
+async def claim_asset_job(
+    client: httpx.AsyncClient,
+    settings: Settings,
+    *,
+    worker_id: str = "asset-worker-3090-a",
+    node_id: str = "worker-3090-a",
+    generation: str = "initial",
+) -> dict[str, object]:
     response = await signed_post(
         client,
         settings,
         "/internal/v1/assets/jobs/claim",
         {
-            "worker_id": "asset-worker-3090-a",
+            **asset_worker_claim_identity(worker_id, node_id, generation),
             "load_1m": 1.0,
             "available_memory_mb": 100000,
         },
@@ -1940,6 +2023,514 @@ async def claim_asset_job(client: httpx.AsyncClient, settings: Settings) -> dict
     job = response.json()["job"]
     assert job is not None
     return job
+
+
+@pytest.mark.parametrize(
+    ("node_mode", "node_health", "manual_reserved"),
+    [
+        ("DRAINING", "ONLINE", False),
+        ("RESERVED", "ONLINE", False),
+        ("DISABLED", "ONLINE", False),
+        ("MAINTENANCE", "ONLINE", False),
+        ("ACTIVE", "ONLINE", True),
+    ],
+)
+async def test_linux_asset_worker_claim_fails_closed_when_bound_node_unavailable(
+    tmp_path: Path,
+    node_mode: str,
+    node_health: str,
+    manual_reserved: bool,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        await register_asset_worker(client, settings)
+        created = await post_uv_process(
+            client,
+            f"node-gate-{node_mode.lower()}-{node_health.lower()}",
+            f"node-gate-{node_mode.lower()}-{node_health.lower()}",
+        )
+        assert created.status_code == 202, created.text
+
+        app = client._transport.app  # type: ignore[attr-defined]
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-a")
+            assert node is not None
+            node.mode = node_mode
+            node.health = node_health
+            node.manual_reserved = manual_reserved
+            await db.commit()
+
+        response = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(),
+                "load_1m": 1.0,
+                "available_memory_mb": 100000,
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["job"] is None
+
+        async with app.state.db.session() as db:
+            job = await db.get(AssetJob, created.json()["job_id"])
+            worker = await db.get(AssetWorker, "asset-worker-3090-a")
+            assert job is not None
+            assert job.status == "QUEUED"
+            assert job.worker_id is None
+            assert worker is not None
+            assert worker.current_jobs == 0
+
+
+@pytest.mark.parametrize(
+    ("node_mode", "node_health"),
+    [
+        ("ACTIVE", "ONLINE"),
+        ("OVERFLOW", "ONLINE"),
+        ("ACTIVE", "OFFLINE"),
+        ("ACTIVE", "DEGRADED"),
+    ],
+)
+async def test_linux_asset_worker_claim_ignores_gpu_and_comfy_state(
+    tmp_path: Path,
+    node_mode: str,
+    node_health: str,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        await register_asset_worker(client, settings)
+        created = await post_uv_process(
+            client,
+            f"{node_mode.lower()}-node-gpu-busy-cpu-independent",
+            f"{node_mode.lower()}-node-gpu-busy-cpu-independent",
+        )
+        assert created.status_code == 202, created.text
+
+        app = client._transport.app  # type: ignore[attr-defined]
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-a")
+            assert node is not None
+            node.mode = node_mode
+            node.health = node_health
+            node.current_jobs = node.max_concurrency
+            node.gpu_util_percent = 100
+            await db.commit()
+
+        claimed = await claim_asset_job(client, settings)
+        assert claimed["job_id"] == created.json()["job_id"]
+
+
+@pytest.mark.parametrize("interlock_kind", ["fence", "pending", "recovery"])
+async def test_linux_cpu_claim_continues_during_same_node_substance_gpu_drain(
+    tmp_path: Path,
+    interlock_kind: str,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        worker_id = "asset-worker-3090-b"
+        node_id = "worker-3090-b"
+        await register_asset_worker(
+            client,
+            settings,
+            worker_id=worker_id,
+            node_id=node_id,
+        )
+        created = await post_uv_process(
+            client,
+            f"substance-owned-cpu-{interlock_kind}",
+            f"substance-owned-cpu-{interlock_kind}",
+        )
+        assert created.status_code == 202, created.text
+
+        labels: dict[str, object] = {
+            "substance_bake_drain_owner": "asset-api",
+        }
+        if interlock_kind == "fence":
+            labels["substance_bake_fence_job_ids"] = ["active-bake"]
+        elif interlock_kind == "pending":
+            labels["substance_bake_pending_reservation"] = {
+                "job_ids": ["pending-bake"],
+                "expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+            }
+        else:
+            labels["substance_bake_recovery_required"] = [{"job_id": "recovering-bake"}]
+
+        app = client._transport.app  # type: ignore[attr-defined]
+        async with app.state.db.session() as db:
+            node = await db.get(Node, node_id)
+            assert node is not None
+            node.mode = "DRAINING"
+            node.health = "OFFLINE"
+            node.labels = labels
+            node.gpu_util_percent = 100
+            await db.commit()
+
+        claimed = await claim_asset_job(
+            client,
+            settings,
+            worker_id=worker_id,
+            node_id=node_id,
+        )
+        assert claimed["job_id"] == created.json()["job_id"]
+
+
+async def test_operator_drain_with_retained_substance_fence_blocks_cpu_claim(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        worker_id = "asset-worker-3090-b"
+        node_id = "worker-3090-b"
+        await register_asset_worker(
+            client,
+            settings,
+            worker_id=worker_id,
+            node_id=node_id,
+        )
+        created = await post_uv_process(client, "operator-drain-cpu", "operator-drain-cpu")
+        assert created.status_code == 202, created.text
+
+        app = client._transport.app  # type: ignore[attr-defined]
+        async with app.state.db.session() as db:
+            node = await db.get(Node, node_id)
+            assert node is not None
+            node.mode = "DRAINING"
+            node.labels = {"substance_bake_fence_job_ids": ["active-bake"]}
+            await db.commit()
+
+        response = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(worker_id, node_id),
+                "load_1m": 1.0,
+                "available_memory_mb": 100000,
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["job"] is None
+
+
+async def test_capacity_and_queue_eta_follow_linux_node_claim_gate(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        await register_asset_worker(client, settings, max_concurrency=2)
+        created = await post_uv_process(client, "capacity-gate", "capacity-gate")
+        assert created.status_code == 202, created.text
+        headers = {"X-API-Key": "gpc_assetkey_secret"}
+
+        active_capacity = await client.get("/api/v1/assets/capacity", headers=headers)
+        assert active_capacity.status_code == 200, active_capacity.text
+        assert active_capacity.json()["schedulable_workers"] == 1
+        assert active_capacity.json()["total_slots"] == 2
+        active_job = await client.get(
+            f"/api/v1/assets/jobs/{created.json()['job_id']}", headers=headers
+        )
+        assert active_job.json()["timing"]["estimated_start_seconds"] == 0
+
+        app = client._transport.app  # type: ignore[attr-defined]
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-a")
+            assert node is not None
+            node.mode = "DRAINING"
+            await db.commit()
+
+        drained_capacity = await client.get("/api/v1/assets/capacity", headers=headers)
+        assert drained_capacity.status_code == 200, drained_capacity.text
+        assert drained_capacity.json()["online_workers"] == 1
+        assert drained_capacity.json()["schedulable_workers"] == 0
+        assert drained_capacity.json()["total_slots"] == 0
+        assert drained_capacity.json()["available_slots"] == 0
+        drained_job = await client.get(
+            f"/api/v1/assets/jobs/{created.json()['job_id']}", headers=headers
+        )
+        assert drained_job.json()["timing"]["estimated_start_seconds"] is None
+
+
+async def test_capacity_keeps_linux_cpu_slots_during_owned_substance_drain(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        await register_asset_worker(
+            client,
+            settings,
+            worker_id="asset-worker-3090-b",
+            node_id="worker-3090-b",
+            max_concurrency=3,
+        )
+        app = client._transport.app  # type: ignore[attr-defined]
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            node.mode = "DRAINING"
+            node.health = "OFFLINE"
+            node.labels = {
+                "substance_bake_drain_owner": "asset-api",
+                "substance_bake_fence_job_ids": ["active-bake"],
+            }
+            await db.commit()
+
+        capacity = await client.get(
+            "/api/v1/assets/capacity",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert capacity.status_code == 200, capacity.text
+        assert capacity.json()["resources"]["cpu"]["schedulable_workers"] == 1
+        assert capacity.json()["resources"]["cpu"]["available_slots"] == 3
+
+
+async def test_substance_capacity_preserves_total_used_available_identity(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        for index in range(1, 5):
+            await register_substance_worker(
+                client,
+                settings,
+                f"asset-worker-3090-b-windows-0{index}",
+            )
+        app = client._transport.app  # type: ignore[attr-defined]
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            node.mode = "DRAINING"
+            node.labels = {
+                "substance_bake_drain_owner": "asset-api",
+                "substance_bake_fence_job_ids": ["active-bake"],
+            }
+            await db.commit()
+
+        response = await client.get(
+            "/api/v1/assets/capacity",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert response.status_code == 200, response.text
+        snapshot = response.json()["resources"]["substance"]
+        assert snapshot == {
+            "online_workers": 4,
+            "schedulable_workers": 4,
+            "total_slots": 4,
+            "used_slots": 1,
+            "available_slots": 3,
+        }
+        assert snapshot["total_slots"] == (
+            snapshot["used_slots"] + snapshot["available_slots"]
+        )
+
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            node.labels = {
+                "substance_bake_drain_owner": "asset-api",
+                "substance_bake_fence_job_ids": [
+                    "active-bake-01",
+                    "active-bake-02",
+                    "active-bake-03",
+                    "active-bake-04",
+                ],
+            }
+            await db.commit()
+
+        full_response = await client.get(
+            "/api/v1/assets/capacity",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert full_response.status_code == 200, full_response.text
+        full_snapshot = full_response.json()["resources"]["substance"]
+        assert full_snapshot == {
+            "online_workers": 4,
+            "schedulable_workers": 4,
+            "total_slots": 4,
+            "used_slots": 4,
+            "available_slots": 0,
+        }
+        assert full_snapshot["total_slots"] == (
+            full_snapshot["used_slots"] + full_snapshot["available_slots"]
+        )
+
+
+async def test_retopology_eta_requires_a_codex_ready_worker(tmp_path: Path) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        await register_asset_worker(
+            client,
+            settings,
+            max_concurrency=2,
+            codex_auth_status="UNAUTHENTICATED",
+            codex_probe_status="FAILED",
+            codex_error_code="CODEX_AUTH_REQUIRED",
+        )
+        retopology = await post_retopology_process(
+            client,
+            "retopology-no-codex-capacity",
+            "retopology-no-codex-capacity",
+        )
+        assert retopology.status_code == 202, retopology.text
+        headers = {"X-API-Key": "gpc_assetkey_secret"}
+        retopology_status = await client.get(
+            f"/api/v1/assets/jobs/{retopology.json()['job_id']}",
+            headers=headers,
+        )
+        assert retopology_status.status_code == 200, retopology_status.text
+        assert retopology_status.json()["timing"]["estimated_start_seconds"] is None
+
+        uv = await post_uv_process(client, "uv-without-codex", "uv-without-codex")
+        assert uv.status_code == 202, uv.text
+        uv_status = await client.get(
+            f"/api/v1/assets/jobs/{uv.json()['job_id']}",
+            headers=headers,
+        )
+        assert uv_status.status_code == 200, uv_status.text
+        assert uv_status.json()["timing"]["estimated_start_seconds"] == 0
+
+
+async def test_linux_worker_durable_job_blocks_generation_and_node_migration(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        started_at = datetime.now(UTC) - timedelta(minutes=2)
+        await register_asset_worker(
+            client,
+            settings,
+            generation="old",
+            agent_started_at=started_at,
+            max_concurrency=1,
+        )
+        first = await post_uv_process(client, "generation-first", "generation-first")
+        second = await post_uv_process(client, "generation-second", "generation-second")
+        assert first.status_code == second.status_code == 202
+        claimed = await claim_asset_job(client, settings, generation="old")
+        assert claimed["job_id"] == first.json()["job_id"]
+
+        # A restarted process may report an empty local set, but the durable
+        # lease remains authoritative and keeps the slot occupied.
+        await register_asset_worker(
+            client,
+            settings,
+            generation="old",
+            agent_started_at=started_at,
+            max_concurrency=1,
+            current_jobs=0,
+        )
+        conflict = await register_asset_worker(
+            client,
+            settings,
+            node_id="worker-3090-b",
+            generation="new",
+            agent_started_at=started_at + timedelta(minutes=1),
+            max_concurrency=1,
+            expected_status_code=409,
+        )
+        assert conflict.json()["detail"]["code"] == "ASSET_WORKER_GENERATION_CONFLICT"
+
+        app = client._transport.app  # type: ignore[attr-defined]
+        async with app.state.db.session() as db:
+            worker = await db.get(AssetWorker, "asset-worker-3090-a")
+            assert worker is not None
+            assert worker.node_id == "worker-3090-a"
+            assert worker.agent_instance_id == asset_worker_generation(
+                "asset-worker-3090-a", "old"
+            )["agent_instance_id"]
+            assert worker.current_jobs == 1
+
+        no_second_slot = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(generation="old"),
+                "load_1m": 1.0,
+                "available_memory_mb": 100000,
+            },
+        )
+        assert no_second_slot.status_code == 200, no_second_slot.text
+        assert no_second_slot.json()["job"] is None
+
+
+async def test_linux_worker_restart_can_reconcile_an_expired_durable_lease(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        old_started_at = datetime.now(UTC) - timedelta(minutes=2)
+        new_started_at = old_started_at + timedelta(minutes=1)
+        await register_asset_worker(
+            client,
+            settings,
+            generation="old",
+            agent_started_at=old_started_at,
+            max_concurrency=1,
+        )
+        created = await post_uv_process(client, "expired-generation", "expired-generation")
+        assert created.status_code == 202, created.text
+        claimed = await claim_asset_job(client, settings, generation="old")
+        assert claimed["job_id"] == created.json()["job_id"]
+
+        app = client._transport.app  # type: ignore[attr-defined]
+        async with app.state.db.session() as db:
+            job = await db.get(AssetJob, created.json()["job_id"])
+            assert job is not None
+            job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            await db.commit()
+
+        restarted = await register_asset_worker(
+            client,
+            settings,
+            generation="new",
+            agent_started_at=new_started_at,
+            max_concurrency=1,
+            current_jobs=0,
+        )
+        assert restarted.status_code == 200, restarted.text
+
+        # The first claim by the restarted process reaps and requeues the
+        # expired lease, then immediately assigns it to the new generation.
+        reclaimed = await claim_asset_job(client, settings, generation="new")
+        assert reclaimed["job_id"] == created.json()["job_id"]
+        async with app.state.db.session() as db:
+            job = await db.get(AssetJob, created.json()["job_id"])
+            worker = await db.get(AssetWorker, "asset-worker-3090-a")
+            assert job is not None and worker is not None
+            assert job.status == "CLAIMED"
+            assert job.worker_instance_id == asset_worker_generation(
+                "asset-worker-3090-a", "new"
+            )["agent_instance_id"]
+            assert worker.current_jobs == 1
+
+
+async def test_linux_worker_newer_idle_generation_cannot_be_replaced_by_stale_instance(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        old_started_at = datetime.now(UTC) - timedelta(minutes=2)
+        new_started_at = old_started_at + timedelta(minutes=1)
+        await register_asset_worker(
+            client,
+            settings,
+            generation="old",
+            agent_started_at=old_started_at,
+        )
+        await register_asset_worker(
+            client,
+            settings,
+            node_id="worker-3090-b",
+            generation="new",
+            agent_started_at=new_started_at,
+        )
+        stale = await register_asset_worker(
+            client,
+            settings,
+            generation="old",
+            agent_started_at=old_started_at,
+            expected_status_code=409,
+        )
+        assert stale.json()["detail"]["code"] == "ASSET_WORKER_GENERATION_CONFLICT"
+
+        app = client._transport.app  # type: ignore[attr-defined]
+        async with app.state.db.session() as db:
+            worker = await db.get(AssetWorker, "asset-worker-3090-a")
+            assert worker is not None
+            assert worker.node_id == "worker-3090-b"
+            assert worker.agent_instance_id == asset_worker_generation(
+                "asset-worker-3090-a", "new"
+            )["agent_instance_id"]
 
 
 def queued_asset_job(
@@ -1994,6 +2585,8 @@ async def test_substance_queue_timing_excludes_stale_online_workers(
                         skill_version="substance-baker-v1",
                         max_concurrency=1,
                         current_jobs=0,
+                        agent_instance_id="1" * 32,
+                        agent_started_at=now - timedelta(minutes=1),
                         last_heartbeat_at=now,
                     ),
                     AssetWorker(
@@ -2006,6 +2599,8 @@ async def test_substance_queue_timing_excludes_stale_online_workers(
                         skill_version="substance-baker-v1",
                         max_concurrency=1,
                         current_jobs=0,
+                        agent_instance_id="2" * 32,
+                        agent_started_at=now - timedelta(minutes=1),
                         last_heartbeat_at=now - timedelta(seconds=timeout + 1),
                     ),
                 ]
@@ -2139,7 +2734,7 @@ async def test_codex_unhealthy_worker_skips_process_but_keeps_cpu_queue_moving(
             settings,
             "/internal/v1/assets/jobs/claim",
             {
-                "worker_id": "asset-worker-3090-a",
+                **asset_worker_claim_identity(),
                 "load_1m": 1.0,
                 "available_memory_mb": 100000,
             },
@@ -2179,7 +2774,7 @@ async def test_codex_process_claim_requires_a_fresh_healthy_probe(
             settings,
             "/internal/v1/assets/jobs/claim",
             {
-                "worker_id": "asset-worker-3090-a",
+                **asset_worker_claim_identity(),
                 "load_1m": 1.0,
                 "available_memory_mb": 100000,
             },
@@ -2223,6 +2818,7 @@ async def test_failed_heartbeat_preserves_historical_codex_success(
                 "codex_probe_latency_ms": 8000,
                 "codex_last_checked_at": datetime.now(UTC).isoformat(),
                 "codex_error_code": "AUTH_REFRESH_REUSED",
+                **asset_worker_generation("asset-worker-3090-a"),
             },
         )
         assert failed.status_code == 200, failed.text

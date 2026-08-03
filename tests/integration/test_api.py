@@ -1920,6 +1920,85 @@ async def test_admin_login_and_destructive_confirmation(tmp_path: Path) -> None:
         assert missing_confirmation.status_code == 409
 
 
+async def test_operator_mode_change_takes_drain_ownership_without_dropping_gpu_fences(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            node.mode = "DRAINING"
+            node.labels = {
+                "substance_bake_drain_owner": "asset-api",
+                "substance_bake_fence_job_ids": ["active-bake"],
+                "substance_bake_pending_reservation": {
+                    "job_ids": ["pending-bake"],
+                    "expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+                },
+                "substance_bake_recovery_required": [{"job_id": "recovery-bake"}],
+            }
+            await db.commit()
+
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        changed = await client.put(
+            "/admin/nodes/worker-3090-b/mode",
+            headers=auth,
+            json={"mode": "DRAINING", "reason": "operator maintenance", "confirm": True},
+        )
+        assert changed.status_code == 200, changed.text
+
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "DRAINING"
+            assert "substance_bake_drain_owner" not in node.labels
+            assert node.labels["substance_bake_fence_job_ids"] == ["active-bake"]
+            assert node.labels["substance_bake_pending_reservation"]["job_ids"] == [
+                "pending-bake"
+            ]
+            assert node.labels["substance_bake_recovery_required"]
+
+
+async def test_maintenance_action_is_blocked_by_substance_interlock_and_takes_drain_owner(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            node.mode = "DRAINING"
+            node.labels = {
+                "substance_bake_drain_owner": "asset-api",
+                "substance_bake_fence_job_ids": ["active-bake"],
+            }
+            await db.commit()
+
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        restart = await client.post(
+            "/admin/nodes/worker-3090-b/restart",
+            headers=auth,
+            json={"reason": "must wait for native baker", "confirm": True},
+        )
+        assert restart.status_code == 409, restart.text
+        assert restart.json()["detail"]["code"] == "NODE_DRAINING"
+        assert restart.json()["detail"]["substance_interlock"]["active"] is True
+
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "DRAINING"
+            assert "substance_bake_drain_owner" not in node.labels
+            assert node.labels["substance_bake_fence_job_ids"] == ["active-bake"]
+
+
 async def test_admin_nodes_selects_linux_codex_worker_not_newer_windows_baker(
     tmp_path: Path,
 ) -> None:
@@ -2110,6 +2189,8 @@ async def test_admin_asset_processing_reports_real_workers_jobs_and_artifacts(
                     max_concurrency=4,
                     current_jobs=1,
                     cpu_count=32,
+                    agent_instance_id="a" * 32,
+                    agent_started_at=now - timedelta(minutes=1),
                     last_heartbeat_at=now,
                 )
             )
@@ -2266,6 +2347,63 @@ async def test_admin_asset_processing_explains_substance_next_turn_reservation(
         assert payload["substance_gpu"]["sharing_policy"] == ("exclusive_turn_with_comfyui")
         assert payload["substance_gpu"]["reserved_job_ids"] == [job_id]
         assert payload["substance_gpu"]["comfyui_current_jobs"] == 1
+
+
+async def test_admin_asset_processing_reports_full_substance_capacity(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        now = datetime.now(UTC)
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            node.mode = "DRAINING"
+            node.health = "ONLINE"
+            node.current_jobs = 0
+            node.labels = {
+                "substance_bake_drain_owner": "asset-api",
+                "substance_bake_fence_job_ids": [
+                    "active-bake-01",
+                    "active-bake-02",
+                    "active-bake-03",
+                    "active-bake-04",
+                ],
+            }
+            for index in range(1, 5):
+                db.add(
+                    AssetWorker(
+                        id=f"asset-worker-3090-b-windows-0{index}",
+                        display_name=f"3090-B Substance Worker #{index}",
+                        node_id="worker-3090-b",
+                        hostname="3090-b-windows",
+                        status="ONLINE",
+                        blender_version="substance-15.1.0",
+                        skill_version="substance-baker-2026.08.03-v5",
+                        max_concurrency=1,
+                        current_jobs=0,
+                        cpu_count=64,
+                        agent_instance_id=f"{index}" * 32,
+                        agent_started_at=now - timedelta(minutes=1),
+                        last_heartbeat_at=now,
+                    )
+                )
+            await db.commit()
+
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        response = await client.get("/admin/asset-processing", headers=auth)
+        assert response.status_code == 200, response.text
+        summary = response.json()["summary"]
+        assert summary["online_workers"] == 4
+        assert summary["schedulable_workers"] == 4
+        assert summary["reported_total_slots"] == 4
+        assert summary["total_slots"] == 4
+        assert summary["used_slots"] == 4
+        assert summary["available_slots"] == 0
+        assert summary["total_slots"] == summary["used_slots"] + summary["available_slots"]
 
 
 async def test_admin_views_separate_production_and_test_traffic(tmp_path: Path) -> None:

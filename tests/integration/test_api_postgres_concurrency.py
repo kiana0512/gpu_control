@@ -1,0 +1,177 @@
+import asyncio
+import os
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+
+import httpx
+import pytest
+from gpu_control_api.main import create_app
+from sqlalchemy import select, text
+from sqlalchemy.engine import make_url
+
+from packages.gpu_control_core.models import ApiClient, AuditLog, Base, Job, JobBatch, Node
+from packages.gpu_control_core.security import hash_password
+from packages.gpu_control_core.settings import Settings
+
+
+def postgres_url() -> str:
+    url = os.environ.get("GPU_CONTROL_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("GPU_CONTROL_TEST_POSTGRES_URL is required for PostgreSQL lock tests")
+    parsed = make_url(url)
+    if parsed.host not in {"127.0.0.1", "localhost"} or not str(
+        parsed.database or ""
+    ).startswith("gpu_control_test_"):
+        pytest.fail(
+            "destructive PostgreSQL concurrency test requires a loopback "
+            "gpu_control_test_* disposable database"
+        )
+    return url
+
+
+@pytest.mark.parametrize("locked_row", ["batch", "job"])
+async def test_node_interrupt_fails_fast_on_scheduler_owned_rows(
+    tmp_path: Path,
+    locked_row: str,
+) -> None:
+    settings = Settings(
+        environment="test",
+        database_url=postgres_url(),
+        redis_url="redis://127.0.0.1:6399/15",
+        job_root=tmp_path / "jobs",
+        jwt_secret="test-jwt",
+        api_key_pepper="test-pepper",
+        node_agent_hmac_secret="test-agent",
+        alertmanager_webhook_token="development-only-change-me",
+    )
+    app = create_app(settings)
+    batch_id = str(uuid.uuid4())
+    job_id = str(uuid.uuid4())
+    now = datetime.now(UTC)
+    async with app.router.lifespan_context(app):
+        async with app.state.db.engine.begin() as connection:
+            await connection.execute(text("DROP SCHEMA public CASCADE"))
+            await connection.execute(text("CREATE SCHEMA public"))
+            await connection.run_sync(Base.metadata.create_all)
+        async with app.state.db.session() as db:
+            db.add(
+                ApiClient(
+                    id="admin",
+                    name="admin",
+                    role="admin",
+                    password_hash=hash_password("correct-password"),
+                    max_queued=20,
+                    max_running=3,
+                )
+            )
+            db.add(
+                Node(
+                    id="worker-3090-a",
+                    display_name="3090-A",
+                    base_url="http://127.0.0.1:8188",
+                    pool="PRIMARY",
+                    mode="ACTIVE",
+                    health="ONLINE",
+                    current_jobs=1,
+                    max_concurrency=1,
+                    labels={},
+                )
+            )
+            db.add(
+                JobBatch(
+                    id=batch_id,
+                    tenant_id="admin",
+                    external_batch_id=f"interrupt-lock:{locked_row}",
+                    workflow_key="imageclip-rgba",
+                    workflow_version="test-1",
+                    pipeline_commit="7" * 40,
+                    pipeline_sha256="8" * 64,
+                    output_node="SaveImage #9",
+                    status="RUNNING",
+                    failure_policy="all_or_nothing",
+                    output_naming="preserve_stem_png",
+                    parameters={},
+                    request_hash="a" * 64,
+                    request_id=f"interrupt-lock-{locked_row}",
+                    trace_id=f"interrupt-lock-{locked_row}",
+                    batch_dir=str(tmp_path / batch_id),
+                    manifest_sha256="b" * 64,
+                    archive_sha256="c" * 64,
+                    archive_size_bytes=1,
+                    total_items=1,
+                    created_at=now,
+                    validated_at=now,
+                    queued_at=now,
+                    started_at=now,
+                    updated_at=now,
+                )
+            )
+            await db.commit()
+            db.add(
+                Job(
+                    id=job_id,
+                    tenant_id="admin",
+                    workflow_key="imageclip-rgba",
+                    workflow_version="test-1",
+                    status="RUNNING",
+                    priority="batch",
+                    parameters={},
+                    request_hash="d" * 64,
+                    request_id=f"interrupt-job-{locked_row}",
+                    trace_id=f"interrupt-job-{locked_row}",
+                    job_dir=str(tmp_path / job_id),
+                    batch_id=batch_id,
+                    node_id="worker-3090-a",
+                    created_at=now,
+                )
+            )
+            await db.commit()
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            login = await client.post(
+                "/admin/auth/login",
+                json={"username": "admin", "password": "correct-password"},
+            )
+            auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+            lock_session = app.state.db.sessions()
+            try:
+                await lock_session.begin()
+                model = JobBatch if locked_row == "batch" else Job
+                row_id = batch_id if locked_row == "batch" else job_id
+                locked = await lock_session.scalar(
+                    select(model).where(model.id == row_id).with_for_update()
+                )
+                assert locked is not None
+
+                response = await asyncio.wait_for(
+                    client.post(
+                        "/admin/nodes/worker-3090-a/interrupt",
+                        headers=auth,
+                        json={"reason": "postgres lock-order proof", "confirm": True},
+                    ),
+                    timeout=2,
+                )
+                assert response.status_code == 409, response.text
+                assert response.json()["detail"]["code"] == "NODE_INTERRUPT_BUSY_RETRY"
+            finally:
+                await lock_session.rollback()
+                await lock_session.close()
+
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-a")
+            job = await db.get(Job, job_id)
+            retry_audit = await db.scalar(
+                select(AuditLog).where(
+                    AuditLog.action == "node.interrupt.busy_retry",
+                    AuditLog.target_id == "worker-3090-a",
+                )
+            )
+            assert node is not None and node.mode == "ACTIVE"
+            assert job is not None and job.status == "RUNNING"
+            assert job.cancel_requested is False
+            assert retry_audit is not None and retry_audit.result == "REJECTED"
+        async with app.state.db.engine.begin() as connection:
+            await connection.execute(text("DROP SCHEMA public CASCADE"))
+            await connection.execute(text("CREATE SCHEMA public"))
