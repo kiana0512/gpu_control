@@ -5,13 +5,17 @@ import json
 import time
 import uuid
 import zipfile
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
+from fastapi import FastAPI
 from gpu_control_api.main import _merge_service_parameter, create_app
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.gpu_control_core.enums import BatchStatus
 from packages.gpu_control_core.models import (
@@ -74,7 +78,7 @@ async def test_api_version_exposes_immutable_build_provenance(
         assert payload["version_aligned"] is True
 
 
-async def prepared_app(tmp_path: Path):
+async def prepared_app(tmp_path: Path) -> AsyncIterator[tuple[FastAPI, httpx.AsyncClient]]:
     settings = Settings(
         environment="test",
         database_url=f"sqlite+aiosqlite:///{(tmp_path / 'api.db').as_posix()}",
@@ -226,6 +230,275 @@ async def prepared_app(tmp_path: Path):
             yield app, client
 
 
+async def install_imageclip_batch_workflow(app: FastAPI) -> None:
+    async with app.state.db.session() as session:
+        session.add(
+            Workflow(
+                key="imageclip-rgba",
+                display_name="ImageClip RGBA",
+                description="batch admission test",
+            )
+        )
+        session.add(
+            WorkflowVersion(
+                workflow_key="imageclip-rgba",
+                version="test-1",
+                template={
+                    "1": {
+                        "class_type": "LoadImage",
+                        "inputs": {"image": "placeholder.png"},
+                    },
+                    "9": {"class_type": "SaveImage", "inputs": {}},
+                },
+                parameter_schema={
+                    "type": "object",
+                    "properties": {"image_filename": {"type": "string"}},
+                    "required": ["image_filename"],
+                    "additionalProperties": False,
+                },
+                bindings={"image_filename": "1.inputs.image"},
+                allowed_class_types=["LoadImage", "SaveImage"],
+                required_models=[],
+                required_custom_nodes=[],
+                min_vram_mb=0,
+                timeout_seconds=60,
+                node_labels={
+                    "imageclip_commit": "7" * 40,
+                    "imageclip_pipeline_sha256": "8" * 64,
+                },
+                output_nodes=["9"],
+                enabled=True,
+                template_sha256="batch-admission-test",
+            )
+        )
+        await session.commit()
+
+
+def imageclip_batch_files(external_batch_id: str) -> dict[str, Any]:
+    from PIL import Image
+
+    image = io.BytesIO()
+    Image.new("RGB", (3, 2), "white").save(image, format="PNG")
+    image_bytes = image.getvalue()
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("shot/0001.png", image_bytes)
+    manifest = {
+        "schema_version": "1.0",
+        "external_batch_id": external_batch_id,
+        "failure_policy": "all_or_nothing",
+        "output_naming": "preserve_stem_png",
+        "parameters": {},
+        "frames": [
+            {
+                "ordinal": 0,
+                "relative_path": "shot/0001.png",
+                "size_bytes": len(image_bytes),
+                "sha256": hashlib.sha256(image_bytes).hexdigest(),
+            }
+        ],
+    }
+    return {
+        "archive": ("frames.zip", archive.getvalue(), "application/zip"),
+        "manifest": (None, json.dumps(manifest)),
+    }
+
+
+async def test_expired_batch_idempotency_key_can_be_reused_concurrently(
+    tmp_path: Path,
+) -> None:
+    headers = {
+        "X-API-Key": "gpc_abcd1234_secret",
+        "Idempotency-Key": "reusable-batch-key",
+    }
+    async for app, client in prepared_app(tmp_path):
+        await install_imageclip_batch_workflow(app)
+        first = await client.post(
+            "/api/v1/batches/imageclip-rgba",
+            headers=headers,
+            files=imageclip_batch_files("expired-original"),
+        )
+        assert first.status_code == 202, first.text
+        first_batch_id = first.json()["batch_id"]
+        async with app.state.db.session() as db:
+            expired = await db.scalar(
+                select(BatchIdempotencyKey).where(
+                    BatchIdempotencyKey.client_id == "tenant",
+                    BatchIdempotencyKey.key == "reusable-batch-key",
+                )
+            )
+            assert expired is not None
+            expired.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            await db.commit()
+
+        async def submit(api_client: httpx.AsyncClient = client) -> httpx.Response:
+            return await api_client.post(
+                "/api/v1/batches/imageclip-rgba",
+                headers=headers,
+                files=imageclip_batch_files("reused-concurrently"),
+            )
+
+        responses = await asyncio.gather(*(submit() for _ in range(20)))
+        assert sum(response.status_code == 202 for response in responses) == 1
+        assert sum(response.status_code == 200 for response in responses) == 19
+        reused_batch_ids = {response.json()["batch_id"] for response in responses}
+        assert len(reused_batch_ids) == 1
+        assert first_batch_id not in reused_batch_ids
+        async with app.state.db.session() as db:
+            current = await db.scalar(
+                select(BatchIdempotencyKey).where(
+                    BatchIdempotencyKey.client_id == "tenant",
+                    BatchIdempotencyKey.key == "reusable-batch-key",
+                )
+            )
+            assert current is not None
+            assert current.batch_id in reused_batch_ids
+            assert await db.scalar(select(func.count(JobBatch.id))) == 2
+
+
+async def test_expired_batch_idempotency_key_inserted_before_locked_recheck_is_reused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = {
+        "X-API-Key": "gpc_abcd1234_secret",
+        "Idempotency-Key": "locked-expired-key",
+    }
+    async for app, client in prepared_app(tmp_path):
+        await install_imageclip_batch_workflow(app)
+        old_batch_id = str(uuid.uuid4())
+        async with app.state.db.session() as db:
+            db.add(
+                JobBatch(
+                    id=old_batch_id,
+                    tenant_id="tenant",
+                    external_batch_id="old-locked-expired",
+                    workflow_key="imageclip-rgba",
+                    workflow_version="test-1",
+                    status=BatchStatus.SUCCEEDED.value,
+                    request_hash="a" * 64,
+                    request_id="old-locked-expired",
+                    trace_id="old-locked-expired",
+                    batch_dir=str(tmp_path / "old-locked-expired"),
+                    manifest_sha256="b" * 64,
+                    archive_sha256="c" * 64,
+                    archive_size_bytes=1,
+                    total_items=1,
+                    pending_items=0,
+                )
+            )
+            await db.commit()
+
+        injected = False
+
+        async def inject_expired_key(db: AsyncSession, batch_id: str = old_batch_id) -> None:
+            nonlocal injected
+            if injected:
+                return
+            injected = True
+            db.add(
+                BatchIdempotencyKey(
+                    client_id="tenant",
+                    key="locked-expired-key",
+                    request_hash="d" * 64,
+                    batch_id=batch_id,
+                    expires_at=datetime.now(UTC) - timedelta(seconds=1),
+                )
+            )
+            await db.flush()
+
+        monkeypatch.setattr(
+            app.state.db,
+            "acquire_global_admission_transaction_lock",
+            inject_expired_key,
+        )
+        created = await client.post(
+            "/api/v1/batches/imageclip-rgba",
+            headers=headers,
+            files=imageclip_batch_files("locked-recheck-reuse"),
+        )
+        assert created.status_code == 202, created.text
+        assert created.json()["batch_id"] != old_batch_id
+        async with app.state.db.session() as db:
+            current = await db.scalar(
+                select(BatchIdempotencyKey).where(
+                    BatchIdempotencyKey.client_id == "tenant",
+                    BatchIdempotencyKey.key == "locked-expired-key",
+                )
+            )
+            assert current is not None
+            assert current.batch_id == created.json()["batch_id"]
+
+
+async def test_uncommitted_imageclip_batch_directory_is_removed_on_unexpected_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        await install_imageclip_batch_workflow(app)
+
+        async def fail_global_admission_lock(_: AsyncSession) -> None:
+            raise RuntimeError("injected admission failure")
+
+        monkeypatch.setattr(
+            app.state.db,
+            "acquire_global_admission_transaction_lock",
+            fail_global_admission_lock,
+        )
+        response = await client.post(
+            "/api/v1/batches/imageclip-rgba",
+            headers={
+                "X-API-Key": "gpc_abcd1234_secret",
+                "Idempotency-Key": "cleanup-on-failure",
+            },
+            files=imageclip_batch_files("cleanup-on-failure"),
+        )
+        assert response.status_code == 500, response.text
+        permanent = [path for path in (tmp_path / "jobs").glob("batches/*/*/*/*") if path.is_dir()]
+        assert permanent == []
+        staging = tmp_path / "jobs" / ".batch-staging"
+        assert not staging.exists() or not any(staging.iterdir())
+
+
+async def test_lost_batch_commit_acknowledgement_preserves_committed_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_commit = AsyncSession.commit
+    async for app, client in prepared_app(tmp_path):
+        await install_imageclip_batch_workflow(app)
+        raised = False
+
+        async def commit_then_lose_acknowledgement(db: AsyncSession) -> None:
+            nonlocal raised
+            commits_batch = any(isinstance(item, JobBatch) for item in db.identity_map.values())
+            await original_commit(db)
+            if commits_batch and not raised:
+                raised = True
+                raise RuntimeError("injected lost commit acknowledgement")
+
+        monkeypatch.setattr(AsyncSession, "commit", commit_then_lose_acknowledgement)
+        response = await client.post(
+            "/api/v1/batches/imageclip-rgba",
+            headers={
+                "X-API-Key": "gpc_abcd1234_secret",
+                "Idempotency-Key": "lost-commit-ack",
+            },
+            files=imageclip_batch_files("lost-commit-ack"),
+        )
+        assert response.status_code == 500, response.text
+        assert raised is True
+        async with app.state.db.session() as db:
+            batch = await db.scalar(
+                select(JobBatch).where(
+                    JobBatch.tenant_id == "tenant",
+                    JobBatch.external_batch_id == "lost-commit-ack",
+                )
+            )
+            assert batch is not None
+            assert Path(batch.batch_dir).is_dir()
+
+
 async def test_api_key_rbac_validation_and_idempotency(tmp_path: Path) -> None:
     async for _, client in prepared_app(tmp_path):
         # First-party LAN callers are intentionally auto-enrolled by source IP.
@@ -292,6 +565,243 @@ async def test_job_create_acquires_global_admission_before_tenant_lock(
         )
         assert response.status_code == 202, response.text
         assert lock_calls == ["global", "tenant:tenant"]
+
+
+async def test_production_admission_atomically_preempts_new_test_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        async with app.state.db.session() as db:
+            load_client = await db.get(ApiClient, "tenant-b")
+            assert load_client is not None
+            load_client.client_kind = "test"
+            await db.commit()
+
+        first_lock_entered = asyncio.Event()
+        second_lock_entered = asyncio.Event()
+        allow_second_admission = asyncio.Event()
+        lock_calls = 0
+
+        async def ordered_global_lock(
+            _session: object,
+            first_entered: asyncio.Event = first_lock_entered,
+            second_entered: asyncio.Event = second_lock_entered,
+            allow_second: asyncio.Event = allow_second_admission,
+        ) -> None:
+            nonlocal lock_calls
+            lock_calls += 1
+            if lock_calls == 1:
+                first_entered.set()
+                return
+            second_entered.set()
+            await allow_second.wait()
+
+        monkeypatch.setattr(
+            app.state.db,
+            "acquire_global_admission_transaction_lock",
+            ordered_global_lock,
+        )
+        production_task = asyncio.create_task(
+            client.post(
+                "/api/v1/jobs",
+                headers={
+                    "X-API-Key": "gpc_abcd1234_secret",
+                    "Idempotency-Key": "production-first",
+                },
+                files={
+                    "workflow_key": (None, "fake"),
+                    "workflow_version": (None, "1"),
+                    "parameters": (None, '{"steps":20}'),
+                },
+            )
+        )
+        await asyncio.wait_for(first_lock_entered.wait(), timeout=2)
+        test_task = asyncio.create_task(
+            client.post(
+                "/api/v1/jobs",
+                headers={
+                    "X-API-Key": "gpc_tenantb1_secret-b",
+                    "Idempotency-Key": "test-after-production",
+                },
+                files={
+                    "workflow_key": (None, "fake"),
+                    "workflow_version": (None, "1"),
+                    "parameters": (None, '{"steps":20}'),
+                },
+            )
+        )
+        await asyncio.wait_for(second_lock_entered.wait(), timeout=2)
+        production = await asyncio.wait_for(production_task, timeout=5)
+        assert production.status_code == 202, production.text
+        allow_second_admission.set()
+        preempted = await asyncio.wait_for(test_task, timeout=5)
+        assert preempted.status_code == 503, preempted.text
+        assert preempted.headers["Retry-After"] == "5"
+        assert preempted.json()["detail"] == {
+            "code": "LOAD_TEST_PREEMPTED",
+            "message": "真实生产任务已进入系统，新的压力测试任务已暂停接收",
+            "retryable": True,
+        }
+        async with app.state.db.session() as db:
+            test_job_count = await db.scalar(
+                select(func.count(Job.id)).where(Job.tenant_id == "tenant-b")
+            )
+            assert test_job_count == 0
+
+
+async def test_test_idempotency_replay_remains_available_after_preemption(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        async with app.state.db.session() as db:
+            load_client = await db.get(ApiClient, "tenant-b")
+            assert load_client is not None
+            load_client.client_kind = "test"
+            await db.commit()
+        test_request = {
+            "workflow_key": (None, "fake"),
+            "workflow_version": (None, "1"),
+            "parameters": (None, '{"steps":20}'),
+        }
+        test_headers = {
+            "X-API-Key": "gpc_tenantb1_secret-b",
+            "Idempotency-Key": "existing-test-job",
+        }
+        created = await client.post("/api/v1/jobs", headers=test_headers, files=test_request)
+        assert created.status_code == 202, created.text
+
+        production = await client.post(
+            "/api/v1/jobs",
+            headers={
+                "X-API-Key": "gpc_abcd1234_secret",
+                "Idempotency-Key": "production-arrived",
+            },
+            files=test_request,
+        )
+        assert production.status_code == 202, production.text
+
+        replay = await client.post("/api/v1/jobs", headers=test_headers, files=test_request)
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["job_id"] == created.json()["job_id"]
+
+        rejected = await client.post(
+            "/api/v1/jobs",
+            headers={
+                "X-API-Key": "gpc_tenantb1_secret-b",
+                "Idempotency-Key": "new-test-job",
+            },
+            files=test_request,
+        )
+        assert rejected.status_code == 503, rejected.text
+
+
+async def test_active_production_asset_work_preempts_new_test_batch(
+    tmp_path: Path,
+) -> None:
+    from PIL import Image
+
+    image = io.BytesIO()
+    Image.new("RGB", (2, 2), "white").save(image, format="PNG")
+    image_bytes = image.getvalue()
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("0001.png", image_bytes)
+    manifest = {
+        "schema_version": "1.0",
+        "external_batch_id": "preempted-test-batch",
+        "failure_policy": "all_or_nothing",
+        "output_naming": "preserve_stem_png",
+        "parameters": {},
+        "frames": [
+            {
+                "ordinal": 0,
+                "relative_path": "0001.png",
+                "size_bytes": len(image_bytes),
+                "sha256": hashlib.sha256(image_bytes).hexdigest(),
+            }
+        ],
+    }
+    async for app, client in prepared_app(tmp_path):
+        async with app.state.db.session() as db:
+            load_client = await db.get(ApiClient, "tenant-b")
+            assert load_client is not None
+            load_client.client_kind = "test"
+            db.add(
+                Workflow(
+                    key="imageclip-rgba",
+                    display_name="ImageClip RGBA",
+                    description="admission test",
+                )
+            )
+            db.add(
+                WorkflowVersion(
+                    workflow_key="imageclip-rgba",
+                    version="admission-test",
+                    template={
+                        "1": {
+                            "class_type": "LoadImage",
+                            "inputs": {"image": "placeholder.png"},
+                        },
+                        "9": {"class_type": "SaveImage", "inputs": {}},
+                    },
+                    parameter_schema={
+                        "type": "object",
+                        "properties": {"image_filename": {"type": "string"}},
+                        "required": ["image_filename"],
+                        "additionalProperties": False,
+                    },
+                    bindings={"image_filename": "1.inputs.image"},
+                    allowed_class_types=["LoadImage", "SaveImage"],
+                    required_models=[],
+                    required_custom_nodes=[],
+                    min_vram_mb=0,
+                    timeout_seconds=60,
+                    node_labels={
+                        "imageclip_commit": "7" * 40,
+                        "imageclip_pipeline_sha256": "8" * 64,
+                    },
+                    output_nodes=["9"],
+                    enabled=True,
+                    template_sha256="admission-test",
+                )
+            )
+            db.add(
+                AssetJob(
+                    id="production-asset-active",
+                    client_id="tenant",
+                    external_asset_id="production-asset-active",
+                    job_type="UV_PROCESS_V2",
+                    status="QUEUED",
+                    source_filename="asset.fbx",
+                    input_path=str(tmp_path / "asset.fbx"),
+                    input_sha256="a" * 64,
+                    input_size_bytes=1,
+                    options={},
+                    request_hash="b" * 64,
+                    request_id="production-asset-active",
+                )
+            )
+            await db.commit()
+
+        response = await client.post(
+            "/api/v1/batches/imageclip-rgba",
+            headers={
+                "X-API-Key": "gpc_tenantb1_secret-b",
+                "Idempotency-Key": "preempted-test-batch",
+            },
+            files={
+                "archive": ("frames.zip", archive.getvalue(), "application/zip"),
+                "manifest": (None, json.dumps(manifest)),
+            },
+        )
+        assert response.status_code == 503, response.text
+        assert response.json()["detail"]["code"] == "LOAD_TEST_PREEMPTED"
+        async with app.state.db.session() as db:
+            test_batches = await db.scalar(
+                select(func.count(JobBatch.id)).where(JobBatch.tenant_id == "tenant-b")
+            )
+            assert test_batches == 0
 
 
 async def test_batch_api_idempotency_isolation_and_parent_only_admin_list(
@@ -536,6 +1046,7 @@ async def test_batch_api_idempotency_isolation_and_parent_only_admin_list(
         assert capacity.status_code == 200
         assert capacity.json()["schema_version"] == "1.0"
         assert capacity.json()["advisory"] is True
+        assert capacity.json()["client"]["id"] == "tenant"
         assert capacity.json()["client"]["kind"] == "production"
 
         async with app.state.db.session() as session:
@@ -1653,6 +2164,45 @@ async def test_admin_asset_processing_reports_real_workers_jobs_and_artifacts(
         assert payload["jobs"][0]["job_type"] == "UV_PROCESS_V2"
         assert payload["jobs"][0]["artifacts"][0]["filename"] == "chair_PBR_UV.fbx"
         assert payload["contracts"]["uv"]["artifact_count"] == 5
+        assert payload["jobs_scope"]["active_only"] is False
+
+        active = await client.get(
+            "/admin/asset-processing?limit=500&active_only=true", headers=auth
+        )
+        assert active.status_code == 200
+        assert active.json()["jobs"] == []
+        assert active.json()["jobs_scope"] == {
+            "active_only": True,
+            "limit": 500,
+            "returned": 0,
+            "saturated": False,
+        }
+
+        async with app.state.db.session() as db:
+            db.add(
+                AssetJob(
+                    id=str(uuid.uuid4()),
+                    client_id="tenant",
+                    external_asset_id="asset:future:state",
+                    job_type="UV_PROCESS_V2",
+                    status="FUTURE_NON_TERMINAL",
+                    source_filename="future.fbx",
+                    input_path="/tmp/future.fbx",
+                    input_sha256="f" * 64,
+                    input_size_bytes=1,
+                    options={},
+                    request_hash="e" * 64,
+                    request_id="asset-admin-future-state-test",
+                    created_at=now,
+                )
+            )
+            await db.commit()
+
+        unknown_active = await client.get(
+            "/admin/asset-processing?limit=500&active_only=true", headers=auth
+        )
+        assert unknown_active.status_code == 200
+        assert [job["status"] for job in unknown_active.json()["jobs"]] == ["FUTURE_NON_TERMINAL"]
 
 
 async def test_admin_asset_processing_explains_substance_next_turn_reservation(
@@ -1700,7 +2250,7 @@ async def test_admin_asset_processing_explains_substance_next_turn_reservation(
             json={"username": "admin", "password": "correct-password"},
         )
         auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
-        response = await client.get("/admin/asset-processing", headers=auth)
+        response = await client.get("/admin/asset-processing?active_only=true", headers=auth)
         assert response.status_code == 200, response.text
         payload = response.json()
         job = next(row for row in payload["jobs"] if row["job_id"] == job_id)
@@ -1785,6 +2335,7 @@ async def test_admin_views_separate_production_and_test_traffic(tmp_path: Path) 
         assert test_jobs.status_code == 200
         assert [row["job_id"] for row in test_jobs.json()] == ["test-job"]
         assert test_jobs.json()[0]["client_kind"] == "test"
+        assert test_jobs.json()[0]["request_id"] == "test-request"
 
         all_jobs = await client.get("/admin/jobs?client_kind=all", headers=auth)
         assert {row["job_id"] for row in all_jobs.json()} == {
@@ -2178,6 +2729,72 @@ async def test_admin_can_update_discovered_client_limits_and_access(tmp_path: Pa
         )
         assert conflict.status_code == 409
         assert conflict.json()["detail"]["code"] == "CLIENT_IP_CONFLICT"
+
+
+async def test_admin_client_kind_update_uses_global_then_client_row_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        login = await client.post(
+            "/admin/auth/login", json={"username": "admin", "password": "correct-password"}
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        lock_order: list[str] = []
+        original_get = AsyncSession.get
+
+        async def record_global_lock(_: AsyncSession, events: list[str] = lock_order) -> None:
+            events.append("global")
+
+        async def record_get(
+            session: AsyncSession,
+            entity: Any,
+            ident: Any,
+            events: list[str] = lock_order,
+            get: Any = original_get,
+            **kwargs: Any,
+        ) -> Any:
+            if entity is ApiClient and ident == "tenant" and kwargs.get("with_for_update"):
+                events.append("client-row")
+            return await get(session, entity, ident, **kwargs)
+
+        async def reject_tenant_lock(_: AsyncSession, __: str) -> None:
+            raise AssertionError("admin client update must not acquire a tenant lock")
+
+        monkeypatch.setattr(
+            app.state.db,
+            "acquire_global_admission_transaction_lock",
+            record_global_lock,
+        )
+        monkeypatch.setattr(
+            app.state.db,
+            "acquire_tenant_transaction_lock",
+            reject_tenant_lock,
+        )
+        monkeypatch.setattr(AsyncSession, "get", record_get)
+        updated = await client.put(
+            "/admin/clients/tenant",
+            headers=auth,
+            json={
+                "name": "Tenant",
+                "client_kind": "test",
+                "enabled": True,
+                "max_queued": 200,
+                "max_running": 1,
+                "daily_quota": 1000,
+                "weight": 1,
+                "allowed_ips": [],
+                "callback_hosts": ["callback.example.com"],
+                "reason": "atomic admission classification",
+                "confirm": True,
+            },
+        )
+        assert updated.status_code == 200, updated.text
+        assert lock_order == ["global", "client-row"]
+        async with app.state.db.session() as db:
+            stored = await original_get(db, ApiClient, "tenant")
+            assert stored is not None
+            assert stored.client_kind == "test"
 
 
 async def test_signed_node_heartbeat_updates_address_and_dynamic_monitoring(

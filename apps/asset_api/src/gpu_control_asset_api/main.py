@@ -27,6 +27,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
+from packages.gpu_control_core.admission import (
+    TERMINAL_ASSET_WORK_STATUSES,
+    active_production_work_exists,
+    client_is_load_test,
+)
 from packages.gpu_control_core.assets import (
     AssetCreateMetadata,
     RetopologyAuditMetadata,
@@ -74,9 +79,6 @@ from packages.gpu_control_core.security import sign_agent_request, verify_api_ke
 from packages.gpu_control_core.settings import Settings, get_settings
 
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
-TERMINAL_ASSET_STATUSES = frozenset(
-    {"SUCCEEDED", "WAITING_REVIEW", "REVIEW_REJECTED", "FAILED", "CANCELLED"}
-)
 DOWNLOADABLE_ASSET_STATUSES = frozenset({"SUCCEEDED", "WAITING_REVIEW"})
 UV_REQUIRED_ARTIFACTS = {
     "blend": ("model_PBR_UV.blend", "application/octet-stream"),
@@ -170,6 +172,8 @@ def fsync_completion_staging(staging: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
 SUBSTANCE_VERSION = "substance-15.1.0"
 SUBSTANCE_SKILL_VERSION = "substance-baker-2026.08.03-v5"
 SUBSTANCE_MAX_PARALLEL = 4
@@ -227,13 +231,64 @@ def sha256_path(path: Path) -> str:
     return digest.hexdigest()
 
 
+def build_substance_input_bundle(
+    staging: Path,
+    input_root: Path,
+    request_document: dict[str, Any],
+    bundle_files: dict[str, str],
+) -> tuple[Path, str, int]:
+    """Build and hash the immutable Baker bundle outside the admission lock."""
+
+    workspace = input_root.parent
+    request_path = workspace / "request.json"
+    request_path.write_text(
+        json.dumps(request_document, ensure_ascii=False, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
+    publish_root = staging / "publish"
+    publish_root.mkdir(parents=False, exist_ok=False)
+    bundle = publish_root / "substance_bake_input.zip"
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.write(request_path, "request.json")
+        for bundle_name in bundle_files.values():
+            archive.write(input_root / bundle_name, f"input/{bundle_name}")
+    bundle_sha = sha256_path(bundle)
+    bundle_size = bundle.stat().st_size
+    shutil.rmtree(workspace)
+    return publish_root, bundle_sha, bundle_size
+
+
+def build_retopology_input_bundle(
+    staging: Path,
+    bundle_root: Path,
+    project_filename: str,
+    input_manifest: dict[str, Any],
+    reference_names: list[str],
+) -> tuple[Path, str, int]:
+    """Build and hash the immutable retopology bundle outside admission."""
+
+    manifest_path = bundle_root / "input_manifest.json"
+    manifest_path.write_text(
+        json.dumps(input_manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    publish_root = staging / "publish"
+    publish_root.mkdir(parents=False, exist_ok=False)
+    bundle = publish_root / "retopology_input.zip"
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.write(bundle_root / project_filename, project_filename)
+        archive.write(manifest_path, "input_manifest.json")
+        for filename in reference_names:
+            archive.write(bundle_root / "references" / filename, f"references/{filename}")
+    bundle_sha = sha256_path(bundle)
+    bundle_size = bundle.stat().st_size
+    shutil.rmtree(bundle_root)
+    return publish_root, bundle_sha, bundle_size
+
+
 def is_substance_worker_id(worker_id: str | None) -> bool:
     return bool(
         worker_id
-        and (
-            worker_id == SUBSTANCE_WORKER_ID
-            or worker_id.startswith(SUBSTANCE_WORKER_ID_PREFIX)
-        )
+        and (worker_id == SUBSTANCE_WORKER_ID or worker_id.startswith(SUBSTANCE_WORKER_ID_PREFIX))
     )
 
 
@@ -290,8 +345,7 @@ def ensure_substance_owned_drain(node: Node, labels: dict[str, Any]) -> bool:
         labels[SUBSTANCE_DRAIN_OWNER_LABEL] = SUBSTANCE_DRAIN_OWNER
         return True
     return (
-        node.mode == "DRAINING"
-        and labels.get(SUBSTANCE_DRAIN_OWNER_LABEL) == SUBSTANCE_DRAIN_OWNER
+        node.mode == "DRAINING" and labels.get(SUBSTANCE_DRAIN_OWNER_LABEL) == SUBSTANCE_DRAIN_OWNER
     )
 
 
@@ -334,8 +388,7 @@ async def reconcile_substance_gpu_reservation(
         ).all()
     )
     fresh_baker_slots = sum(
-        max(0, worker.max_concurrency - worker.current_jobs)
-        for worker in fresh_bakers
+        max(0, worker.max_concurrency - worker.current_jobs) for worker in fresh_bakers
     )
     reservation_capacity = min(available, fresh_baker_slots)
     if reservation_capacity:
@@ -359,12 +412,8 @@ async def reconcile_substance_gpu_reservation(
     if pending_job_ids and ensure_substance_owned_drain(node, labels):
         labels[SUBSTANCE_PENDING_RESERVATION_LABEL] = {
             "job_ids": pending_job_ids,
-            "worker_ids": [worker.id for worker in fresh_bakers][
-                : len(pending_job_ids)
-            ],
-            "expires_at": (
-                current + timedelta(seconds=reservation_seconds)
-            ).isoformat(),
+            "worker_ids": [worker.id for worker in fresh_bakers][: len(pending_job_ids)],
+            "expires_at": (current + timedelta(seconds=reservation_seconds)).isoformat(),
             "max_parallel": SUBSTANCE_MAX_PARALLEL,
         }
     else:
@@ -407,9 +456,7 @@ def substance_recovery_entries(labels: dict[str, Any]) -> list[dict[str, Any]]:
                 "idle_observed_agent_instance_id": str(
                     item.get("idle_observed_agent_instance_id", "")
                 ),
-                "process_probe_checked_at": str(
-                    item.get("process_probe_checked_at", "")
-                ),
+                "process_probe_checked_at": str(item.get("process_probe_checked_at", "")),
             }
         )
     return entries
@@ -443,9 +490,7 @@ async def mark_substance_gpu_recovery_required(
         labels.pop(SUBSTANCE_FENCE_LABEL, None)
     labels.pop(SUBSTANCE_LEGACY_FENCE_LABEL, None)
     labels.pop(SUBSTANCE_PENDING_RESERVATION_LABEL, None)
-    entries = [
-        entry for entry in substance_recovery_entries(labels) if entry["job_id"] != job.id
-    ]
+    entries = [entry for entry in substance_recovery_entries(labels) if entry["job_id"] != job.id]
     entries.append(
         {
             "job_id": job.id,
@@ -497,11 +542,7 @@ async def confirm_substance_gpu_recovery(
         return False
     try:
         latest_lease_expiry = max(
-            as_utc(
-                datetime.fromisoformat(
-                    entry["lease_expired_at"].replace("Z", "+00:00")
-                )
-            )
+            as_utc(datetime.fromisoformat(entry["lease_expired_at"].replace("Z", "+00:00")))
             for entry in matching
         )
     except (ValueError, TypeError):
@@ -534,14 +575,10 @@ async def confirm_substance_gpu_recovery(
     for entry in matching:
         try:
             idle_observed_at = as_utc(
-                datetime.fromisoformat(
-                    entry["idle_observed_at"].replace("Z", "+00:00")
-                )
+                datetime.fromisoformat(entry["idle_observed_at"].replace("Z", "+00:00"))
             )
             persisted_process_observation = as_utc(
-                datetime.fromisoformat(
-                    entry["process_probe_checked_at"].replace("Z", "+00:00")
-                )
+                datetime.fromisoformat(entry["process_probe_checked_at"].replace("Z", "+00:00"))
             )
         except (ValueError, TypeError):
             continue
@@ -549,8 +586,7 @@ async def confirm_substance_gpu_recovery(
             idle_observed_at >= latest_lease_expiry
             and idle_observed_at <= observation_time
             and persisted_process_observation >= latest_lease_expiry
-            and persisted_process_observation
-            <= idle_observed_at + timedelta(seconds=30)
+            and persisted_process_observation <= idle_observed_at + timedelta(seconds=30)
         ):
             persisted_idle_observations.append(idle_observed_at)
             persisted_process_observations.append(persisted_process_observation)
@@ -558,9 +594,7 @@ async def confirm_substance_gpu_recovery(
         for entry in entries:
             if entry["worker_id"] == worker.id:
                 entry["idle_observed_at"] = observation_time.isoformat()
-                entry["idle_observed_agent_instance_id"] = (
-                    reported_agent_instance_id
-                )
+                entry["idle_observed_agent_instance_id"] = reported_agent_instance_id
                 entry["process_probe_checked_at"] = process_observation.isoformat()
         recovery_observed_after = observation_time
     else:
@@ -571,16 +605,13 @@ async def confirm_substance_gpu_recovery(
     labels[SUBSTANCE_RECOVERY_REQUIRED_LABEL] = entries
     ensure_substance_owned_drain(node, labels)
     node.labels = labels
-    node_heartbeat = (
-        as_utc(node.last_heartbeat_at) if node.last_heartbeat_at is not None else None
-    )
+    node_heartbeat = as_utc(node.last_heartbeat_at) if node.last_heartbeat_at is not None else None
     if (
         node.health != "ONLINE"
         or node_heartbeat is None
         or node_heartbeat < latest_lease_expiry
         or node_heartbeat < recovery_observed_after
-        or (observation_time - node_heartbeat).total_seconds()
-        > node_heartbeat_timeout_seconds
+        or (observation_time - node_heartbeat).total_seconds() > node_heartbeat_timeout_seconds
         or node.current_jobs != 0
         or node.external_busy
         or node.foreign_queue_detected
@@ -612,9 +643,7 @@ async def release_substance_gpu_fence(
     """Release one Baker fence and atomically reserve the next production work."""
     if job.job_type != "SUBSTANCE_BAKE_V1":
         return
-    node = await db.scalar(
-        select(Node).where(Node.id == SUBSTANCE_GPU_NODE_ID).with_for_update()
-    )
+    node = await db.scalar(select(Node).where(Node.id == SUBSTANCE_GPU_NODE_ID).with_for_update())
     if node is None:
         return
     labels = dict(node.labels or {})
@@ -627,9 +656,7 @@ async def release_substance_gpu_fence(
     labels.pop(SUBSTANCE_LEGACY_FENCE_LABEL, None)
     pending = labels.get(SUBSTANCE_PENDING_RESERVATION_LABEL)
     if isinstance(pending, dict) and isinstance(pending.get("job_ids"), list):
-        pending["job_ids"] = [
-            str(job_id) for job_id in pending["job_ids"] if str(job_id) != job.id
-        ]
+        pending["job_ids"] = [str(job_id) for job_id in pending["job_ids"] if str(job_id) != job.id]
         labels[SUBSTANCE_PENDING_RESERVATION_LABEL] = pending
     node.labels = labels
     await reconcile_substance_gpu_reservation(
@@ -642,6 +669,7 @@ async def release_substance_gpu_fence(
 
 class Principal(BaseModel):
     id: str
+    client_kind: str
 
 
 class WorkerHeartbeat(BaseModel):
@@ -657,9 +685,7 @@ class WorkerHeartbeat(BaseModel):
     current_jobs: int = Field(ge=0, le=32)
     load_1m: float = Field(ge=0, le=4096)
     available_memory_mb: int = Field(ge=0)
-    agent_instance_id: str | None = Field(
-        default=None, pattern=r"^[a-f0-9]{32}$", max_length=32
-    )
+    agent_instance_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$", max_length=32)
     agent_started_at: datetime | None = None
     substance_process_probe_status: str = Field(default="NOT_RUN", max_length=24)
     substance_process_probe_checked_at: datetime | None = None
@@ -682,9 +708,7 @@ class WorkerHeartbeat(BaseModel):
 class WorkerClaim(BaseModel):
     model_config = ConfigDict(extra="forbid")
     worker_id: str = Field(min_length=1, max_length=64)
-    agent_instance_id: str | None = Field(
-        default=None, pattern=r"^[a-f0-9]{32}$", max_length=32
-    )
+    agent_instance_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$", max_length=32)
     load_1m: float = Field(ge=0, le=4096)
     available_memory_mb: int = Field(ge=0)
 
@@ -798,7 +822,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             clients = list(
                 (await db.scalars(select(ApiClient).where(ApiClient.role == "client"))).all()
             )
-            matches = [candidate for candidate in clients if source_ip in (candidate.allowed_ips or [])]
+            matches = [
+                candidate for candidate in clients if source_ip in (candidate.allowed_ips or [])
+            ]
             if len(matches) == 1:
                 client = matches[0]
             elif len(matches) > 1:
@@ -831,11 +857,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         client.last_seen_ip = source_ip
         client.last_seen_at = datetime.now(UTC)
         await db.commit()
-        return Principal(id=client.id)
+        return Principal(id=client.id, client_kind=client.client_kind)
 
-    async def verify_worker(
-        request: Request, raw_body: bytes, worker_id: str
-    ) -> None:
+    async def verify_worker(request: Request, raw_body: bytes, worker_id: str) -> None:
         timestamp = request.headers.get("x-asset-timestamp", "")
         nonce = request.headers.get("x-asset-nonce", "")
         signature = request.headers.get("x-asset-signature", "")
@@ -864,9 +888,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if now - seen_at > 60:
                     del nonces[key]
             if replay_key in nonces:
-                raise HTTPException(
-                    409, detail={"code": "ASSET_WORKER_REQUEST_REPLAY"}
-                )
+                raise HTTPException(409, detail={"code": "ASSET_WORKER_REQUEST_REPLAY"})
             nonces[replay_key] = now
 
     def artifact_payload(artifact: AssetArtifact) -> dict[str, Any]:
@@ -895,20 +917,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "不会发布不合格结果。请联系服务端管理员重试或修复。"
             ),
             "RETOPOLOGY_AUDIT_FAILED": (
-                "自动重拓扑候选未通过严格交付 QA；诊断制品已保留，"
-                "未发布为最终结果。"
+                "自动重拓扑候选未通过严格交付 QA；诊断制品已保留，未发布为最终结果。"
             ),
             "RETOPOLOGY_QUALITY_GATE_FAILED": (
-                "自动重拓扑候选未通过严格交付 QA；诊断制品已保留，"
-                "未发布为最终结果。"
+                "自动重拓扑候选未通过严格交付 QA；诊断制品已保留，未发布为最终结果。"
             ),
             "BLENDER_EXECUTION_FAILED": (
-                "Blender 资产处理执行失败；系统已保留任务诊断，"
-                "请联系服务端管理员处理后重试。"
+                "Blender 资产处理执行失败；系统已保留任务诊断，请联系服务端管理员处理后重试。"
             ),
             "SUBSTANCE_EXECUTION_FAILED": (
-                "Substance 3D Baker 执行失败；系统已保留输入和原生 Windows 日志，"
-                "未发布不完整贴图。"
+                "Substance 3D Baker 执行失败；系统已保留输入和原生 Windows 日志，未发布不完整贴图。"
             ),
             "SUBSTANCE_RESULT_INVALID": (
                 "Substance 3D Baker 输出未通过完整性校验，未发布为最终贴图。"
@@ -936,14 +954,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         *,
         details: dict[str, Any] | None = None,
     ) -> None:
-        sequence = int(
-            await db.scalar(
-                select(func.coalesce(func.max(AssetJobEvent.sequence), 0)).where(
-                    AssetJobEvent.job_id == job.id
+        sequence = (
+            int(
+                await db.scalar(
+                    select(func.coalesce(func.max(AssetJobEvent.sequence), 0)).where(
+                        AssetJobEvent.job_id == job.id
+                    )
                 )
+                or 0
             )
-            or 0
-        ) + 1
+            + 1
+        )
         db.add(
             AssetJobEvent(
                 job_id=job.id,
@@ -962,7 +983,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         terminal_at = job.finished_at or job.last_progress_at
         timing_end = (
             as_utc(terminal_at)
-            if job.status in TERMINAL_ASSET_STATUSES and terminal_at is not None
+            if job.status in TERMINAL_ASSET_WORK_STATUSES and terminal_at is not None
             else now
         )
         elapsed = (
@@ -973,9 +994,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         queue_position: int | None = None
         estimated_start_seconds: int | None = None
         if job.status == "QUEUED":
-            heartbeat_cutoff = now - timedelta(
-                seconds=cfg.asset_worker_heartbeat_timeout_seconds
-            )
+            heartbeat_cutoff = now - timedelta(seconds=cfg.asset_worker_heartbeat_timeout_seconds)
             queue_query = select(func.count(AssetJob.id)).where(
                 AssetJob.status == "QUEUED",
                 AssetJob.created_at <= job.created_at,
@@ -999,10 +1018,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     ~AssetWorker.id.startswith(SUBSTANCE_WORKER_ID_PREFIX),
                 )
             queue_position = int(await db.scalar(queue_query) or 1)
-            slots = int(
-                await db.scalar(worker_query)
-                or 0
-            )
+            slots = int(await db.scalar(worker_query) or 0)
             typical_seconds = {
                 "UV_UNWRAP": 180,
                 "UV_PROCESS_V2": 240,
@@ -1020,9 +1036,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "estimated_start_seconds": estimated_start_seconds,
             "elapsed_seconds": elapsed,
             "estimated_remaining_seconds": job.estimated_remaining_seconds,
-            "last_progress_at": job.last_progress_at.isoformat()
-            if job.last_progress_at
-            else None,
+            "last_progress_at": job.last_progress_at.isoformat() if job.last_progress_at else None,
         }
 
     def artifacts_are_downloadable(job: AssetJob) -> bool:
@@ -1068,8 +1082,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "review_required": False,
             "artifacts_role": (
                 "diagnostic"
-                if job.status == "FAILED"
-                and job.error_code in RETOPOLOGY_DIAGNOSTIC_ERROR_CODES
+                if job.status == "FAILED" and job.error_code in RETOPOLOGY_DIAGNOSTIC_ERROR_CODES
                 else "delivery"
                 if job.status == "SUCCEEDED"
                 else "retained"
@@ -1083,19 +1096,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, detail={"code": "ASSET_JOB_NOT_FOUND"})
         return job
 
-    async def lock_substance_node_for_job(
-        job_id: str, db: AsyncSession
-    ) -> str | None:
+    async def lock_substance_node_for_job(job_id: str, db: AsyncSession) -> str | None:
         """Establish the global Node -> AssetJob lock order for Baker mutations."""
-        job_type = await db.scalar(
-            select(AssetJob.job_type).where(AssetJob.id == job_id)
-        )
+        job_type = await db.scalar(select(AssetJob.job_type).where(AssetJob.id == job_id))
         if job_type == "SUBSTANCE_BAKE_V1":
-            await db.scalar(
-                select(Node)
-                .where(Node.id == SUBSTANCE_GPU_NODE_ID)
-                .with_for_update()
-            )
+            await db.scalar(select(Node).where(Node.id == SUBSTANCE_GPU_NODE_ID).with_for_update())
         return job_type
 
     async def persist_upload(
@@ -1120,6 +1125,119 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, detail={"code": "ASSET_EMPTY"})
         return digest.hexdigest(), size
 
+    async def lock_asset_admission(
+        request: Request,
+        principal: Principal,
+        db: AsyncSession,
+    ) -> None:
+        """Establish the shared global -> tenant lock order for new work."""
+
+        await request.app.state.db.acquire_global_admission_transaction_lock(db)
+        await request.app.state.db.acquire_tenant_transaction_lock(db, principal.id)
+
+    async def enforce_new_asset_admission(
+        principal: Principal,
+        db: AsyncSession,
+    ) -> None:
+        """Pause only new test work while any production work is non-terminal."""
+
+        if not await client_is_load_test(
+            db, principal.id
+        ) or not await active_production_work_exists(db):
+            return
+        raise HTTPException(
+            503,
+            detail={
+                "code": "LOAD_TEST_PREEMPTED",
+                "message": "真实生产任务已进入系统，新的压力测试任务已暂停接收",
+                "retryable": True,
+            },
+            headers={"Retry-After": "5"},
+        )
+
+    async def replay_or_expire_asset_idempotency(
+        principal: Principal,
+        db: AsyncSession,
+        *,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> JSONResponse | None:
+        """Replay a live key or remove an expired key under admission locks."""
+
+        existing = await db.scalar(
+            select(AssetIdempotencyKey)
+            .where(
+                AssetIdempotencyKey.client_id == principal.id,
+                AssetIdempotencyKey.key == idempotency_key,
+            )
+            .with_for_update()
+        )
+        if existing is None:
+            return None
+        if as_utc(existing.expires_at) <= datetime.now(UTC):
+            await db.delete(existing)
+            await db.flush()
+            return None
+        if existing.request_hash != request_hash:
+            raise HTTPException(409, detail={"code": "IDEMPOTENCY_CONFLICT"})
+        old_job = await db.get(AssetJob, existing.job_id)
+        if old_job is None:
+            raise HTTPException(500, detail={"code": "ASSET_JOB_NOT_FOUND"})
+        return JSONResponse(await job_payload(old_job, db), 200)
+
+    async def cleanup_uncommitted_asset_root(
+        request: Request,
+        job_id: str | None,
+        job_root: Path | None,
+    ) -> None:
+        """Remove an unpublished input tree only when the DB proves it is orphaned.
+
+        A database commit may become durable even when its acknowledgement is
+        lost to the API process.  In that case deleting ``job_root`` would leave
+        an authoritative AssetJob pointing at missing input.  Fail closed on
+        database uncertainty and leave the directory for the audited orphan
+        sweeper instead.
+        """
+
+        if job_id is None or job_root is None or not job_root.exists():
+            return
+        try:
+            async with request.app.state.db.session() as cleanup_db:
+                persisted = await cleanup_db.get(AssetJob, job_id)
+        except Exception:
+            return
+        if persisted is None and job_root.exists():
+            await asyncio.to_thread(shutil.rmtree, job_root)
+
+    async def cleanup_uncommitted_completion(
+        request: Request,
+        staging: Path,
+        artifacts: list[AssetArtifact],
+    ) -> None:
+        """Delete staged outputs only when no durable artifact row references them."""
+
+        if not staging.exists():
+            return
+        artifact_ids = [artifact.id for artifact in artifacts]
+        persisted = False
+        try:
+            if artifact_ids:
+                async with request.app.state.db.session() as cleanup_db:
+                    persisted = (
+                        await cleanup_db.scalar(
+                            select(AssetArtifact.id)
+                            .where(AssetArtifact.id.in_(artifact_ids))
+                            .limit(1)
+                        )
+                    ) is not None
+        except Exception:
+            # A successful commit can lose its acknowledgement.  Database
+            # uncertainty is therefore a preserve condition, never a delete
+            # condition; a later orphan sweep can prove and reclaim the tree.
+            return
+        if not persisted and staging.exists():
+            await asyncio.to_thread(shutil.rmtree, staging)
+
     async def create_uploaded_job(
         *,
         request: Request,
@@ -1136,6 +1254,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         staging = cfg.asset_root / f".staging-{uuid.uuid4().hex}"
         staging.mkdir(parents=True, exist_ok=False)
         source = staging / filename
+        job_id: str | None = None
+        job_root: Path | None = None
+        committed = False
         digest = hashlib.sha256()
         size = 0
         try:
@@ -1152,21 +1273,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(422, detail={"code": "ASSET_EMPTY"})
             input_sha = digest.hexdigest()
             request_hash = request_hash_builder(input_sha)
-            existing = await db.scalar(
-                select(AssetIdempotencyKey).where(
-                    AssetIdempotencyKey.client_id == principal.id,
-                    AssetIdempotencyKey.key == idempotency_key,
-                    AssetIdempotencyKey.expires_at > datetime.now(UTC),
-                )
+            await lock_asset_admission(request, principal, db)
+            replay = await replay_or_expire_asset_idempotency(
+                principal,
+                db,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
             )
-            if existing is not None:
-                shutil.rmtree(staging)
-                if existing.request_hash != request_hash:
-                    raise HTTPException(409, detail={"code": "IDEMPOTENCY_CONFLICT"})
-                old_job = await db.get(AssetJob, existing.job_id)
-                if old_job is None:
-                    raise HTTPException(500, detail={"code": "ASSET_JOB_NOT_FOUND"})
-                return JSONResponse(await job_payload(old_job, db), 200)
+            if replay is not None:
+                return replay
+            await enforce_new_asset_admission(principal, db)
             duplicate_external = await db.scalar(
                 select(AssetJob).where(
                     AssetJob.client_id == principal.id,
@@ -1212,13 +1328,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             )
             await db.commit()
+            committed = True
             return JSONResponse(await job_payload(job, db), 202)
         except IntegrityError as exc:
             await db.rollback()
             raise HTTPException(409, detail={"code": "ASSET_CONFLICT"}) from exc
         finally:
             if staging.exists():
-                shutil.rmtree(staging)
+                await asyncio.to_thread(shutil.rmtree, staging)
+            if not committed:
+                await cleanup_uncommitted_asset_root(request, job_id, job_root)
 
     @app.get("/health/live")
     async def live() -> dict[str, str]:
@@ -1244,7 +1363,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             parsed = AssetCreateMetadata.model_validate_json(metadata)
             filename = validate_asset_filename(asset.filename or "")
         except ValueError as exc:
-            raise HTTPException(422, detail={"code": "ASSET_INPUT_INVALID", "message": str(exc)}) from exc
+            raise HTTPException(
+                422, detail={"code": "ASSET_INPUT_INVALID", "message": str(exc)}
+            ) from exc
         return await create_uploaded_job(
             request=request,
             principal=principal,
@@ -1278,13 +1399,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             parsed = SubstanceBakeMetadata.model_validate_json(metadata)
             low_name = validate_baker_filename(low_mesh.filename or "")
-            high_name = (
-                validate_baker_filename(high_mesh.filename or "") if high_mesh else None
-            )
-            cage_name = (
-                validate_baker_filename(cage_mesh.filename or "") if cage_mesh else None
-            )
-            if parsed.options.profile in {"normal-dx-v1", "pbr-core-v1", "li3d-pbr-full-v2"} and not high_mesh:
+            high_name = validate_baker_filename(high_mesh.filename or "") if high_mesh else None
+            cage_name = validate_baker_filename(cage_mesh.filename or "") if cage_mesh else None
+            if (
+                parsed.options.profile in {"normal-dx-v1", "pbr-core-v1", "li3d-pbr-full-v2"}
+                and not high_mesh
+            ):
                 raise ValueError(f"{parsed.options.profile} requires high_mesh")
             texture_uploads = {
                 "base_color": base_color_texture,
@@ -1303,8 +1423,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ) from exc
 
         staging = cfg.asset_root / f".staging-{uuid.uuid4().hex}"
-        input_root = staging / "input"
+        input_root = staging / "workspace" / "input"
         input_root.mkdir(parents=True, exist_ok=False)
+        job_id: str | None = None
+        job_root: Path | None = None
+        committed = False
         try:
             input_sha: dict[str, str] = {}
             received = 0
@@ -1333,20 +1456,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 bundle_files[role] = bundle_name
 
             request_hash = substance_bake_request_hash(parsed, input_sha)
-            existing = await db.scalar(
-                select(AssetIdempotencyKey).where(
-                    AssetIdempotencyKey.client_id == principal.id,
-                    AssetIdempotencyKey.key == idempotency_key,
-                    AssetIdempotencyKey.expires_at > datetime.now(UTC),
-                )
+            request_document = {
+                "schema_version": 1,
+                "job_type": "SUBSTANCE_BAKE_V1",
+                "external_asset_id": parsed.external_asset_id,
+                "options": parsed.options.model_dump(mode="json"),
+                "files": bundle_files,
+                "input_sha256": input_sha,
+            }
+            publish_root, bundle_sha, bundle_size = await asyncio.to_thread(
+                build_substance_input_bundle,
+                staging,
+                input_root,
+                request_document,
+                bundle_files,
             )
-            if existing is not None:
-                if existing.request_hash != request_hash:
-                    raise HTTPException(409, detail={"code": "IDEMPOTENCY_CONFLICT"})
-                old_job = await db.get(AssetJob, existing.job_id)
-                if old_job is None:
-                    raise HTTPException(500, detail={"code": "ASSET_JOB_NOT_FOUND"})
-                return JSONResponse(await job_payload(old_job, db), 200)
+
+            await lock_asset_admission(request, principal, db)
+            replay = await replay_or_expire_asset_idempotency(
+                principal,
+                db,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+            )
+            if replay is not None:
+                return replay
+            await enforce_new_asset_admission(principal, db)
             duplicate_external = await db.scalar(
                 select(AssetJob).where(
                     AssetJob.client_id == principal.id,
@@ -1356,30 +1491,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if duplicate_external is not None:
                 raise HTTPException(409, detail={"code": "EXTERNAL_ASSET_CONFLICT"})
 
-            request_document = {
-                "schema_version": 1,
-                "job_type": "SUBSTANCE_BAKE_V1",
-                "external_asset_id": parsed.external_asset_id,
-                "options": parsed.options.model_dump(mode="json"),
-                "files": bundle_files,
-                "input_sha256": input_sha,
-            }
-            (staging / "request.json").write_text(
-                json.dumps(request_document, ensure_ascii=False, sort_keys=True, indent=2),
-                encoding="utf-8",
-            )
-            bundle = staging / "substance_bake_input.zip"
-            with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                archive.write(staging / "request.json", "request.json")
-                for bundle_name in bundle_files.values():
-                    archive.write(input_root / bundle_name, f"input/{bundle_name}")
-            bundle_sha = sha256_path(bundle)
-            bundle_size = bundle.stat().st_size
-
             job_id = str(uuid.uuid4())
             job_root = cfg.asset_root / job_id
-            job_root.mkdir(parents=True, exist_ok=False)
-            bundle.rename(job_root / bundle.name)
+            publish_root.rename(job_root)
+            bundle_name = "substance_bake_input.zip"
             options = parsed.options.model_dump(mode="json")
             options["files"] = bundle_files
             options["input_sha256"] = input_sha
@@ -1389,8 +1504,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 external_asset_id=parsed.external_asset_id,
                 job_type="SUBSTANCE_BAKE_V1",
                 status="QUEUED",
-                source_filename=bundle.name,
-                input_path=str(job_root / bundle.name),
+                source_filename=bundle_name,
+                input_path=str(job_root / bundle_name),
                 input_sha256=bundle_sha,
                 input_size_bytes=bundle_size,
                 options=options,
@@ -1405,9 +1520,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 # cannot slip another ComfyUI job between queueing the
                 # production bake and installing its pending reservation.
                 substance_node = await db.scalar(
-                    select(Node)
-                    .where(Node.id == SUBSTANCE_GPU_NODE_ID)
-                    .with_for_update()
+                    select(Node).where(Node.id == SUBSTANCE_GPU_NODE_ID).with_for_update()
                 )
             db.add(job)
             await db.flush()
@@ -1438,13 +1551,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             )
             await db.commit()
+            committed = True
             return JSONResponse(await job_payload(job, db), 202)
         except IntegrityError as exc:
             await db.rollback()
             raise HTTPException(409, detail={"code": "ASSET_CONFLICT"}) from exc
         finally:
             if staging.exists():
-                shutil.rmtree(staging)
+                await asyncio.to_thread(shutil.rmtree, staging)
+            if not committed:
+                await cleanup_uncommitted_asset_root(request, job_id, job_root)
 
     @app.post("/api/v1/assets/retopology/audit")
     async def create_retopology_audit_job(
@@ -1476,9 +1592,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             options=parsed.options.model_dump(mode="json"),
             job_type="RETOPOLOGY_AUDIT",
             idempotency_key=idempotency_key,
-            request_hash_builder=lambda input_sha: retopology_audit_request_hash(
-                parsed, input_sha
-            ),
+            request_hash_builder=lambda input_sha: retopology_audit_request_hash(parsed, input_sha),
         )
 
     @app.post("/api/v1/assets/retopology/process")
@@ -1519,6 +1633,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         bundle_root = staging / "bundle"
         references_root = bundle_root / "references"
         references_root.mkdir(parents=True, exist_ok=False)
+        job_id: str | None = None
+        job_root: Path | None = None
+        committed = False
         try:
             project_path = bundle_root / project_filename
             project_sha, project_size = await persist_upload(project, project_path)
@@ -1553,35 +1670,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 reference_sha[filename] = digest
                 reference_sizes[filename] = size
 
-            request_hash = retopology_process_request_hash(
-                parsed, project_sha, reference_sha
-            )
-            existing = await db.scalar(
-                select(AssetIdempotencyKey).where(
-                    AssetIdempotencyKey.client_id == principal.id,
-                    AssetIdempotencyKey.key == idempotency_key,
-                    AssetIdempotencyKey.expires_at > datetime.now(UTC),
-                )
-            )
-            if existing is not None:
-                if existing.request_hash != request_hash:
-                    raise HTTPException(409, detail={"code": "IDEMPOTENCY_CONFLICT"})
-                old_job = await db.get(AssetJob, existing.job_id)
-                if old_job is None:
-                    raise HTTPException(500, detail={"code": "ASSET_JOB_NOT_FOUND"})
-                return JSONResponse(await job_payload(old_job, db), 200)
-            duplicate_external = await db.scalar(
-                select(AssetJob).where(
-                    AssetJob.client_id == principal.id,
-                    AssetJob.external_asset_id == parsed.external_asset_id,
-                )
-            )
-            if duplicate_external is not None:
-                raise HTTPException(409, detail={"code": "EXTERNAL_ASSET_CONFLICT"})
-
+            request_hash = retopology_process_request_hash(parsed, project_sha, reference_sha)
             reference_by_name = {
-                item.filename: item.model_dump(mode="json")
-                for item in parsed.reference_views
+                item.filename: item.model_dump(mode="json") for item in parsed.reference_views
             }
             input_manifest = {
                 "schema_version": "retopology_input.v1",
@@ -1600,23 +1691,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ],
                 "user_request": parsed.user_request,
             }
-            manifest_path = bundle_root / "input_manifest.json"
-            manifest_path.write_text(
-                json.dumps(input_manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+            publish_root, bundle_sha, bundle_size = await asyncio.to_thread(
+                build_retopology_input_bundle,
+                staging,
+                bundle_root,
+                project_filename,
+                input_manifest,
+                sorted(reference_sha),
             )
-            bundle_path = staging / "retopology_input.zip"
-            with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_STORED) as archive:
-                archive.write(project_path, project_filename)
-                archive.write(manifest_path, "input_manifest.json")
-                for filename in sorted(reference_sha):
-                    archive.write(references_root / filename, f"references/{filename}")
-            bundle_sha = sha256_path(bundle_path)
-            bundle_size = bundle_path.stat().st_size
-            shutil.rmtree(bundle_root)
+
+            await lock_asset_admission(request, principal, db)
+            replay = await replay_or_expire_asset_idempotency(
+                principal,
+                db,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+            )
+            if replay is not None:
+                return replay
+            await enforce_new_asset_admission(principal, db)
+            duplicate_external = await db.scalar(
+                select(AssetJob).where(
+                    AssetJob.client_id == principal.id,
+                    AssetJob.external_asset_id == parsed.external_asset_id,
+                )
+            )
+            if duplicate_external is not None:
+                raise HTTPException(409, detail={"code": "EXTERNAL_ASSET_CONFLICT"})
 
             job_id = str(uuid.uuid4())
             job_root = cfg.asset_root / job_id
-            staging.rename(job_root)
+            publish_root.rename(job_root)
             options = parsed.options.model_dump(mode="json")
             options.update(
                 {
@@ -1655,13 +1760,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             )
             await db.commit()
+            committed = True
             return JSONResponse(await job_payload(job, db), 202)
         except IntegrityError as exc:
             await db.rollback()
             raise HTTPException(409, detail={"code": "ASSET_CONFLICT"}) from exc
         finally:
             if staging.exists():
-                shutil.rmtree(staging)
+                await asyncio.to_thread(shutil.rmtree, staging)
+            if not committed:
+                await cleanup_uncommitted_asset_root(request, job_id, job_root)
 
     @app.post("/api/v1/assets/uv/process")
     async def create_uv_process_job(
@@ -1691,9 +1799,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             options=parsed.options.model_dump(mode="json"),
             job_type="UV_PROCESS_V2",
             idempotency_key=idempotency_key,
-            request_hash_builder=lambda input_sha: uv_process_request_hash(
-                parsed, input_sha
-            ),
+            request_hash_builder=lambda input_sha: uv_process_request_hash(parsed, input_sha),
         )
 
     @app.get("/api/v1/assets/jobs/{job_id}")
@@ -1750,7 +1856,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             ensure_ascii=False,
                         )
                         yield f"id: {sequence}\nevent: asset-progress\ndata: {data}\n\n"
-                        terminal = item.status in TERMINAL_ASSET_STATUSES
+                        terminal = item.status in TERMINAL_ASSET_WORK_STATUSES
                     if terminal:
                         return
                 yield ": keepalive\n\n"
@@ -1770,9 +1876,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         owner_and_type = (
             await db.execute(
-                select(AssetJob.client_id, AssetJob.job_type).where(
-                    AssetJob.id == job_id
-                )
+                select(AssetJob.client_id, AssetJob.job_type).where(AssetJob.id == job_id)
             )
         ).one_or_none()
         if owner_and_type is None or owner_and_type.client_id != principal.id:
@@ -1781,15 +1885,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Every Baker mutation uses Node -> AssetJob. This serializes
             # queued cancellation against claim/fence installation and keeps
             # a claimed lease from losing its physical-GPU fence.
-            await db.scalar(
-                select(Node)
-                .where(Node.id == SUBSTANCE_GPU_NODE_ID)
-                .with_for_update()
-            )
+            await db.scalar(select(Node).where(Node.id == SUBSTANCE_GPU_NODE_ID).with_for_update())
         job = await db.get(AssetJob, job_id, with_for_update=True)
         if job is None or job.client_id != principal.id:
             raise HTTPException(404, detail={"code": "ASSET_JOB_NOT_FOUND"})
-        if job.status in TERMINAL_ASSET_STATUSES:
+        if job.status in TERMINAL_ASSET_WORK_STATUSES:
             return await job_payload(job, db)
         job.cancel_requested = True
         if job.status == "QUEUED":
@@ -1837,7 +1937,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/v1/assets/capacity")
     async def capacity(
-        _: Annotated[Principal, Depends(api_principal)],
+        principal: Annotated[Principal, Depends(api_principal)],
         db: Annotated[AsyncSession, Depends(session)],
     ) -> dict[str, Any]:
         cutoff = datetime.now(UTC) - timedelta(seconds=cfg.asset_worker_heartbeat_timeout_seconds)
@@ -1860,6 +1960,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "available_slots": sum(
                 max(0, worker.max_concurrency - worker.current_jobs) for worker in workers
             ),
+            "client": {"id": principal.id, "kind": principal.client_kind},
             "as_of": datetime.now(UTC).isoformat(),
         }
 
@@ -1873,9 +1974,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         substance_heartbeat_node: Node | None = None
         if is_substance_worker_id(body.worker_id):
             substance_heartbeat_node = await db.scalar(
-                select(Node)
-                .where(Node.id == SUBSTANCE_GPU_NODE_ID)
-                .with_for_update()
+                select(Node).where(Node.id == SUBSTANCE_GPU_NODE_ID).with_for_update()
             )
         worker = await db.get(AssetWorker, body.worker_id, with_for_update=True)
         if worker is None:
@@ -1918,9 +2017,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         worker.agent_instance_id = body.agent_instance_id
         worker.agent_started_at = body.agent_started_at
         worker.substance_process_probe_status = body.substance_process_probe_status
-        worker.substance_process_probe_checked_at = (
-            body.substance_process_probe_checked_at
-        )
+        worker.substance_process_probe_checked_at = body.substance_process_probe_checked_at
         worker.substance_active_processes = body.substance_active_processes
         worker.codex_cli_version = body.codex_cli_version
         worker.codex_auth_status = body.codex_auth_status
@@ -1957,24 +2054,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else None
         )
         agent_started_at = (
-            as_utc(body.agent_started_at)
-            if body.agent_started_at is not None
-            else None
+            as_utc(body.agent_started_at) if body.agent_started_at is not None else None
         )
-        substance_process_evidence_ok = (
-            not is_substance_worker_id(body.worker_id)
-            or (
-                body.agent_instance_id is not None
-                and agent_started_at is not None
-                and process_checked_at is not None
-                and body.substance_process_probe_status == "HEALTHY"
-                and body.substance_active_processes is not None
-                and agent_started_at <= process_checked_at
-                and process_checked_at
-                >= heartbeat_at
-                - timedelta(seconds=cfg.asset_worker_heartbeat_timeout_seconds)
-                and process_checked_at <= heartbeat_at + timedelta(seconds=30)
-            )
+        substance_process_evidence_ok = not is_substance_worker_id(body.worker_id) or (
+            body.agent_instance_id is not None
+            and agent_started_at is not None
+            and process_checked_at is not None
+            and body.substance_process_probe_status == "HEALTHY"
+            and body.substance_active_processes is not None
+            and agent_started_at <= process_checked_at
+            and process_checked_at
+            >= heartbeat_at - timedelta(seconds=cfg.asset_worker_heartbeat_timeout_seconds)
+            and process_checked_at <= heartbeat_at + timedelta(seconds=30)
         )
         worker.status = (
             "ONLINE"
@@ -2005,6 +2096,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Annotated[AsyncSession, Depends(session)],
     ) -> JSONResponse:
         await verify_worker(request, await request.body(), body.worker_id)
+        substance_claim = is_substance_worker_id(body.worker_id)
+        if substance_claim:
+            # Serialize a Baker claim with every new-work admission before
+            # taking the physical 3090-B row.  This closes the window where a
+            # test Baker could bypass a production create already holding the
+            # global admission lock while that create waited for the Node.
+            await request.app.state.db.acquire_global_admission_transaction_lock(db)
         expiry_cutoff = datetime.now(UTC)
         substance_expiry_hint = await db.scalar(
             select(AssetJob.id)
@@ -2022,9 +2120,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # only after taking the physical Node lock, then each AssetJob row
             # is locked in the globally consistent Node -> Job order.
             substance_expiry_node = await db.scalar(
-                select(Node)
-                .where(Node.id == SUBSTANCE_GPU_NODE_ID)
-                .with_for_update()
+                select(Node).where(Node.id == SUBSTANCE_GPU_NODE_ID).with_for_update()
             )
             expired_substance = list(
                 (
@@ -2032,9 +2128,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         select(AssetJob)
                         .where(
                             AssetJob.job_type == "SUBSTANCE_BAKE_V1",
-                            AssetJob.status.in_(
-                                ["CLAIMED", "RUNNING", "CANCELLING"]
-                            ),
+                            AssetJob.status.in_(["CLAIMED", "RUNNING", "CANCELLING"]),
                             AssetJob.lease_expires_at < expiry_cutoff,
                         )
                         .with_for_update(skip_locked=True)
@@ -2058,7 +2152,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for stale in expired:
             expired_at = datetime.now(UTC)
             previous_worker_id = str(stale.worker_id or "unknown")
-            previous_worker = await db.get(AssetWorker, stale.worker_id) if stale.worker_id else None
+            previous_worker = (
+                await db.get(AssetWorker, stale.worker_id) if stale.worker_id else None
+            )
             substance_expired = stale.job_type == "SUBSTANCE_BAKE_V1"
             if previous_worker is not None:
                 previous_worker.current_jobs = max(0, previous_worker.current_jobs - 1)
@@ -2134,12 +2230,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # committing here prevents those early returns from rolling back a
             # FAILED/recovery-required transition and its physical-GPU drain.
             await db.commit()
+            if substance_claim:
+                # The reconciliation commit releases transaction-scoped
+                # advisory locks.  Reacquire the global lock before the next
+                # Node lock so the ordering remains global -> Node -> Job.
+                await request.app.state.db.acquire_global_admission_transaction_lock(db)
         substance_node: Node | None = None
-        if is_substance_worker_id(body.worker_id):
+        if substance_claim:
             substance_node = await db.scalar(
-                select(Node)
-                .where(Node.id == SUBSTANCE_GPU_NODE_ID)
-                .with_for_update()
+                select(Node).where(Node.id == SUBSTANCE_GPU_NODE_ID).with_for_update()
             )
         worker = await db.get(AssetWorker, body.worker_id, with_for_update=True)
         cutoff = datetime.now(UTC) - timedelta(seconds=cfg.asset_worker_heartbeat_timeout_seconds)
@@ -2154,8 +2253,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ):
             return JSONResponse({"job": None}, 200)
         if is_substance_worker_id(worker.id) and (
-            body.agent_instance_id is None
-            or body.agent_instance_id != worker.agent_instance_id
+            body.agent_instance_id is None or body.agent_instance_id != worker.agent_instance_id
         ):
             # A restarted scheduled task must heartbeat its new generation
             # before it can claim.  This prevents an older process with the
@@ -2191,9 +2289,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
                 labels = dict(substance_node.labels or {})
                 fenced_job_ids = substance_fence_job_ids(labels)
-            recovery_required = bool(
-                labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL)
-            )
+            recovery_required = bool(labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL))
             pending_owned = bool(pending_substance_job_ids) and (
                 labels.get(SUBSTANCE_DRAIN_OWNER_LABEL) == SUBSTANCE_DRAIN_OWNER
             )
@@ -2236,9 +2332,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if is_substance_worker_id(worker.id):
             claim_query = claim_query.where(AssetJob.job_type == "SUBSTANCE_BAKE_V1")
             if pending_substance_job_ids:
-                claim_query = claim_query.where(
-                    AssetJob.id.in_(pending_substance_job_ids)
-                )
+                claim_query = claim_query.where(AssetJob.id.in_(pending_substance_job_ids))
         else:
             claim_query = claim_query.where(AssetJob.job_type != "SUBSTANCE_BAKE_V1")
             codex_probe_cutoff = datetime.now(UTC) - timedelta(
@@ -2254,19 +2348,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 # Codex planning is required only by the full retopology
                 # process. Keep UV and Blender-only retopology audit capacity
                 # available while the credential or live probe is unhealthy.
-                claim_query = claim_query.where(
-                    AssetJob.job_type.not_in(CODEX_REQUIRED_JOB_TYPES)
-                )
+                claim_query = claim_query.where(AssetJob.job_type.not_in(CODEX_REQUIRED_JOB_TYPES))
         claimed_row = (
             await db.execute(
                 claim_query
-            # Production always wins the next free slot.  This is deliberately
-            # evaluated before queue age so an old load-test job cannot delay a
-            # real caller.  FIFO remains stable inside each client-kind pool.
-            .order_by(
-                case((ApiClient.client_kind == "test", 1), else_=0),
-                AssetJob.created_at,
-                AssetJob.id,
+                # Production always wins the next free slot.  This is deliberately
+                # evaluated before queue age so an old load-test job cannot delay a
+                # real caller.  FIFO remains stable inside each client-kind pool.
+                .order_by(
+                    case((ApiClient.client_kind == "test", 1), else_=0),
+                    AssetJob.created_at,
+                    AssetJob.id,
                 ).with_for_update(skip_locked=True, of=AssetJob)
             )
         ).first()
@@ -2296,9 +2388,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             pending = labels.get(SUBSTANCE_PENDING_RESERVATION_LABEL)
             if isinstance(pending, dict) and isinstance(pending.get("job_ids"), list):
                 remaining_pending = [
-                    str(job_id)
-                    for job_id in pending["job_ids"]
-                    if str(job_id) != job.id
+                    str(job_id) for job_id in pending["job_ids"] if str(job_id) != job.id
                 ]
                 if remaining_pending:
                     pending["job_ids"] = remaining_pending
@@ -2400,9 +2490,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         if job.job_type != expected_job_type:
             raise HTTPException(409, detail={"code": "ASSET_JOB_TYPE_MISMATCH"})
-        job.lease_expires_at = datetime.now(UTC) + timedelta(
-            seconds=cfg.asset_worker_lease_seconds
-        )
+        job.lease_expires_at = datetime.now(UTC) + timedelta(seconds=cfg.asset_worker_lease_seconds)
         snapshot = AssetCompletionSnapshot(
             id=job.id,
             job_type=job.job_type,
@@ -2433,9 +2521,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         worker = None
         if job.worker_id:
             worker = await db.scalar(
-                select(AssetWorker)
-                .where(AssetWorker.id == job.worker_id)
-                .with_for_update()
+                select(AssetWorker).where(AssetWorker.id == job.worker_id).with_for_update()
             )
         return job, worker
 
@@ -2513,6 +2599,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/internal/v1/assets/jobs/{job_id}/complete")
     async def worker_complete(
         job_id: str,
+        request: Request,
         db: Annotated[AsyncSession, Depends(session)],
         lease: Annotated[str, Header(alias="X-Asset-Lease")],
         blend: Annotated[UploadFile, File()],
@@ -2574,20 +2661,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             committed = True
             return {"accepted": True}
         finally:
-            if not committed and staging.exists():
-                shutil.rmtree(staging)
+            if not committed:
+                await cleanup_uncommitted_completion(request, staging, created)
 
     @app.post("/internal/v1/assets/jobs/{job_id}/retopology-complete")
     async def worker_complete_retopology_audit(
         job_id: str,
+        request: Request,
         db: Annotated[AsyncSession, Depends(session)],
         lease: Annotated[str, Header(alias="X-Asset-Lease")],
         audit: Annotated[UploadFile, File()],
         manifest: Annotated[UploadFile, File()],
     ) -> dict[str, Any]:
-        snapshot = await prepare_asset_completion(
-            job_id, lease, db, "RETOPOLOGY_AUDIT"
-        )
+        snapshot = await prepare_asset_completion(job_id, lease, db, "RETOPOLOGY_AUDIT")
         uploads = {"audit": audit, "manifest": manifest}
         staging = cfg.asset_root / snapshot.id / f".outputs-{uuid.uuid4().hex}"
         staging.mkdir(parents=True, exist_ok=False)
@@ -2599,9 +2685,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 path = staging / filename
                 digest, size = await persist_completion_upload(upload, path)
                 if size == 0:
-                    raise HTTPException(
-                        422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind}
-                    )
+                    raise HTTPException(422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind})
                 created.append(
                     AssetArtifact(
                         id=str(uuid.uuid4()),
@@ -2615,27 +2699,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     )
                 )
             try:
-                audit_payload = json.loads(
-                    (staging / "retopology_audit.json").read_text("utf-8")
-                )
+                audit_payload = json.loads((staging / "retopology_audit.json").read_text("utf-8"))
                 manifest_payload = json.loads(
                     (staging / "retopology_manifest.json").read_text("utf-8")
                 )
             except (OSError, ValueError) as exc:
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_AUDIT_INVALID"}
-                ) from exc
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_AUDIT_INVALID"}) from exc
             if audit_payload.get("schema_version") != 2:
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_AUDIT_SCHEMA_INVALID"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_AUDIT_SCHEMA_INVALID"})
             objects = audit_payload.get("objects")
-            if not isinstance(objects, dict) or not {"high", "reference", "low"}.issubset(
-                objects
-            ):
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_AUDIT_OBJECTS_MISSING"}
-                )
+            if not isinstance(objects, dict) or not {"high", "reference", "low"}.issubset(objects):
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_AUDIT_OBJECTS_MISSING"})
             visual_review = audit_payload.get("visual_review_required")
             if not isinstance(visual_review, list) or not {
                 "front",
@@ -2643,17 +2717,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "top",
                 "perspective",
             }.issubset(set(visual_review)):
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_VISUAL_REVIEW_MISSING"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_VISUAL_REVIEW_MISSING"})
             if (
                 manifest_payload.get("job_id") != snapshot.id
                 or manifest_payload.get("input_sha256") != snapshot.input_sha256
                 or manifest_payload.get("job_type") != snapshot.job_type
             ):
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_MANIFEST_MISMATCH"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_MANIFEST_MISMATCH"})
             fsync_completion_staging(staging)
             job, worker = await lock_asset_completion_for_publish(snapshot, lease, db)
             cancelled = await cancel_at_completion_safe_point(db, job, worker)
@@ -2706,8 +2776,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "audit_passed": audit_passed,
             }
         finally:
-            if not committed and staging.exists():
-                shutil.rmtree(staging)
+            if not committed:
+                await cleanup_uncommitted_completion(request, staging, created)
 
     @app.post("/internal/v1/assets/jobs/{job_id}/retopology-process-complete")
     async def worker_complete_retopology_process(
@@ -2716,9 +2786,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Annotated[AsyncSession, Depends(session)],
         lease: Annotated[str, Header(alias="X-Asset-Lease")],
     ) -> dict[str, Any]:
-        snapshot = await prepare_asset_completion(
-            job_id, lease, db, "RETOPOLOGY_PROCESS_V1"
-        )
+        snapshot = await prepare_asset_completion(job_id, lease, db, "RETOPOLOGY_PROCESS_V1")
         form = await request.form()
         expected = dict(RETOPOLOGY_PROCESS_REQUIRED_ARTIFACTS)
         if snapshot.options.get("reference_views"):
@@ -2757,9 +2825,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 path = staging / filename
                 digest, size = await persist_completion_upload(upload, path)
                 if size == 0:
-                    raise HTTPException(
-                        422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind}
-                    )
+                    raise HTTPException(422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind})
                 created.append(
                     AssetArtifact(
                         id=str(uuid.uuid4()),
@@ -2792,16 +2858,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(
                     422, detail={"code": "RETOPOLOGY_PROCESS_JSON_INVALID"}
                 ) from exc
-            if baseline_payload.get("schema_version") != 2 or audit_payload.get(
-                "schema_version"
-            ) != 2:
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_AUDIT_SCHEMA_INVALID"}
-                )
+            if (
+                baseline_payload.get("schema_version") != 2
+                or audit_payload.get("schema_version") != 2
+            ):
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_AUDIT_SCHEMA_INVALID"})
             if report_payload.get("schema_version") != "retopology_process_report.v1":
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_PROCESS_REPORT_INVALID"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_PROCESS_REPORT_INVALID"})
             quality_gate = report_payload.get("quality_gate")
             if (
                 not isinstance(quality_gate, dict)
@@ -2809,27 +2872,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or not isinstance(quality_gate.get("passed"), bool)
                 or not isinstance(quality_gate.get("failures"), list)
             ):
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_QUALITY_GATE_INVALID"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_QUALITY_GATE_INVALID"})
+            if agent_plan_payload.get("recommended_algorithm") not in {
+                "quadriflow",
+                "cleanup_existing",
+            } or not isinstance(agent_plan_payload.get("target_faces"), int):
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_AGENT_PLAN_INVALID"})
             if (
-                agent_plan_payload.get("recommended_algorithm")
-                not in {"quadriflow", "cleanup_existing"}
-                or not isinstance(agent_plan_payload.get("target_faces"), int)
-            ):
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_AGENT_PLAN_INVALID"}
-                )
-            if (
-                manifest_payload.get("schema_version")
-                != "retopology_process_manifest.v1"
+                manifest_payload.get("schema_version") != "retopology_process_manifest.v1"
                 or manifest_payload.get("job_id") != snapshot.id
                 or manifest_payload.get("job_type") != snapshot.job_type
                 or manifest_payload.get("input_sha256") != snapshot.input_sha256
             ):
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_MANIFEST_MISMATCH"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_MANIFEST_MISMATCH"})
             expected_objects = {
                 "high": snapshot.options["high_object"],
                 "reference": snapshot.options["reference_object"],
@@ -2837,9 +2892,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "generated": snapshot.options["generated_low_object"],
             }
             if manifest_payload.get("objects") != expected_objects:
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_MANIFEST_OBJECTS_MISMATCH"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_MANIFEST_OBJECTS_MISMATCH"})
             # The old key is accepted while workers roll. This is visual
             # evidence for deterministic QA, not a manual approval gate.
             visual_evidence = manifest_payload.get("visual_evidence") or manifest_payload.get(
@@ -2848,15 +2901,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if (
                 not isinstance(visual_evidence, dict)
                 or visual_evidence.get("required") is not True
-                or set(visual_evidence.get("views", []))
-                != {"front", "side", "top", "perspective"}
-                or set(visual_evidence.get("roles", []))
-                != {"high", "reference", "generated"}
+                or set(visual_evidence.get("views", [])) != {"front", "side", "top", "perspective"}
+                or set(visual_evidence.get("roles", [])) != {"high", "reference", "generated"}
                 or visual_evidence.get("manual_review_required", False) is not False
             ):
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_VISUAL_EVIDENCE_MISSING"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_VISUAL_EVIDENCE_MISSING"})
             agent_plan = manifest_payload.get("agent_plan")
             if (
                 not isinstance(agent_plan, dict)
@@ -2866,30 +2915,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or agent_plan.get("recommended_target_faces")
                 != agent_plan_payload.get("target_faces")
             ):
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_AGENT_MANIFEST_MISMATCH"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_AGENT_MANIFEST_MISMATCH"})
             if (
                 manifest_payload.get("source_preserved") is not True
                 or report_payload.get("source_preserved") is not True
             ):
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_SOURCE_PROTECTION_FAILED"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_SOURCE_PROTECTION_FAILED"})
             topology_goal_met = bool(report_payload.get("topology_goal_met"))
             if (
                 topology_goal_met != bool(quality_gate.get("passed"))
                 or manifest_payload.get("quality_gate") != quality_gate
             ):
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_QUALITY_GATE_MISMATCH"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_QUALITY_GATE_MISMATCH"})
             if manifest_payload.get("automatic_final_promotion_allowed") != (
                 bool(audit_payload.get("audit_passed")) and topology_goal_met
             ):
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_AUTOMATIC_DELIVERY_INVALID"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_AUTOMATIC_DELIVERY_INVALID"})
             for filename, (_, content_type) in {
                 **RETOPOLOGY_PROCESS_REQUIRED_FILENAMES,
                 **(
@@ -2924,9 +2965,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.add_all(created)
             audit_passed = audit_payload.get("audit_passed") is True
             report_promotable = report_payload.get("topology_goal_met") is True
-            manifest_promotable = (
-                manifest_payload.get("automatic_final_promotion_allowed") is True
-            )
+            manifest_promotable = manifest_payload.get("automatic_final_promotion_allowed") is True
             quality_passed = audit_passed and report_promotable and manifest_promotable
             quality_failures: list[str] = []
             reported_failures = audit_payload.get("failures")
@@ -2948,9 +2987,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # disposition only: artifact integrity, manifest identity and
             # source-fingerprint protection above remain hard failures.
             quality_failures = list(dict.fromkeys(quality_failures))
-            advisory_warning = (
-                cfg.retopology_qa_enforcement == "advisory" and not quality_passed
-            )
+            advisory_warning = cfg.retopology_qa_enforcement == "advisory" and not quality_passed
             delivery_allowed = quality_passed or advisory_warning
             if delivery_allowed:
                 # The worker deliberately uploads versioned candidates. Once
@@ -2979,30 +3016,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.progress = 100
             job.stage = "SUCCEEDED" if delivery_allowed else "FAILED"
             if quality_passed:
-                job.stage_message = (
-                    "候选已通过严格 QA 与三组四视图生成，自动发布交付"
-                )
+                job.stage_message = "候选已通过严格 QA 与三组四视图生成，自动发布交付"
                 completion_event = "asset.succeeded"
             elif advisory_warning:
-                job.stage_message = (
-                    "候选已生成并交付；严格 QA 未通过，告警与完整报告已保留"
-                )
+                job.stage_message = "候选已生成并交付；严格 QA 未通过，告警与完整报告已保留"
                 completion_event = "asset.succeeded_with_warnings"
             else:
-                job.stage_message = (
-                    "候选未满足拓扑目标或硬性 QA；仅保留诊断制品，不可交付"
-                )
+                job.stage_message = "候选未满足拓扑目标或硬性 QA；仅保留诊断制品，不可交付"
                 completion_event = "asset.qa_failed"
             job.estimated_remaining_seconds = 0
             job.last_progress_at = datetime.now(UTC)
             job.finished_at = job.last_progress_at
-            job.error_code = (
-                None if delivery_allowed else "RETOPOLOGY_QUALITY_GATE_FAILED"
-            )
+            job.error_code = None if delivery_allowed else "RETOPOLOGY_QUALITY_GATE_FAILED"
             job.error_message = (
-                None
-                if job.error_code is None
-                else json.dumps(quality_failures, ensure_ascii=False)
+                None if job.error_code is None else json.dumps(quality_failures, ensure_ascii=False)
             )
             job.lease_expires_at = None
             job.lease_token_hash = None
@@ -3020,9 +3047,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 details={
                     "event": completion_event,
                     "warning_code": (
-                        "RETOPOLOGY_QUALITY_GATE_WARNING"
-                        if advisory_warning
-                        else None
+                        "RETOPOLOGY_QUALITY_GATE_WARNING" if advisory_warning else None
                     ),
                     "qa_enforcement": cfg.retopology_qa_enforcement,
                     "quality_gate_passed": quality_passed,
@@ -3044,12 +3069,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "delivered_with_warnings": advisory_warning,
             }
         finally:
-            if not committed and staging.exists():
-                shutil.rmtree(staging)
+            if not committed:
+                await cleanup_uncommitted_completion(request, staging, created)
 
     @app.post("/internal/v1/assets/jobs/{job_id}/uv-v2-complete")
     async def worker_complete_uv_v2(
         job_id: str,
+        request: Request,
         db: Annotated[AsyncSession, Depends(session)],
         lease: Annotated[str, Header(alias="X-Asset-Lease")],
         blend: Annotated[UploadFile, File()],
@@ -3058,9 +3084,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         qa: Annotated[UploadFile, File()],
         fbx_qa: Annotated[UploadFile, File()],
     ) -> dict[str, Any]:
-        snapshot = await prepare_asset_completion(
-            job_id, lease, db, "UV_PROCESS_V2"
-        )
+        snapshot = await prepare_asset_completion(job_id, lease, db, "UV_PROCESS_V2")
         stem = Path(snapshot.source_filename).stem
         contract = {
             "blend": (f"{stem}_PBR_UV.blend", "application/octet-stream"),
@@ -3086,9 +3110,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 path = staging / filename
                 digest, size = await persist_completion_upload(upload, path)
                 if size == 0:
-                    raise HTTPException(
-                        422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind}
-                    )
+                    raise HTTPException(422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind})
                 created.append(
                     AssetArtifact(
                         id=str(uuid.uuid4()),
@@ -3102,15 +3124,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     )
                 )
             try:
-                report_payload = json.loads(
-                    (staging / contract["report"][0]).read_text("utf-8")
-                )
-                blend_qa_payload = json.loads(
-                    (staging / contract["qa"][0]).read_text("utf-8")
-                )
-                fbx_qa_payload = json.loads(
-                    (staging / contract["fbx_qa"][0]).read_text("utf-8")
-                )
+                report_payload = json.loads((staging / contract["report"][0]).read_text("utf-8"))
+                blend_qa_payload = json.loads((staging / contract["qa"][0]).read_text("utf-8"))
+                fbx_qa_payload = json.loads((staging / contract["fbx_qa"][0]).read_text("utf-8"))
             except (OSError, ValueError) as exc:
                 raise HTTPException(422, detail={"code": "ASSET_QA_INVALID"}) from exc
             if not all(
@@ -3118,9 +3134,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 for payload in (report_payload, blend_qa_payload, fbx_qa_payload)
             ):
                 raise HTTPException(422, detail={"code": "ASSET_QA_INVALID"})
-            if report_payload.get("input") not in {None, snapshot.source_filename} and Path(
-                str(report_payload.get("input"))
-            ).name != snapshot.source_filename:
+            if (
+                report_payload.get("input") not in {None, snapshot.source_filename}
+                and Path(str(report_payload.get("input"))).name != snapshot.source_filename
+            ):
                 raise HTTPException(422, detail={"code": "ASSET_REPORT_INPUT_MISMATCH"})
             quality_failures: list[str] = []
             failed_qa: list[str] = []
@@ -3130,14 +3147,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ):
                 hard_failures = payload.get("hard_failures")
                 if not isinstance(hard_failures, list):
-                    raise HTTPException(
-                        422, detail={"code": "ASSET_QA_INVALID", "qa": label}
-                    )
+                    raise HTTPException(422, detail={"code": "ASSET_QA_INVALID", "qa": label})
                 passed = payload.get("passed")
                 if not isinstance(passed, bool):
-                    raise HTTPException(
-                        422, detail={"code": "ASSET_QA_INVALID", "qa": label}
-                    )
+                    raise HTTPException(422, detail={"code": "ASSET_QA_INVALID", "qa": label})
                 if hard_failures or not passed:
                     failed_qa.append(label)
                     if hard_failures:
@@ -3156,13 +3169,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         quality_failures.append(f"{label}: passed=false")
             quality_failures = list(dict.fromkeys(quality_failures))
             quality_passed = not failed_qa
-            advisory_warning = (
-                cfg.uv_qa_enforcement == "advisory" and not quality_passed
-            )
+            advisory_warning = cfg.uv_qa_enforcement == "advisory" and not quality_passed
             if not quality_passed and not advisory_warning:
-                raise HTTPException(
-                    422, detail={"code": "ASSET_QA_FAILED", "qa": failed_qa[0]}
-                )
+                raise HTTPException(422, detail={"code": "ASSET_QA_FAILED", "qa": failed_qa[0]})
             fsync_completion_staging(staging)
             job, worker = await lock_asset_completion_for_publish(snapshot, lease, db)
             cancelled = await cancel_at_completion_safe_point(db, job, worker)
@@ -3186,9 +3195,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 job.stage_message = "PBR UV、FBX 回读与双重 QA 已通过并发布"
                 completion_event = "asset.succeeded"
             else:
-                job.stage_message = (
-                    "PBR UV 五件套已发布；几何 QA 未通过，告警与完整报告已保留"
-                )
+                job.stage_message = "PBR UV 五件套已发布；几何 QA 未通过，告警与完整报告已保留"
                 completion_event = "asset.succeeded_with_warnings"
             job.estimated_remaining_seconds = 0
             job.last_progress_at = datetime.now(UTC)
@@ -3204,9 +3211,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 job,
                 details={
                     "event": completion_event,
-                    "warning_code": (
-                        "UV_QUALITY_GATE_WARNING" if advisory_warning else None
-                    ),
+                    "warning_code": ("UV_QUALITY_GATE_WARNING" if advisory_warning else None),
                     "qa_enforcement": cfg.uv_qa_enforcement,
                     "quality_gate_passed": quality_passed,
                     "quality_failures": quality_failures,
@@ -3223,12 +3228,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "delivered_with_warnings": advisory_warning,
             }
         finally:
-            if not committed and staging.exists():
-                shutil.rmtree(staging)
+            if not committed:
+                await cleanup_uncommitted_completion(request, staging, created)
 
     @app.post("/internal/v1/assets/jobs/{job_id}/substance-complete")
     async def worker_complete_substance(
         job_id: str,
+        request: Request,
         db: Annotated[AsyncSession, Depends(session)],
         lease: Annotated[str, Header(alias="X-Asset-Lease")],
         result: Annotated[UploadFile, File()],
@@ -3244,9 +3250,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         roughness: Annotated[UploadFile | None, File()] = None,
         metallic: Annotated[UploadFile | None, File()] = None,
     ) -> dict[str, Any]:
-        snapshot = await prepare_asset_completion(
-            job_id, lease, db, "SUBSTANCE_BAKE_V1"
-        )
+        snapshot = await prepare_asset_completion(job_id, lease, db, "SUBSTANCE_BAKE_V1")
         profile = str(snapshot.options.get("profile", ""))
         contract = SUBSTANCE_BAKE_OUTPUTS.get(profile)
         if contract is None:
@@ -3284,9 +3288,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     upload, path, max_bytes=cfg.asset_max_upload_bytes
                 )
                 if size == 0:
-                    raise HTTPException(
-                        422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind}
-                    )
+                    raise HTTPException(422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind})
                 actual_sha[kind] = digest
                 created.append(
                     AssetArtifact(
@@ -3303,8 +3305,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             expected_resolution = int(snapshot.options.get("resolution", 0))
             for kind in (
-                "ao", "normal_dx", "normal_gl", "world_normal", "curvature",
-                "thickness", "position", "base_color", "roughness", "metallic",
+                "ao",
+                "normal_dx",
+                "normal_gl",
+                "world_normal",
+                "curvature",
+                "thickness",
+                "position",
+                "base_color",
+                "roughness",
+                "metallic",
             ):
                 if kind not in contract:
                     continue
@@ -3326,28 +3336,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     ) from exc
 
             try:
-                result_payload = json.loads(
-                    (staging / contract["result"][0]).read_text("utf-8")
-                )
-                log_text = (staging / contract["log"][0]).read_text(
-                    "utf-8", errors="replace"
-                )
+                result_payload = json.loads((staging / contract["result"][0]).read_text("utf-8"))
+                log_text = (staging / contract["log"][0]).read_text("utf-8", errors="replace")
             except (OSError, ValueError) as exc:
-                raise HTTPException(
-                    422, detail={"code": "SUBSTANCE_RESULT_INVALID"}
-                ) from exc
+                raise HTTPException(422, detail={"code": "SUBSTANCE_RESULT_INVALID"}) from exc
             tool = result_payload.get("tool") or {}
             execution = result_payload.get("execution") or {}
             output_hashes = result_payload.get("output_sha256") or {}
             schema_version = result_payload.get("schema_version")
-            legacy_exit_evidence_valid = (
-                schema_version == 1 and execution.get("exit_code") == 0
-            )
+            legacy_exit_evidence_valid = schema_version == 1 and execution.get("exit_code") == 0
             commands = execution.get("commands")
             expected_command_count = SUBSTANCE_BAKE_COMMAND_COUNTS[profile]
             all_exit_codes_observed = isinstance(commands, list) and all(
-                isinstance(command, dict)
-                and command.get("exit_code_observed") is True
+                isinstance(command, dict) and command.get("exit_code_observed") is True
                 for command in commands
             )
             command_evidence_valid = (
@@ -3367,12 +3368,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     )
                     for command in commands
                 )
-                and execution.get("exit_code_observed")
-                is all_exit_codes_observed
-                and execution.get("exit_code")
-                == (0 if all_exit_codes_observed else None)
-                and log_text.count("Bake finished successfully")
-                >= expected_command_count
+                and execution.get("exit_code_observed") is all_exit_codes_observed
+                and execution.get("exit_code") == (0 if all_exit_codes_observed else None)
+                and log_text.count("Bake finished successfully") >= expected_command_count
             )
             if (
                 not (legacy_exit_evidence_valid or command_evidence_valid)
@@ -3382,11 +3380,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or tool.get("version") != "15.1.0"
                 or tool.get("exe_sha256")
                 != "7B920FC6EE6005FAAB072C9280B1772F03D694FF04AA91C5A4DB516F7C9FEC6D"
-                or execution.get("comfyui_cache_policy")
-                != "no_explicit_eviction_process_preserved"
+                or execution.get("comfyui_cache_policy") != "no_explicit_eviction_process_preserved"
                 or execution.get("comfyui_container_restarted") is not False
                 or execution.get("comfyui_process_continuity_verified") is not True
-                or any(output_hashes.get(kind) != actual_sha[kind] for kind in contract if kind not in {"result", "log"})
+                or any(
+                    output_hashes.get(kind) != actual_sha[kind]
+                    for kind in contract
+                    if kind not in {"result", "log"}
+                )
                 or "Bake finished successfully" not in log_text
             ):
                 raise HTTPException(422, detail={"code": "SUBSTANCE_RESULT_INVALID"})
@@ -3427,8 +3428,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             committed = True
             return {"accepted": True, "status": job.status}
         finally:
-            if not committed and staging.exists():
-                shutil.rmtree(staging)
+            if not committed:
+                await cleanup_uncommitted_completion(request, staging, created)
 
     @app.post("/internal/v1/assets/jobs/{job_id}/fail")
     async def worker_fail(
@@ -3437,9 +3438,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Annotated[AsyncSession, Depends(session)],
         lease: Annotated[str, Header(alias="X-Asset-Lease")],
     ) -> dict[str, Any]:
-        job = await leased_job(
-            job_id, lease, db, lock_substance_node=True
-        )
+        job = await leased_job(job_id, lease, db, lock_substance_node=True)
         previous_worker_id = job.worker_id
         previous_worker_instance_id = job.worker_instance_id
         requires_runtime_recovery = (

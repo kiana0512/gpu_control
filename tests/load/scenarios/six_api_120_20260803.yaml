@@ -1,7 +1,9 @@
 schema_version: "1.0"
 
-# The system owner approved an idle-window six-API maximum-load run on
-# 2026-08-03. Production traffic always preempts this bounded test.
+# Reuses the 70:30 six-API mix approved for the 2026-07-30 R8 run. The owner
+# explicitly requested another maximum 120-user run on 2026-08-03 after the
+# 1.5.9 safety rollout. Runtime gates still require an exact change window,
+# UUIDv4 session, isolated test tenants, a verified backup, and zero live work.
 weights_confirmed: true
 weights:
   imageclip_batch: 42

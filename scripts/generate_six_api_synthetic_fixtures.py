@@ -637,6 +637,15 @@ def generate(
     write_checksums(root)
     verify_checksums(root)
     (root / INCOMPLETE_MARKER).unlink()
+    # The load harness opens and hashes the exact descriptor used for upload.
+    # Remove write bits after generation so an in-place writer cannot change
+    # that inode between validation and transport.
+    for path in root.rglob("*"):
+        if path.is_file():
+            path.chmod(0o444)
+    for path in sorted((item for item in root.rglob("*") if item.is_dir()), reverse=True):
+        path.chmod(0o555)
+    root.chmod(0o555)
     return root
 
 

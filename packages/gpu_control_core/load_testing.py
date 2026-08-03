@@ -14,6 +14,7 @@ import os
 import re
 import stat
 import threading
+import time
 import zipfile
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
@@ -22,6 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+from uuid import UUID
 
 import yaml
 
@@ -34,7 +36,10 @@ API_NAMES = (
     "substance_bake",
 )
 SYNC_FINAL_API_NAMES = frozenset({"modelview_roughness"})
-LOAD_SUCCESS_STATUSES = frozenset({"SUCCEEDED", "WAITING_REVIEW"})
+# A production load run proves automatic delivery, not historical
+# downloadability. WAITING_REVIEW remains terminal for legacy records but is
+# deliberately not a successful acceptance state.
+LOAD_SUCCESS_STATUSES = frozenset({"SUCCEEDED"})
 LOAD_TERMINAL_STATUSES = frozenset(
     {"SUCCEEDED", "WAITING_REVIEW", "REVIEW_REJECTED", "FAILED", "CANCELLED", "TIMED_OUT"}
 )
@@ -114,6 +119,56 @@ API_CONTRACTS: dict[str, dict[str, str]] = {
     },
 }
 
+# Fixed copies of the public, atomically-published artifact contracts. Keep
+# these independent from the FastAPI application module so the network-free
+# planner and the Locust entrypoint do not import application/runtime state.
+FIXED_LOAD_ARTIFACT_KINDS: dict[str, frozenset[str]] = {
+    "imageclip_batch": frozenset({"result_archive"}),
+    "modelview_roughness": frozenset({"output"}),
+    "uv_process": frozenset({"blend", "fbx", "report", "qa", "fbx_qa"}),
+    "retopology_audit": frozenset({"audit", "manifest"}),
+}
+RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS = frozenset(
+    {
+        "blend",
+        "fbx",
+        "process_report",
+        "baseline_audit",
+        "audit",
+        "manifest",
+        "comparison",
+        "agent_plan",
+        "agent_prompt",
+        "agent_events",
+        *{
+            f"view_{role}_{view}"
+            for role in ("high", "reference", "generated")
+            for view in ("front", "side", "top", "perspective")
+        },
+    }
+)
+SUBSTANCE_LOAD_ARTIFACT_KINDS: dict[str, frozenset[str]] = {
+    "ao-self-v1": frozenset({"ao", "result", "log"}),
+    "normal-dx-v1": frozenset({"normal_dx", "result", "log"}),
+    "pbr-core-v1": frozenset({"ao", "normal_dx", "result", "log"}),
+    "li3d-pbr-full-v2": frozenset(
+        {
+            "base_color",
+            "roughness",
+            "metallic",
+            "ao",
+            "normal_dx",
+            "normal_gl",
+            "world_normal",
+            "curvature",
+            "thickness",
+            "position",
+            "result",
+            "log",
+        }
+    ),
+}
+
 REQUIRED_FIXTURE_PATHS: dict[str, tuple[str, ...]] = {
     "imageclip_batch": ("archive", "manifest"),
     "modelview_roughness": ("image",),
@@ -167,8 +222,199 @@ class LoadTestConfigurationError(ValueError):
     """Raised when a plan, fixture manifest, or safety gate is invalid."""
 
 
+class LoadTestPreempted(RuntimeError):
+    """Raised when the production watchdog has fenced further load traffic."""
+
+    def __init__(self, *, reason: str, operation: str) -> None:
+        self.reason = reason
+        self.operation = operation
+        super().__init__(f"load operation {operation} preempted: {reason}")
+
+
+def expected_load_artifact_kinds(
+    api_name: str,
+    *,
+    metadata: Mapping[str, Any] | None = None,
+) -> frozenset[str]:
+    """Return the exact final artifact kinds for one submitted load fixture."""
+
+    fixed = FIXED_LOAD_ARTIFACT_KINDS.get(api_name)
+    if fixed is not None:
+        return fixed
+    payload = metadata if isinstance(metadata, Mapping) else {}
+    if api_name == "retopology_process":
+        references = payload.get("reference_views")
+        if references is not None and (
+            not isinstance(references, Sequence) or isinstance(references, str | bytes)
+        ):
+            raise LoadTestConfigurationError(
+                "retopology_process reference_views must be a sequence"
+            )
+        return RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS | (
+            frozenset({"reference_images"}) if references else frozenset()
+        )
+    if api_name == "substance_bake":
+        options = payload.get("options")
+        profile = str(options.get("profile") or "") if isinstance(options, Mapping) else ""
+        expected = SUBSTANCE_LOAD_ARTIFACT_KINDS.get(profile)
+        if expected is None:
+            raise LoadTestConfigurationError(
+                f"unsupported Substance load artifact profile: {profile or '<missing>'}"
+            )
+        return expected
+    raise LoadTestConfigurationError(f"unknown load API artifact contract: {api_name}")
+
+
+def validate_load_artifact_manifest(
+    api_name: str,
+    artifacts: object,
+    *,
+    expected_kinds: Sequence[str] | frozenset[str],
+) -> list[dict[str, Any]]:
+    """Validate exact cardinality/kinds and immutable download metadata."""
+
+    expected = frozenset(str(kind) for kind in expected_kinds)
+    if not expected:
+        raise LoadTestConfigurationError(f"{api_name} artifact contract is empty")
+    if not isinstance(artifacts, Sequence) or isinstance(artifacts, str | bytes):
+        raise LoadTestConfigurationError(f"{api_name} artifacts must be a list")
+    normalized: list[dict[str, Any]] = []
+    observed: list[str] = []
+    for index, raw in enumerate(artifacts):
+        if not isinstance(raw, Mapping):
+            raise LoadTestConfigurationError(f"{api_name} artifact index {index} is not an object")
+        artifact = dict(raw)
+        kind = str(artifact.get("kind") or "")
+        identifier = str(artifact.get("id") or "")
+        filename = str(artifact.get("filename") or "")
+        download_url = str(artifact.get("download_url") or "")
+        size_bytes = artifact.get("size_bytes")
+        sha256 = str(artifact.get("sha256") or "")
+        if not kind or not identifier or (api_name != "modelview_roughness" and not filename):
+            raise LoadTestConfigurationError(
+                f"{api_name} artifact index {index} omitted identity metadata"
+            )
+        if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes <= 0:
+            raise LoadTestConfigurationError(f"{api_name} artifact {kind} has a non-positive size")
+        if not HASH_PATTERN.fullmatch(sha256):
+            raise LoadTestConfigurationError(f"{api_name} artifact {kind} has an invalid SHA-256")
+        if not download_url.startswith("/") or download_url.startswith("//"):
+            raise LoadTestConfigurationError(
+                f"{api_name} artifact {kind} has a non-local download URL"
+            )
+        observed.append(kind)
+        normalized.append(artifact)
+    if len(set(observed)) != len(observed):
+        raise LoadTestConfigurationError(f"{api_name} artifact kinds are not unique")
+    if frozenset(observed) != expected or len(observed) != len(expected):
+        raise LoadTestConfigurationError(
+            f"{api_name} artifact kinds/cardinality drifted: "
+            f"expected={sorted(expected)} observed={sorted(observed)}"
+        )
+    return normalized
+
+
+def validate_downloaded_load_artifact(
+    api_name: str,
+    artifact: Mapping[str, Any],
+    content: bytes,
+    *,
+    header_sha256: str | None,
+) -> str:
+    """Verify metadata size/SHA, response SHA header, and downloaded bytes."""
+
+    kind = str(artifact.get("kind") or "<unknown>")
+    size_bytes = artifact.get("size_bytes")
+    expected_sha256 = str(artifact.get("sha256") or "")
+    if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes <= 0:
+        raise LoadTestConfigurationError(
+            f"{api_name} artifact {kind} has a non-positive metadata size"
+        )
+    if not HASH_PATTERN.fullmatch(expected_sha256):
+        raise LoadTestConfigurationError(
+            f"{api_name} artifact {kind} has an invalid metadata SHA-256"
+        )
+    if not content or len(content) != size_bytes:
+        raise LoadTestConfigurationError(
+            f"{api_name} artifact {kind} download size does not match metadata"
+        )
+    response_sha256 = str(header_sha256 or "")
+    if response_sha256 != expected_sha256:
+        raise LoadTestConfigurationError(
+            f"{api_name} artifact {kind} response SHA-256 header does not match metadata"
+        )
+    actual_sha256 = hashlib.sha256(content).hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise LoadTestConfigurationError(
+            f"{api_name} artifact {kind} body SHA-256 does not match metadata"
+        )
+    return actual_sha256
+
+
+def find_load_session_identity_collisions(
+    gpu_jobs: Sequence[Mapping[str, Any]],
+    asset_jobs: Sequence[Mapping[str, Any]],
+    *,
+    tenant_ids: Sequence[str],
+    session_id: str,
+) -> list[dict[str, str]]:
+    """Find historical rows that reuse this run's exact identity namespace."""
+
+    if not SESSION_PATTERN.fullmatch(session_id):
+        raise LoadTestConfigurationError("session collision scan requires a valid session id")
+    tenants = {str(value).strip() for value in tenant_ids if str(value).strip()}
+    if not tenants or len(tenants) != len(tenant_ids):
+        raise LoadTestConfigurationError(
+            "session collision scan requires unique non-empty tenant ids"
+        )
+    escaped_session = re.escape(session_id)
+    gpu_batch_pattern = re.compile(rf"^loadtest:{escaped_session}:imageclip_batch:[0-9]{{8}}$")
+    roughness_pattern = re.compile(rf"^lt:{escaped_session}:mvr:[0-9]{{8}}$")
+    asset_pattern = re.compile(
+        rf"^loadtest:{escaped_session}:"
+        r"(?:uv_process|retopology_audit|retopology_process|substance_bake):[0-9]{8}$"
+    )
+    collisions: list[dict[str, str]] = []
+    for plane, rows in (("gpu", gpu_jobs), ("asset", asset_jobs)):
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise LoadTestConfigurationError(
+                    f"{plane} session collision scan received a non-object row"
+                )
+            owner_field = "tenant_id" if plane == "gpu" else "client_id"
+            if str(row.get(owner_field) or "") not in tenants:
+                continue
+            identity = ""
+            if plane == "asset":
+                identity = str(row.get("external_asset_id") or "")
+                matched = asset_pattern.fullmatch(identity) is not None
+            elif row.get("kind") == "batch":
+                identity = str(row.get("external_batch_id") or "")
+                matched = gpu_batch_pattern.fullmatch(identity) is not None
+            else:
+                identity = str(row.get("request_id") or "")
+                matched = roughness_pattern.fullmatch(identity) is not None
+            if not matched:
+                continue
+            identifier = str(row.get("job_id") or row.get("batch_id") or "")
+            if not identifier:
+                raise LoadTestConfigurationError(
+                    f"{plane} session collision row omitted its task id"
+                )
+            collisions.append(
+                {
+                    "plane": plane,
+                    "task_id": identifier,
+                    "owner_id": str(row.get(owner_field)),
+                    "identity": identity,
+                    "status": str(row.get("status") or "UNKNOWN"),
+                }
+            )
+    return collisions
+
+
 class LoadShapeStopSignal:
-    """Thread-safe, idempotent request for the Locust Shape to end a run."""
+    """Thread-safe, idempotent fence for the Locust Shape and virtual users."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -188,6 +434,17 @@ class LoadShapeStopSignal:
         with self._lock:
             self._reason = None
 
+    def raise_if_requested(self, operation: str) -> None:
+        """Prevent a virtual user from starting another request after a safety stop."""
+
+        normalized = operation.strip()
+        if not normalized:
+            raise LoadTestConfigurationError("load preemption operation cannot be empty")
+        with self._lock:
+            reason = self._reason
+        if reason is not None:
+            raise LoadTestPreempted(reason=reason, operation=normalized)
+
     @property
     def requested(self) -> bool:
         with self._lock:
@@ -206,6 +463,8 @@ def execute_bounded_teardown_cancel(
     max_attempts: int = 3,
     initial_backoff_seconds: float = 0.25,
     maximum_backoff_seconds: float = 1.0,
+    deadline_monotonic: float | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> tuple[int, int]:
     """Cancel once, retrying only 429/5xx responses with bounded backoff."""
 
@@ -214,6 +473,8 @@ def execute_bounded_teardown_cancel(
     if initial_backoff_seconds < 0 or maximum_backoff_seconds < 0:
         raise LoadTestConfigurationError("teardown cancel backoff cannot be negative")
     for attempt in range(1, max_attempts + 1):
+        if deadline_monotonic is not None and monotonic() >= deadline_monotonic:
+            raise TimeoutError("teardown deadline expired before cancel attempt")
         status_code = send_status()
         retryable = status_code == 429 or 500 <= status_code <= 599
         if not retryable or attempt == max_attempts:
@@ -222,6 +483,11 @@ def execute_bounded_teardown_cancel(
             maximum_backoff_seconds,
             initial_backoff_seconds * (2 ** (attempt - 1)),
         )
+        if deadline_monotonic is not None:
+            remaining = deadline_monotonic - monotonic()
+            if remaining <= 0:
+                raise TimeoutError("teardown deadline expired before cancel retry")
+            delay = min(delay, remaining)
         sleep(delay)
     raise AssertionError("bounded teardown cancel exhausted without returning")
 
@@ -288,8 +554,7 @@ def normalize_scheduler_capacity_v1(payload: object) -> dict[str, Any]:
         if value is not None
     ]
     if not queue_values or any(
-        isinstance(value, bool) or not isinstance(value, int) or value < 0
-        for value in queue_values
+        isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in queue_values
     ):
         raise LoadTestConfigurationError(
             "scheduler capacity queue depth must be a non-negative integer"
@@ -335,30 +600,63 @@ def load_queue_start(payload: Mapping[str, Any]) -> object:
 
 
 def validate_test_client_capacities(
-    capacities: Sequence[Mapping[str, Any]], *, expected_count: int
+    capacities: Sequence[Mapping[str, Any]],
+    *,
+    expected_tenant_ids: Sequence[str],
+    asset_capacities: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Validate every rotating load identity without retaining its secret."""
+    """Validate ordered load identities on both API planes without retaining secrets."""
 
-    if expected_count < 1 or len(capacities) != expected_count:
+    expected_tenants = tuple(str(value).strip() for value in expected_tenant_ids)
+    if (
+        not expected_tenants
+        or any(not value for value in expected_tenants)
+        or len(set(expected_tenants)) != len(expected_tenants)
+        or len(capacities) != len(expected_tenants)
+    ):
         raise LoadTestConfigurationError(
-            "every LOAD_TEST_API_KEYS identity must have one capacity preflight"
+            "every LOAD_TEST_API_KEYS identity must have one ordered tenant capacity preflight"
+        )
+    if asset_capacities is not None and len(asset_capacities) != len(expected_tenants):
+        raise LoadTestConfigurationError(
+            "every LOAD_TEST_API_KEYS identity must have one Asset capacity preflight"
         )
     checks: list[dict[str, Any]] = []
-    for index, capacity in enumerate(capacities):
+    for index, (capacity, expected_tenant_id) in enumerate(
+        zip(capacities, expected_tenants, strict=True)
+    ):
         client = capacity.get("client")
-        if not isinstance(client, Mapping) or client.get("kind") != "test":
+        if (
+            not isinstance(client, Mapping)
+            or client.get("kind") != "test"
+            or client.get("id") != expected_tenant_id
+        ):
             raise LoadTestConfigurationError(
-                f"load API key index {index} must belong to client_kind=test"
+                f"load API key index {index} does not match test tenant {expected_tenant_id}"
             )
         if capacity.get("accepting_batches") is not True:
             raise LoadTestConfigurationError(
                 f"load API key index {index} is not accepting GPU batches"
             )
+        asset_identity_verified = asset_capacities is not None
+        if asset_capacities is not None:
+            asset_client = asset_capacities[index].get("client")
+            if (
+                not isinstance(asset_client, Mapping)
+                or asset_client.get("kind") != "test"
+                or asset_client.get("id") != expected_tenant_id
+            ):
+                raise LoadTestConfigurationError(
+                    f"load API key index {index} does not match Asset test tenant "
+                    f"{expected_tenant_id}"
+                )
         checks.append(
             {
                 "api_key_index": index,
+                "tenant_id": expected_tenant_id,
                 "client_kind": "test",
                 "accepting_batches": True,
+                "asset_identity_verified": asset_identity_verified,
             }
         )
     return checks
@@ -425,21 +723,32 @@ def identify_foreign_active_work(
     asset_jobs: Sequence[Mapping[str, Any]],
     *,
     test_tenant_ids: Sequence[str],
+    session_id: str,
+    roughness_request_key_indices: Mapping[str, int],
 ) -> dict[str, Any]:
     """Return minimal evidence for active work outside this load session.
 
-    Asset admin rows do not expose ``client_kind``, so their ``client_id`` is
-    classified against the exact tenant allowlist bound to the approved load
-    plan. GPU rows prefer their authoritative ``client_kind`` and use the
-    tenant allowlist as a fallback and second session boundary. Missing or
+    Asset rows use their session-prefixed external ID. ImageClip uses its
+    external batch ID, while synchronous Roughness must match a request/key
+    binding registered by this harness process. GPU rows also require
+    ``client_kind=test`` when the field is present. Missing, cross-session, or
     unknown ownership fails closed. Business payloads are never returned.
     """
 
-    approved_tenants = {str(value) for value in test_tenant_ids if str(value)}
+    approved_tenant_order = tuple(str(value) for value in test_tenant_ids if str(value))
+    approved_tenants = set(approved_tenant_order)
     if not approved_tenants or len(approved_tenants) != len(test_tenant_ids):
-        raise LoadTestConfigurationError(
-            "production watchdog requires unique LOAD_TEST_TENANT_IDS"
-        )
+        raise LoadTestConfigurationError("production watchdog requires unique LOAD_TEST_TENANT_IDS")
+    if not SESSION_PATTERN.fullmatch(session_id):
+        raise LoadTestConfigurationError("production watchdog requires a valid session id")
+    tenant_key_indices = {tenant_id: index for index, tenant_id in enumerate(approved_tenant_order)}
+    escaped_session = re.escape(session_id)
+    roughness_pattern = re.compile(rf"^lt:{escaped_session}:mvr:[0-9]{{8}}$")
+    imageclip_pattern = re.compile(rf"^loadtest:{escaped_session}:imageclip_batch:[0-9]{{8}}$")
+    asset_patterns = {
+        api_name: re.compile(rf"^loadtest:{escaped_session}:{re.escape(api_name)}:[0-9]{{8}}$")
+        for api_name in ASSET_JOB_TYPE_TO_API.values()
+    }
     conflicts: list[dict[str, str]] = []
     for plane, rows in (("gpu", gpu_jobs), ("asset", asset_jobs)):
         for row in rows:
@@ -454,11 +763,34 @@ def identify_foreign_active_work(
             owner = str(row.get(owner_field) or "")
             raw_client_kind = row.get("client_kind")
             client_kind = str(raw_client_kind) if raw_client_kind else "production"
-            owner_is_current_session = owner in approved_tenants
+            owner_is_load_tenant = owner in approved_tenants
             if plane == "gpu" and raw_client_kind is not None:
-                belongs_to_session = client_kind == "test" and owner_is_current_session
+                belongs_to_load_tenant = client_kind == "test" and owner_is_load_tenant
             else:
-                belongs_to_session = owner_is_current_session
+                belongs_to_load_tenant = owner_is_load_tenant
+            belongs_to_session = False
+            if belongs_to_load_tenant and plane == "asset":
+                api_name = ASSET_JOB_TYPE_TO_API.get(str(row.get("job_type") or ""))
+                pattern = asset_patterns.get(api_name or "")
+                belongs_to_session = (
+                    pattern is not None
+                    and pattern.fullmatch(str(row.get("external_asset_id") or "")) is not None
+                )
+            elif belongs_to_load_tenant and row.get("kind") == "batch":
+                belongs_to_session = (
+                    imageclip_pattern.fullmatch(str(row.get("external_batch_id") or "")) is not None
+                )
+            elif (
+                belongs_to_load_tenant
+                and row.get("kind") == "job"
+                and row.get("workflow_key") == "modelview-roughness"
+            ):
+                request_id = str(row.get("request_id") or "")
+                belongs_to_session = roughness_pattern.fullmatch(
+                    request_id
+                ) is not None and roughness_request_key_indices.get(
+                    request_id
+                ) == tenant_key_indices.get(owner)
             if belongs_to_session:
                 continue
             identifier = row.get("job_id") or row.get("batch_id") or "unknown"
@@ -483,6 +815,7 @@ def discover_scoped_teardown_tasks(
     asset_jobs: Sequence[Mapping[str, Any]],
     *,
     tenant_key_indices: Mapping[str, int],
+    roughness_request_key_indices: Mapping[str, int],
     session_id: str,
     started_at: str,
 ) -> list[dict[str, Any]]:
@@ -491,10 +824,11 @@ def discover_scoped_teardown_tasks(
     The configured load tenants are dedicated to one run and map one-to-one to
     API keys. Asset jobs and ImageClip batches must additionally carry the
     harness session prefix. The synchronous roughness contract has no external
-    business ID, so it is recoverable only by exact test tenant, approved
-    workflow key, and a server ``created_at`` at or after this run's start.
-    Any ambiguous active row owned by a load tenant aborts discovery instead of
-    being guessed or cancelled.
+    business ID, so its authoritative server-side ``request_id`` must exactly
+    match a request/key binding registered by this harness process. The request
+    ID also carries the current session prefix. ``created_at`` remains a
+    secondary lower bound for every row. Any ambiguous active row owned by a
+    load tenant aborts discovery instead of being guessed or cancelled.
     """
 
     if not SESSION_PATTERN.fullmatch(session_id):
@@ -516,11 +850,31 @@ def discover_scoped_teardown_tasks(
         raise LoadTestConfigurationError(
             "teardown scan requires a unique API key index for every tenant"
         )
+    roughness_request_pattern = re.compile(rf"^lt:{re.escape(session_id)}:mvr:[0-9]{{8}}$")
+    normalized_roughness_requests: dict[str, int] = {}
+    for request_id, raw_index in roughness_request_key_indices.items():
+        normalized_request_id = str(request_id).strip()
+        if (
+            not roughness_request_pattern.fullmatch(normalized_request_id)
+            or isinstance(raw_index, bool)
+            or not isinstance(raw_index, int)
+            or raw_index < 0
+            or raw_index not in normalized_indices.values()
+        ):
+            raise LoadTestConfigurationError(
+                "teardown scan received an invalid roughness request binding"
+            )
+        normalized_roughness_requests[normalized_request_id] = raw_index
     run_started_at = _parse_window_timestamp(started_at)
     if run_started_at is None:
         raise LoadTestConfigurationError("teardown scan requires an aware RFC3339 run start")
 
-    session_prefix = f"loadtest:{session_id}:"
+    escaped_session = re.escape(session_id)
+    imageclip_pattern = re.compile(rf"^loadtest:{escaped_session}:imageclip_batch:[0-9]{{8}}$")
+    asset_patterns = {
+        api_name: re.compile(rf"^loadtest:{escaped_session}:{re.escape(api_name)}:[0-9]{{8}}$")
+        for api_name in ASSET_JOB_TYPE_TO_API.values()
+    }
     discovered: list[dict[str, Any]] = []
     seen: set[str] = set()
 
@@ -563,7 +917,7 @@ def discover_scoped_teardown_tasks(
         kind = str(row.get("kind") or "")
         if kind == "batch":
             external_id = str(row.get("external_batch_id") or "")
-            if not external_id.startswith(session_prefix):
+            if imageclip_pattern.fullmatch(external_id) is None:
                 raise LoadTestConfigurationError(
                     "teardown scan found an ambiguous load-tenant GPU batch"
                 )
@@ -578,11 +932,17 @@ def discover_scoped_teardown_tasks(
                     "api_key_index": key_index,
                     "last_status": status,
                     "recovery_source": "admin_scope_scan",
-                    "scope_basis": "tenant+created_at+external_batch_id",
+                    "scope_basis": "tenant+created_at+exact_external_batch_id",
                 }
             )
             continue
-        if kind != "job" or row.get("workflow_key") != "modelview-roughness":
+        roughness_request_id = str(row.get("request_id") or "")
+        if (
+            kind != "job"
+            or row.get("workflow_key") != "modelview-roughness"
+            or not roughness_request_pattern.fullmatch(roughness_request_id)
+            or normalized_roughness_requests.get(roughness_request_id) != key_index
+        ):
             raise LoadTestConfigurationError("teardown scan found an ambiguous load-tenant GPU job")
         discovered.append(
             {
@@ -595,7 +955,8 @@ def discover_scoped_teardown_tasks(
                 "api_key_index": key_index,
                 "last_status": status,
                 "recovery_source": "admin_scope_scan",
-                "scope_basis": "exclusive_test_tenant+created_at+workflow_key",
+                "request_id": roughness_request_id,
+                "scope_basis": "tenant+created_at+workflow_key+request_id",
             }
         )
 
@@ -608,7 +969,8 @@ def discover_scoped_teardown_tasks(
         identifier, status, key_index = common
         external_id = str(row.get("external_asset_id") or "")
         api_name = ASSET_JOB_TYPE_TO_API.get(str(row.get("job_type") or ""))
-        if not external_id.startswith(session_prefix) or api_name is None:
+        pattern = asset_patterns.get(api_name or "")
+        if api_name is None or pattern is None or pattern.fullmatch(external_id) is None:
             raise LoadTestConfigurationError(
                 "teardown scan found an ambiguous load-tenant asset job"
             )
@@ -623,7 +985,7 @@ def discover_scoped_teardown_tasks(
                 "api_key_index": key_index,
                 "last_status": status,
                 "recovery_source": "admin_scope_scan",
-                "scope_basis": "tenant+created_at+external_asset_id",
+                "scope_basis": "tenant+created_at+job_type+exact_external_asset_id",
             }
         )
 
@@ -663,6 +1025,12 @@ def evaluate_load_lifecycle(
         for record in records
         if record.get("artifact_contract_failed") is True
     ]
+    artifact_contract_unverified = [
+        str(record.get("id"))
+        for record in records
+        if record.get("terminal_status") in LOAD_SUCCESS_STATUSES
+        and record.get("artifact_contract_verified") is not True
+    ]
     poll_timeouts = [
         str(record.get("id")) for record in records if record.get("poll_timed_out") is True
     ]
@@ -680,6 +1048,18 @@ def evaluate_load_lifecycle(
         if record.get("terminal_status") in LOAD_SUCCESS_STATUSES
         and int(record.get("artifact_count") or 0) >= 1
         and record.get("artifact_contract_failed") is not True
+        and record.get("artifact_contract_verified") is True
+    ]
+    verified_successful_by_api = Counter(
+        str(record.get("api") or "")
+        for record in records
+        if record.get("terminal_status") in LOAD_SUCCESS_STATUSES
+        and int(record.get("artifact_count") or 0) >= 1
+        and record.get("artifact_contract_failed") is not True
+        and record.get("artifact_contract_verified") is True
+    )
+    missing_successful_apis = [
+        api_name for api_name in API_NAMES if verified_successful_by_api[api_name] < 1
     ]
     safely_settled_ids = {
         str(outcome.get("task_id"))
@@ -703,18 +1083,20 @@ def evaluate_load_lifecycle(
                 unsuccessful,
                 missing_artifacts,
                 artifact_contract_failures,
+                artifact_contract_unverified,
                 poll_timeouts,
                 teardown,
+                missing_successful_apis,
             )
         )
         policy = (
-            "all registered tasks must end successfully with a verified artifact; "
-            "teardown means the run is incomplete"
+            "all six APIs require a successful terminal task with a verified artifact; "
+            "all registered tasks must succeed and teardown means the run is incomplete"
         )
     else:
         passed = (
             bool(records)
-            and bool(verified_successes)
+            and not missing_successful_apis
             and recovery_scan_passed
             and not any(
                 (
@@ -722,14 +1104,16 @@ def evaluate_load_lifecycle(
                     bounded_unsuccessful,
                     missing_artifacts,
                     artifact_contract_failures,
+                    artifact_contract_unverified,
                     poll_timeouts,
                     teardown_failed,
                 )
             )
         )
         policy = (
-            "bounded stress requires a verified successful subset and every residual "
-            "task to be scope-recovered, cancelled or terminal, and observed settled"
+            "bounded stress requires a verified successful artifact from every API and "
+            "every residual task to be scope-recovered, cancelled or terminal, and "
+            "observed settled"
         )
     return {
         "passed": passed,
@@ -739,12 +1123,17 @@ def evaluate_load_lifecycle(
             record.get("terminal_status") in LOAD_SUCCESS_STATUSES for record in records
         ),
         "verified_successful": len(verified_successes),
+        "verified_successful_by_api": {
+            api_name: verified_successful_by_api[api_name] for api_name in API_NAMES
+        },
+        "missing_successful_apis": missing_successful_apis,
         "incomplete_task_ids": incomplete,
         "unresolved_incomplete_task_ids": unresolved_incomplete,
         "unsuccessful_tasks": unsuccessful,
         "bounded_unsuccessful_tasks": bounded_unsuccessful,
         "missing_artifact_task_ids": missing_artifacts,
         "artifact_contract_failure_task_ids": artifact_contract_failures,
+        "artifact_contract_unverified_task_ids": artifact_contract_unverified,
         "poll_timeout_task_ids": poll_timeouts,
         "teardown_attempted": len(teardown),
         "teardown_failed_task_ids": teardown_failed,
@@ -814,9 +1203,7 @@ class LoadScenario:
             if API_CONTRACTS[name]["resource"] in {"GPU", "GPU_FENCED_ASSET"}
         )
         cpu_weight = sum(
-            self.weights[name]
-            for name in API_NAMES
-            if API_CONTRACTS[name]["resource"] == "CPU"
+            self.weights[name] for name in API_NAMES if API_CONTRACTS[name]["resource"] == "CPU"
         )
         return {
             "gpu_consuming": round(gpu_weight / total, 6),
@@ -861,9 +1248,7 @@ class RuntimeSettings:
     result_dir: Path | None
 
     @classmethod
-    def from_environment(
-        cls, environment: Mapping[str, str] | None = None
-    ) -> RuntimeSettings:
+    def from_environment(cls, environment: Mapping[str, str] | None = None) -> RuntimeSettings:
         source = dict(os.environ if environment is None else environment)
         target = normalize_target(
             source.get("LOAD_TEST_TARGET")
@@ -898,13 +1283,9 @@ class RuntimeSettings:
             session_id=session_id,
             environment=source.get("LOAD_TEST_ENVIRONMENT", "plan").strip().lower(),
             allow_load_test=source.get("ALLOW_LOAD_TEST", "").strip().lower() == "true",
-            allow_production_load_test=source.get(
-                "ALLOW_PRODUCTION_LOAD_TEST", ""
-            ).strip().lower()
+            allow_production_load_test=source.get("ALLOW_PRODUCTION_LOAD_TEST", "").strip().lower()
             == "true",
-            target_allowlist=_split_nonempty(
-                source.get("LOAD_TEST_TARGET_ALLOWLIST", "")
-            ),
+            target_allowlist=_split_nonempty(source.get("LOAD_TEST_TARGET_ALLOWLIST", "")),
             production_targets=production_targets,
             confirmation_token=source.get("LOAD_TEST_CONFIRMATION_TOKEN", "").strip(),
             change_id=source.get("LOAD_TEST_CHANGE_ID", "").strip(),
@@ -917,9 +1298,7 @@ class RuntimeSettings:
             ),
             api_keys=api_keys,
             tenant_ids=tenant_ids,
-            admin_bearer_token=source.get(
-                "LOAD_TEST_ADMIN_BEARER_TOKEN", ""
-            ).strip(),
+            admin_bearer_token=source.get("LOAD_TEST_ADMIN_BEARER_TOKEN", "").strip(),
             ca_file=Path(ca_value).expanduser() if ca_value else None,
             result_dir=Path(result_value).expanduser() if result_value else None,
         )
@@ -950,8 +1329,7 @@ class RuntimeSettings:
             return True
         hostname = self.hostname
         production_hosts = {
-            str(urlsplit(value).hostname or value).lower()
-            for value in self.production_targets
+            str(urlsplit(value).hostname or value).lower() for value in self.production_targets
         }
         if hostname in production_hosts:
             return True
@@ -982,10 +1360,23 @@ class RuntimeSettings:
         if not self.allow_load_test:
             blockers.append("ALLOW_LOAD_TEST must be exactly true")
         if production:
-            if self.environment != "production":
+            if self.session_id == "plan-only":
                 blockers.append(
-                    "known production targets require LOAD_TEST_ENVIRONMENT=production"
+                    "production requires an explicit unique UUIDv4 LOAD_TEST_SESSION_ID"
                 )
+            else:
+                try:
+                    parsed_session_id = UUID(self.session_id)
+                except ValueError:
+                    parsed_session_id = None
+                if (
+                    parsed_session_id is None
+                    or parsed_session_id.version != 4
+                    or str(parsed_session_id) != self.session_id
+                ):
+                    blockers.append("production LOAD_TEST_SESSION_ID must be a canonical UUIDv4")
+            if self.environment != "production":
+                blockers.append("known production targets require LOAD_TEST_ENVIRONMENT=production")
             if not self.allow_production_load_test:
                 blockers.append("ALLOW_PRODUCTION_LOAD_TEST must be exactly true")
             if not self.change_id:
@@ -1011,6 +1402,10 @@ class RuntimeSettings:
             ):
                 blockers.append(
                     "production scenarios must require zero pre-existing GPU and asset jobs"
+                )
+            if scenario.maximum_users != 120 or scenario.stages[-1].users != 120:
+                blockers.append(
+                    "production six-API scenario must peak and finish at exactly 120 users"
                 )
             if self.backup_dir is None:
                 blockers.append("LOAD_TEST_BACKUP_DIR is required for production")
@@ -1043,6 +1438,8 @@ class RuntimeSettings:
             blockers.append("scenario weights_confirmed must be true after real-traffic review")
         if scenario.maximum_users < 100:
             blockers.append("scenario must include a stage with at least 100 users")
+        if scenario.maximum_users > 120:
+            blockers.append("scenario cannot exceed the approved safety cap of 120 users")
         if self.result_dir is None:
             blockers.append("LOAD_TEST_RESULT_DIR must be an explicit new result directory")
         if urlsplit(self.target).scheme == "https":
@@ -1104,7 +1501,9 @@ def normalize_target(raw: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise LoadTestConfigurationError("load-test target must be an HTTP(S) origin")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise LoadTestConfigurationError("load-test target cannot contain credentials/query/fragment")
+        raise LoadTestConfigurationError(
+            "load-test target cannot contain credentials/query/fragment"
+        )
     if parsed.path not in {"", "/"}:
         raise LoadTestConfigurationError("load-test target must not contain a path")
     host = parsed.hostname.lower()
@@ -1160,9 +1559,7 @@ def load_scenario(path: Path) -> LoadScenario:
     if max(stage.users for stage in stages) < 100:
         raise LoadTestConfigurationError("a 100+ virtual-user stage is required")
 
-    raw_timeouts = _mapping(
-        payload.get("operation_timeout_seconds"), "operation_timeout_seconds"
-    )
+    raw_timeouts = _mapping(payload.get("operation_timeout_seconds"), "operation_timeout_seconds")
     if set(raw_timeouts) != set(API_NAMES):
         raise LoadTestConfigurationError(
             "operation_timeout_seconds must contain exactly the six API names"
@@ -1203,8 +1600,7 @@ def load_scenario(path: Path) -> LoadScenario:
     raw_preflight = _mapping(payload.get("preflight", {}), "preflight")
     try:
         preflight = {
-            key: int(raw_preflight.get(key, default))
-            for key, default in preflight_defaults.items()
+            key: int(raw_preflight.get(key, default)) for key, default in preflight_defaults.items()
         }
     except (TypeError, ValueError) as exc:
         raise LoadTestConfigurationError("preflight thresholds must be integers") from exc
@@ -1291,9 +1687,7 @@ def load_fixture_manifest(path: Path) -> FixtureManifest:
         raw_entry = _mapping(raw_apis[api_name], f"fixtures.apis.{api_name}")
         missing = set(REQUIRED_FIXTURE_PATHS[api_name]) - set(raw_entry)
         if missing:
-            raise LoadTestConfigurationError(
-                f"fixture {api_name} is missing {sorted(missing)}"
-            )
+            raise LoadTestConfigurationError(f"fixture {api_name} is missing {sorted(missing)}")
         parsed: dict[str, Path | tuple[Path, ...]] = {}
         for key, value in raw_entry.items():
             if key == "reference_images":
@@ -1362,9 +1756,7 @@ def validate_fixture_files(fixtures: FixtureManifest, *, repository_root: Path) 
                     raise LoadTestConfigurationError("ImageClip input archive must use ZIP_STORED")
                 content = archive.read(info)
                 if len(content) != int(item.get("size_bytes", -1)):
-                    raise LoadTestConfigurationError(
-                        f"ImageClip size mismatch for {relative_path}"
-                    )
+                    raise LoadTestConfigurationError(f"ImageClip size mismatch for {relative_path}")
                 if hashlib.sha256(content).hexdigest() != str(item.get("sha256", "")):
                     raise LoadTestConfigurationError(
                         f"ImageClip SHA-256 mismatch for {relative_path}"
@@ -1395,9 +1787,7 @@ def validate_fixture_files(fixtures: FixtureManifest, *, repository_root: Path) 
     except ValueError as exc:
         raise LoadTestConfigurationError(f"asset metadata fixture is invalid: {exc}") from exc
 
-    reference_values = fixtures.paths_for("retopology_process").get(
-        "reference_images", ()
-    )
+    reference_values = fixtures.paths_for("retopology_process").get("reference_images", ())
     references = reference_values if isinstance(reference_values, tuple) else ()
     if sorted(path.name for path in references) != sorted(
         item.filename for item in process.reference_views
@@ -1473,9 +1863,7 @@ def _validate_zero_quiesce_gate(path: Path) -> None:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError) as exc:
-        raise LoadTestConfigurationError(
-            f"cannot read production {path.name}"
-        ) from exc
+        raise LoadTestConfigurationError(f"cannot read production {path.name}") from exc
     for line in lines:
         if "=" not in line:
             raise LoadTestConfigurationError(f"production {path.name} is invalid")
@@ -1531,9 +1919,7 @@ def _validate_production_backup(
             f"production full backup is missing required payloads: {missing_payloads}"
         )
     empty_payloads = sorted(
-        name
-        for name in NONEMPTY_FULL_BACKUP_PAYLOADS
-        if entry_by_name[name].stat().st_size < 1
+        name for name in NONEMPTY_FULL_BACKUP_PAYLOADS if entry_by_name[name].stat().st_size < 1
     )
     if empty_payloads:
         raise LoadTestConfigurationError(
@@ -1571,9 +1957,7 @@ def _validate_production_backup(
     except (OSError, UnicodeDecodeError) as exc:
         raise LoadTestConfigurationError("cannot read production git-head.txt") from exc
     if recorded_git_head != manifest["GIT_HEAD"]:
-        raise LoadTestConfigurationError(
-            "BACKUP_MANIFEST GIT_HEAD does not match git-head.txt"
-        )
+        raise LoadTestConfigurationError("BACKUP_MANIFEST GIT_HEAD does not match git-head.txt")
     try:
         with (root / "database.dump").open("rb") as database_file:
             database_header = database_file.read(5)
@@ -1630,9 +2014,7 @@ def _validate_production_backup(
     if not listed:
         raise LoadTestConfigurationError("production SHA256SUMS is empty")
     expected_files = {
-        entry.name
-        for entry in entries
-        if entry.name not in {"SHA256SUMS", "BACKUP_COMPLETE"}
+        entry.name for entry in entries if entry.name not in {"SHA256SUMS", "BACKUP_COMPLETE"}
     }
     if set(listed) != expected_files:
         raise LoadTestConfigurationError(
@@ -1642,9 +2024,7 @@ def _validate_production_backup(
         if file_sha256(root / name) != digest:
             raise LoadTestConfigurationError(f"production backup checksum failed for {name}")
 
-    latest_mtime = max(
-        datetime.fromtimestamp(entry.stat().st_mtime, UTC) for entry in entries
-    )
+    latest_mtime = max(datetime.fromtimestamp(entry.stat().st_mtime, UTC) for entry in entries)
     if latest_mtime >= window_start:
         raise LoadTestConfigurationError(
             "production backup must be completely finalized before the approved window"
@@ -1710,9 +2090,7 @@ def write_result_manifest(result_dir: Path, *, session_id: str) -> None:
     if not root.is_dir():
         raise LoadTestConfigurationError(f"result directory does not exist: {root}")
     excluded = {"checksums.sha256", "manifest.json"}
-    files = sorted(
-        path for path in root.rglob("*") if path.is_file() and path.name not in excluded
-    )
+    files = sorted(path for path in root.rglob("*") if path.is_file() and path.name not in excluded)
     inventory = [
         {
             "path": str(path.relative_to(root)),
@@ -1750,17 +2128,15 @@ def percentile(values: Sequence[float], ratio: float) -> float | None:
     return round(float(ordered[index]), 3)
 
 
-def summarize_records(records: Sequence[Mapping[str, Any]], elapsed_seconds: float) -> dict[str, Any]:
+def summarize_records(
+    records: Sequence[Mapping[str, Any]], elapsed_seconds: float
+) -> dict[str, Any]:
     completed = [record for record in records if record.get("terminal_status")]
     latencies = [
-        float(record["total_ms"])
-        for record in completed
-        if record.get("total_ms") is not None
+        float(record["total_ms"]) for record in completed if record.get("total_ms") is not None
     ]
     queue_latencies = [
-        float(record["queue_ms"])
-        for record in completed
-        if record.get("queue_ms") is not None
+        float(record["queue_ms"]) for record in completed if record.get("queue_ms") is not None
     ]
     errors = Counter(
         str(record.get("error_code") or record.get("terminal_status"))
@@ -1770,22 +2146,14 @@ def summarize_records(records: Sequence[Mapping[str, Any]], elapsed_seconds: flo
     return {
         "created": len(records),
         "completed": len(completed),
-        "throughput_completed_per_second": round(
-            len(completed) / max(elapsed_seconds, 0.001), 6
-        ),
-        "terminal_statuses": dict(
-            Counter(str(record["terminal_status"]) for record in completed)
-        ),
+        "throughput_completed_per_second": round(len(completed) / max(elapsed_seconds, 0.001), 6),
+        "terminal_statuses": dict(Counter(str(record["terminal_status"]) for record in completed)),
         "apis": dict(Counter(str(record.get("api")) for record in records)),
         "nodes": dict(
             Counter(str(record["node_id"]) for record in completed if record.get("node_id"))
         ),
         "workers": dict(
-            Counter(
-                str(record["worker_id"])
-                for record in completed
-                if record.get("worker_id")
-            )
+            Counter(str(record["worker_id"]) for record in completed if record.get("worker_id"))
         ),
         "retries": sum(int(record.get("retries", 0)) for record in records),
         "recoveries": sum(bool(record.get("recovered")) for record in records),
@@ -1988,9 +2356,7 @@ def summarize_telemetry(
                 "p50": percentile(free_vram, 0.50),
             },
             "current_jobs": _distribution(series["current_jobs"]),
-            "slot_occupancy_percent": _distribution(
-                series["slot_occupancy_percent"]
-            ),
+            "slot_occupancy_percent": _distribution(series["slot_occupancy_percent"]),
         }
 
     worker_summary: dict[str, Any] = {}
@@ -1998,9 +2364,7 @@ def summarize_telemetry(
         worker_summary[worker_id] = {
             "samples": len(series["slot_occupancy_percent"]),
             "current_jobs": _distribution(series["current_jobs"]),
-            "slot_occupancy_percent": _distribution(
-                series["slot_occupancy_percent"]
-            ),
+            "slot_occupancy_percent": _distribution(series["slot_occupancy_percent"]),
             "cpu_util_percent": None,
             "cpu_util_note": "backend does not expose CPU%; slot occupancy is authoritative",
         }
@@ -2040,13 +2404,7 @@ def summarize_telemetry(
                 for worker_id in expected_worker_ids
             ),
             "all_gpus_reached_90_percent": all(
-                (
-                    gpu_summary.get(node_id, {}).get(
-                        "saturation_ge_90_percent_ratio"
-                    )
-                    or 0
-                )
-                > 0
+                (gpu_summary.get(node_id, {}).get("saturation_ge_90_percent_ratio") or 0) > 0
                 for node_id in expected_gpu_ids
             ),
         },

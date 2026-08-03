@@ -11,10 +11,14 @@ import yaml
 
 from packages.gpu_control_core.load_testing import (
     API_NAMES,
+    FIXED_LOAD_ARTIFACT_KINDS,
     REQUIRED_FULL_BACKUP_PAYLOADS,
+    RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS,
+    SUBSTANCE_LOAD_ARTIFACT_KINDS,
     LoadShapeStopSignal,
     LoadStage,
     LoadTestConfigurationError,
+    LoadTestPreempted,
     RuntimeSettings,
     build_plan,
     configure_locust_client_tls,
@@ -23,6 +27,8 @@ from packages.gpu_control_core.load_testing import (
     evaluate_load_thresholds,
     evaluate_telemetry_evidence,
     execute_bounded_teardown_cancel,
+    expected_load_artifact_kinds,
+    find_load_session_identity_collisions,
     identify_foreign_active_work,
     load_fixture_manifest,
     load_queue_start,
@@ -33,6 +39,8 @@ from packages.gpu_control_core.load_testing import (
     summarize_records,
     summarize_telemetry,
     validate_asset_worker_roles,
+    validate_downloaded_load_artifact,
+    validate_load_artifact_manifest,
     validate_production_backup,
     validate_test_client_capacities,
 )
@@ -192,7 +200,7 @@ def fixture_manifest(tmp_path: Path) -> Path:
 def allowed_environment(tmp_path: Path, target: str = "https://staging.example") -> dict[str, str]:
     base = {
         "LOAD_TEST_TARGET": target,
-        "LOAD_TEST_SESSION_ID": "staging-acceptance-01",
+        "LOAD_TEST_SESSION_ID": "123e4567-e89b-42d3-a456-426614174000",
         "LOAD_TEST_ENVIRONMENT": "staging",
         "ALLOW_LOAD_TEST": "true",
         "LOAD_TEST_TARGET_ALLOWLIST": target,
@@ -293,6 +301,195 @@ def test_default_runtime_is_plan_only_and_has_no_credentials() -> None:
     assert runtime.environment == "plan"
 
 
+def test_six_api_artifact_contracts_match_server_contracts() -> None:
+    assert FIXED_LOAD_ARTIFACT_KINDS == {
+        "imageclip_batch": frozenset({"result_archive"}),
+        "modelview_roughness": frozenset({"output"}),
+        "uv_process": frozenset({"blend", "fbx", "report", "qa", "fbx_qa"}),
+        "retopology_audit": frozenset({"audit", "manifest"}),
+    }
+    assert len(RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS) == 22
+    assert expected_load_artifact_kinds(
+        "retopology_process", metadata={"reference_views": [{"filename": "front.png"}]}
+    ) == RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS | {"reference_images"}
+    assert (
+        expected_load_artifact_kinds("retopology_process", metadata={"reference_views": []})
+        == RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS
+    )
+    for profile, kinds in SUBSTANCE_LOAD_ARTIFACT_KINDS.items():
+        assert (
+            expected_load_artifact_kinds(
+                "substance_bake", metadata={"options": {"profile": profile}}
+            )
+            == kinds
+        )
+
+    root = Path(__file__).resolve().parents[2]
+    asset_source = (root / "apps/asset_api/src/gpu_control_asset_api/main.py").read_text(
+        encoding="utf-8"
+    )
+    asset_module = ast.parse(asset_source)
+    assignments = {
+        node.targets[0].id: node.value
+        for node in asset_module.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    }
+    server_audit = ast.literal_eval(assignments["RETOPOLOGY_AUDIT_ARTIFACTS"])
+    assert frozenset(server_audit) == FIXED_LOAD_ARTIFACT_KINDS["retopology_audit"]
+    server_substance = ast.literal_eval(assignments["SUBSTANCE_BAKE_OUTPUTS"])
+    assert {
+        profile: frozenset(contract) for profile, contract in server_substance.items()
+    } == SUBSTANCE_LOAD_ARTIFACT_KINDS
+
+    required_node = assignments["RETOPOLOGY_PROCESS_REQUIRED_FILENAMES"]
+    assert isinstance(required_node, ast.Dict)
+    required_kinds: set[str] = set()
+    for key, value in zip(required_node.keys, required_node.values, strict=True):
+        if key is not None:
+            pair = ast.literal_eval(value)
+            required_kinds.add(str(pair[0]))
+            continue
+        assert isinstance(value, ast.DictComp)
+        generator_values = [ast.literal_eval(item.iter) for item in value.generators]
+        required_kinds.update(
+            f"view_{role}_{view}" for role in generator_values[0] for view in generator_values[1]
+        )
+    promotions = ast.literal_eval(assignments["RETOPOLOGY_FINAL_MODEL_ARTIFACTS"])
+    final_required_kinds = {
+        str(promotions[kind][0]) if kind in promotions else kind for kind in required_kinds
+    }
+    assert frozenset(final_required_kinds) == RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS
+    optional = ast.literal_eval(assignments["RETOPOLOGY_PROCESS_OPTIONAL_FILENAMES"])
+    assert {value[0] for value in optional.values()} == {"reference_images"}
+
+    uv_complete = next(
+        node
+        for node in ast.walk(asset_module)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "worker_complete_uv_v2"
+    )
+    uv_contract = next(
+        node.value
+        for node in uv_complete.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "contract" for target in node.targets)
+    )
+    assert isinstance(uv_contract, ast.Dict)
+    assert {ast.literal_eval(key) for key in uv_contract.keys if key is not None} == set(
+        FIXED_LOAD_ARTIFACT_KINDS["uv_process"]
+    )
+    scheduler_source = (root / "apps/scheduler/src/gpu_control_scheduler/main.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'kind="result_archive"' in scheduler_source
+    assert 'kind="output"' in scheduler_source
+
+
+def test_artifact_manifest_requires_exact_unique_positive_contract() -> None:
+    def artifact(kind: str) -> dict[str, object]:
+        return {
+            "id": f"artifact-{kind}",
+            "kind": kind,
+            "filename": f"{kind}.bin",
+            "size_bytes": 7,
+            "sha256": "a" * 64,
+            "download_url": f"/api/v1/assets/jobs/job/artifacts/{kind}",
+        }
+
+    expected = FIXED_LOAD_ARTIFACT_KINDS["uv_process"]
+    valid = [artifact(kind) for kind in sorted(expected)]
+    assert len(
+        validate_load_artifact_manifest("uv_process", valid, expected_kinds=expected)
+    ) == len(expected)
+
+    with pytest.raises(LoadTestConfigurationError, match="kinds/cardinality"):
+        validate_load_artifact_manifest("uv_process", valid[:-1], expected_kinds=expected)
+    with pytest.raises(LoadTestConfigurationError, match="not unique"):
+        validate_load_artifact_manifest("uv_process", [*valid, valid[0]], expected_kinds=expected)
+    empty = [dict(item) for item in valid]
+    empty[0]["size_bytes"] = 0
+    with pytest.raises(LoadTestConfigurationError, match="non-positive"):
+        validate_load_artifact_manifest("uv_process", empty, expected_kinds=expected)
+
+    roughness = artifact("output")
+    roughness.pop("filename")
+    assert validate_load_artifact_manifest(
+        "modelview_roughness", [roughness], expected_kinds={"output"}
+    )
+
+
+def test_downloaded_artifact_requires_size_and_three_matching_sha_values() -> None:
+    content = b"verified artifact"
+    digest = hashlib.sha256(content).hexdigest()
+    artifact = {"kind": "output", "size_bytes": len(content), "sha256": digest}
+    assert (
+        validate_downloaded_load_artifact(
+            "modelview_roughness", artifact, content, header_sha256=digest
+        )
+        == digest
+    )
+
+    for mutation, header, message in (
+        ({**artifact, "size_bytes": len(content) + 1}, digest, "size"),
+        (artifact, None, "header"),
+        (artifact, "b" * 64, "header"),
+        ({**artifact, "sha256": "b" * 64}, "b" * 64, "body"),
+    ):
+        with pytest.raises(LoadTestConfigurationError, match=message):
+            validate_downloaded_load_artifact(
+                "modelview_roughness", mutation, content, header_sha256=header
+            )
+
+
+def test_session_collision_scan_uses_exact_current_tenant_identities() -> None:
+    session_id = "123e4567-e89b-42d3-a456-426614174000"
+    collisions = find_load_session_identity_collisions(
+        [
+            {
+                "kind": "batch",
+                "batch_id": "batch-1",
+                "tenant_id": "tenant-a",
+                "external_batch_id": f"loadtest:{session_id}:imageclip_batch:00000001",
+                "status": "SUCCEEDED",
+            },
+            {
+                "kind": "job",
+                "job_id": "job-1",
+                "tenant_id": "tenant-b",
+                "request_id": f"lt:{session_id}:mvr:00000002",
+                "status": "SUCCEEDED",
+            },
+            {
+                "kind": "batch",
+                "batch_id": "ignored-cross-tenant",
+                "tenant_id": "business",
+                "external_batch_id": f"loadtest:{session_id}:imageclip_batch:00000003",
+            },
+        ],
+        [
+            {
+                "job_id": "asset-1",
+                "client_id": "tenant-a",
+                "external_asset_id": f"loadtest:{session_id}:uv_process:00000004",
+                "status": "FAILED",
+            },
+            {
+                "job_id": "ignored-cross-session",
+                "client_id": "tenant-a",
+                "external_asset_id": "loadtest:another-session:uv_process:00000004",
+            },
+        ],
+        tenant_ids=("tenant-a", "tenant-b"),
+        session_id=session_id,
+    )
+    assert {(item["plane"], item["task_id"]) for item in collisions} == {
+        ("gpu", "batch-1"),
+        ("gpu", "job-1"),
+        ("asset", "asset-1"),
+    }
+
+
 def test_locust_client_is_bound_to_approved_ca(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -361,12 +558,19 @@ def test_shape_stop_request_is_idempotent_and_shape_owned() -> None:
     assert signal.requested is True
     assert signal.reason == "telemetry_sample_failed"
     assert select_load_shape_stage(stages, 1.0, stop_requested=signal.requested) is None
+    with pytest.raises(LoadTestPreempted) as stopped:
+        signal.raise_if_requested("imageclip_batch:submit")
+    assert stopped.value.reason == "telemetry_sample_failed"
+    assert stopped.value.operation == "imageclip_batch:submit"
 
     signal.reset()
     assert signal.requested is False
+    signal.raise_if_requested("imageclip_batch:submit")
     assert select_load_shape_stage(stages, 1.0, stop_requested=False) == (10, 2.0)
     with pytest.raises(LoadTestConfigurationError, match="reason cannot be empty"):
         signal.request("  ")
+    with pytest.raises(LoadTestConfigurationError, match="operation cannot be empty"):
+        signal.raise_if_requested("  ")
 
 
 def test_telemetry_never_quits_the_locust_runner_directly() -> None:
@@ -385,6 +589,24 @@ def test_telemetry_never_quits_the_locust_runner_directly() -> None:
         and node.func.attr == "quit"
     ]
     assert direct_quits == []
+
+
+def test_watchdog_fences_before_requesting_immediate_runner_stop() -> None:
+    source_path = Path(__file__).resolve().parents[2] / "tests/load/locustfile.py"
+    source = source_path.read_text(encoding="utf-8")
+    module = ast.parse(source)
+    watchdog = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "handle_telemetry_watchdog"
+    )
+    watchdog_source = ast.get_source_segment(source, watchdog) or ""
+
+    assert '_shape_stop_signal.request("foreign_work_detected")' in watchdog_source
+    assert "request_immediate_runner_stop(environment)" in watchdog_source
+    assert watchdog_source.index("_shape_stop_signal.request") < watchdog_source.index(
+        "request_immediate_runner_stop"
+    )
 
 
 def test_telemetry_shutdown_drains_inflight_sample_before_fallback_kill() -> None:
@@ -438,12 +660,70 @@ def test_locust_uses_status_scoped_recovery_and_sync_e2e_route_name() -> None:
     status_sender_source = ast.get_source_segment(source, status_sender) or ""
     discovery_source = ast.get_source_segment(source, discovery) or ""
     roughness_source = ast.get_source_segment(source, roughness) or ""
-    assert "client_kind={client_kind}&status={status}&limit=500" in status_sender_source
+    assert "client_kind={client_kind}&active_only=true&limit=500" in status_sender_source
     assert "execute_bounded_teardown_cancel" in active_query_source
     assert "ADMIN_STATUS_QUERY_THROTTLE_SECONDS" in active_query_source
     assert 'client_kind="test"' in discovery_source
     assert "passes=2" in discovery_source
     assert 'operation="sync-e2e"' in roughness_source
+
+
+def test_formal_preflight_rejects_distributed_locust_before_network_preflight() -> None:
+    source_path = Path(__file__).resolve().parents[2] / "tests/load/locustfile.py"
+    source = source_path.read_text(encoding="utf-8")
+    module = ast.parse(source)
+    guarded = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "guarded_preflight"
+    )
+    guarded_source = ast.get_source_segment(source, guarded) or ""
+
+    assert "MasterRunner, WorkerRunner" in source
+    assert "isinstance(runner, MasterRunner | WorkerRunner)" in guarded_source
+    assert guarded_source.index("MasterRunner") < guarded_source.index("perform_preflight()")
+
+
+def test_production_preflight_scans_all_status_history_before_submissions() -> None:
+    source_path = Path(__file__).resolve().parents[2] / "tests/load/locustfile.py"
+    source = source_path.read_text(encoding="utf-8")
+    module = ast.parse(source)
+    preflight = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "perform_preflight"
+    )
+    preflight_source = ast.get_source_segment(source, preflight) or ""
+
+    assert "/admin/jobs?client_kind=test&limit=500" in preflight_source
+    assert "/admin/asset-processing?limit=500&active_only=false" in preflight_source
+    assert "find_load_session_identity_collisions" in preflight_source
+    assert "reached the 500-row safety limit" in preflight_source
+
+
+def test_locust_virtual_users_fence_cycles_submissions_and_retries() -> None:
+    source_path = Path(__file__).resolve().parents[2] / "tests/load/locustfile.py"
+    source = source_path.read_text(encoding="utf-8")
+    module = ast.parse(source)
+    user_class = next(
+        node for node in module.body if isinstance(node, ast.ClassDef) and node.name == "SixApiUser"
+    )
+    methods = {
+        node.name: ast.get_source_segment(source, node) or ""
+        for node in user_class.body
+        if isinstance(node, ast.FunctionDef)
+    }
+
+    assert 'self.ensure_not_preempted("business-cycle")' in methods["business_cycle"]
+    assert "except LoadTestPreempted" in methods["business_cycle"]
+    assert ':submit")' in methods["submit_async_asset"]
+    assert ':submit")' in methods["run_imageclip_batch"]
+    assert ':submit")' in methods["run_modelview_roughness"]
+    assert "X-Artifact-SHA256" in methods["run_modelview_roughness"]
+    assert "hashlib.sha256(response.content).hexdigest()" in methods["run_modelview_roughness"]
+    for method_name in ("request_with_retry", "post_multipart"):
+        assert ':request")' in methods[method_name]
+        assert ':retry")' in methods[method_name]
 
 
 def test_teardown_cancel_retries_429_and_5xx_with_bounded_backoff() -> None:
@@ -466,6 +746,72 @@ def test_teardown_cancel_retries_429_and_5xx_with_bounded_backoff() -> None:
     )
     assert (status_code, attempts) == (599, 3)
     assert exhausted_sleeps == [0.25, 0.5]
+
+
+def test_teardown_cancel_respects_shared_deadline_during_backoff() -> None:
+    clock = [0.0]
+    sends = [0]
+
+    def send() -> int:
+        sends[0] += 1
+        return 503
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    with pytest.raises(TimeoutError, match="deadline"):
+        execute_bounded_teardown_cancel(
+            send,
+            sleep,
+            max_attempts=3,
+            initial_backoff_seconds=0.25,
+            maximum_backoff_seconds=1.0,
+            deadline_monotonic=0.2,
+            monotonic=lambda: clock[0],
+        )
+
+    assert sends == [1]
+    assert clock == [0.2]
+
+
+def test_locust_teardown_has_final_rescan_and_one_total_deadline() -> None:
+    source_path = Path(__file__).resolve().parents[2] / "tests/load/locustfile.py"
+    source = source_path.read_text(encoding="utf-8")
+    module = ast.parse(source)
+    teardown = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "teardown_session_tasks"
+    )
+    teardown_source = ast.get_source_segment(source, teardown) or ""
+
+    assert "TEARDOWN_TOTAL_TIMEOUT_SECONDS" in teardown_source
+    assert teardown_source.count("discover_teardown_records(") >= 2
+    assert "TEARDOWN_FINAL_EMPTY_SCANS" in teardown_source
+    assert 'recovery_scan["final_scope_verified"]' in teardown_source
+    assert "deadline_monotonic=deadline" in teardown_source
+
+
+def test_locust_revalidates_fixture_integrity_before_use_and_each_stage() -> None:
+    source_path = Path(__file__).resolve().parents[2] / "tests/load/locustfile.py"
+    source = source_path.read_text(encoding="utf-8")
+    module = ast.parse(source)
+    fixture_path_node = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "fixture_path"
+    )
+    shape = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.ClassDef) and node.name == "SixApiStagesShape"
+    )
+    fixture_source = ast.get_source_segment(source, fixture_path_node) or ""
+    shape_source = ast.get_source_segment(source, shape) or ""
+
+    assert "verify_fixture_path(value)" in fixture_source
+    assert "verify_all_fixture_paths()" in shape_source
+    assert "fixture_integrity_failed" in shape_source
 
 
 def test_wrapper_forces_safe_locust_stop_timeout(tmp_path: Path) -> None:
@@ -573,27 +919,43 @@ def test_transport_failures_are_retryable_and_queue_prefers_queued_at() -> None:
 
 
 def test_every_api_key_must_be_a_test_client_and_accepting() -> None:
+    capacities = [
+        {
+            "client": {"id": tenant_id, "kind": "test"},
+            "accepting_batches": True,
+        }
+        for tenant_id in ("load-a", "load-b")
+    ]
+    asset_capacities = [
+        {"client": {"id": tenant_id, "kind": "test"}} for tenant_id in ("load-a", "load-b")
+    ]
     checks = validate_test_client_capacities(
-        [
-            {"client": {"kind": "test"}, "accepting_batches": True},
-            {"client": {"kind": "test"}, "accepting_batches": True},
-        ],
-        expected_count=2,
+        capacities,
+        expected_tenant_ids=("load-a", "load-b"),
+        asset_capacities=asset_capacities,
     )
     assert [item["api_key_index"] for item in checks] == [0, 1]
+    assert [item["tenant_id"] for item in checks] == ["load-a", "load-b"]
+    assert all(item["asset_identity_verified"] is True for item in checks)
 
-    try:
+    with pytest.raises(LoadTestConfigurationError, match="index 1"):
         validate_test_client_capacities(
-            [
-                {"client": {"kind": "test"}, "accepting_batches": True},
-                {"client": {"kind": "production"}, "accepting_batches": True},
-            ],
-            expected_count=2,
+            capacities,
+            expected_tenant_ids=("load-a", "swapped-tenant"),
+            asset_capacities=asset_capacities,
         )
-    except LoadTestConfigurationError as exc:
-        assert "index 1" in str(exc)
-    else:
-        raise AssertionError("every rotating key must be checked independently")
+    with pytest.raises(LoadTestConfigurationError, match="Asset test tenant"):
+        validate_test_client_capacities(
+            capacities,
+            expected_tenant_ids=("load-a", "load-b"),
+            asset_capacities=[asset_capacities[0], {"client": {"id": "wrong", "kind": "test"}}],
+        )
+    with pytest.raises(LoadTestConfigurationError, match="index 0"):
+        validate_test_client_capacities(
+            [{"client": {"kind": "test"}, "accepting_batches": True}, capacities[1]],
+            expected_tenant_ids=("load-a", "load-b"),
+            asset_capacities=asset_capacities,
+        )
 
 
 def test_cpu_and_substance_worker_capacity_are_independent() -> None:
@@ -654,6 +1016,8 @@ def test_watchdog_uses_exact_tenant_allowlist_and_fails_closed() -> None:
                 "status": "RUNNING",
                 "client_kind": "test",
                 "tenant_id": "load-tenant",
+                "kind": "batch",
+                "external_batch_id": "loadtest:run-01:imageclip_batch:00000001",
             },
             {
                 "job_id": "production-gpu",
@@ -669,10 +1033,18 @@ def test_watchdog_uses_exact_tenant_allowlist_and_fails_closed() -> None:
             },
         ],
         [
-            {"job_id": "own-asset", "status": "CLAIMED", "client_id": "load-tenant"},
+            {
+                "job_id": "own-asset",
+                "status": "CLAIMED",
+                "client_id": "load-tenant",
+                "job_type": "UV_PROCESS_V2",
+                "external_asset_id": "loadtest:run-01:uv_process:00000002",
+            },
             {"job_id": "foreign-asset", "status": "RUNNING", "client_id": "business"},
         ],
         test_tenant_ids=("load-tenant",),
+        session_id="run-01",
+        roughness_request_key_indices={},
     )
     assert [item["job_id"] for item in result["jobs"]] == [
         "production-gpu",
@@ -681,9 +1053,19 @@ def test_watchdog_uses_exact_tenant_allowlist_and_fails_closed() -> None:
     assert result["detected"] is True
 
     fallback = identify_foreign_active_work(
-        [{"job_id": "own-legacy-gpu", "status": "RUNNING", "tenant_id": "load-tenant"}],
+        [
+            {
+                "job_id": "own-legacy-gpu",
+                "status": "RUNNING",
+                "tenant_id": "load-tenant",
+                "kind": "batch",
+                "external_batch_id": "loadtest:run-01:imageclip_batch:00000003",
+            }
+        ],
         [],
         test_tenant_ids=("load-tenant",),
+        session_id="run-01",
+        roughness_request_key_indices={},
     )
     assert fallback["detected"] is False
     with pytest.raises(LoadTestConfigurationError, match="non-object"):
@@ -691,7 +1073,65 @@ def test_watchdog_uses_exact_tenant_allowlist_and_fails_closed() -> None:
             [],
             ["bad-row"],
             test_tenant_ids=("load-tenant",),  # type: ignore[list-item]
+            session_id="run-01",
+            roughness_request_key_indices={},
         )
+
+
+def test_watchdog_treats_same_tenant_cross_session_work_as_foreign() -> None:
+    result = identify_foreign_active_work(
+        [
+            {
+                "job_id": "other-run-roughness",
+                "status": "RUNNING",
+                "client_kind": "test",
+                "tenant_id": "load-tenant",
+                "kind": "job",
+                "workflow_key": "modelview-roughness",
+                "request_id": "lt:other-run:mvr:00000001",
+            }
+        ],
+        [],
+        test_tenant_ids=("load-tenant",),
+        session_id="run-01",
+        roughness_request_key_indices={"lt:run-01:mvr:00000001": 0},
+    )
+
+    assert result["detected"] is True
+    assert result["jobs"][0]["job_id"] == "other-run-roughness"
+
+
+def test_watchdog_rejects_session_prefix_collisions_and_asset_type_mismatch() -> None:
+    result = identify_foreign_active_work(
+        [
+            {
+                "job_id": "batch-suffix-collision",
+                "status": "RUNNING",
+                "client_kind": "test",
+                "tenant_id": "load-tenant",
+                "kind": "batch",
+                "external_batch_id": ("loadtest:run-01:imageclip_batch:00000001:foreign"),
+            }
+        ],
+        [
+            {
+                "job_id": "asset-api-mismatch",
+                "status": "CLAIMED",
+                "client_id": "load-tenant",
+                "job_type": "UV_PROCESS_V2",
+                "external_asset_id": ("loadtest:run-01:retopology_process:00000002"),
+            }
+        ],
+        test_tenant_ids=("load-tenant",),
+        session_id="run-01",
+        roughness_request_key_indices={},
+    )
+
+    assert result["detected"] is True
+    assert {item["job_id"] for item in result["jobs"]} == {
+        "batch-suffix-collision",
+        "asset-api-mismatch",
+    }
 
 
 def test_execution_requires_unique_tenant_id_for_every_load_key(tmp_path: Path) -> None:
@@ -712,16 +1152,26 @@ def test_execution_requires_unique_tenant_id_for_every_load_key(tmp_path: Path) 
         RuntimeSettings.from_environment(environment)
 
 
+def verified_six_api_records() -> list[dict[str, object]]:
+    return [
+        {
+            "id": f"ok-{api_name}",
+            "api": api_name,
+            "terminal_status": "SUCCEEDED",
+            "artifact_count": 1,
+            "artifact_contract_verified": True,
+        }
+        for api_name in API_NAMES
+    ]
+
+
 def test_lifecycle_gate_rejects_failures_timeouts_artifacts_and_teardown() -> None:
-    success = {
-        "id": "ok",
-        "terminal_status": "SUCCEEDED",
-        "artifact_count": 1,
-    }
-    assert evaluate_load_lifecycle([success], [])["passed"] is True
+    successes = verified_six_api_records()
+    assert evaluate_load_lifecycle(successes, [])["passed"] is True
 
     cases = [
         [{"id": "failed", "terminal_status": "FAILED", "artifact_count": 1}],
+        [{"id": "review", "terminal_status": "WAITING_REVIEW", "artifact_count": 1}],
         [{"id": "timeout", "terminal_status": None, "poll_timed_out": True}],
         [{"id": "missing", "terminal_status": "SUCCEEDED", "artifact_count": 0}],
         [
@@ -734,18 +1184,14 @@ def test_lifecycle_gate_rejects_failures_timeouts_artifacts_and_teardown() -> No
         ],
     ]
     for records in cases:
-        assert evaluate_load_lifecycle(records, [])["passed"] is False
+        assert evaluate_load_lifecycle([*successes, *records], [])["passed"] is False
     teardown = [{"task_id": "active", "cancelled": True, "status_code": 200}]
-    assert evaluate_load_lifecycle([success], teardown)["passed"] is False
+    assert evaluate_load_lifecycle(successes, teardown)["passed"] is False
 
 
 def test_bounded_stress_requires_verified_subset_and_safe_settled_cleanup() -> None:
     records = [
-        {
-            "id": "verified",
-            "terminal_status": "SUCCEEDED",
-            "artifact_count": 1,
-        },
+        *verified_six_api_records(),
         {"id": "still-active", "terminal_status": None, "artifact_count": 0},
     ]
     settled_cancel = [
@@ -765,7 +1211,8 @@ def test_bounded_stress_requires_verified_subset_and_safe_settled_cleanup() -> N
     )
 
     assert result["passed"] is True
-    assert result["verified_successful"] == 1
+    assert result["verified_successful"] == len(API_NAMES)
+    assert result["missing_successful_apis"] == []
     assert result["unresolved_incomplete_task_ids"] == []
 
     for rejected_status in ("FAILED", "REVIEW_REJECTED", "TIMED_OUT"):
@@ -795,6 +1242,20 @@ def test_bounded_stress_requires_verified_subset_and_safe_settled_cleanup() -> N
     assert result["passed"] is False
 
 
+def test_bounded_stress_requires_verified_success_from_every_api() -> None:
+    records = verified_six_api_records()[:-1]
+
+    result = evaluate_load_lifecycle(
+        records,
+        [],
+        mode="bounded_stress",
+        recovery_scan_passed=True,
+    )
+
+    assert result["passed"] is False
+    assert result["missing_successful_apis"] == [API_NAMES[-1]]
+
+
 def test_scoped_teardown_discovery_recovers_only_exact_run_owned_work() -> None:
     discovered = discover_scoped_teardown_tasks(
         [
@@ -804,6 +1265,7 @@ def test_scoped_teardown_discovery_recovers_only_exact_run_owned_work() -> None:
                 "tenant_id": "tenant-a",
                 "client_kind": "test",
                 "workflow_key": "modelview-roughness",
+                "request_id": "lt:run-01:mvr:00000003",
                 "status": "RUNNING",
                 "created_at": "2026-07-30T12:00:01Z",
             },
@@ -837,6 +1299,7 @@ def test_scoped_teardown_discovery_recovers_only_exact_run_owned_work() -> None:
             }
         ],
         tenant_key_indices={"tenant-a": 0, "tenant-b": 1},
+        roughness_request_key_indices={"lt:run-01:mvr:00000003": 0},
         session_id="run-01",
         started_at="2026-07-30T12:00:00Z",
     )
@@ -855,6 +1318,7 @@ def test_scoped_teardown_discovery_fails_closed_on_ambiguous_tenant_work() -> No
         "tenant_id": "tenant-a",
         "client_kind": "test",
         "workflow_key": "modelview-roughness",
+        "request_id": "lt:run-01:mvr:00000001",
         "status": "RUNNING",
         "created_at": "2026-07-30T11:59:59Z",
     }
@@ -863,6 +1327,7 @@ def test_scoped_teardown_discovery_fails_closed_on_ambiguous_tenant_work() -> No
             [base],
             [],
             tenant_key_indices={"tenant-a": 0},
+            roughness_request_key_indices={"lt:run-01:mvr:00000001": 0},
             session_id="run-01",
             started_at="2026-07-30T12:00:00Z",
         )
@@ -880,6 +1345,102 @@ def test_scoped_teardown_discovery_fails_closed_on_ambiguous_tenant_work() -> No
             [],
             [ambiguous_asset],
             tenant_key_indices={"tenant-a": 0},
+            roughness_request_key_indices={},
+            session_id="run-01",
+            started_at="2026-07-30T12:00:00Z",
+        )
+
+    mismatched_asset = {
+        "job_id": "mismatched-asset-job",
+        "client_id": "tenant-a",
+        "external_asset_id": "loadtest:run-01:retopology_process:00000001",
+        "job_type": "UV_PROCESS_V2",
+        "status": "RUNNING",
+        "created_at": "2026-07-30T12:00:01Z",
+    }
+    with pytest.raises(LoadTestConfigurationError, match="ambiguous"):
+        discover_scoped_teardown_tasks(
+            [],
+            [mismatched_asset],
+            tenant_key_indices={"tenant-a": 0},
+            roughness_request_key_indices={},
+            session_id="run-01",
+            started_at="2026-07-30T12:00:00Z",
+        )
+
+    suffix_batch = {
+        "kind": "batch",
+        "job_id": "suffix-batch",
+        "tenant_id": "tenant-a",
+        "client_kind": "test",
+        "external_batch_id": "loadtest:run-01:imageclip_batch:00000001:foreign",
+        "status": "RUNNING",
+        "created_at": "2026-07-30T12:00:01Z",
+    }
+    with pytest.raises(LoadTestConfigurationError, match="ambiguous"):
+        discover_scoped_teardown_tasks(
+            [suffix_batch],
+            [],
+            tenant_key_indices={"tenant-a": 0},
+            roughness_request_key_indices={},
+            session_id="run-01",
+            started_at="2026-07-30T12:00:00Z",
+        )
+
+
+@pytest.mark.parametrize(
+    "request_id",
+    [
+        "",
+        "lt:other-run:mvr:00000001",
+        "lt:run-01:uv:00000001",
+        "lt:run-01:mvr:0000001",
+        "lt:run-01:mvr:00000001:extra",
+    ],
+)
+def test_roughness_teardown_recovery_rejects_non_exact_session_binding(
+    request_id: str,
+) -> None:
+    row = {
+        "kind": "job",
+        "job_id": "roughness-job",
+        "tenant_id": "tenant-a",
+        "client_kind": "test",
+        "workflow_key": "modelview-roughness",
+        "request_id": request_id,
+        "status": "RUNNING",
+        "created_at": "2026-07-30T12:00:01Z",
+    }
+
+    with pytest.raises(LoadTestConfigurationError, match="ambiguous"):
+        discover_scoped_teardown_tasks(
+            [row],
+            [],
+            tenant_key_indices={"tenant-a": 0},
+            roughness_request_key_indices={"lt:run-01:mvr:00000001": 0},
+            session_id="run-01",
+            started_at="2026-07-30T12:00:00Z",
+        )
+
+
+def test_roughness_teardown_recovery_requires_same_api_key_binding() -> None:
+    row = {
+        "kind": "job",
+        "job_id": "roughness-job",
+        "tenant_id": "tenant-b",
+        "client_kind": "test",
+        "workflow_key": "modelview-roughness",
+        "request_id": "lt:run-01:mvr:00000001",
+        "status": "RUNNING",
+        "created_at": "2026-07-30T12:00:01Z",
+    }
+
+    with pytest.raises(LoadTestConfigurationError, match="ambiguous"):
+        discover_scoped_teardown_tasks(
+            [row],
+            [],
+            tenant_key_indices={"tenant-a": 0, "tenant-b": 1},
+            roughness_request_key_indices={"lt:run-01:mvr:00000001": 0},
             session_id="run-01",
             started_at="2026-07-30T12:00:00Z",
         )
@@ -919,6 +1480,32 @@ def test_production_target_is_refused_even_with_confirmation(tmp_path: Path) -> 
         raise AssertionError("production target without extra gates must fail closed")
 
 
+@pytest.mark.parametrize("session_id", ["plan-only", "reused-friendly-name"])
+def test_production_requires_explicit_canonical_uuid4_session(
+    tmp_path: Path, session_id: str
+) -> None:
+    scenario = load_scenario(write_yaml(tmp_path / "scenario.yaml", scenario_payload()))
+    fixtures = load_fixture_manifest(fixture_manifest(tmp_path))
+    environment = allowed_environment(tmp_path, target="https://10.3.34.11")
+    environment.update(
+        {
+            "LOAD_TEST_SESSION_ID": session_id,
+            "LOAD_TEST_ENVIRONMENT": "production",
+            "ALLOW_PRODUCTION_LOAD_TEST": "true",
+        }
+    )
+    runtime = RuntimeSettings.from_environment(environment)
+
+    blockers = runtime.execution_blockers(
+        scenario,
+        fixtures,
+        repository_root=Path("/opt/gpu-control"),
+        validate_backup=False,
+    )
+
+    assert any("UUIDv4" in blocker for blocker in blockers)
+
+
 def test_production_target_allows_only_explicit_change_window_gates(tmp_path: Path) -> None:
     scenario = load_scenario(write_yaml(tmp_path / "scenario.yaml", scenario_payload()))
     fixtures = load_fixture_manifest(fixture_manifest(tmp_path))
@@ -946,6 +1533,40 @@ def test_production_target_allows_only_explicit_change_window_gates(tmp_path: Pa
         repository_root=Path("/opt/gpu-control"),
         now=now,
     )
+
+
+@pytest.mark.parametrize("users", [100, 121])
+def test_production_six_api_profile_requires_exactly_120_users(tmp_path: Path, users: int) -> None:
+    payload = scenario_payload()
+    payload["stages"][-1]["users"] = users
+    scenario = load_scenario(write_yaml(tmp_path / "scenario.yaml", payload))
+    fixtures = load_fixture_manifest(fixture_manifest(tmp_path))
+    now = datetime.now(UTC)
+    environment = allowed_environment(tmp_path, target="https://10.3.34.11")
+    environment.update(
+        {
+            "LOAD_TEST_ENVIRONMENT": "production",
+            "ALLOW_PRODUCTION_LOAD_TEST": "true",
+            "LOAD_TEST_CHANGE_ID": "CHG-profile-limit",
+            "LOAD_TEST_WINDOW_START": (now - timedelta(minutes=1)).isoformat(),
+            "LOAD_TEST_WINDOW_END": (now + timedelta(hours=1)).isoformat(),
+        }
+    )
+    provisional = RuntimeSettings.from_environment(environment)
+    environment["LOAD_TEST_CONFIRMATION_TOKEN"] = provisional.expected_confirmation_token
+    runtime = RuntimeSettings.from_environment(environment)
+
+    blockers = runtime.execution_blockers(
+        scenario,
+        fixtures,
+        repository_root=Path("/opt/gpu-control"),
+        now=now,
+        validate_backup=False,
+    )
+
+    assert any("exactly 120 users" in blocker for blocker in blockers)
+    if users > 120:
+        assert any("safety cap of 120" in blocker for blocker in blockers)
 
 
 def test_confirmation_token_domains_and_exact_origin_allowlist(tmp_path: Path) -> None:

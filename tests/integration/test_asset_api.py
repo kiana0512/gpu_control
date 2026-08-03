@@ -2,22 +2,27 @@ import asyncio
 import hashlib
 import io
 import json
+import threading
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 import pytest
 from gpu_control_asset_api import main as asset_api_main
 from gpu_control_asset_api.main import as_utc, create_app
 from PIL import Image
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.gpu_control_core.models import (
     ApiClient,
     ApiKey,
+    AssetArtifact,
+    AssetIdempotencyKey,
     AssetJob,
     AssetWorker,
     Base,
@@ -39,9 +44,7 @@ async def test_asset_api_version_exposes_aligned_immutable_provenance(
 ) -> None:
     monkeypatch.setenv("GPU_CONTROL_BUILD_VERSION", "1.5.5")
     monkeypatch.setenv("GPU_CONTROL_BUILD_REVISION", "a" * 40)
-    monkeypatch.setattr(
-        "gpu_control_asset_api.main.importlib.metadata.version", lambda _: "1.5.5"
-    )
+    monkeypatch.setattr("gpu_control_asset_api.main.importlib.metadata.version", lambda _: "1.5.5")
     async for _, client in prepared_asset_app(tmp_path):
         response = await client.get("/api/v1/assets/version")
         assert response.status_code == 200
@@ -149,6 +152,127 @@ async def test_asset_api_auto_discovers_client_by_source_ip_without_api_key(
         assert repeated.status_code == 200, repeated.text
 
 
+async def test_asset_admission_uses_global_then_tenant_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async for _, client in prepared_asset_app(tmp_path):
+        app = client._transport.app  # type: ignore[attr-defined]
+        lock_calls: list[str] = []
+
+        async def record_global_lock(
+            _session: object,
+            calls: list[str] = lock_calls,
+        ) -> None:
+            calls.append("global")
+
+        async def record_tenant_lock(
+            _session: object,
+            tenant_id: str,
+            calls: list[str] = lock_calls,
+        ) -> None:
+            calls.append(f"tenant:{tenant_id}")
+
+        monkeypatch.setattr(
+            app.state.db,
+            "acquire_global_admission_transaction_lock",
+            record_global_lock,
+        )
+        monkeypatch.setattr(
+            app.state.db,
+            "acquire_tenant_transaction_lock",
+            record_tenant_lock,
+        )
+        response = await client.post(
+            "/api/v1/assets/uv/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "production-uv-lock-order",
+            },
+            files={
+                "asset": ("asset.fbx", b"asset", "application/octet-stream"),
+                "metadata": (
+                    None,
+                    json.dumps(
+                        {
+                            "external_asset_id": "production-uv-lock-order",
+                            "options": {},
+                        }
+                    ),
+                ),
+            },
+        )
+        assert response.status_code == 202, response.text
+        assert lock_calls == ["global", "tenant:asset-client"]
+
+
+async def test_active_production_gpu_work_preempts_new_test_asset_admission(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        app = client._transport.app  # type: ignore[attr-defined]
+        async with app.state.db.session() as db:
+            db.add(
+                ApiClient(
+                    id="load-test-client",
+                    name="Load Test",
+                    role="client",
+                    client_kind="test",
+                )
+            )
+            db.add(
+                ApiKey(
+                    id=str(uuid.uuid4()),
+                    client_id="load-test-client",
+                    prefix="loadtest",
+                    secret_hash=hash_api_secret("secret", settings.api_key_pepper),
+                )
+            )
+            db.add(
+                Job(
+                    id="production-gpu-active",
+                    tenant_id="asset-client",
+                    workflow_key="imageclip-rgba",
+                    workflow_version="1",
+                    status="FUTURE_ACTIVE_STATE",
+                    parameters={},
+                    request_hash="a" * 64,
+                    request_id="production-gpu-active",
+                    trace_id="production-gpu-active",
+                    job_dir=str(tmp_path / "production-gpu-active"),
+                )
+            )
+            await db.commit()
+
+        response = await client.post(
+            "/api/v1/assets/uv/process",
+            headers={
+                "X-API-Key": "gpc_loadtest_secret",
+                "Idempotency-Key": "preempted-test-uv",
+            },
+            files={
+                "asset": ("asset.fbx", b"asset", "application/octet-stream"),
+                "metadata": (
+                    None,
+                    json.dumps(
+                        {
+                            "external_asset_id": "preempted-test-uv",
+                            "options": {},
+                        }
+                    ),
+                ),
+            },
+        )
+        assert response.status_code == 503, response.text
+        assert response.headers["Retry-After"] == "5"
+        assert response.json()["detail"]["code"] == "LOAD_TEST_PREEMPTED"
+        async with app.state.db.session() as db:
+            test_jobs = await db.scalar(
+                select(func.count(AssetJob.id)).where(AssetJob.client_id == "load-test-client")
+            )
+            assert test_jobs == 0
+
+
 async def signed_post(
     client: httpx.AsyncClient, settings: Settings, path: str, payload: dict[str, object]
 ) -> httpx.Response:
@@ -196,12 +320,13 @@ async def create_minimal_substance_job(
     external_asset_id: str,
     *,
     api_key: str = "gpc_assetkey_secret",
+    idempotency_key: str | None = None,
 ) -> httpx.Response:
     return await client.post(
         "/api/v1/assets/bake/process",
         headers={
             "X-API-Key": api_key,
-            "Idempotency-Key": external_asset_id,
+            "Idempotency-Key": idempotency_key or external_asset_id,
         },
         files={
             "low_mesh": ("asset_low.fbx", b"low-fbx", "application/octet-stream"),
@@ -222,6 +347,254 @@ async def create_minimal_substance_job(
     )
 
 
+async def expire_asset_idempotency_key(app: Any, key: str) -> None:
+    database = app.state.db
+    async with database.session() as db:
+        row = await db.scalar(
+            select(AssetIdempotencyKey).where(
+                AssetIdempotencyKey.client_id == "asset-client",
+                AssetIdempotencyKey.key == key,
+            )
+        )
+        assert row is not None
+        row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        await db.commit()
+
+
+async def post_uv_process(
+    client: httpx.AsyncClient,
+    external_asset_id: str,
+    idempotency_key: str,
+) -> httpx.Response:
+    return await client.post(
+        "/api/v1/assets/uv/process",
+        headers={
+            "X-API-Key": "gpc_assetkey_secret",
+            "Idempotency-Key": idempotency_key,
+        },
+        files={
+            "asset": ("asset.fbx", b"asset", "application/octet-stream"),
+            "metadata": (
+                None,
+                json.dumps({"external_asset_id": external_asset_id, "options": {}}),
+            ),
+        },
+    )
+
+
+async def post_retopology_process(
+    client: httpx.AsyncClient,
+    external_asset_id: str,
+    idempotency_key: str,
+) -> httpx.Response:
+    return await client.post(
+        "/api/v1/assets/retopology/process",
+        headers={
+            "X-API-Key": "gpc_assetkey_secret",
+            "Idempotency-Key": idempotency_key,
+        },
+        files={
+            "project": (
+                "crate.blend",
+                b"real-blend-placeholder",
+                "application/octet-stream",
+            ),
+            "metadata": (
+                None,
+                json.dumps(retopology_process_metadata(external_asset_id)),
+                "application/json",
+            ),
+        },
+    )
+
+
+async def test_expired_asset_idempotency_keys_are_reusable_on_all_create_paths(
+    tmp_path: Path,
+) -> None:
+    async for _, client in prepared_asset_app(tmp_path):
+        app = client._transport.app  # type: ignore[attr-defined]
+        scenarios = (
+            (
+                "expired-uv-key",
+                lambda external_id, test_client=client: post_uv_process(
+                    test_client, external_id, "expired-uv-key"
+                ),
+            ),
+            (
+                "expired-pbr-key",
+                lambda external_id, test_client=client: create_minimal_substance_job(
+                    test_client,
+                    external_id,
+                    idempotency_key="expired-pbr-key",
+                ),
+            ),
+            (
+                "expired-retopo-key",
+                lambda external_id, test_client=client: post_retopology_process(
+                    test_client, external_id, "expired-retopo-key"
+                ),
+            ),
+        )
+        for key, submit in scenarios:
+            first = await submit(f"{key}-old")
+            assert first.status_code == 202, first.text
+            await expire_asset_idempotency_key(app, key)
+
+            second = await submit(f"{key}-new")
+            assert second.status_code == 202, second.text
+            assert second.json()["job_id"] != first.json()["job_id"]
+            async with app.state.db.session() as db:
+                current = await db.scalar(
+                    select(AssetIdempotencyKey).where(
+                        AssetIdempotencyKey.client_id == "asset-client",
+                        AssetIdempotencyKey.key == key,
+                    )
+                )
+                assert current is not None
+                assert current.job_id == second.json()["job_id"]
+
+
+async def test_large_bundle_builds_finish_on_threads_before_global_admission_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async for _, client in prepared_asset_app(tmp_path):
+        app = client._transport.app  # type: ignore[attr-defined]
+        event_thread = threading.get_ident()
+        calls: list[tuple[str, int]] = []
+        original_substance = asset_api_main.build_substance_input_bundle
+        original_retopology = asset_api_main.build_retopology_input_bundle
+
+        def observed_substance(
+            *args: Any,
+            _calls: list[tuple[str, int]] = calls,
+            _original: Any = original_substance,
+            **kwargs: Any,
+        ) -> tuple[Path, str, int]:
+            _calls.append(("substance_bundle", threading.get_ident()))
+            return _original(*args, **kwargs)
+
+        def observed_retopology(
+            *args: Any,
+            _calls: list[tuple[str, int]] = calls,
+            _original: Any = original_retopology,
+            **kwargs: Any,
+        ) -> tuple[Path, str, int]:
+            _calls.append(("retopology_bundle", threading.get_ident()))
+            return _original(*args, **kwargs)
+
+        async def observed_global_lock(
+            _db: AsyncSession,
+            _calls: list[tuple[str, int]] = calls,
+        ) -> None:
+            _calls.append(("global_lock", threading.get_ident()))
+
+        monkeypatch.setattr(asset_api_main, "build_substance_input_bundle", observed_substance)
+        monkeypatch.setattr(asset_api_main, "build_retopology_input_bundle", observed_retopology)
+        monkeypatch.setattr(
+            app.state.db,
+            "acquire_global_admission_transaction_lock",
+            observed_global_lock,
+        )
+
+        substance = await create_minimal_substance_job(client, "threaded-bundle-pbr")
+        assert substance.status_code == 202, substance.text
+        retopology = await post_retopology_process(
+            client, "threaded-bundle-retopo", "threaded-bundle-retopo"
+        )
+        assert retopology.status_code == 202, retopology.text
+
+        assert [name for name, _ in calls] == [
+            "substance_bundle",
+            "global_lock",
+            "retopology_bundle",
+            "global_lock",
+        ]
+        assert calls[0][1] != event_thread
+        assert calls[2][1] != event_thread
+        assert calls[1][1] == event_thread
+        assert calls[3][1] == event_thread
+
+
+@pytest.mark.parametrize("create_path", ["uv", "pbr", "retopology"])
+async def test_promoted_asset_root_is_removed_after_integrity_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    create_path: str,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        original_flush = AsyncSession.flush
+        failed = False
+
+        async def fail_first_flush(
+            session: AsyncSession,
+            objects: Any = None,
+            _original_flush: Any = original_flush,
+        ) -> None:
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise IntegrityError("forced", {}, RuntimeError("forced"))
+            await _original_flush(session, objects)
+
+        monkeypatch.setattr(AsyncSession, "flush", fail_first_flush)
+        if create_path == "uv":
+            response = await post_uv_process(client, "cleanup-uv", "cleanup-uv")
+        elif create_path == "pbr":
+            response = await create_minimal_substance_job(client, "cleanup-pbr")
+        else:
+            response = await post_retopology_process(
+                client, "cleanup-retopology", "cleanup-retopology"
+            )
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["code"] == "ASSET_CONFLICT"
+        assert list(settings.asset_root.iterdir()) == []
+
+
+@pytest.mark.parametrize("create_path", ["uv", "pbr", "retopology"])
+async def test_lost_asset_commit_acknowledgement_preserves_committed_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    create_path: str,
+) -> None:
+    original_commit = AsyncSession.commit
+    async for settings, client in prepared_asset_app(tmp_path):
+        app = client._transport.app  # type: ignore[attr-defined]
+        raised = False
+
+        async def commit_then_lose_acknowledgement(session: AsyncSession) -> None:
+            nonlocal raised
+            commits_asset = any(
+                isinstance(item, AssetJob) and item.status == "QUEUED"
+                for item in session.identity_map.values()
+            )
+            await original_commit(session)
+            if commits_asset and not raised:
+                raised = True
+                raise RuntimeError("injected lost asset commit acknowledgement")
+
+        monkeypatch.setattr(AsyncSession, "commit", commit_then_lose_acknowledgement)
+        with pytest.raises(RuntimeError, match="lost asset commit acknowledgement"):
+            if create_path == "uv":
+                await post_uv_process(client, "lost-ack-uv", "lost-ack-uv")
+            elif create_path == "pbr":
+                await create_minimal_substance_job(client, "lost-ack-pbr")
+            else:
+                await post_retopology_process(
+                    client,
+                    "lost-ack-retopology",
+                    "lost-ack-retopology",
+                )
+        assert raised is True
+        async with app.state.db.session() as db:
+            job = await db.scalar(
+                select(AssetJob).where(AssetJob.external_asset_id == f"lost-ack-{create_path}")
+            )
+            assert job is not None
+            assert Path(job.input_path).is_file()
+            assert Path(job.input_path).parent == settings.asset_root / job.id
+
+
 async def register_substance_worker(
     client: httpx.AsyncClient,
     settings: Settings,
@@ -235,9 +608,7 @@ async def register_substance_worker(
     expected_status: str = "ONLINE",
 ) -> httpx.Response:
     checked_at = process_probe_checked_at or datetime.now(UTC)
-    agent_instance_id = hashlib.sha256(
-        f"{worker_id}:{generation}".encode()
-    ).hexdigest()[:32]
+    agent_instance_id = hashlib.sha256(f"{worker_id}:{generation}".encode()).hexdigest()[:32]
     response = await signed_post(
         client,
         settings,
@@ -273,9 +644,7 @@ async def claim_substance_job(
     *,
     generation: str = "initial",
 ) -> httpx.Response:
-    agent_instance_id = hashlib.sha256(
-        f"{worker_id}:{generation}".encode()
-    ).hexdigest()[:32]
+    agent_instance_id = hashlib.sha256(f"{worker_id}:{generation}".encode()).hexdigest()[:32]
     return await signed_post(
         client,
         settings,
@@ -287,6 +656,51 @@ async def claim_substance_job(
             "available_memory_mb": 100000,
         },
     )
+
+
+async def test_substance_claim_takes_global_admission_before_node_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        worker_id = "asset-worker-3090-b-windows-01"
+        await register_substance_worker(client, settings, worker_id)
+        created = await create_minimal_substance_job(client, "claim-global-before-node")
+        assert created.status_code == 202, created.text
+        app = client._transport.app  # type: ignore[attr-defined]
+        lock_state = {"acquired": False, "calls": 0}
+        original_scalar = AsyncSession.scalar
+
+        async def record_global(
+            _session: AsyncSession,
+            _state: dict[str, int | bool] = lock_state,
+        ) -> None:
+            _state["acquired"] = True
+            _state["calls"] = int(_state["calls"]) + 1
+
+        async def assert_node_after_global(
+            session: AsyncSession,
+            statement: Any,
+            *args: Any,
+            _state: dict[str, int | bool] = lock_state,
+            _original_scalar: Any = original_scalar,
+            **kwargs: Any,
+        ) -> Any:
+            rendered = str(statement)
+            if "FROM nodes" in rendered and "nodes.id" in rendered:
+                assert _state["acquired"] is True
+            return await _original_scalar(session, statement, *args, **kwargs)
+
+        monkeypatch.setattr(
+            app.state.db,
+            "acquire_global_admission_transaction_lock",
+            record_global,
+        )
+        monkeypatch.setattr(AsyncSession, "scalar", assert_node_after_global)
+        claimed = await claim_substance_job(client, settings, worker_id)
+        assert claimed.status_code == 200, claimed.text
+        assert claimed.json()["job"]["job_id"] == created.json()["job_id"]
+        assert lock_state["calls"] == 1
 
 
 def png_bytes(size: int) -> bytes:
@@ -353,9 +767,7 @@ async def test_substance_v4_without_host_process_evidence_is_drained(
         assert heartbeat.status_code == 200, heartbeat.text
         assert heartbeat.json()["status"] == "DRAINING"
 
-        created = await create_minimal_substance_job(
-            client, "missing-host-process-evidence"
-        )
+        created = await create_minimal_substance_job(client, "missing-host-process-evidence")
         assert created.status_code == 202, created.text
         claimed = await claim_substance_job(client, settings, worker_id)
         assert claimed.json()["job"] is None
@@ -366,12 +778,8 @@ async def test_substance_claim_is_bound_to_heartbeat_agent_generation(
 ) -> None:
     async for settings, client in prepared_asset_app(tmp_path):
         worker_id = "asset-worker-3090-b-windows-01"
-        await register_substance_worker(
-            client, settings, worker_id, generation="current"
-        )
-        created = await create_minimal_substance_job(
-            client, "claim-generation-binding"
-        )
+        await register_substance_worker(client, settings, worker_id, generation="current")
+        created = await create_minimal_substance_job(client, "claim-generation-binding")
         assert created.status_code == 202, created.text
 
         stale_instance = await claim_substance_job(
@@ -388,9 +796,10 @@ async def test_substance_claim_is_bound_to_heartbeat_agent_generation(
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             job = await db.get(AssetJob, created.json()["job_id"])
             assert job is not None
-            assert job.worker_instance_id == hashlib.sha256(
-                f"{worker_id}:current".encode()
-            ).hexdigest()[:32]
+            assert (
+                job.worker_instance_id
+                == hashlib.sha256(f"{worker_id}:current".encode()).hexdigest()[:32]
+            )
 
 
 async def test_restarted_substance_instance_cannot_claim_over_live_assignment(
@@ -398,17 +807,11 @@ async def test_restarted_substance_instance_cannot_claim_over_live_assignment(
 ) -> None:
     async for settings, client in prepared_asset_app(tmp_path):
         worker_id = "asset-worker-3090-b-windows-01"
-        await register_substance_worker(
-            client, settings, worker_id, generation="original"
-        )
+        await register_substance_worker(client, settings, worker_id, generation="original")
         first = await create_minimal_substance_job(client, "generation-live-first")
-        first_claim = await claim_substance_job(
-            client, settings, worker_id, generation="original"
-        )
+        first_claim = await claim_substance_job(client, settings, worker_id, generation="original")
         assert first_claim.json()["job"]["job_id"] == first.json()["job_id"]
-        second = await create_minimal_substance_job(
-            client, "generation-live-second"
-        )
+        second = await create_minimal_substance_job(client, "generation-live-second")
 
         # The scheduled task restarts while the original instance still owns
         # a durable lease.  Its empty in-memory counter must not erase that
@@ -430,9 +833,7 @@ async def test_restarted_substance_instance_cannot_claim_over_live_assignment(
             worker.current_jobs = 0
             await db.commit()
 
-        duplicate = await claim_substance_job(
-            client, settings, worker_id, generation="restarted"
-        )
+        duplicate = await claim_substance_job(client, settings, worker_id, generation="restarted")
         assert duplicate.status_code == 200, duplicate.text
         assert duplicate.json()["job"] is None
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
@@ -505,9 +906,7 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
         assert linux_claim.json()["job"] is None
 
         worker_id = "asset-worker-3090-b-windows"
-        heartbeat = await register_substance_worker(
-            client, settings, worker_id
-        )
+        heartbeat = await register_substance_worker(client, settings, worker_id)
         assert heartbeat.json()["status"] == "ONLINE"
         claim = await claim_substance_job(client, settings, worker_id)
         leased = claim.json()["job"]
@@ -575,10 +974,7 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
             log_bytes: bytes,
         ) -> dict[str, tuple[str, bytes, str]]:
             return {
-                **{
-                    kind: (f"asset_{kind}.png", baked_bytes, "image/png")
-                    for kind in kinds
-                },
+                **{kind: (f"asset_{kind}.png", baked_bytes, "image/png") for kind in kinds},
                 "result": ("baker_result.json", result_bytes, "application/json"),
                 "log": ("baker.log", log_bytes, "text/plain"),
             }
@@ -723,9 +1119,7 @@ async def test_production_substance_queue_reserves_next_gpu_turn_and_cancel_rele
             node = await db.get(Node, "worker-3090-b")
             assert node is not None
             assert node.mode == "DRAINING"
-            assert node.labels["substance_bake_pending_reservation"]["job_ids"] == [
-                job_id
-            ]
+            assert node.labels["substance_bake_pending_reservation"]["job_ids"] == [job_id]
             assert "substance_bake_fence_job_ids" not in node.labels
 
         blocked = await claim_substance_job(client, settings, worker_id)
@@ -802,9 +1196,7 @@ async def test_production_substance_queue_reserves_next_gpu_turn_and_cancel_rele
             node = await db.get(Node, "worker-3090-b")
             assert node is not None
             assert node.mode == "DRAINING"
-            assert node.labels["substance_bake_pending_reservation"]["job_ids"] == [
-                job_id
-            ]
+            assert node.labels["substance_bake_pending_reservation"]["job_ids"] == [job_id]
 
         cancelled = await client.post(
             f"/api/v1/assets/jobs/{job_id}/cancel",
@@ -832,22 +1224,16 @@ async def test_substance_pending_reservation_requires_fresh_available_baker(
             assert node.mode == "ACTIVE"
             assert "substance_bake_pending_reservation" not in node.labels
 
-        await register_substance_worker(
-            client, settings, "asset-worker-3090-b-windows-01"
-        )
+        await register_substance_worker(client, settings, "asset-worker-3090-b-windows-01")
         for index in range(3):
-            created = await create_minimal_substance_job(
-                client, f"one-baker-capacity-{index}"
-            )
+            created = await create_minimal_substance_job(client, f"one-baker-capacity-{index}")
             assert created.status_code == 202, created.text
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")
             assert node is not None
             pending = node.labels["substance_bake_pending_reservation"]
             assert len(pending["job_ids"]) == 1
-            assert pending["worker_ids"] == [
-                "asset-worker-3090-b-windows-01"
-            ]
+            assert pending["worker_ids"] == ["asset-worker-3090-b-windows-01"]
 
             worker = await db.get(
                 AssetWorker,
@@ -885,9 +1271,7 @@ async def test_substance_reservation_never_steals_administrative_mode_ownership(
     existing_owner: str | None,
 ) -> None:
     async for settings, client in prepared_asset_app(tmp_path):
-        await register_substance_worker(
-            client, settings, "asset-worker-3090-b-windows-01"
-        )
+        await register_substance_worker(client, settings, "asset-worker-3090-b-windows-01")
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")
             assert node is not None
@@ -900,9 +1284,7 @@ async def test_substance_reservation_never_steals_administrative_mode_ownership(
                 }
             await db.commit()
 
-        created = await create_minimal_substance_job(
-            client, f"mode-ownership-{mode.lower()}"
-        )
+        created = await create_minimal_substance_job(client, f"mode-ownership-{mode.lower()}")
         assert created.status_code == 202, created.text
         job_id = created.json()["job_id"]
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
@@ -964,7 +1346,7 @@ async def test_test_substance_submission_never_installs_pending_gpu_reservation(
             assert "substance_bake_pending_reservation" not in node.labels
 
 
-async def test_test_substance_claim_waits_for_production_gpu_jobs_and_batches(
+async def test_test_substance_admission_waits_for_production_gpu_jobs_and_batches(
     tmp_path: Path,
 ) -> None:
     async for settings, client in prepared_asset_app(tmp_path):
@@ -1003,19 +1385,14 @@ async def test_test_substance_claim_waits_for_production_gpu_jobs_and_batches(
             )
             await db.commit()
 
-        await register_substance_worker(
-            client, settings, "asset-worker-3090-b-windows-01"
-        )
+        await register_substance_worker(client, settings, "asset-worker-3090-b-windows-01")
         created = await create_minimal_substance_job(
             client,
             "test-bake-yields-to-gpu",
             api_key="gpc_loadtest_secret",
         )
-        assert created.status_code == 202, created.text
-        blocked_by_job = await claim_substance_job(
-            client, settings, "asset-worker-3090-b-windows-01"
-        )
-        assert blocked_by_job.json()["job"] is None
+        assert created.status_code == 503, created.text
+        assert created.json()["detail"]["code"] == "LOAD_TEST_PREEMPTED"
 
         now = datetime.now(UTC)
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
@@ -1044,10 +1421,13 @@ async def test_test_substance_claim_waits_for_production_gpu_jobs_and_batches(
             )
             await db.commit()
 
-        blocked_by_batch = await claim_substance_job(
-            client, settings, "asset-worker-3090-b-windows-01"
+        blocked_by_batch = await create_minimal_substance_job(
+            client,
+            "test-bake-yields-to-batch",
+            api_key="gpc_loadtest_secret",
         )
-        assert blocked_by_batch.json()["job"] is None
+        assert blocked_by_batch.status_code == 503, blocked_by_batch.text
+        assert blocked_by_batch.json()["detail"]["code"] == "LOAD_TEST_PREEMPTED"
 
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             batch = await db.get(JobBatch, "production-gpu-batch")
@@ -1055,10 +1435,14 @@ async def test_test_substance_claim_waits_for_production_gpu_jobs_and_batches(
             batch.status = "SUCCEEDED"
             batch.finished_at = datetime.now(UTC)
             await db.commit()
-        claimed = await claim_substance_job(
-            client, settings, "asset-worker-3090-b-windows-01"
+        admitted = await create_minimal_substance_job(
+            client,
+            "test-bake-after-production",
+            api_key="gpc_loadtest_secret",
         )
-        assert claimed.json()["job"]["job_id"] == created.json()["job_id"]
+        assert admitted.status_code == 202, admitted.text
+        claimed = await claim_substance_job(client, settings, "asset-worker-3090-b-windows-01")
+        assert claimed.json()["job"]["job_id"] == admitted.json()["job_id"]
 
 
 async def test_substance_comfyui_continuity_failure_keeps_gpu_recovery_fence(
@@ -1067,9 +1451,7 @@ async def test_substance_comfyui_continuity_failure_keeps_gpu_recovery_fence(
     async for settings, client in prepared_asset_app(tmp_path):
         worker_id = "asset-worker-3090-b-windows-01"
         await register_substance_worker(client, settings, worker_id)
-        created = await create_minimal_substance_job(
-            client, "comfyui-continuity-fail-closed"
-        )
+        created = await create_minimal_substance_job(client, "comfyui-continuity-fail-closed")
         assert created.status_code == 202, created.text
         job_id = created.json()["job_id"]
         claimed = await claim_substance_job(client, settings, worker_id)
@@ -1116,9 +1498,7 @@ async def test_expired_substance_lease_blocks_reclaim_until_explicit_health_evid
         claimed = await claim_substance_job(client, settings, first_worker)
         assert claimed.status_code == 200, claimed.text
         assert claimed.json()["job"]["job_id"] == job_id
-        queued_after = await create_minimal_substance_job(
-            client, "lease-expiry-follow-up"
-        )
+        queued_after = await create_minimal_substance_job(client, "lease-expiry-follow-up")
         assert queued_after.status_code == 202, queued_after.text
         follow_up_job_id = queued_after.json()["job_id"]
 
@@ -1147,9 +1527,10 @@ async def test_expired_substance_lease_blocks_reclaim_until_explicit_health_evid
             assert len(recovery_entries) == 1
             assert recovery_entries[0]["job_id"] == job_id
             assert recovery_entries[0]["worker_id"] == first_worker
-            assert recovery_entries[0]["worker_instance_id"] == hashlib.sha256(
-                f"{first_worker}:initial".encode()
-            ).hexdigest()[:32]
+            assert (
+                recovery_entries[0]["worker_instance_id"]
+                == hashlib.sha256(f"{first_worker}:initial".encode()).hexdigest()[:32]
+            )
             assert recovery_entries[0]["lease_expired_at"]
             assert follow_up.status == "QUEUED"
             assert follow_up.attempt_count == 0
@@ -1174,9 +1555,7 @@ async def test_expired_substance_lease_blocks_reclaim_until_explicit_health_evid
             assert node is not None
             recovery_entry = node.labels["substance_bake_recovery_required"][0]
             assert recovery_entry["idle_observed_at"]
-            first_idle_observation = datetime.fromisoformat(
-                recovery_entry["idle_observed_at"]
-            )
+            first_idle_observation = datetime.fromisoformat(recovery_entry["idle_observed_at"])
             assert node.last_heartbeat_at is not None
             assert as_utc(node.last_heartbeat_at) < as_utc(first_idle_observation)
 
@@ -1189,9 +1568,9 @@ async def test_expired_substance_lease_blocks_reclaim_until_explicit_health_evid
             assert node is not None
             assert "substance_bake_recovery_required" in node.labels
             recovery_entry = node.labels["substance_bake_recovery_required"][0]
-            assert datetime.fromisoformat(
-                recovery_entry["idle_observed_at"]
-            ) == first_idle_observation
+            assert (
+                datetime.fromisoformat(recovery_entry["idle_observed_at"]) == first_idle_observation
+            )
 
             # Scheduler publishes a new ComfyUI observation only after the
             # persisted zero-process barrier.
@@ -1210,9 +1589,7 @@ async def test_expired_substance_lease_blocks_reclaim_until_explicit_health_evid
             assert node is not None
             assert node.mode == "DRAINING"
             assert "substance_bake_recovery_required" not in node.labels
-            assert node.labels["substance_bake_fence_job_ids"] == [
-                follow_up_job_id
-            ]
+            assert node.labels["substance_bake_fence_job_ids"] == [follow_up_job_id]
 
 
 async def test_substance_recovery_restores_asset_owned_drain_to_active(
@@ -1221,9 +1598,7 @@ async def test_substance_recovery_restores_asset_owned_drain_to_active(
     async for settings, client in prepared_asset_app(tmp_path):
         first_worker = "asset-worker-3090-b-windows-01"
         second_worker = "asset-worker-3090-b-windows-02"
-        created = await create_minimal_substance_job(
-            client, "lease-expiry-restores-active"
-        )
+        created = await create_minimal_substance_job(client, "lease-expiry-restores-active")
         job_id = created.json()["job_id"]
         await register_substance_worker(client, settings, first_worker)
         claimed = await claim_substance_job(client, settings, first_worker)
@@ -1245,9 +1620,7 @@ async def test_substance_recovery_restores_asset_owned_drain_to_active(
             assert node.labels["substance_bake_drain_owner"] == "asset-api"
             node.last_heartbeat_at = datetime.now(UTC)
             recovery_entry = node.labels["substance_bake_recovery_required"][0]
-            lease_expired_at = datetime.fromisoformat(
-                recovery_entry["lease_expired_at"]
-            )
+            lease_expired_at = datetime.fromisoformat(recovery_entry["lease_expired_at"])
             await db.commit()
 
         # A restarted Agent has reset its in-memory current_jobs to zero, but
@@ -1309,9 +1682,7 @@ async def test_substance_recovery_restores_asset_owned_drain_to_active(
             assert node is not None
             assert node.mode == "DRAINING"
             recovery_entry = node.labels["substance_bake_recovery_required"][0]
-            first_idle_observation = datetime.fromisoformat(
-                recovery_entry["idle_observed_at"]
-            )
+            first_idle_observation = datetime.fromisoformat(recovery_entry["idle_observed_at"])
             node.last_heartbeat_at = datetime.now(UTC)
             assert as_utc(node.last_heartbeat_at) >= as_utc(first_idle_observation)
             await db.commit()
@@ -1407,6 +1778,10 @@ async def test_uv_asset_job_contract_worker_concurrency_and_atomic_artifacts(
         assert capacity.status_code == 200
         assert capacity.json()["total_slots"] == 4
         assert capacity.json()["available_slots"] == 4
+        assert capacity.json()["client"] == {
+            "id": "asset-client",
+            "kind": "production",
+        }
 
         claim = await signed_post(
             client,
@@ -1438,9 +1813,7 @@ async def test_uv_asset_job_contract_worker_concurrency_and_atomic_artifacts(
         )
         assert progress.json() == {"cancel_requested": False}
 
-        qa = json.dumps(
-            {"schema_version": "1.0", "passed": True, "hard_failures": []}
-        ).encode()
+        qa = json.dumps({"schema_version": "1.0", "passed": True, "hard_failures": []}).encode()
         completed = await client.post(
             f"/internal/v1/assets/jobs/{job_id}/complete",
             headers=lease_headers,
@@ -1552,9 +1925,7 @@ async def register_asset_worker(
     assert response.status_code == 200, response.text
 
 
-async def claim_asset_job(
-    client: httpx.AsyncClient, settings: Settings
-) -> dict[str, object]:
+async def claim_asset_job(client: httpx.AsyncClient, settings: Settings) -> dict[str, object]:
     response = await signed_post(
         client,
         settings,
@@ -1918,9 +2289,7 @@ async def test_substance_claim_prioritizes_production_and_keeps_pool_fifo(
         claimed: list[str] = []
         for index in range(4):
             worker_id = f"asset-worker-3090-b-windows-{index:02d}"
-            heartbeat = await register_substance_worker(
-                client, settings, worker_id
-            )
+            heartbeat = await register_substance_worker(client, settings, worker_id)
             assert heartbeat.json()["status"] == "ONLINE"
             response = await claim_substance_job(client, settings, worker_id)
             claimed.append(str(response.json()["job"]["job_id"]))
@@ -2120,12 +2489,8 @@ def uv_process_v2_completion_files(
 async def test_uv_process_v2_advisory_delivers_five_artifacts_with_warning(
     tmp_path: Path,
 ) -> None:
-    async for settings, client in prepared_asset_app(
-        tmp_path, uv_qa_enforcement="advisory"
-    ):
-        job = await create_and_claim_uv_process_v2(
-            client, settings, "asset:chair:uv:v2:advisory"
-        )
+    async for settings, client in prepared_asset_app(tmp_path, uv_qa_enforcement="advisory"):
+        job = await create_and_claim_uv_process_v2(client, settings, "asset:chair:uv:v2:advisory")
         completed = await client.post(
             f"/internal/v1/assets/jobs/{job['job_id']}/uv-v2-complete",
             headers={"X-Asset-Lease": str(job["lease_token"])},
@@ -2184,15 +2549,11 @@ async def test_uv_process_v2_strict_still_rejects_geometry_qa_failure(
     tmp_path: Path,
 ) -> None:
     async for settings, client in prepared_asset_app(tmp_path):
-        job = await create_and_claim_uv_process_v2(
-            client, settings, "asset:chair:uv:v2:strict"
-        )
+        job = await create_and_claim_uv_process_v2(client, settings, "asset:chair:uv:v2:strict")
         completed = await client.post(
             f"/internal/v1/assets/jobs/{job['job_id']}/uv-v2-complete",
             headers={"X-Asset-Lease": str(job["lease_token"])},
-            files=uv_process_v2_completion_files(
-                job, blend_failures=["overlap_triangle_pairs=2"]
-            ),
+            files=uv_process_v2_completion_files(job, blend_failures=["overlap_triangle_pairs=2"]),
         )
         assert completed.status_code == 422, completed.text
         assert completed.json()["detail"] == {
@@ -2220,9 +2581,7 @@ async def test_uv_process_v2_advisory_keeps_integrity_failures_hard(
     completion_overrides: dict[str, str],
     expected_detail: dict[str, str],
 ) -> None:
-    async for settings, client in prepared_asset_app(
-        tmp_path, uv_qa_enforcement="advisory"
-    ):
+    async for settings, client in prepared_asset_app(tmp_path, uv_qa_enforcement="advisory"):
         job = await create_and_claim_uv_process_v2(
             client,
             settings,
@@ -2241,12 +2600,8 @@ async def test_uv_process_v2_advisory_keeps_integrity_failures_hard(
 async def test_uv_process_v2_rejects_non_object_qa_json_as_422(
     tmp_path: Path,
 ) -> None:
-    async for settings, client in prepared_asset_app(
-        tmp_path, uv_qa_enforcement="advisory"
-    ):
-        job = await create_and_claim_uv_process_v2(
-            client, settings, "asset:chair:uv:v2:scalar-qa"
-        )
+    async for settings, client in prepared_asset_app(tmp_path, uv_qa_enforcement="advisory"):
+        job = await create_and_claim_uv_process_v2(client, settings, "asset:chair:uv:v2:scalar-qa")
         files = uv_process_v2_completion_files(job)
         qa_filename, _, qa_content_type = files["qa"]
         files["qa"] = (qa_filename, b"[]", qa_content_type)
@@ -2412,9 +2767,7 @@ async def test_retopology_process_accepts_reference_views_and_publishes_review_s
             "max_repair_rounds": 1,
             "require_closed": False,
         },
-        "reference_views": [
-            {"filename": "front.png", "view": "front", "label": "概念图正面"}
-        ],
+        "reference_views": [{"filename": "front.png", "view": "front", "label": "概念图正面"}],
         "user_request": "保持箱体轮廓，扣件单独保留。",
     }
     async for settings, client in prepared_asset_app(tmp_path):
@@ -2516,7 +2869,7 @@ async def test_retopology_process_accepts_reference_views_and_publishes_review_s
                         "source_topology": {
                             "high": {"face_components": 1},
                             "reference": {"face_components": 1},
-                            "current": {"face_components": 1}
+                            "current": {"face_components": 1},
                         },
                         "candidate_topology": {
                             "faces": 2400,
@@ -2530,12 +2883,28 @@ async def test_retopology_process_accepts_reference_views_and_publishes_review_s
                 ).encode(),
                 "application/json",
             ),
-            "baseline_audit": ("retopology_baseline_audit.json", json.dumps(audit).encode(), "application/json"),
-            "audit": ("retopology_final_audit.json", json.dumps(audit).encode(), "application/json"),
-            "manifest": ("retopology_manifest.json", json.dumps(manifest).encode(), "application/json"),
+            "baseline_audit": (
+                "retopology_baseline_audit.json",
+                json.dumps(audit).encode(),
+                "application/json",
+            ),
+            "audit": (
+                "retopology_final_audit.json",
+                json.dumps(audit).encode(),
+                "application/json",
+            ),
+            "manifest": (
+                "retopology_manifest.json",
+                json.dumps(manifest).encode(),
+                "application/json",
+            ),
             "comparison": ("retopology_comparison.png", png, "image/png"),
             "reference_images": ("reference_images.png", png, "image/png"),
-            "agent_plan": ("retopology_agent_plan.json", json.dumps(agent_plan).encode(), "application/json"),
+            "agent_plan": (
+                "retopology_agent_plan.json",
+                json.dumps(agent_plan).encode(),
+                "application/json",
+            ),
             "agent_prompt": ("retopology_agent_prompt.txt", b"planning prompt", "text/plain"),
             "agent_events": ("retopology_agent_events.jsonl", b"{}\n", "application/x-ndjson"),
         }
@@ -2966,6 +3335,98 @@ async def test_completion_commit_failure_leaves_no_blocking_final_and_can_retry(
         assert len(list((settings.asset_root / job_id).glob(".outputs-*"))) == 1
 
 
+async def test_lost_completion_commit_acknowledgement_preserves_downloadable_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metadata = {
+        "external_asset_id": "asset:uv:lost-completion-ack",
+        "options": {
+            "resolution": 2048,
+            "padding_px": 10,
+            "hard_edge_angle_degrees": 75,
+            "hidden_axis": "y+",
+            "texel_density_mode": "uniform",
+            "qa_profile": "pbr-v1",
+        },
+    }
+    async for settings, client in prepared_asset_app(tmp_path):
+        created = await client.post(
+            "/api/v1/assets/uv/unwrap",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "asset:uv:lost-completion-ack",
+            },
+            files={
+                "asset": ("lost-ack.fbx", b"fbx", "application/octet-stream"),
+                "metadata": (None, json.dumps(metadata)),
+            },
+        )
+        assert created.status_code == 202, created.text
+        await register_asset_worker(client, settings)
+        claimed = await claim_asset_job(client, settings)
+        job_id = str(claimed["job_id"])
+        original_commit = AsyncSession.commit
+        raised = False
+
+        async def commit_then_lose_acknowledgement(
+            session: AsyncSession,
+            _original_commit: Any = original_commit,
+        ) -> None:
+            nonlocal raised
+            publishes_artifacts = any(
+                isinstance(item, AssetArtifact)
+                for item in (*session.new, *session.identity_map.values())
+            )
+            await _original_commit(session)
+            if publishes_artifacts and not raised:
+                raised = True
+                raise RuntimeError("injected lost completion commit acknowledgement")
+
+        monkeypatch.setattr(AsyncSession, "commit", commit_then_lose_acknowledgement)
+        with pytest.raises(RuntimeError, match="lost completion commit acknowledgement"):
+            await client.post(
+                f"/internal/v1/assets/jobs/{job_id}/complete",
+                headers={"X-Asset-Lease": str(claimed["lease_token"])},
+                files={
+                    "blend": ("model_PBR_UV.blend", b"blend", "application/octet-stream"),
+                    "fbx": ("model_PBR_UV.fbx", b"fbx", "application/octet-stream"),
+                    "report": ("model_report.json", b"{}", "application/json"),
+                    "qa": (
+                        "model_QA.json",
+                        json.dumps({"hard_failures": []}).encode(),
+                        "application/json",
+                    ),
+                },
+            )
+        assert raised is True
+        monkeypatch.setattr(AsyncSession, "commit", original_commit)
+
+        status = await client.get(
+            f"/api/v1/assets/jobs/{job_id}",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert status.status_code == 200, status.text
+        payload = status.json()
+        assert payload["status"] == "SUCCEEDED"
+        assert len(payload["artifacts"]) == 4
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            durable_artifacts = list(
+                (
+                    await db.scalars(select(AssetArtifact).where(AssetArtifact.job_id == job_id))
+                ).all()
+            )
+            assert len(durable_artifacts) == 4
+            assert all(Path(artifact.path).is_file() for artifact in durable_artifacts)
+        for artifact in payload["artifacts"]:
+            downloaded = await client.get(
+                f"/api/v1/assets/jobs/{job_id}/artifacts/{artifact['id']}",
+                headers={"X-API-Key": "gpc_assetkey_secret"},
+            )
+            assert downloaded.status_code == 200, downloaded.text
+            assert hashlib.sha256(downloaded.content).hexdigest() == artifact["sha256"]
+
+
 async def test_retopology_advisory_completion_cancel_wins_before_publish(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2982,9 +3443,7 @@ async def test_retopology_advisory_completion_cancel_wins_before_publish(
             client.post(
                 f"/internal/v1/assets/jobs/{job_id}/retopology-process-complete",
                 headers={"X-Asset-Lease": str(job["lease_token"])},
-                files=retopology_process_completion_files(
-                    job, png_bytes(16), quality_passed=False
-                ),
+                files=retopology_process_completion_files(job, png_bytes(16), quality_passed=False),
             )
         )
         await asyncio.wait_for(staged.wait(), 2)
@@ -3012,9 +3471,7 @@ async def test_substance_completion_staging_does_not_hold_gpu_node_lock(
     async for settings, client in prepared_asset_app(tmp_path):
         worker_id = "asset-worker-3090-b-windows-race"
         await register_substance_worker(client, settings, worker_id)
-        created = await create_minimal_substance_job(
-            client, "substance-completion-cancel-race"
-        )
+        created = await create_minimal_substance_job(client, "substance-completion-cancel-race")
         assert created.status_code == 202, created.text
         job_id = created.json()["job_id"]
         claimed = await claim_substance_job(client, settings, worker_id)
@@ -3153,9 +3610,7 @@ async def test_retopology_advisory_qa_delivers_with_persisted_warning(
             for artifact in payload["artifacts"]
             if artifact["kind"] in {"blend", "fbx"}
         }
-        assert {
-            kind: artifact["filename"] for kind, artifact in final_models.items()
-        } == {
+        assert {kind: artifact["filename"] for kind, artifact in final_models.items()} == {
             "blend": "retopology_final.blend",
             "fbx": "retopology_final.fbx",
         }

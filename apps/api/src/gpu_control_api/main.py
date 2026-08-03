@@ -31,6 +31,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.comfy_client import ComfyClient, ComfyError
+from packages.gpu_control_core.admission import (
+    TERMINAL_ASSET_WORK_STATUSES,
+    active_production_work_exists,
+    client_is_load_test,
+)
 from packages.gpu_control_core.batches import (
     BatchContractError,
     extract_batch_archive,
@@ -459,6 +464,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             response.headers["Content-Security-Policy"] = "default-src 'self'"
             return response
         finally:
+            pending_batch_root = getattr(request.state, "uncommitted_batch_root", None)
+            if pending_batch_root is not None:
+                pending_batch_id = getattr(request.state, "uncommitted_batch_id", None)
+                committed_batch = False
+                try:
+                    if pending_batch_id:
+                        async with request.app.state.db.session() as cleanup_db:
+                            committed_batch = (
+                                await cleanup_db.get(JobBatch, pending_batch_id)
+                            ) is not None
+                except Exception:
+                    logger().exception(
+                        "batch.uncommitted_commit_state_unknown",
+                        error_code="BATCH_STORAGE_CLEANUP_DEFERRED",
+                        batch_id=pending_batch_id,
+                        batch_root=str(pending_batch_root),
+                    )
+                    # A commit acknowledgement can be lost after PostgreSQL
+                    # made the row durable. Preserve the directory whenever
+                    # commit state cannot be proven; deleting it could corrupt
+                    # an authoritative batch. A later orphan sweep may remove
+                    # it once database state is available.
+                    committed_batch = True
+                if not committed_batch:
+                    try:
+                        request.app.state.storage.remove_tree(pending_batch_root)
+                    except Exception:
+                        logger().exception(
+                            "batch.uncommitted_directory_cleanup_failed",
+                            error_code="BATCH_STORAGE_CLEANUP_FAILED",
+                            batch_id=pending_batch_id,
+                            batch_root=str(pending_batch_root),
+                        )
             reset_context(token)
 
     async def session(request: Request) -> AsyncIterator[AsyncSession]:
@@ -1119,6 +1157,17 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     },
                     200,
                 )
+        if await client_is_load_test(db, principal.id) and await active_production_work_exists(db):
+            storage.remove_tree(root)
+            raise HTTPException(
+                503,
+                detail={
+                    "code": "LOAD_TEST_PREEMPTED",
+                    "message": "真实生产任务已进入系统，新的压力测试任务已暂停接收",
+                    "retryable": True,
+                },
+                headers={"Retry-After": "5"},
+            )
         queued = await db.scalar(
             select(func.count(Job.id)).where(Job.status == JobStatus.QUEUED.value)
         )
@@ -1366,6 +1415,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                         headers={
                             "X-Job-ID": job_id,
                             "X-Client-ID": principal.id,
+                            "X-Artifact-SHA256": artifact.sha256,
                             "Cache-Control": "no-store",
                         },
                     )
@@ -1548,9 +1598,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             normalized_start = start if start.tzinfo is not None else start.replace(tzinfo=UTC)
             normalized_end = end if end.tzinfo is not None else end.replace(tzinfo=UTC)
             value = int(
-                (
-                    normalized_end.astimezone(UTC) - normalized_start.astimezone(UTC)
-                ).total_seconds()
+                (normalized_end.astimezone(UTC) - normalized_start.astimezone(UTC)).total_seconds()
                 * 1000
             )
             return value if value >= 0 else None
@@ -1706,9 +1754,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             and bool(gpu_service_ms_total)
         )
         required_straggler_nodes = set(node_ids)
-        straggler_finishes_complete = required_straggler_nodes.issubset(
-            complete_node_gpu_finishes
-        )
+        straggler_finishes_complete = required_straggler_nodes.issubset(complete_node_gpu_finishes)
         parent_gpu_wall_ms = duration_ms(batch.started_at, batch.execution_finished_at)
         node_finish_offsets_ms: list[int] = []
         straggler_time_bounds_valid = straggler_finishes_complete
@@ -1716,9 +1762,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             for node_id in sorted(required_straggler_nodes):
                 node_finished_at = complete_node_gpu_finishes[node_id]
                 finish_offset_ms = duration_ms(batch.started_at, node_finished_at)
-                finish_to_parent_end_ms = duration_ms(
-                    node_finished_at, batch.execution_finished_at
-                )
+                finish_to_parent_end_ms = duration_ms(node_finished_at, batch.execution_finished_at)
                 if finish_offset_ms is None or finish_to_parent_end_ms is None:
                     straggler_time_bounds_valid = False
                     break
@@ -1954,6 +1998,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "running_jobs": running_jobs,
             },
             "client": {
+                "id": principal.id,
                 "kind": client.client_kind if client is not None else "production",
                 "queued_jobs": tenant_queued,
                 "running_jobs": tenant_running,
@@ -2009,15 +2054,38 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             ) from exc
         tenant_lock = request.app.state.tenant_locks.setdefault(principal.id, asyncio.Lock())
         async with tenant_lock:
-            await request.app.state.db.acquire_tenant_transaction_lock(db, principal.id)
             request_hash = hashlib.sha256(b"imageclip-rgba\x00" + canonical_manifest).hexdigest()
-            existing_key = await db.scalar(
-                select(BatchIdempotencyKey).where(
+
+            async def live_idempotency_key(*, lock: bool) -> BatchIdempotencyKey | None:
+                statement = select(BatchIdempotencyKey).where(
                     BatchIdempotencyKey.client_id == principal.id,
                     BatchIdempotencyKey.key == idempotency_key,
-                    BatchIdempotencyKey.expires_at > datetime.now(UTC),
                 )
-            )
+                if lock:
+                    statement = statement.with_for_update()
+                row = await db.scalar(statement)
+                if row is None:
+                    return None
+                expires_at = row.expires_at
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=UTC)
+                if expires_at <= datetime.now(UTC):
+                    # The optimistic lookup runs before the global admission
+                    # lock and must not acquire a row lock by deleting here;
+                    # doing so would invert global -> row ordering across API
+                    # replicas.  The locked re-check performs the deletion.
+                    if not lock:
+                        return None
+                    await db.delete(row)
+                    # The expired row still owns the unique (client_id, key)
+                    # constraint until it is flushed.  Delete it only after
+                    # global -> tenant -> row has been established so the key
+                    # can be reused without a cross-replica deadlock window.
+                    await db.flush()
+                    return None
+                return row
+
+            existing_key = await live_idempotency_key(lock=False)
             if existing_key is not None:
                 existing_batch = await db.get(JobBatch, existing_key.batch_id)
                 if existing_batch is None:
@@ -2130,6 +2198,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 storage.atomic_json(staging / "workflow.identity.json", workflow_identity)
                 batch_now = datetime.now(UTC)
                 root = storage.promote_batch_staging(staging, batch_id, batch_now)
+                request.state.uncommitted_batch_root = root
+                request.state.uncommitted_batch_id = batch_id
             except BatchContractError as exc:
                 storage.remove_tree(staging)
                 status_code = 413 if exc.code == "BATCH_TOO_LARGE" else 422
@@ -2145,6 +2215,79 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             except Exception:
                 storage.remove_tree(staging)
                 raise
+            # Archive validation is intentionally outside the global admission
+            # lock.  Re-check identity and uniqueness after taking the shared
+            # global -> tenant lock order, then keep that transaction open
+            # through insertion/commit.  This lets a production request win
+            # atomically without a large test archive blocking all admissions.
+            await request.app.state.db.acquire_global_admission_transaction_lock(db)
+            await request.app.state.db.acquire_tenant_transaction_lock(db, principal.id)
+            locked_existing_key = await live_idempotency_key(lock=True)
+            if locked_existing_key is not None:
+                existing_batch = await db.get(JobBatch, locked_existing_key.batch_id)
+                if existing_batch is None:
+                    storage.remove_tree(root)
+                    raise HTTPException(
+                        500,
+                        detail={
+                            "code": "BATCH_NOT_FOUND",
+                            "message": "幂等记录对应批次不存在",
+                        },
+                    )
+                legacy_request_hash = hashlib.sha256(
+                    existing_batch.workflow_version.encode() + b"\x00" + canonical_manifest
+                ).hexdigest()
+                if locked_existing_key.request_hash not in {
+                    request_hash,
+                    legacy_request_hash,
+                }:
+                    storage.remove_tree(root)
+                    raise HTTPException(
+                        409,
+                        detail={
+                            "code": "IDEMPOTENCY_CONFLICT",
+                            "message": "相同 Idempotency-Key 的批次内容不同",
+                        },
+                    )
+                storage.remove_tree(root)
+                payload = await batch_payload(existing_batch, db)
+                payload.update(
+                    {
+                        "accepted_bytes": existing_batch.archive_size_bytes,
+                        "status_url": f"/api/v1/batches/{existing_batch.id}",
+                        "events_url": f"/api/v1/batches/{existing_batch.id}/events",
+                        "manifest_url": f"/api/v1/batches/{existing_batch.id}/manifest",
+                    }
+                )
+                return JSONResponse(payload, 200)
+            locked_same_external = await db.scalar(
+                select(JobBatch).where(
+                    JobBatch.tenant_id == principal.id,
+                    JobBatch.external_batch_id == parsed_manifest.external_batch_id,
+                )
+            )
+            if locked_same_external is not None:
+                storage.remove_tree(root)
+                raise HTTPException(
+                    409,
+                    detail={
+                        "code": "EXTERNAL_BATCH_CONFLICT",
+                        "message": "external_batch_id 已被其他幂等请求使用",
+                    },
+                )
+            if await client_is_load_test(db, principal.id) and await active_production_work_exists(
+                db
+            ):
+                storage.remove_tree(root)
+                raise HTTPException(
+                    503,
+                    detail={
+                        "code": "LOAD_TEST_PREEMPTED",
+                        "message": "真实生产任务已进入系统，新的压力测试任务已暂停接收",
+                        "retryable": True,
+                    },
+                    headers={"Retry-After": "5"},
+                )
             trace_id = uuid.uuid4().hex
             batch = JobBatch(
                 id=batch_id,
@@ -2214,6 +2357,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                         "message": "批次幂等键或外部 ID 已存在",
                     },
                 ) from exc
+            request.state.uncommitted_batch_root = None
+            request.state.uncommitted_batch_id = None
             await _notify(
                 request.app,
                 "gpu-control:wakeup",
@@ -2895,30 +3040,45 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         status: str | None = None,
         limit: int = 100,
         client_kind: Literal["production", "test", "all"] = "production",
+        active_only: bool = False,
     ) -> list[dict[str, Any]]:
+        if active_only and status:
+            raise HTTPException(
+                422,
+                detail={
+                    "code": "AMBIGUOUS_JOB_SCOPE",
+                    "message": "active_only 与 status 不能同时使用",
+                },
+            )
         bounded_limit = min(max(limit, 1), 500)
         scoped_client_ids = select(ApiClient.id).where(ApiClient.role == "client")
         if client_kind != "all":
             scoped_client_ids = scoped_client_ids.where(ApiClient.client_kind == client_kind)
-        query = (
-            select(Job)
-            .where(
-                Job.batch_id.is_(None),
-                Job.tenant_id.in_(scoped_client_ids),
-            )
-            .order_by(Job.created_at.desc())
-            .limit(bounded_limit)
-        )
-        if status:
+        job_scope = [Job.batch_id.is_(None)]
+        batch_scope: list[Any] = []
+        if client_kind != "all":
+            job_scope.append(Job.tenant_id.in_(scoped_client_ids))
+            batch_scope.append(JobBatch.tenant_id.in_(scoped_client_ids))
+        # client_kind=all is a safety/audit scope and must include orphaned or
+        # unknown tenants. The response marks their owner as production so the
+        # load watchdog stops instead of silently ignoring schedulable work.
+        query = select(Job).where(*job_scope).order_by(Job.created_at.desc()).limit(bounded_limit)
+        if active_only:
+            query = query.where(~Job.status.in_([item.value for item in TERMINAL_JOB_STATUSES]))
+        elif status:
             query = query.where(Job.status == status)
         job_rows = list((await db.scalars(query)).all())
         batch_query = (
             select(JobBatch)
-            .where(JobBatch.tenant_id.in_(scoped_client_ids))
+            .where(*batch_scope)
             .order_by(JobBatch.created_at.desc())
             .limit(bounded_limit)
         )
-        if status:
+        if active_only:
+            batch_query = batch_query.where(
+                ~JobBatch.status.in_([item.value for item in TERMINAL_BATCH_STATUSES])
+            )
+        elif status:
             batch_query = batch_query.where(JobBatch.status == status)
         batch_rows = list((await db.scalars(batch_query)).all())
         tenant_ids = {row.tenant_id for row in job_rows} | {row.tenant_id for row in batch_rows}
@@ -2936,6 +3096,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 {
                     "tenant_id": job.tenant_id,
                     "client_kind": owner.client_kind if owner else "production",
+                    "request_id": job.request_id,
                 }
             )
             rows.append(payload)
@@ -2970,6 +3131,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         _: Annotated[Principal, Depends(admin_principal)],
         db: Annotated[AsyncSession, Depends(session)],
         limit: int = 100,
+        active_only: bool = False,
     ) -> dict[str, Any]:
         """Expose the Blender queue without mixing it into GPU jobs."""
         bounded_limit = min(max(limit, 1), 500)
@@ -2996,10 +3158,16 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             return max(0, int(((ended or now) - started).total_seconds()))
 
         workers = list((await db.scalars(select(AssetWorker).order_by(AssetWorker.id))).all())
+        jobs_query = select(AssetJob)
+        if active_only:
+            # Unknown/future states are deliberately returned. The load-test
+            # watchdog validates known active states and therefore fails
+            # closed instead of silently hiding a new non-terminal state.
+            jobs_query = jobs_query.where(~AssetJob.status.in_(TERMINAL_ASSET_WORK_STATUSES))
         jobs = list(
             (
                 await db.scalars(
-                    select(AssetJob).order_by(AssetJob.created_at.desc()).limit(bounded_limit)
+                    jobs_query.order_by(AssetJob.created_at.desc()).limit(bounded_limit)
                 )
             ).all()
         )
@@ -3124,6 +3292,12 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "used_slots": sum(worker.current_jobs for worker in online_workers),
                 "qa_failed": counts.get("FAILED", 0),
             },
+            "jobs_scope": {
+                "active_only": active_only,
+                "limit": bounded_limit,
+                "returned": len(jobs),
+                "saturated": len(jobs) >= bounded_limit,
+            },
             "substance_gpu": {
                 "node_id": "worker-3090-b",
                 "health": substance_node.health if substance_node else "OFFLINE",
@@ -3138,15 +3312,11 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     else None
                 ),
                 "active_bake_job_ids": fenced_substance_job_ids,
-                "recovery_required": bool(
-                    substance_labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL)
-                ),
+                "recovery_required": bool(substance_labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL)),
                 "manual_reserved": bool(
                     substance_node.manual_reserved if substance_node else False
                 ),
-                "external_busy": bool(
-                    substance_node.external_busy if substance_node else False
-                ),
+                "external_busy": bool(substance_node.external_busy if substance_node else False),
                 "foreign_queue_detected": bool(
                     substance_node.foreign_queue_detected if substance_node else False
                 ),
@@ -4314,6 +4484,12 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
     ) -> dict[str, Any]:
         if not body.confirm:
             raise HTTPException(409, detail={"code": "CONFIRMATION_REQUIRED"})
+        # Changing client_kind changes whether new work is production or load
+        # traffic.  Serialize that classification change with the same global
+        # admission transaction lock used by both job admission paths, then
+        # lock the target client row.  The order is always global -> client;
+        # this endpoint must not acquire a tenant advisory lock first.
+        await request.app.state.db.acquire_global_admission_transaction_lock(db)
         client = await db.get(ApiClient, client_id, with_for_update=True)
         if client is None or client.role != "client":
             raise HTTPException(404, detail={"code": "CLIENT_NOT_FOUND"})

@@ -12,6 +12,10 @@
   控制面 1.5.9 和 Worker 1.2.5 必须绑定同一个已推送的 40 位 Git SHA、不可变镜像身份和 SBOM。
 - 六 API 压测入口修复独立脚本导入路径，保留真实业务优先、空闲窗口、备份、凭据、allowlist、
   fixtures、逐级升压和精确清场门禁；未显式 `--execute` 时不会发出任何 HTTP 请求。
+- GPU 与 Asset 新任务使用同一 PostgreSQL 全局准入事务锁；任何真实非终态任务都会原子拒绝新的
+  测试流量，返回 `503 LOAD_TEST_PREEMPTED`，未知租户或未知状态按生产流量 fail closed。
+- 六 API 正式压测仅认 `SUCCEEDED`，并按 API 固定 kind 集合和基数逐件校验非零 size、metadata
+  SHA、`X-Artifact-SHA256` 与下载 body SHA；缺件、多件、重复 kind 或三重 SHA 漂移整轮失败。
 - 不修改 ImageClip、ModelViewCreator、UV/重拓扑 Skill、工作流、模型、prompt、参数、图拓扑或
   输出语义；三节点空闲滚动、真实六 API 验收和观察完成前保持候选状态。
 

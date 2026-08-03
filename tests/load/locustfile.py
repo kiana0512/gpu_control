@@ -16,11 +16,12 @@ import json
 import math
 import os
 import random
+import stat
 import sys
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +37,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 import gevent  # noqa: E402
 import httpx  # noqa: E402
 from locust import HttpUser, LoadTestShape, between, events, task  # noqa: E402
+from locust.runners import MasterRunner, WorkerRunner  # noqa: E402
 
 from packages.gpu_control_core.load_testing import (  # noqa: E402
     API_CONTRACTS,
@@ -43,6 +45,7 @@ from packages.gpu_control_core.load_testing import (  # noqa: E402
     LOAD_SUCCESS_STATUSES,
     LoadShapeStopSignal,
     LoadTestConfigurationError,
+    LoadTestPreempted,
     RuntimeSettings,
     approved_load_tls_verify,
     configure_locust_client_tls,
@@ -51,7 +54,9 @@ from packages.gpu_control_core.load_testing import (  # noqa: E402
     evaluate_load_thresholds,
     evaluate_telemetry_evidence,
     execute_bounded_teardown_cancel,
+    expected_load_artifact_kinds,
     file_sha256,
+    find_load_session_identity_collisions,
     identify_foreign_active_work,
     load_fixture_manifest,
     load_queue_start,
@@ -62,6 +67,8 @@ from packages.gpu_control_core.load_testing import (  # noqa: E402
     summarize_records,
     summarize_telemetry,
     validate_asset_worker_roles,
+    validate_downloaded_load_artifact,
+    validate_load_artifact_manifest,
     validate_test_client_capacities,
     write_result_manifest,
 )
@@ -96,7 +103,7 @@ if not (RUNTIME.result_dir / "plan.json").is_file():
 RESULT_DIR = RUNTIME.result_dir.resolve()
 
 
-def verify_plan_binding() -> None:
+def verify_plan_binding() -> tuple[dict[Path, str], dict[Path, tuple[int, int, int]]]:
     try:
         plan = json.loads((RESULT_DIR / "plan.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -122,6 +129,8 @@ def verify_plan_binding() -> None:
     planned_apis = fixture_plan.get("apis")
     if not isinstance(planned_apis, dict):
         raise LoadTestConfigurationError("plan.json omitted fixture file hashes")
+    expected_hashes: dict[Path, str] = {}
+    fingerprints: dict[Path, tuple[int, int, int]] = {}
     for api_name, entry in FIXTURES.entries.items():
         planned_entry = planned_apis.get(api_name)
         if not isinstance(planned_entry, dict):
@@ -141,11 +150,28 @@ def verify_plan_binding() -> None:
                 raise LoadTestConfigurationError(
                     f"fixture {api_name}.{key} changed after plan generation"
                 )
+            for path, actual_entry in zip(paths, actual, strict=True):
+                resolved = path.resolve()
+                digest = str(actual_entry["sha256"] or "")
+                existing_digest = expected_hashes.get(resolved)
+                if existing_digest is not None and existing_digest != digest:
+                    raise LoadTestConfigurationError(
+                        f"fixture {resolved} has conflicting planned SHA-256 values"
+                    )
+                stat_result = path.stat()
+                expected_hashes[resolved] = digest
+                fingerprints[resolved] = (
+                    stat_result.st_ino,
+                    stat_result.st_size,
+                    stat_result.st_mtime_ns,
+                )
     if scenario_plan.get("approved_workflows") != SCENARIO.approved_workflows:
         raise LoadTestConfigurationError("approved workflow identities changed after planning")
+    return expected_hashes, fingerprints
 
 
-verify_plan_binding()
+PLANNED_FIXTURE_SHA256, _fixture_fingerprints = verify_plan_binding()
+_fixture_integrity_lock = threading.Lock()
 
 TERMINAL_STATUSES = {
     "SUCCEEDED",
@@ -168,19 +194,6 @@ ACTIVE_STATUSES = {
     "CANCELLING",
     "RETRY_WAIT",
 }
-ACTIVE_STATUS_QUERY_ORDER = (
-    "RECEIVED",
-    "VALIDATING",
-    "RETRY_WAIT",
-    "QUEUED",
-    "CLAIMED",
-    "UPLOADING",
-    "SUBMITTED",
-    "RUNNING",
-    "DOWNLOADING",
-    "ASSEMBLING",
-    "CANCELLING",
-)
 TELEMETRY_INTERVAL_SECONDS = 5.0
 TELEMETRY_SHUTDOWN_GRACE_SECONDS = TELEMETRY_INTERVAL_SECONDS + 1.0
 TEARDOWN_CANCEL_MAX_ATTEMPTS = 3
@@ -188,8 +201,11 @@ TEARDOWN_CANCEL_INITIAL_BACKOFF_SECONDS = 0.25
 TEARDOWN_CANCEL_MAXIMUM_BACKOFF_SECONDS = 1.0
 TEARDOWN_CANCEL_THROTTLE_SECONDS = 0.1
 TEARDOWN_CANCEL_TIMEOUT_SECONDS = 5.0
-TEARDOWN_SETTLE_TIMEOUT_SECONDS = 300
+TEARDOWN_TOTAL_TIMEOUT_SECONDS = 300
+TEARDOWN_SETTLE_PASS_TIMEOUT_SECONDS = 10
 TEARDOWN_SETTLE_POLL_INTERVAL_SECONDS = 1.0
+TEARDOWN_FINAL_EMPTY_SCANS = 2
+TEARDOWN_MAX_RESCAN_PASSES = 12
 ADMIN_STATUS_QUERY_MAX_ATTEMPTS = 3
 ADMIN_STATUS_QUERY_INITIAL_BACKOFF_SECONDS = 0.25
 ADMIN_STATUS_QUERY_MAXIMUM_BACKOFF_SECONDS = 1.0
@@ -207,6 +223,7 @@ _telemetry_sequence = 0
 _telemetry_final_sample_written = False
 _production_watchdog_triggered = False
 _shape_stop_signal = LoadShapeStopSignal()
+_last_fixture_verified_stage: tuple[int, float] | None = None
 _expected_gpu_node_ids: tuple[str, ...] = ()
 _expected_asset_worker_ids: tuple[str, ...] = ()
 
@@ -244,11 +261,81 @@ def fixture_path(api_name: str, key: str) -> Path:
     value = FIXTURES.paths_for(api_name)[key]
     if not isinstance(value, Path):
         raise RuntimeError(f"fixture {api_name}.{key} is not one path")
+    verify_fixture_path(value)
     return value
 
 
+def verify_fixture_path(path: Path, *, force_hash: bool = False) -> None:
+    """Fail closed if a planned fixture changes while the run is in progress."""
+
+    resolved = path.resolve()
+    expected_sha256 = PLANNED_FIXTURE_SHA256.get(resolved)
+    if expected_sha256 is None:
+        _shape_stop_signal.request("fixture_integrity_failed")
+        raise LoadTestConfigurationError(f"fixture is not bound to plan.json: {resolved}")
+    try:
+        stat_result = resolved.stat()
+    except OSError as exc:
+        _shape_stop_signal.request("fixture_integrity_failed")
+        raise LoadTestConfigurationError(
+            f"cannot stat planned fixture {resolved}: {type(exc).__name__}"
+        ) from exc
+    fingerprint = (stat_result.st_ino, stat_result.st_size, stat_result.st_mtime_ns)
+    if stat_result.st_mode & 0o222:
+        _shape_stop_signal.request("fixture_integrity_failed")
+        raise LoadTestConfigurationError(f"planned fixture must be read-only: {resolved}")
+    with _fixture_integrity_lock:
+        unchanged = _fixture_fingerprints.get(resolved) == fingerprint
+    if unchanged and not force_hash:
+        return
+    if file_sha256(resolved) != expected_sha256:
+        _shape_stop_signal.request("fixture_integrity_failed")
+        raise LoadTestConfigurationError(f"fixture changed during load run: {resolved}")
+    with _fixture_integrity_lock:
+        _fixture_fingerprints[resolved] = fingerprint
+
+
+def verify_all_fixture_paths() -> None:
+    for path in sorted(PLANNED_FIXTURE_SHA256, key=str):
+        verify_fixture_path(path, force_hash=True)
+
+
+def open_verified_fixture(stack: ExitStack, path: Path) -> Any:
+    """Open, hash, and rewind the exact read-only inode used for upload."""
+
+    resolved = path.resolve()
+    expected_sha256 = PLANNED_FIXTURE_SHA256.get(resolved)
+    if expected_sha256 is None:
+        _shape_stop_signal.request("fixture_integrity_failed")
+        raise LoadTestConfigurationError(f"fixture is not bound to plan.json: {resolved}")
+    try:
+        handle = stack.enter_context(resolved.open("rb"))
+        descriptor_stat = os.fstat(handle.fileno())
+    except OSError as exc:
+        _shape_stop_signal.request("fixture_integrity_failed")
+        raise LoadTestConfigurationError(
+            f"cannot open planned fixture {resolved}: {type(exc).__name__}"
+        ) from exc
+    if not stat.S_ISREG(descriptor_stat.st_mode) or descriptor_stat.st_mode & 0o222:
+        _shape_stop_signal.request("fixture_integrity_failed")
+        raise LoadTestConfigurationError(
+            f"opened fixture is not an immutable regular file: {resolved}"
+        )
+    digest = hashlib.sha256()
+    while chunk := handle.read(1024 * 1024):
+        digest.update(chunk)
+    if digest.hexdigest() != expected_sha256:
+        _shape_stop_signal.request("fixture_integrity_failed")
+        raise LoadTestConfigurationError(f"opened fixture SHA-256 changed: {resolved}")
+    handle.seek(0)
+    return handle
+
+
 def fixture_json(api_name: str, key: str) -> dict[str, Any]:
-    payload = json.loads(fixture_path(api_name, key).read_text(encoding="utf-8"))
+    path = fixture_path(api_name, key)
+    with ExitStack() as stack:
+        handle = open_verified_fixture(stack, path)
+        payload = json.loads(handle.read().decode("utf-8"))
     if not isinstance(payload, dict):
         raise RuntimeError(f"fixture {api_name}.{key} must be a JSON object")
     return payload
@@ -262,10 +349,12 @@ class SessionRegistry:
         self.events_path = output / "events.jsonl"
         self.started_monotonic = time.monotonic()
         self.started_at = utc_now()
+        self.recovery_started_at = self.started_at
         self._lock = threading.Lock()
         self._records: dict[str, dict[str, Any]] = {}
-        self._admission = Counter()
-        self._retry_events = Counter()
+        self._roughness_request_key_indices: dict[str, int] = {}
+        self._admission: Counter[str] = Counter()
+        self._retry_events: Counter[str] = Counter()
 
     def event(self, event: str, **fields: Any) -> None:
         payload = {
@@ -292,6 +381,33 @@ class SessionRegistry:
             status_code=status_code,
         )
 
+    def mark_recovery_boundary(self) -> None:
+        """Start recovery ownership only after the zero-work preflight succeeds."""
+
+        with self._lock:
+            self.recovery_started_at = utc_now()
+
+    def register_roughness_request(self, request_id: str, api_key_index: int) -> None:
+        """Bind a sync request before I/O so teardown can recover a lost response."""
+
+        with self._lock:
+            existing = self._roughness_request_key_indices.get(request_id)
+            if existing is not None and existing != api_key_index:
+                raise LoadTestConfigurationError(
+                    "roughness request ID was reused by another load-test API key"
+                )
+            self._roughness_request_key_indices[request_id] = api_key_index
+        self.event(
+            "task.sync_request_registered",
+            api="modelview_roughness",
+            request_id=request_id,
+            api_key_index=api_key_index,
+        )
+
+    def roughness_request_key_indices(self) -> dict[str, int]:
+        with self._lock:
+            return dict(self._roughness_request_key_indices)
+
     def register(
         self,
         identifier: str,
@@ -307,6 +423,8 @@ class SessionRegistry:
         traceparent: str,
         created_monotonic: float,
         submission_retries: int,
+        expected_artifact_kinds: Sequence[str],
+        direct_artifact_sha256: str | None = None,
     ) -> None:
         record = {
             "id": identifier,
@@ -328,6 +446,10 @@ class SessionRegistry:
             "recovered": submission_retries > 0,
             "artifact_count": 0,
             "artifact_bytes": 0,
+            "artifact_kinds": [],
+            "expected_artifact_kinds": sorted(set(expected_artifact_kinds)),
+            "artifact_contract_verified": False,
+            "direct_artifact_sha256": direct_artifact_sha256,
         }
         with self._lock:
             self._records[identifier] = record
@@ -384,12 +506,32 @@ class SessionRegistry:
                 record["retries"] = int(record.get("retries", 0)) + retries
                 record["recovered"] = True
 
-    def add_artifact(self, identifier: str, size_bytes: int) -> None:
+    def add_artifact(self, identifier: str, kind: str, size_bytes: int) -> None:
         with self._lock:
             record = self._records.get(identifier)
             if record:
                 record["artifact_count"] = int(record.get("artifact_count", 0)) + 1
                 record["artifact_bytes"] = int(record.get("artifact_bytes", 0)) + size_bytes
+                record.setdefault("artifact_kinds", []).append(kind)
+
+    def mark_artifact_contract_verified(self, identifier: str) -> None:
+        with self._lock:
+            record = self._records.get(identifier)
+            if record is None:
+                return
+            expected = list(record.get("expected_artifact_kinds") or [])
+            observed = list(record.get("artifact_kinds") or [])
+            if (
+                len(observed) != len(expected)
+                or len(set(observed)) != len(observed)
+                or set(observed) != set(expected)
+            ):
+                record["artifact_contract_failed"] = True
+                record["artifact_contract_failure_reason"] = (
+                    "downloaded artifact kinds/cardinality did not match the exact contract"
+                )
+                return
+            record["artifact_contract_verified"] = True
 
     def mark_poll_timeout(self, identifier: str) -> None:
         with self._lock:
@@ -495,19 +637,35 @@ def preflight_json(
     return payload
 
 
+def deadline_timeout(deadline: float | None, maximum_seconds: float) -> float:
+    if deadline is None:
+        return maximum_seconds
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("load-test teardown deadline expired")
+    return max(0.001, min(maximum_seconds, remaining))
+
+
+def deadline_sleep(seconds: float, deadline: float) -> None:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("load-test teardown deadline expired")
+    gevent.sleep(min(seconds, remaining))
+
+
 def admin_status_query_sender(
     client: httpx.Client,
     headers: Mapping[str, str],
     *,
     client_kind: str,
-    status: str,
     response_holder: list[httpx.Response],
+    deadline: float | None = None,
 ) -> Callable[[], int]:
     def send_status_query() -> int:
         response = client.get(
-            f"/admin/jobs?client_kind={client_kind}&status={status}&limit=500",
+            f"/admin/jobs?client_kind={client_kind}&active_only=true&limit=500",
             headers=dict(headers),
-            timeout=30,
+            timeout=deadline_timeout(deadline, 30),
         )
         response_holder[:] = [response]
         return response.status_code
@@ -521,6 +679,7 @@ def active_gpu_admin_jobs(
     *,
     client_kind: str,
     passes: int = 1,
+    deadline: float | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     if client_kind not in {"all", "test"} or passes < 1 or passes > 2:
         raise LoadTestConfigurationError("invalid active GPU admin query scope")
@@ -528,54 +687,79 @@ def active_gpu_admin_jobs(
     rows_scanned = 0
     http_attempts = 0
     for _ in range(passes):
-        for status in ACTIVE_STATUS_QUERY_ORDER:
-            response_holder: list[httpx.Response] = []
-            _, attempts = execute_bounded_teardown_cancel(
-                admin_status_query_sender(
-                    client,
-                    headers,
-                    client_kind=client_kind,
-                    status=status,
-                    response_holder=response_holder,
-                ),
-                gevent.sleep,
-                max_attempts=ADMIN_STATUS_QUERY_MAX_ATTEMPTS,
-                initial_backoff_seconds=ADMIN_STATUS_QUERY_INITIAL_BACKOFF_SECONDS,
-                maximum_backoff_seconds=ADMIN_STATUS_QUERY_MAXIMUM_BACKOFF_SECONDS,
+        response_holder: list[httpx.Response] = []
+        _, attempts = execute_bounded_teardown_cancel(
+            admin_status_query_sender(
+                client,
+                headers,
+                client_kind=client_kind,
+                response_holder=response_holder,
+                deadline=deadline,
+            ),
+            (
+                (lambda seconds: deadline_sleep(seconds, deadline))
+                if deadline is not None
+                else gevent.sleep
+            ),
+            max_attempts=ADMIN_STATUS_QUERY_MAX_ATTEMPTS,
+            initial_backoff_seconds=ADMIN_STATUS_QUERY_INITIAL_BACKOFF_SECONDS,
+            maximum_backoff_seconds=ADMIN_STATUS_QUERY_MAXIMUM_BACKOFF_SECONDS,
+            deadline_monotonic=deadline,
+        )
+        http_attempts += attempts
+        response = response_holder[-1]
+        response.raise_for_status()
+        rows = response.json()
+        if not isinstance(rows, list):
+            raise LoadTestConfigurationError(
+                "active GPU admin endpoint returned the wrong shape"
             )
-            http_attempts += attempts
-            response = response_holder[-1]
-            response.raise_for_status()
-            rows = response.json()
-            if not isinstance(rows, list):
+        if len(rows) >= 500:
+            raise LoadTestConfigurationError("active GPU audit window is saturated")
+        rows_scanned += len(rows)
+        for row in rows:
+            if not isinstance(row, dict):
                 raise LoadTestConfigurationError(
-                    "active GPU admin endpoint returned the wrong shape"
+                    "active GPU admin endpoint returned a non-object row"
                 )
-            if len(rows) >= 500:
-                raise LoadTestConfigurationError(f"active GPU {status} audit window is saturated")
-            rows_scanned += len(rows)
-            for row in rows:
-                if not isinstance(row, dict):
-                    raise LoadTestConfigurationError(
-                        "active GPU admin endpoint returned a non-object row"
-                    )
-                identifier = str(row.get("job_id") or row.get("batch_id") or "")
-                if not identifier or str(row.get("status") or "") != status:
-                    raise LoadTestConfigurationError(
-                        "active GPU admin endpoint returned an invalid scoped row"
-                    )
-                jobs_by_id[identifier] = row
+            identifier = str(row.get("job_id") or row.get("batch_id") or "")
+            if not identifier or str(row.get("status") or "") not in ACTIVE_STATUSES:
+                raise LoadTestConfigurationError(
+                    "active GPU admin endpoint returned an invalid or unknown active row"
+                )
+            jobs_by_id[identifier] = row
+        if deadline is None:
             gevent.sleep(ADMIN_STATUS_QUERY_THROTTLE_SECONDS)
+        else:
+            deadline_sleep(ADMIN_STATUS_QUERY_THROTTLE_SECONDS, deadline)
     return list(jobs_by_id.values()), {
         "rows_scanned": rows_scanned,
-        "status_queries": len(ACTIVE_STATUS_QUERY_ORDER) * passes,
+        "status_queries": passes,
         "http_attempts": http_attempts,
-        "transient_retries": http_attempts - len(ACTIVE_STATUS_QUERY_ORDER) * passes,
+        "transient_retries": http_attempts - passes,
     }
+
+
+def active_asset_jobs(asset_overview: Mapping[str, Any], *, context: str) -> list[dict[str, Any]]:
+    scope = asset_overview.get("jobs_scope")
+    jobs = asset_overview.get("jobs")
+    if not isinstance(scope, Mapping) or scope.get("active_only") is not True:
+        raise LoadTestConfigurationError(f"{context} asset audit is not active-only")
+    if not isinstance(jobs, list) or not all(isinstance(item, dict) for item in jobs):
+        raise LoadTestConfigurationError(f"{context} asset audit returned invalid jobs")
+    if scope.get("saturated") is True or len(jobs) >= 500:
+        raise LoadTestConfigurationError(
+            f"{context} active asset audit reached the 500-row safety limit"
+        )
+    if any(str(item.get("status") or "") not in ACTIVE_STATUSES for item in jobs):
+        raise LoadTestConfigurationError(f"{context} asset audit returned a terminal job")
+    return jobs
 
 
 def perform_preflight() -> dict[str, Any]:
     admin_headers = {"Authorization": f"Bearer {RUNTIME.admin_bearer_token}"}
+    historical_gpu_jobs: object = []
+    historical_asset_overview: object = {}
     with httpx.Client(
         base_url=RUNTIME.target,
         verify=httpx_verify(),
@@ -592,7 +776,14 @@ def perform_preflight() -> dict[str, Any]:
             for api_key in RUNTIME.api_keys
         ]
         api_headers = {"X-API-Key": RUNTIME.api_keys[0]}
-        asset_capacity = preflight_json(client, "/api/v1/assets/capacity", api_headers)
+        asset_capacities = [
+            preflight_json(
+                client,
+                "/api/v1/assets/capacity",
+                {"X-API-Key": api_key},
+            )
+            for api_key in RUNTIME.api_keys
+        ]
         public_workflows = preflight_json(client, "/api/v1/workflows", api_headers)
         workflows = preflight_json(client, "/admin/workflows", admin_headers)
         nodes = preflight_json(client, "/admin/nodes", admin_headers)
@@ -601,17 +792,36 @@ def perform_preflight() -> dict[str, Any]:
             admin_headers,
             client_kind="all",
         )
-        asset_overview = preflight_json(client, "/admin/asset-processing?limit=500", admin_headers)
+        asset_overview = preflight_json(
+            client,
+            "/admin/asset-processing?limit=500&active_only=true",
+            admin_headers,
+        )
+        if RUNTIME.is_production_target():
+            historical_gpu_jobs = preflight_json(
+                client,
+                "/admin/jobs?client_kind=test&limit=500",
+                admin_headers,
+            )
+            historical_asset_overview = preflight_json(
+                client,
+                "/admin/asset-processing?limit=500&active_only=false",
+                admin_headers,
+            )
 
-    if not all(isinstance(item, dict) for item in client_capacities) or not isinstance(
-        asset_capacity, dict
+    if not all(isinstance(item, dict) for item in client_capacities) or not all(
+        isinstance(item, dict) for item in asset_capacities
     ):
         raise LoadTestConfigurationError("capacity preflight returned the wrong shape")
     capacity_rows = [item for item in client_capacities if isinstance(item, dict)]
+    asset_capacity_rows = [item for item in asset_capacities if isinstance(item, dict)]
     client_checks = validate_test_client_capacities(
-        capacity_rows, expected_count=len(RUNTIME.api_keys)
+        capacity_rows,
+        expected_tenant_ids=RUNTIME.tenant_ids,
+        asset_capacities=asset_capacity_rows,
     )
     capacity = capacity_rows[0]
+    asset_capacity = asset_capacity_rows[0]
     if not isinstance(public_workflows, list) or not isinstance(workflows, list):
         raise LoadTestConfigurationError("workflow preflight returned the wrong shape")
     if not isinstance(nodes, list) or not isinstance(gpu_jobs, list):
@@ -640,9 +850,12 @@ def perform_preflight() -> dict[str, Any]:
             )
 
     imageclip = SCENARIO.approved_workflows["imageclip-rgba"]
+    if not isinstance(imageclip, Mapping):
+        raise LoadTestConfigurationError("approved ImageClip identity has the wrong shape")
     healthy_gpu_nodes = []
     for node in nodes:
-        labels = node.get("labels") if isinstance(node.get("labels"), dict) else {}
+        raw_labels = node.get("labels")
+        labels: Mapping[str, Any] = raw_labels if isinstance(raw_labels, dict) else {}
         if (
             node.get("health") == "ONLINE"
             and node.get("mode") == "ACTIVE"
@@ -657,13 +870,11 @@ def perform_preflight() -> dict[str, Any]:
     active_gpu = [item for item in gpu_jobs if item.get("status") in ACTIVE_STATUSES]
     if len(active_gpu) > SCENARIO.preflight["maximum_preexisting_gpu_jobs"]:
         raise LoadTestConfigurationError("pre-existing GPU work exceeds the scenario limit")
-    asset_jobs = asset_overview.get("jobs")
+    asset_jobs = active_asset_jobs(asset_overview, context="preflight")
     workers = asset_overview.get("workers")
-    if not isinstance(asset_jobs, list) or not isinstance(workers, list):
+    if not isinstance(workers, list):
         raise LoadTestConfigurationError("asset overview omitted jobs or workers")
-    if len(asset_jobs) >= 500:
-        raise LoadTestConfigurationError("asset job audit window is saturated")
-    active_assets = [item for item in asset_jobs if item.get("status") in ACTIVE_STATUSES]
+    active_assets = asset_jobs
     if len(active_assets) > SCENARIO.preflight["maximum_preexisting_asset_jobs"]:
         raise LoadTestConfigurationError("pre-existing asset work exceeds the scenario limit")
     worker_roles = validate_asset_worker_roles(
@@ -694,6 +905,45 @@ def perform_preflight() -> dict[str, Any]:
         raise LoadTestConfigurationError("server six-API contract set has drifted")
 
     if RUNTIME.is_production_target():
+        if not isinstance(historical_gpu_jobs, list) or not all(
+            isinstance(item, dict) for item in historical_gpu_jobs
+        ):
+            raise LoadTestConfigurationError(
+                "production session history GPU scan returned the wrong shape"
+            )
+        if len(historical_gpu_jobs) >= 500:
+            raise LoadTestConfigurationError(
+                "production session history GPU scan reached the 500-row safety limit"
+            )
+        if not isinstance(historical_asset_overview, dict):
+            raise LoadTestConfigurationError(
+                "production session history Asset scan returned the wrong shape"
+            )
+        historical_asset_scope = historical_asset_overview.get("jobs_scope")
+        historical_asset_jobs = historical_asset_overview.get("jobs")
+        if (
+            not isinstance(historical_asset_scope, Mapping)
+            or historical_asset_scope.get("active_only") is not False
+            or not isinstance(historical_asset_jobs, list)
+            or not all(isinstance(item, dict) for item in historical_asset_jobs)
+        ):
+            raise LoadTestConfigurationError(
+                "production session history Asset scan was not an all-status audit"
+            )
+        if historical_asset_scope.get("saturated") is True or len(historical_asset_jobs) >= 500:
+            raise LoadTestConfigurationError(
+                "production session history Asset scan reached the 500-row safety limit"
+            )
+        session_collisions = find_load_session_identity_collisions(
+            historical_gpu_jobs,
+            historical_asset_jobs,
+            tenant_ids=RUNTIME.tenant_ids,
+            session_id=RUNTIME.session_id,
+        )
+        if session_collisions:
+            raise LoadTestConfigurationError(
+                "production LOAD_TEST_SESSION_ID already exists in persisted GPU/Asset history"
+            )
         cluster = capacity.get("cluster")
         if not isinstance(cluster, dict):
             raise LoadTestConfigurationError("production capacity omitted cluster counters")
@@ -753,6 +1003,16 @@ def perform_preflight() -> dict[str, Any]:
         "cpu_available_slots": worker_roles["cpu_available_slots"],
         "preexisting": {"gpu": len(active_gpu), "asset": len(active_assets)},
         "gpu_active_audit": gpu_audit,
+        "session_history_scan": {
+            "required": RUNTIME.is_production_target(),
+            "gpu_rows": len(historical_gpu_jobs)
+            if isinstance(historical_gpu_jobs, list)
+            else None,
+            "asset_rows": len(historical_asset_jobs)
+            if RUNTIME.is_production_target()
+            else None,
+            "collisions": 0 if RUNTIME.is_production_target() else None,
+        },
         "substance_available_slots": substance_slots,
         "secrets_recorded": False,
     }
@@ -767,7 +1027,11 @@ def collect_telemetry(client: httpx.Client) -> dict[str, Any]:
     api_headers = {"X-API-Key": RUNTIME.api_keys[0]}
     admin_headers = {"Authorization": f"Bearer {RUNTIME.admin_bearer_token}"}
     nodes = preflight_json(client, "/admin/nodes", admin_headers)
-    asset_overview = preflight_json(client, "/admin/asset-processing?limit=500", admin_headers)
+    asset_overview = preflight_json(
+        client,
+        "/admin/asset-processing?limit=500&active_only=true",
+        admin_headers,
+    )
     gpu_jobs, gpu_audit = active_gpu_admin_jobs(
         client,
         admin_headers,
@@ -782,17 +1046,15 @@ def collect_telemetry(client: httpx.Client) -> dict[str, Any]:
     if not isinstance(asset_overview, dict):
         raise LoadTestConfigurationError("telemetry asset response has the wrong shape")
     workers = asset_overview.get("workers")
-    asset_jobs = asset_overview.get("jobs")
+    asset_jobs = active_asset_jobs(asset_overview, context="production watchdog")
     if not isinstance(workers, list):
         raise LoadTestConfigurationError("telemetry asset response omitted workers")
-    if not isinstance(asset_jobs, list):
-        raise LoadTestConfigurationError("telemetry asset response omitted jobs")
-    if len(asset_jobs) >= 500:
-        raise LoadTestConfigurationError("production watchdog audit window is saturated")
     foreign_work = identify_foreign_active_work(
         gpu_jobs,
         asset_jobs,
         test_tenant_ids=RUNTIME.tenant_ids,
+        session_id=RUNTIME.session_id,
+        roughness_request_key_indices=REGISTRY.roughness_request_key_indices(),
     )
     if not isinstance(capacity, dict) or not isinstance(asset_capacity, dict):
         raise LoadTestConfigurationError("telemetry capacity response has the wrong shape")
@@ -994,9 +1256,18 @@ def handle_telemetry_watchdog(sample: Mapping[str, Any], environment: Any) -> bo
             "safety.foreign_work_detected",
             count=watchdog.get("count"),
             jobs=watchdog.get("jobs"),
-            action="shape_stop_requested",
+            action="admission_fenced_runner_stop_and_session_teardown_requested",
         )
+        request_immediate_runner_stop(environment)
     return True
+
+
+def request_immediate_runner_stop(environment: Any) -> None:
+    """Stop Locust asynchronously after the global admission fence is visible."""
+
+    runner = getattr(environment, "runner", None)
+    if runner is not None:
+        gevent.spawn(runner.quit)
 
 
 def telemetry_loop(environment: Any) -> None:
@@ -1021,8 +1292,9 @@ def telemetry_loop(environment: Any) -> None:
                         "telemetry.sample_failed",
                         sequence=sequence,
                         error=type(exc).__name__,
-                        action="shape_stop_requested",
+                        action="admission_fenced_runner_stop_and_session_teardown_requested",
                     )
+                    request_immediate_runner_stop(environment)
                 return
             if handle_telemetry_watchdog(sample, environment):
                 return
@@ -1085,9 +1357,20 @@ def stop_telemetry(environment: Any | None = None, **_: Any) -> None:
 
 @events.test_start.add_listener
 def guarded_preflight(environment: Any, **_: Any) -> None:
-    global _expected_asset_worker_ids, _expected_gpu_node_ids
+    global _expected_asset_worker_ids, _expected_gpu_node_ids, _last_fixture_verified_stage
 
+    runner = getattr(environment, "runner", None)
+    if isinstance(runner, MasterRunner | WorkerRunner):
+        exc = LoadTestConfigurationError(
+            "formal six-API load runs require single-process Locust because lifecycle "
+            "and teardown registries are process-local"
+        )
+        REGISTRY.event("preflight.failed", error=type(exc).__name__, message=str(exc))
+        environment.process_exit_code = 2
+        runner.quit()
+        raise exc
     _shape_stop_signal.reset()
+    _last_fixture_verified_stage = None
     try:
         result = perform_preflight()
     except Exception as exc:
@@ -1101,6 +1384,20 @@ def guarded_preflight(environment: Any, **_: Any) -> None:
         healthy_gpu_nodes=len(result["healthy_gpu_nodes"]),
         online_asset_workers=len(result["online_asset_workers"]),
     )
+    REGISTRY.mark_recovery_boundary()
+    try:
+        verify_all_fixture_paths()
+    except LoadTestConfigurationError as exc:
+        REGISTRY.event(
+            "safety.fixture_integrity_failed",
+            error=type(exc).__name__,
+            message=str(exc),
+            phase="post_preflight",
+        )
+        environment.process_exit_code = 2
+        if environment.runner is not None:
+            environment.runner.quit()
+        raise
     _expected_gpu_node_ids = tuple(
         str(item["id"]) for item in result["healthy_gpu_nodes"] if item.get("id")
     )
@@ -1118,6 +1415,12 @@ class SixApiUser(HttpUser):
         configure_locust_client_tls(self.client, RUNTIME.ca_file)
         self.api_key_index = next(_user_counter) % len(RUNTIME.api_keys)
         self.api_key = RUNTIME.api_keys[self.api_key_index]
+        self._preemption_recorded = False
+
+    def ensure_not_preempted(self, operation: str) -> None:
+        """Fence every new VU request after the global safety stop is raised."""
+
+        _shape_stop_signal.raise_if_requested(operation)
 
     def validation_failure(
         self,
@@ -1158,7 +1461,9 @@ class SixApiUser(HttpUser):
     ) -> tuple[Any, int]:
         retries = 0
         while True:
+            self.ensure_not_preempted(f"{api_name}:{operation}:request")
             kwargs = request_factory() if request_factory else {}
+            self.ensure_not_preempted(f"{api_name}:{operation}:request")
             with self.client.request(
                 method,
                 path,
@@ -1186,6 +1491,7 @@ class SixApiUser(HttpUser):
                 response.failure(failure_label)
                 if retries >= SCENARIO.max_retries:
                     return response, retries
+                self.ensure_not_preempted(f"{api_name}:{operation}:retry")
                 retries += 1
                 REGISTRY.retry(api_name, operation, status_code)
             gevent.sleep(min(8.0, 0.25 * (2**retries)))
@@ -1202,8 +1508,10 @@ class SixApiUser(HttpUser):
     ) -> tuple[Any, int]:
         retries = 0
         while True:
+            self.ensure_not_preempted(f"{api_name}:{operation}:request")
             with ExitStack() as stack:
                 data, files = builder(stack)
+                self.ensure_not_preempted(f"{api_name}:{operation}:request")
                 with self.client.post(
                     path,
                     headers=dict(headers),
@@ -1232,6 +1540,7 @@ class SixApiUser(HttpUser):
                     response.failure(failure_label)
                     if retries >= SCENARIO.max_retries:
                         return response, retries
+                    self.ensure_not_preempted(f"{api_name}:{operation}:retry")
                     retries += 1
                     REGISTRY.retry(api_name, operation, status_code)
             gevent.sleep(min(8.0, 0.25 * (2**retries)))
@@ -1243,6 +1552,7 @@ class SixApiUser(HttpUser):
         metadata: dict[str, Any],
         builder: Callable[[ExitStack, str], tuple[dict[str, str], list[tuple[str, Any]]]],
     ) -> None:
+        self.ensure_not_preempted(f"{api_name}:submit")
         request_id, idempotency_key, traceparent = correlation(api_name, ordinal)
         business_id = external_id(api_name, ordinal)
         metadata["external_asset_id"] = business_id
@@ -1289,6 +1599,9 @@ class SixApiUser(HttpUser):
             traceparent=traceparent,
             created_monotonic=started,
             submission_retries=retries,
+            expected_artifact_kinds=expected_load_artifact_kinds(
+                api_name, metadata=metadata
+            ),
         )
         self.poll_and_collect(job_id, api_name, headers)
 
@@ -1333,37 +1646,6 @@ class SixApiUser(HttpUser):
                 "task did not reach a terminal state before its operation timeout",
             )
             return
-        if API_CONTRACTS[api_name]["resource"] in {"CPU", "GPU_FENCED_ASSET"}:
-            artifacts = final_payload.get("artifacts")
-            if isinstance(artifacts, list):
-                for artifact in artifacts:
-                    if isinstance(artifact, dict):
-                        self.download_artifact(identifier, api_name, artifact, headers)
-                    else:
-                        REGISTRY.mark_artifact_contract_failure(
-                            identifier, "asset artifact entry is not an object"
-                        )
-                        self.validation_failure(
-                            api_name,
-                            "artifact-contract",
-                            "asset artifact entry is not an object",
-                        )
-            if final_status in LOAD_SUCCESS_STATUSES and not artifacts:
-                REGISTRY.mark_artifact_contract_failure(
-                    identifier, "successful asset job returned no artifacts"
-                )
-                self.validation_failure(
-                    api_name,
-                    "artifact-contract",
-                    "successful asset job returned no artifacts",
-                )
-            if final_status not in LOAD_SUCCESS_STATUSES:
-                self.validation_failure(
-                    api_name,
-                    "business-terminal",
-                    f"task ended in unsuccessful business status {final_status}",
-                )
-            return
         if final_status not in LOAD_SUCCESS_STATUSES:
             self.validation_failure(
                 api_name,
@@ -1371,19 +1653,48 @@ class SixApiUser(HttpUser):
                 f"task ended in unsuccessful business status {final_status}",
             )
             return
+        if API_CONTRACTS[api_name]["resource"] in {"CPU", "GPU_FENCED_ASSET"}:
+            self.verify_artifact_set(
+                identifier,
+                api_name,
+                final_payload.get("artifacts"),
+                headers,
+                record,
+            )
+            return
         if api_name == "imageclip_batch":
-            artifact = final_payload.get("artifact")
-            if isinstance(artifact, dict):
-                self.download_artifact(identifier, api_name, artifact, headers)
-            else:
+            artifacts = final_payload.get("artifacts")
+            alias = final_payload.get("artifact")
+            if not isinstance(artifacts, list) or not isinstance(alias, Mapping):
                 REGISTRY.mark_artifact_contract_failure(
-                    identifier, "successful ImageClip batch returned no final artifact"
+                    identifier,
+                    "successful ImageClip batch omitted its artifact list or singular alias",
                 )
                 self.validation_failure(
                     api_name,
                     "artifact-contract",
-                    "successful ImageClip batch returned no final artifact",
+                    "ImageClip batch omitted its artifact list or singular alias",
                 )
+                return
+            if len(artifacts) != 1 or not isinstance(artifacts[0], Mapping) or any(
+                alias.get(key) != artifacts[0].get(key)
+                for key in ("id", "kind", "filename", "size_bytes", "sha256", "download_url")
+            ):
+                REGISTRY.mark_artifact_contract_failure(
+                    identifier, "ImageClip artifact alias does not match the exact artifact"
+                )
+                self.validation_failure(
+                    api_name,
+                    "artifact-contract",
+                    "ImageClip artifact alias does not match the exact artifact",
+                )
+            self.verify_artifact_set(
+                identifier,
+                api_name,
+                artifacts,
+                headers,
+                record,
+            )
             return
         listing, retries = self.request_with_retry(
             "GET",
@@ -1394,20 +1705,68 @@ class SixApiUser(HttpUser):
             timeout=30,
         )
         REGISTRY.add_retries(identifier, retries)
-        if listing.status_code == 200 and isinstance(listing.json(), list):
-            for artifact in listing.json():
-                if isinstance(artifact, dict) and artifact.get("id"):
-                    artifact = {
-                        **artifact,
-                        "download_url": f"/api/v1/jobs/{identifier}/artifacts/{artifact['id']}",
-                    }
-                    self.download_artifact(identifier, api_name, artifact, headers)
-                else:
-                    self.validation_failure(
-                        api_name,
-                        "artifact-contract",
-                        "artifact listing item has no id",
-                    )
+        try:
+            raw_listing = listing.json() if listing.status_code == 200 else None
+        except ValueError:
+            raw_listing = None
+        if not isinstance(raw_listing, list):
+            REGISTRY.mark_artifact_contract_failure(
+                identifier, "roughness artifact listing is unavailable or malformed"
+            )
+            self.validation_failure(
+                api_name,
+                "artifact-contract",
+                "roughness artifact listing is unavailable or malformed",
+            )
+            return
+        artifacts = [
+            {
+                **artifact,
+                "download_url": f"/api/v1/jobs/{identifier}/artifacts/{artifact.get('id')}",
+            }
+            if isinstance(artifact, Mapping)
+            else artifact
+            for artifact in raw_listing
+        ]
+        self.verify_artifact_set(
+            identifier,
+            api_name,
+            artifacts,
+            headers,
+            record,
+        )
+
+    def verify_artifact_set(
+        self,
+        identifier: str,
+        api_name: str,
+        artifacts: object,
+        headers: Mapping[str, str],
+        record: Mapping[str, Any],
+    ) -> None:
+        try:
+            normalized = validate_load_artifact_manifest(
+                api_name,
+                artifacts,
+                expected_kinds=tuple(record.get("expected_artifact_kinds") or ()),
+            )
+        except LoadTestConfigurationError as exc:
+            REGISTRY.mark_artifact_contract_failure(identifier, str(exc))
+            self.validation_failure(api_name, "artifact-contract", str(exc))
+            return
+        direct_sha256 = str(record.get("direct_artifact_sha256") or "")
+        if direct_sha256:
+            listed_sha256 = str(normalized[0].get("sha256") or "")
+            if listed_sha256 != direct_sha256:
+                reason = "roughness direct response SHA-256 differs from its artifact listing"
+                REGISTRY.mark_artifact_contract_failure(identifier, reason)
+                self.validation_failure(api_name, "artifact-sha256", reason)
+        all_downloads_verified = True
+        for artifact in normalized:
+            if not self.download_artifact(identifier, api_name, artifact, headers):
+                all_downloads_verified = False
+        if all_downloads_verified:
+            REGISTRY.mark_artifact_contract_verified(identifier)
 
     def download_artifact(
         self,
@@ -1415,7 +1774,7 @@ class SixApiUser(HttpUser):
         api_name: str,
         artifact: Mapping[str, Any],
         headers: Mapping[str, str],
-    ) -> None:
+    ) -> bool:
         url = str(artifact.get("download_url") or "")
         expected_sha = str(artifact.get("sha256") or "")
         if not url or len(expected_sha) != 64:
@@ -1428,7 +1787,7 @@ class SixApiUser(HttpUser):
                 "artifact-contract",
                 "artifact URL or SHA-256 is missing",
             )
-            return
+            return False
         if not url.startswith("/") or url.startswith("//"):
             REGISTRY.mark_artifact_contract_failure(
                 identifier, "artifact URL is not a same-origin relative path"
@@ -1438,7 +1797,7 @@ class SixApiUser(HttpUser):
                 "artifact-origin",
                 "artifact URL must be a same-origin relative API path",
             )
-            return
+            return False
         response, retries = self.request_with_retry(
             "GET",
             url,
@@ -1452,26 +1811,32 @@ class SixApiUser(HttpUser):
             REGISTRY.mark_artifact_contract_failure(
                 identifier, f"artifact download returned HTTP {response.status_code}"
             )
-            return
-        actual_sha = hashlib.sha256(response.content).hexdigest()
-        header_sha = response.headers.get("X-Artifact-SHA256")
-        if actual_sha != expected_sha or (header_sha and header_sha != expected_sha):
-            REGISTRY.mark_artifact_contract_failure(identifier, "artifact SHA-256 mismatch")
+            return False
+        try:
+            actual_sha = validate_downloaded_load_artifact(
+                api_name,
+                artifact,
+                response.content,
+                header_sha256=response.headers.get("X-Artifact-SHA256"),
+            )
+        except LoadTestConfigurationError as exc:
+            REGISTRY.mark_artifact_contract_failure(identifier, str(exc))
             self.validation_failure(
                 api_name,
                 "artifact-sha256",
-                "artifact SHA-256 mismatch",
+                str(exc),
                 response_length=len(response.content),
             )
             REGISTRY.event(
                 "artifact.sha_mismatch",
                 api=api_name,
                 task_id=identifier,
-                expected_sha256=expected_sha,
-                actual_sha256=actual_sha,
+                expected_sha256=expected_sha or None,
+                actual_sha256=hashlib.sha256(response.content).hexdigest(),
             )
-            return
-        REGISTRY.add_artifact(identifier, len(response.content))
+            return False
+        kind = str(artifact.get("kind") or "")
+        REGISTRY.add_artifact(identifier, kind, len(response.content))
         REGISTRY.event(
             "artifact.verified",
             api=api_name,
@@ -1479,9 +1844,11 @@ class SixApiUser(HttpUser):
             size_bytes=len(response.content),
             sha256=actual_sha,
         )
+        return True
 
     def run_imageclip_batch(self, ordinal: int) -> None:
         api_name = "imageclip_batch"
+        self.ensure_not_preempted(f"{api_name}:submit")
         request_id, idempotency_key, traceparent = correlation(api_name, ordinal)
         manifest = fixture_json(api_name, "manifest")
         business_id = external_id(api_name, ordinal)
@@ -1490,7 +1857,7 @@ class SixApiUser(HttpUser):
 
         def builder(stack: ExitStack) -> tuple[dict[str, str], list[tuple[str, Any]]]:
             archive = fixture_path(api_name, "archive")
-            handle = stack.enter_context(archive.open("rb"))
+            handle = open_verified_fixture(stack, archive)
             return (
                 {"manifest": json.dumps(manifest, ensure_ascii=False, separators=(",", ":"))},
                 [("archive", (archive.name, handle, "application/zip"))],
@@ -1528,17 +1895,20 @@ class SixApiUser(HttpUser):
             traceparent=traceparent,
             created_monotonic=started,
             submission_retries=retries,
+            expected_artifact_kinds=expected_load_artifact_kinds(api_name),
         )
         self.poll_and_collect(batch_id, api_name, headers)
 
     def run_modelview_roughness(self, ordinal: int) -> None:
         api_name = "modelview_roughness"
+        self.ensure_not_preempted(f"{api_name}:submit")
         request_id, idempotency_key, traceparent = correlation(api_name, ordinal)
+        REGISTRY.register_roughness_request(request_id, self.api_key_index)
         headers = request_headers(self.api_key, request_id, traceparent, idempotency_key)
 
         def builder(stack: ExitStack) -> tuple[dict[str, str], list[tuple[str, Any]]]:
             image = fixture_path(api_name, "image")
-            handle = stack.enter_context(image.open("rb"))
+            handle = open_verified_fixture(stack, image)
             return {"parameters": "{}"}, [("image", (image.name, handle, "image/png"))]
 
         started = time.monotonic()
@@ -1562,6 +1932,23 @@ class SixApiUser(HttpUser):
                 response_length=len(response.content),
             )
             return
+        expected_sha = str(response.headers.get("X-Artifact-SHA256") or "")
+        actual_sha = hashlib.sha256(response.content).hexdigest()
+        if len(expected_sha) != 64 or actual_sha != expected_sha:
+            self.validation_failure(
+                api_name,
+                "artifact-sha256",
+                "roughness response omitted or mismatched X-Artifact-SHA256",
+                response_length=len(response.content),
+            )
+            REGISTRY.event(
+                "artifact.sha_mismatch",
+                api=api_name,
+                task_id=job_id,
+                expected_sha256=expected_sha or None,
+                actual_sha256=actual_sha,
+            )
+            return
         REGISTRY.register(
             job_id,
             api_name=api_name,
@@ -1575,8 +1962,16 @@ class SixApiUser(HttpUser):
             traceparent=traceparent,
             created_monotonic=started,
             submission_retries=retries,
+            expected_artifact_kinds=expected_load_artifact_kinds(api_name),
+            direct_artifact_sha256=actual_sha,
         )
-        REGISTRY.add_artifact(job_id, len(response.content))
+        REGISTRY.event(
+            "artifact.direct_response_verified",
+            api=api_name,
+            task_id=job_id,
+            size_bytes=len(response.content),
+            sha256=actual_sha,
+        )
         self.poll_and_collect(job_id, api_name, headers)
 
     def run_uv_process(self, ordinal: int) -> None:
@@ -1587,7 +1982,7 @@ class SixApiUser(HttpUser):
             stack: ExitStack, metadata_text: str
         ) -> tuple[dict[str, str], list[tuple[str, Any]]]:
             asset = fixture_path(api_name, "asset")
-            handle = stack.enter_context(asset.open("rb"))
+            handle = open_verified_fixture(stack, asset)
             return {"metadata": metadata_text}, [
                 ("asset", (asset.name, handle, "application/octet-stream"))
             ]
@@ -1602,7 +1997,7 @@ class SixApiUser(HttpUser):
             stack: ExitStack, metadata_text: str
         ) -> tuple[dict[str, str], list[tuple[str, Any]]]:
             project = fixture_path(api_name, "project")
-            handle = stack.enter_context(project.open("rb"))
+            handle = open_verified_fixture(stack, project)
             return {"metadata": metadata_text}, [
                 ("project", (project.name, handle, "application/octet-stream"))
             ]
@@ -1617,14 +2012,15 @@ class SixApiUser(HttpUser):
             stack: ExitStack, metadata_text: str
         ) -> tuple[dict[str, str], list[tuple[str, Any]]]:
             project = fixture_path(api_name, "project")
-            project_handle = stack.enter_context(project.open("rb"))
+            project_handle = open_verified_fixture(stack, project)
             files: list[tuple[str, Any]] = [
                 ("project", (project.name, project_handle, "application/octet-stream"))
             ]
             reference_values = FIXTURES.paths_for(api_name).get("reference_images", ())
             references = reference_values if isinstance(reference_values, tuple) else ()
             for image in references:
-                handle = stack.enter_context(image.open("rb"))
+                verify_fixture_path(image)
+                handle = open_verified_fixture(stack, image)
                 files.append(("reference_images", (image.name, handle, "image/png")))
             return {"metadata": metadata_text}, files
 
@@ -1651,7 +2047,8 @@ class SixApiUser(HttpUser):
                 path = entry.get(key)
                 if not isinstance(path, Path):
                     continue
-                handle = stack.enter_context(path.open("rb"))
+                verify_fixture_path(path)
+                handle = open_verified_fixture(stack, path)
                 media_type = "image/png" if "texture" in key else "application/octet-stream"
                 files.append((key, (path.name, handle, media_type)))
             return {"metadata": metadata_text}, files
@@ -1660,22 +2057,34 @@ class SixApiUser(HttpUser):
 
     @task
     def business_cycle(self) -> None:
-        ordinal = next(_operation_counter)
-        api_name = random.choices(  # noqa: S311 - configured reproducible workload mix
-            list(API_NAMES),
-            weights=[SCENARIO.weights[name] for name in API_NAMES],
-            k=1,
-        )[0]
-        handler = {
-            "imageclip_batch": self.run_imageclip_batch,
-            "modelview_roughness": self.run_modelview_roughness,
-            "uv_process": self.run_uv_process,
-            "retopology_audit": self.run_retopology_audit,
-            "retopology_process": self.run_retopology_process,
-            "substance_bake": self.run_substance_bake,
-        }[api_name]
+        ordinal = -1
+        api_name = "unselected"
         try:
+            self.ensure_not_preempted("business-cycle")
+            ordinal = next(_operation_counter)
+            api_name = random.choices(  # noqa: S311 - configured workload mix
+                list(API_NAMES),
+                weights=[SCENARIO.weights[name] for name in API_NAMES],
+                k=1,
+            )[0]
+            handler = {
+                "imageclip_batch": self.run_imageclip_batch,
+                "modelview_roughness": self.run_modelview_roughness,
+                "uv_process": self.run_uv_process,
+                "retopology_audit": self.run_retopology_audit,
+                "retopology_process": self.run_retopology_process,
+                "substance_bake": self.run_substance_bake,
+            }[api_name]
             handler(ordinal)
+        except LoadTestPreempted as exc:
+            if not self._preemption_recorded:
+                self._preemption_recorded = True
+                REGISTRY.event(
+                    "safety.virtual_user_preempted",
+                    operation=exc.operation,
+                    reason=exc.reason,
+                    api_key_index=self.api_key_index,
+                )
         except Exception as exc:
             REGISTRY.event(
                 "task.client_exception",
@@ -1697,11 +2106,30 @@ class SixApiUser(HttpUser):
 
 class SixApiStagesShape(LoadTestShape):
     def tick(self) -> tuple[int, float] | None:
-        return select_load_shape_stage(
+        global _last_fixture_verified_stage
+
+        selected_stage = select_load_shape_stage(
             SCENARIO.stages,
             self.get_run_time(),
             stop_requested=_shape_stop_signal.requested,
         )
+        if selected_stage is None or selected_stage == _last_fixture_verified_stage:
+            return selected_stage
+        try:
+            verify_all_fixture_paths()
+        except LoadTestConfigurationError as exc:
+            _shape_stop_signal.request("fixture_integrity_failed")
+            REGISTRY.event(
+                "safety.fixture_integrity_failed",
+                error=type(exc).__name__,
+                message=str(exc),
+                phase="stage_boundary",
+                stage_users=selected_stage[0],
+            )
+            self.runner.environment.process_exit_code = 2
+            return None
+        _last_fixture_verified_stage = selected_stage
+        return selected_stage
 
 
 def teardown_cancel_sender(
@@ -1709,16 +2137,28 @@ def teardown_cancel_sender(
     cancel_url: str,
     headers: Mapping[str, str],
     attempt_counter: list[int],
+    deadline: float,
 ) -> Callable[[], int]:
     def send_cancel() -> int:
         attempt_counter[0] += 1
-        return client.post(cancel_url, headers=dict(headers)).status_code
+        try:
+            return client.post(
+                cancel_url,
+                headers=dict(headers),
+                timeout=deadline_timeout(deadline, TEARDOWN_CANCEL_TIMEOUT_SECONDS),
+            ).status_code
+        except httpx.HTTPError:
+            # Feed transport failures into the same bounded retry policy as
+            # 5xx responses. The cancel key/request ID remain unchanged.
+            return 599
 
     return send_cancel
 
 
 def discover_teardown_records(
     client: httpx.Client,
+    *,
+    deadline: float,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     admin_headers = {"Authorization": f"Bearer {RUNTIME.admin_bearer_token}"}
     gpu_jobs, gpu_audit = active_gpu_admin_jobs(
@@ -1726,29 +2166,31 @@ def discover_teardown_records(
         admin_headers,
         client_kind="test",
         passes=2,
+        deadline=deadline,
     )
-    asset_response = client.get("/admin/asset-processing?limit=500", headers=admin_headers)
+    asset_response = client.get(
+        "/admin/asset-processing?limit=500&active_only=true",
+        headers=admin_headers,
+        timeout=deadline_timeout(deadline, TEARDOWN_CANCEL_TIMEOUT_SECONDS),
+    )
     asset_response.raise_for_status()
     asset_overview = asset_response.json()
     if not isinstance(gpu_jobs, list) or not isinstance(asset_overview, dict):
         raise LoadTestConfigurationError(
             "teardown recovery admin endpoints returned the wrong shape"
         )
-    asset_jobs = asset_overview.get("jobs")
-    if not isinstance(asset_jobs, list):
-        raise LoadTestConfigurationError("teardown recovery asset overview omitted jobs")
-    if len(asset_jobs) >= 500:
-        raise LoadTestConfigurationError("teardown recovery asset audit window is saturated")
+    asset_jobs = active_asset_jobs(asset_overview, context="teardown recovery")
     candidates = discover_scoped_teardown_tasks(
         gpu_jobs,
         asset_jobs,
         tenant_key_indices={tenant_id: index for index, tenant_id in enumerate(RUNTIME.tenant_ids)},
+        roughness_request_key_indices=REGISTRY.roughness_request_key_indices(),
         session_id=RUNTIME.session_id,
-        started_at=REGISTRY.started_at,
+        started_at=REGISTRY.recovery_started_at,
     )
     return candidates, {
         "passed": True,
-        "scope": "exclusive_test_tenant+run_started_at+business_identity",
+        "scope": "test_tenant+preflight_boundary+session_identity",
         "gpu_rows_scanned": gpu_audit["rows_scanned"],
         "gpu_status_queries": gpu_audit["status_queries"],
         "asset_rows_scanned": len(asset_jobs),
@@ -1760,12 +2202,15 @@ def settle_teardown_tasks(
     client: httpx.Client,
     tasks: Mapping[str, Mapping[str, Any]],
     outcomes: list[dict[str, Any]],
+    *,
+    deadline: float,
 ) -> None:
     outcome_by_id = {str(item["task_id"]): item for item in outcomes}
     pending = set(tasks)
-    deadline = time.monotonic() + TEARDOWN_SETTLE_TIMEOUT_SECONDS
     while pending and time.monotonic() < deadline:
         for identifier in list(pending):
+            if time.monotonic() >= deadline:
+                break
             record = tasks[identifier]
             outcome = outcome_by_id[identifier]
             key_index = int(record["api_key_index"])
@@ -1774,7 +2219,11 @@ def settle_teardown_tasks(
                 "X-Request-ID": (f"lt:{RUNTIME.session_id}:settle:{identifier}"[:64]),
             }
             try:
-                response = client.get(str(record["status_url"]), headers=headers)
+                response = client.get(
+                    str(record["status_url"]),
+                    headers=headers,
+                    timeout=deadline_timeout(deadline, TEARDOWN_CANCEL_TIMEOUT_SECONDS),
+                )
                 outcome["last_settle_http_status"] = response.status_code
                 if response.status_code != 200:
                     continue
@@ -1787,19 +2236,25 @@ def settle_teardown_tasks(
                         status in LOAD_SUCCESS_STATUSES or status == "CANCELLED"
                     )
                     pending.remove(identifier)
-            except httpx.HTTPError as exc:
+            except (httpx.HTTPError, TimeoutError) as exc:
                 outcome["settle_error"] = type(exc).__name__
         if pending:
-            gevent.sleep(TEARDOWN_SETTLE_POLL_INTERVAL_SECONDS)
+            try:
+                deadline_sleep(TEARDOWN_SETTLE_POLL_INTERVAL_SECONDS, deadline)
+            except TimeoutError:
+                break
     for identifier in pending:
         outcome = outcome_by_id[identifier]
         outcome["settled"] = False
         outcome["cleanup_safe"] = False
-        outcome["settle_timeout_seconds"] = TEARDOWN_SETTLE_TIMEOUT_SECONDS
+        outcome["settle_timeout_seconds"] = TEARDOWN_TOTAL_TIMEOUT_SECONDS
 
 
 def teardown_session_tasks() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     outcomes: list[dict[str, Any]] = []
+    teardown_started = time.monotonic()
+    deadline = teardown_started + TEARDOWN_TOTAL_TIMEOUT_SECONDS
+    processed_ids: set[str] = set()
     with httpx.Client(
         base_url=RUNTIME.target,
         verify=httpx_verify(),
@@ -1807,12 +2262,12 @@ def teardown_session_tasks() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         timeout=TEARDOWN_CANCEL_TIMEOUT_SECONDS,
     ) as client:
         try:
-            discovered, recovery_scan = discover_teardown_records(client)
-        except (httpx.HTTPError, ValueError, LoadTestConfigurationError) as exc:
+            discovered, recovery_scan = discover_teardown_records(client, deadline=deadline)
+        except (httpx.HTTPError, TimeoutError, ValueError, LoadTestConfigurationError) as exc:
             discovered = []
             recovery_scan = {
                 "passed": False,
-                "scope": "exclusive_test_tenant+run_started_at+business_identity",
+                "scope": "test_tenant+preflight_boundary+session_identity",
                 "error": type(exc).__name__,
                 "message": str(exc),
             }
@@ -1826,78 +2281,173 @@ def teardown_session_tasks() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         recovered = [record for record in discovered if str(record["id"]) not in registered_ids]
         recovery_scan["unregistered_recovered"] = len(recovered)
         active_records.extend(recovered)
-        tasks = {str(record["id"]): record for record in active_records}
-        for index, record in enumerate(active_records):
-            key_index = int(record["api_key_index"])
-            if key_index < 0 or key_index >= len(RUNTIME.api_keys):
-                outcome = {
-                    "task_id": record["id"],
-                    "api": record["api"],
-                    "status_code": 0,
-                    "cancelled": False,
-                    "settled": False,
-                    "cleanup_safe": False,
-                    "error": "APIKeyIndexOutOfRange",
-                    "attempts": 0,
-                    "recovered_by_scope_scan": bool(record.get("recovery_source")),
-                }
-                outcomes.append(outcome)
-                REGISTRY.event("teardown.cancel", **outcome)
-                tasks.pop(str(record["id"]), None)
-                continue
-            api_key = RUNTIME.api_keys[key_index]
-            request_id = f"lt:{RUNTIME.session_id}:teardown:{record['id']}"[:64]
-            headers = {
-                "X-API-Key": api_key,
-                "X-Request-ID": request_id,
-            }
-            if record["kind"] == "batch":
-                headers["Idempotency-Key"] = f"{record['external_id']}:cancel"
-            attempt_counter = [0]
-            send_cancel = teardown_cancel_sender(
-                client,
-                str(record["cancel_url"]),
-                headers,
-                attempt_counter,
-            )
 
-            try:
-                status_code, attempts = execute_bounded_teardown_cancel(
-                    send_cancel,
-                    gevent.sleep,
-                    max_attempts=TEARDOWN_CANCEL_MAX_ATTEMPTS,
-                    initial_backoff_seconds=TEARDOWN_CANCEL_INITIAL_BACKOFF_SECONDS,
-                    maximum_backoff_seconds=TEARDOWN_CANCEL_MAXIMUM_BACKOFF_SECONDS,
+        def cancel_and_settle(records: list[dict[str, Any]]) -> None:
+            fresh_records = [
+                record for record in records if str(record["id"]) not in processed_ids
+            ]
+            tasks: dict[str, dict[str, Any]] = {}
+            for index, record in enumerate(fresh_records):
+                identifier = str(record["id"])
+                key_index = int(record["api_key_index"])
+                if key_index < 0 or key_index >= len(RUNTIME.api_keys):
+                    outcome = {
+                        "task_id": identifier,
+                        "api": record["api"],
+                        "status_code": 0,
+                        "cancelled": False,
+                        "settled": False,
+                        "cleanup_safe": False,
+                        "error": "APIKeyIndexOutOfRange",
+                        "attempts": 0,
+                        "recovered_by_scope_scan": bool(record.get("recovery_source")),
+                    }
+                    outcomes.append(outcome)
+                    REGISTRY.event("teardown.cancel", **outcome)
+                    continue
+                api_key = RUNTIME.api_keys[key_index]
+                request_id = f"lt:{RUNTIME.session_id}:teardown:{identifier}"[:64]
+                headers = {
+                    "X-API-Key": api_key,
+                    "X-Request-ID": request_id,
+                }
+                if record["kind"] == "batch":
+                    headers["Idempotency-Key"] = f"{record['external_id']}:cancel"
+                attempt_counter = [0]
+                send_cancel = teardown_cancel_sender(
+                    client,
+                    str(record["cancel_url"]),
+                    headers,
+                    attempt_counter,
+                    deadline,
                 )
-                outcome = {
-                    "task_id": record["id"],
-                    "api": record["api"],
-                    "status_code": status_code,
-                    "cancelled": status_code == 200,
-                    "attempts": attempts,
-                    "settled": False,
-                    "cleanup_safe": False,
-                    "recovered_by_scope_scan": bool(record.get("recovery_source")),
+                try:
+                    status_code, attempts = execute_bounded_teardown_cancel(
+                        send_cancel,
+                        lambda seconds: deadline_sleep(seconds, deadline),
+                        max_attempts=TEARDOWN_CANCEL_MAX_ATTEMPTS,
+                        initial_backoff_seconds=TEARDOWN_CANCEL_INITIAL_BACKOFF_SECONDS,
+                        maximum_backoff_seconds=TEARDOWN_CANCEL_MAXIMUM_BACKOFF_SECONDS,
+                        deadline_monotonic=deadline,
+                    )
+                    outcome = {
+                        "task_id": identifier,
+                        "api": record["api"],
+                        "status_code": status_code,
+                        "cancelled": status_code == 200,
+                        "attempts": attempts,
+                        "settled": False,
+                        "cleanup_safe": False,
+                        "recovered_by_scope_scan": bool(record.get("recovery_source")),
+                    }
+                except (httpx.HTTPError, TimeoutError) as exc:
+                    outcome = {
+                        "task_id": identifier,
+                        "api": record["api"],
+                        "status_code": 0,
+                        "cancelled": False,
+                        "settled": False,
+                        "cleanup_safe": False,
+                        "error": type(exc).__name__,
+                        "attempts": attempt_counter[0],
+                        "recovered_by_scope_scan": bool(record.get("recovery_source")),
+                    }
+                outcomes.append(outcome)
+                tasks[identifier] = record
+                REGISTRY.event("teardown.cancel", **outcome)
+                if index + 1 < len(fresh_records):
+                    try:
+                        deadline_sleep(TEARDOWN_CANCEL_THROTTLE_SECONDS, deadline)
+                    except TimeoutError:
+                        break
+            if tasks:
+                settle_deadline = min(
+                    deadline,
+                    time.monotonic() + TEARDOWN_SETTLE_PASS_TIMEOUT_SECONDS,
+                )
+                settle_teardown_tasks(client, tasks, outcomes, deadline=settle_deadline)
+                latest_outcome_by_id = {
+                    str(outcome["task_id"]): outcome for outcome in outcomes
                 }
-            except httpx.HTTPError as exc:
-                attempts = attempt_counter[0]
-                outcome = {
-                    "task_id": record["id"],
-                    "api": record["api"],
-                    "status_code": 0,
-                    "cancelled": False,
-                    "settled": False,
-                    "cleanup_safe": False,
-                    "error": type(exc).__name__,
-                    "attempts": attempts,
-                    "recovered_by_scope_scan": bool(record.get("recovery_source")),
+                for identifier in tasks:
+                    latest = latest_outcome_by_id.get(identifier, {})
+                    if (
+                        latest.get("settled") is True
+                        and latest.get("cleanup_safe") is True
+                    ):
+                        processed_ids.add(identifier)
+
+        cancel_and_settle(active_records)
+
+        rescan_evidence: list[dict[str, Any]] = []
+        consecutive_empty_scans = 0
+        final_scope_verified = False
+        for pass_index in range(1, TEARDOWN_MAX_RESCAN_PASSES + 1):
+            if time.monotonic() >= deadline:
+                break
+            try:
+                residual, audit = discover_teardown_records(client, deadline=deadline)
+            except (httpx.HTTPError, TimeoutError, ValueError, LoadTestConfigurationError) as exc:
+                recovery_scan["passed"] = False
+                rescan_evidence.append(
+                    {
+                        "pass": pass_index,
+                        "passed": False,
+                        "error": type(exc).__name__,
+                        "message": str(exc),
+                    }
+                )
+                REGISTRY.event(
+                    "teardown.final_rescan_failed",
+                    pass_index=pass_index,
+                    error=type(exc).__name__,
+                    message=str(exc),
+                )
+                break
+            residual_ids = {str(record["id"]) for record in residual}
+            late_records = [
+                record for record in residual if str(record["id"]) not in processed_ids
+            ]
+            rescan_evidence.append(
+                {
+                    "pass": pass_index,
+                    "passed": True,
+                    "active_candidates": len(residual),
+                    "late_orphans": len(late_records),
+                    "active_candidate_ids": sorted(residual_ids),
+                    "gpu_rows_scanned": audit["gpu_rows_scanned"],
+                    "asset_rows_scanned": audit["asset_rows_scanned"],
                 }
-            outcomes.append(outcome)
-            REGISTRY.event("teardown.cancel", **outcome)
-            if index + 1 < len(active_records):
-                gevent.sleep(TEARDOWN_CANCEL_THROTTLE_SECONDS)
-        if tasks:
-            settle_teardown_tasks(client, tasks, outcomes)
+            )
+            if residual:
+                consecutive_empty_scans = 0
+                if late_records:
+                    recovery_scan["unregistered_recovered"] += len(late_records)
+                    cancel_and_settle(late_records)
+            else:
+                consecutive_empty_scans += 1
+                if consecutive_empty_scans >= TEARDOWN_FINAL_EMPTY_SCANS:
+                    final_scope_verified = True
+                    break
+            try:
+                deadline_sleep(TEARDOWN_SETTLE_POLL_INTERVAL_SECONDS, deadline)
+            except TimeoutError:
+                break
+        recovery_scan["final_rescans"] = rescan_evidence
+        recovery_scan["final_scope_verified"] = final_scope_verified
+        recovery_scan["total_timeout_seconds"] = TEARDOWN_TOTAL_TIMEOUT_SECONDS
+        recovery_scan["elapsed_seconds"] = round(time.monotonic() - teardown_started, 3)
+        if not final_scope_verified:
+            recovery_scan["passed"] = False
+            recovery_scan.setdefault("error", "FinalScopeNotEmptyOrDeadlineExpired")
+        # Keep one final outcome per task for lifecycle evaluation. Individual
+        # retries remain preserved in events.jsonl.
+        outcomes = list(
+            {
+                str(outcome["task_id"]): outcome
+                for outcome in outcomes
+            }.values()
+        )
         for outcome in outcomes:
             REGISTRY.event(
                 "teardown.settled",
@@ -1912,16 +2462,16 @@ def teardown_session_tasks() -> tuple[list[dict[str, Any]], dict[str, Any]]:
 
 def locust_stats(environment: Any) -> dict[str, Any]:
     entries: dict[str, Any] = {}
-    for (name, method), stat in environment.stats.entries.items():
+    for (name, method), entry_stat in environment.stats.entries.items():
         entries[f"{method} {name}"] = {
-            "requests": stat.num_requests,
-            "failures": stat.num_failures,
-            "average_ms": round(stat.avg_response_time, 3),
-            "p50_ms": stat.get_response_time_percentile(0.50),
-            "p90_ms": stat.get_response_time_percentile(0.90),
-            "p95_ms": stat.get_response_time_percentile(0.95),
-            "p99_ms": stat.get_response_time_percentile(0.99),
-            "rps": round(stat.current_rps, 6),
+            "requests": entry_stat.num_requests,
+            "failures": entry_stat.num_failures,
+            "average_ms": round(entry_stat.avg_response_time, 3),
+            "p50_ms": entry_stat.get_response_time_percentile(0.50),
+            "p90_ms": entry_stat.get_response_time_percentile(0.90),
+            "p95_ms": entry_stat.get_response_time_percentile(0.95),
+            "p99_ms": entry_stat.get_response_time_percentile(0.99),
+            "rps": round(entry_stat.current_rps, 6),
         }
     total = environment.stats.total
     return {
@@ -1962,10 +2512,20 @@ def finalize_results(environment: Any, **_: Any) -> None:
     teardown, recovery_scan = teardown_session_tasks()
     records = REGISTRY.records()
     summary = REGISTRY.summary()
-    api_counts = summary.get("apis") if isinstance(summary.get("apis"), dict) else {}
-    missing_apis = [name for name in API_NAMES if int(api_counts.get(name) or 0) < 1]
+    lifecycle_evaluation = evaluate_load_lifecycle(
+        records,
+        teardown,
+        mode=SCENARIO.lifecycle_mode,
+        recovery_scan_passed=recovery_scan.get("passed") is True,
+    )
+    raw_api_counts = summary.get("apis")
+    api_counts: Mapping[str, Any] = raw_api_counts if isinstance(raw_api_counts, dict) else {}
+    verified_api_counts = lifecycle_evaluation["verified_successful_by_api"]
+    missing_apis = lifecycle_evaluation["missing_successful_apis"]
     summary["six_api_coverage"] = {
         "required": list(API_NAMES),
+        "registered_by_api": {name: int(api_counts.get(name) or 0) for name in API_NAMES},
+        "verified_successful_by_api": verified_api_counts,
         "missing": missing_apis,
         "passed": not missing_apis,
     }
@@ -2029,19 +2589,20 @@ def finalize_results(environment: Any, **_: Any) -> None:
     }
     summary["production_watchdog"] = {
         "triggered": _production_watchdog_triggered,
-        "action": "shape_stop_requested" if _production_watchdog_triggered else None,
+        "action": (
+            "admission_fenced_runner_stop_and_session_teardown_requested"
+            if _production_watchdog_triggered
+            else None
+        ),
+        "new_test_requests_admission_fenced": _production_watchdog_triggered,
         "running_test_work_is_non_preemptive": True,
+        "session_only_teardown_enabled": True,
     }
     summary["shape_stop"] = {
         "requested": _shape_stop_signal.requested,
         "reason": _shape_stop_signal.reason,
     }
-    summary["lifecycle_evaluation"] = evaluate_load_lifecycle(
-        records,
-        teardown,
-        mode=SCENARIO.lifecycle_mode,
-        recovery_scan_passed=recovery_scan.get("passed") is True,
-    )
+    summary["lifecycle_evaluation"] = lifecycle_evaluation
     (RESULT_DIR / "records.json").write_text(
         json.dumps(records, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n",
         encoding="utf-8",
