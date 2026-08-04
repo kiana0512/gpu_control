@@ -145,6 +145,29 @@ ComfyUI 运行约束：
 
 以下硬完整性门禁仍然 fail closed，不能因 advisory QA 而放宽：身份、输入/输出 schema、manifest、租约所有权、产物非空、SHA 一致、原始输入保护和不可变工作流身份。
 
+### 5.1 2026-08-04 真实生产并行证据
+
+在三条动画管家 ImageClip 父批次持续运行、三台 ComfyUI 均保持原 container ID/缓存且未执行
+restart、recreate 或 `/free` 的窗口中，生产 Asset 请求完成了以下自然流量验证：
+
+- PBR `cc004096-8a08-4c65-8b7a-0a625e8ac886` 在 3090-B 安全 fence 后由 Windows-01
+  完成，终态 `SUCCEEDED/100`；节点随后自动恢复 `ACTIVE` 并继续 ImageClip；
+- UV `4322c38e-55c9-445b-8b1a-fa3c8dca4183` 与
+  `dffcd257-9f4d-4b6a-9147-2910312368c5` 均为 `SUCCEEDED/100`，每项精确返回
+  `blend,fbx,fbx_qa,qa,report` 五件正式产物；
+- 重拓扑 `0e9dc7d5-8077-4e3b-bb9f-7f9bc3c55490` 与
+  `c2b80552-0f3d-451a-9a1d-bbad3d6522c6` 均为 `SUCCEEDED/100`，每项精确返回
+  22 件产物，包含正式 `retopology_final.blend`、`retopology_final.fbx`、manifest、审计、
+  对比图和三组四视图；没有因 advisory QA 扣住 BLEND/FBX。
+
+这些是当前生产版本的旁路兼容证据，不替代 1.5.9 灰度后的隔离 canary 和三重 SHA 验收。
+
+同一窗口发现 3090-B 的可选 Node Agent GPU 指标在 WSL/Windows 共载竞争时反复
+`ReadTimeout`；Comfy 作业、节点 heartbeat 与缓存命中仍正常。源码提交
+`cdd89fbb4c77f7e403a0b3af0bb93c09e083beac` 为失败指标查询增加 30 秒有界退避，并继续让
+Comfy `system_stats` 提供显存降级数据。该修复已通过全量 Python 单元/集成门禁、Ruff 与
+Mypy，但尚未部署；必须随最终 Scheduler 在全空闲窗口灰度，不能热重启当前生产调度器。
+
 ## 6. 六 API 综合压力验收计划
 
 基础场景文件：`tests/load/scenarios/six_api_120_20260803.yaml`。2026-08-04 业主要求的
@@ -292,10 +315,10 @@ Blender 5.1.2 验证报告 `passed=true`，报告 SHA-256 为
 | 字段 | 必填值 |
 |---|---|
 | 最早本地代码候选 Git commit | `b410a6a7994cdd06335a106ad5257eafb6378fdf`；已被后续修复取代，`SUPERSEDED` |
-| 本轮实现 Git commit | `dac30c039f692cf8274eaff5430ca7ebfd97b201`；`LOCAL_COMMITTED_NOT_PUSHED` |
-| 最终可推送完整 Git commit | `PENDING_FINAL_COMMIT` |
+| 本轮指标稳定性修复 Git commit | `cdd89fbb4c77f7e403a0b3af0bb93c09e083beac`；`PUSHED_GITHUB_MAIN` |
+| 最终可发布完整 Git commit | `PENDING_FINAL_EVIDENCE_COMMIT` |
 | 完整仓库/历史推送到指定 GitHub `origin/main` 的精确授权 | `AUTHORIZED_BY_OWNER_2026-08-03` |
-| GitHub `main` 包含该 commit | `PENDING_GITHUB_MAIN` |
+| GitHub `main` 包含指标修复 commit | `VERIFIED_cdd89fbb4c77f7e403a0b3af0bb93c09e083beac` |
 | API image digest / SBOM | `PENDING_API_DIGEST` / `PENDING_API_SBOM` |
 | Scheduler image digest / SBOM | `PENDING_SCHEDULER_DIGEST` / `PENDING_SCHEDULER_SBOM` |
 | Asset API image digest / SBOM | `PENDING_ASSET_API_DIGEST` / `PENDING_ASSET_API_SBOM` |
@@ -392,7 +415,7 @@ CANDIDATE_NOT_DEPLOYED → DEPLOYED_NOT_ACCEPTED → PRODUCTION_ACCEPTED
 ```text
 CURRENT_PRODUCTION = DEPLOYED_NOT_ACCEPTED
 CONTROL_1_5_9_WORKER_1_2_5 = CANDIDATE_NOT_DEPLOYED
-FINAL_SOURCE_GATES = PASSED_WORKTREE_PENDING_FINAL_COMMIT
+FINAL_SOURCE_GATES = PASSED_cdd89fb_FULL_PYTHON_RUFF_MYPY_PENDING_FINAL_EVIDENCE_COMMIT
 SOURCE_PUSH_AUTHORIZATION = AUTHORIZED_BY_OWNER_2026-08-03
 FORMAL_LOAD_TEST = PENDING_SIX_API_LOAD_RESULT
 FIXED_B97_AND_3XB97 = PENDING_FIXED_BENCHMARK
