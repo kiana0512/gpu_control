@@ -8,6 +8,8 @@ export interface NodeInfo {
   current_jobs: number;
   max_concurrency: number;
   gpu_util_percent: number;
+  gpu_temperature_c: number | null;
+  gpu_power_w: number | null;
   free_vram_mb: number;
   total_vram_mb: number;
   manual_reserved: boolean;

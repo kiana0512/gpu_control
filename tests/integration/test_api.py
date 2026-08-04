@@ -2148,6 +2148,28 @@ async def test_admin_nodes_selects_linux_codex_worker_not_newer_windows_baker(
         assert runtime["eligibility_reason"] == "ELIGIBLE"
 
 
+async def test_admin_nodes_exposes_optional_gpu_temperature_and_power(tmp_path: Path) -> None:
+    async for app, client in prepared_app(tmp_path):
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-a")
+            assert node is not None
+            labels = dict(node.labels or {})
+            labels.update({"gpu_temperature_c": 68.0, "gpu_power_w": 301.4})
+            node.labels = labels
+            await db.commit()
+
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        response = await client.get("/admin/nodes", headers=auth)
+        assert response.status_code == 200, response.text
+        worker = next(item for item in response.json() if item["id"] == "worker-3090-a")
+        assert worker["gpu_temperature_c"] == 68.0
+        assert worker["gpu_power_w"] == 301.4
+
+
 async def test_admin_nodes_marks_stale_codex_worker_or_probe_ineligible(
     tmp_path: Path,
 ) -> None:

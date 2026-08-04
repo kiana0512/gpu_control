@@ -5,6 +5,7 @@ import { api } from "../api";
 import type { NodeInfo } from "../types";
 import StatusMark from "../components/StatusMark.vue";
 import { useAutoRefresh } from "../composables/useAutoRefresh";
+import { formatGpuPower, formatGpuTemperature } from "../nodePresentation";
 
 const nodes = ref<NodeInfo[]>([]);
 const error = ref("");
@@ -151,6 +152,12 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
               ><strong>{{
                 node.health === "ONLINE" ? `${node.gpu_util_percent}%` : "—"
               }}</strong>
+            </div>
+            <div>
+              <span>温度</span><strong>{{ formatGpuTemperature(node) }}</strong>
+            </div>
+            <div>
+              <span>功率</span><strong>{{ formatGpuPower(node) }}</strong>
             </div>
             <div>
               <span>可用显存</span

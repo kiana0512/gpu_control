@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import mimetypes
 import os
 import re
@@ -3981,6 +3982,15 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         for row in rows:
             item = {column.name: getattr(row, column.name) for column in Node.__table__.columns}
             labels = row.labels or {}
+            for metric_key in ("gpu_temperature_c", "gpu_power_w"):
+                metric_value = labels.get(metric_key)
+                item[metric_key] = (
+                    float(metric_value)
+                    if isinstance(metric_value, int | float)
+                    and not isinstance(metric_value, bool)
+                    and math.isfinite(float(metric_value))
+                    else None
+                )
             worker = worker_by_id.get(f"asset-{row.id}")
             installed = bool(labels.get("codex_cli_installed"))
             auth_status = worker.codex_auth_status if worker else "UNKNOWN"

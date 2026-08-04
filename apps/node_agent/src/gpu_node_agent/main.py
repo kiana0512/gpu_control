@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import importlib.metadata
 import json
+import math
 import os
 import re
 import secrets
@@ -156,10 +157,23 @@ async def _gpu_model() -> str:
     return _validated_gpu_model(lines[0])
 
 
-async def _gpu_metrics() -> dict[str, int]:
+def _optional_gpu_metric(value: str, *, minimum: float, maximum: float) -> float | None:
+    normalized = value.strip()
+    if normalized.lower() in {"n/a", "[n/a]", "not supported", "unknown", ""}:
+        return None
+    try:
+        metric = float(normalized)
+    except ValueError:
+        return None
+    if not math.isfinite(metric) or metric < minimum or metric > maximum:
+        return None
+    return round(metric, 1)
+
+
+async def _gpu_metrics() -> dict[str, int | float | None]:
     process = await asyncio.create_subprocess_exec(
         _nvidia_smi_path(),
-        "--query-gpu=utilization.gpu,memory.free,memory.total",
+        "--query-gpu=utilization.gpu,memory.free,memory.total,temperature.gpu,power.draw",
         "--format=csv,noheader,nounits",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -169,16 +183,20 @@ async def _gpu_metrics() -> dict[str, int]:
         raise RuntimeError(stderr.decode(errors="replace").strip() or "nvidia-smi failed")
     lines = stdout.decode().splitlines()
     fields = [field.strip() for field in lines[0].split(",")] if lines else []
-    if len(fields) != 3:
+    if len(fields) != 5:
         raise RuntimeError("invalid nvidia-smi metrics response")
     try:
-        utilization, free_vram_mb, total_vram_mb = (int(float(field)) for field in fields)
+        utilization, free_vram_mb, total_vram_mb = (
+            int(float(field)) for field in fields[:3]
+        )
     except ValueError as exc:
         raise RuntimeError("invalid nvidia-smi metrics value") from exc
     return {
         "gpu_util_percent": max(0, min(utilization, 100)),
         "free_vram_mb": max(0, free_vram_mb),
         "total_vram_mb": max(0, total_vram_mb),
+        "gpu_temperature_c": _optional_gpu_metric(fields[3], minimum=0, maximum=150),
+        "gpu_power_w": _optional_gpu_metric(fields[4], minimum=0, maximum=2000),
     }
 
 
@@ -451,7 +469,7 @@ def create_app(settings: Settings | NodeAgentSettings | None = None) -> FastAPI:
         return current
 
     @app.get("/v1/gpu-metrics")
-    async def gpu_metrics() -> dict[str, int]:
+    async def gpu_metrics() -> dict[str, int | float | None]:
         return await _gpu_metrics()
 
     @app.post("/v1/operations")

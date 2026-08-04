@@ -852,6 +852,16 @@ class Scheduler:
                 "gpu_util_percent": float(payload["gpu_util_percent"]),
                 "free_vram_mb": int(payload["free_vram_mb"]),
                 "total_vram_mb": int(payload["total_vram_mb"]),
+                "gpu_temperature_c": (
+                    float(payload["gpu_temperature_c"])
+                    if payload.get("gpu_temperature_c") is not None
+                    else None
+                ),
+                "gpu_power_w": (
+                    float(payload["gpu_power_w"])
+                    if payload.get("gpu_power_w") is not None
+                    else None
+                ),
             }
         except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
             self.gpu_metrics_retry_at[node.id] = (
@@ -952,22 +962,36 @@ class Scheduler:
                                     else NodeHealth.ONLINE.value
                                 )
                                 current.last_heartbeat_at = probe_completed_at
+                                labels = dict(current.labels or {})
                                 if gpu_metrics is not None:
                                     current.gpu_util_percent = gpu_metrics[
                                         "gpu_util_percent"
                                     ]
                                     current.free_vram_mb = gpu_metrics["free_vram_mb"]
                                     current.total_vram_mb = gpu_metrics["total_vram_mb"]
-                                elif devices:
-                                    device = devices[0]
-                                    current.free_vram_mb = int(
-                                        device.get("vram_free", 0)
-                                    ) // (1024 * 1024)
-                                    current.total_vram_mb = int(
-                                        device.get("vram_total", 0)
-                                    ) // (1024 * 1024)
+                                    for label_key in ("gpu_temperature_c", "gpu_power_w"):
+                                        value = gpu_metrics.get(label_key)
+                                        if value is None:
+                                            labels.pop(label_key, None)
+                                        else:
+                                            labels[label_key] = value
+                                    labels["gpu_metrics_observed_at"] = (
+                                        probe_completed_at.isoformat()
+                                    )
+                                else:
+                                    labels.pop("gpu_temperature_c", None)
+                                    labels.pop("gpu_power_w", None)
+                                    labels.pop("gpu_metrics_observed_at", None)
+                                    if devices:
+                                        device = devices[0]
+                                        current.free_vram_mb = int(
+                                            device.get("vram_free", 0)
+                                        ) // (1024 * 1024)
+                                        current.total_vram_mb = int(
+                                            device.get("vram_total", 0)
+                                        ) // (1024 * 1024)
+                                current.labels = labels
                                 if isinstance(inventory, dict):
-                                    labels = dict(current.labels or {})
                                     labels["comfy_class_types"] = sorted(
                                         required_classes.intersection(inventory)
                                     )

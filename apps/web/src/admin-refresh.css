@@ -2254,8 +2254,8 @@ pre button {
 }
 .node-metrics {
   display: grid;
-  grid-template-columns: repeat(3, minmax(90px, 1fr));
-  gap: 28px;
+  grid-template-columns: repeat(5, minmax(76px, 1fr));
+  gap: 18px;
 }
 .node-metrics div {
   display: grid;
@@ -2308,7 +2308,7 @@ pre button {
 }
 .node-main-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.1fr) 110px minmax(310px, 1.15fr) auto;
+  grid-template-columns: minmax(220px, 1.1fr) 110px minmax(500px, 1.45fr) auto;
   align-items: center;
   gap: 22px;
   min-height: 112px;
@@ -3484,6 +3484,10 @@ pre button {
   .node-primary-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+  .node-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 20px;
   }
   .node-primary-actions button {
     width: 100%;

@@ -36,3 +36,47 @@ async def test_failed_optional_gpu_metrics_probe_uses_bounded_backoff(monkeypatc
 
     assert calls == 1
     assert scheduler.gpu_metrics_retry_at[node.id] > 0
+
+
+async def test_gpu_metrics_probe_preserves_optional_temperature_and_power(monkeypatch) -> None:
+    class Response:
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+        @staticmethod
+        def json() -> dict[str, int | float]:
+            return {
+                "gpu_util_percent": 97,
+                "free_vram_mb": 13900,
+                "total_vram_mb": 24576,
+                "gpu_temperature_c": 71.0,
+                "gpu_power_w": 322.6,
+            }
+
+    class Client:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            pass
+
+        async def get(self, *args, **kwargs) -> Response:
+            return Response()
+
+    monkeypatch.setattr(scheduler_main.httpx, "AsyncClient", Client)
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.settings = SimpleNamespace(node_agent_secret=lambda _node_id: "secret")
+    scheduler.gpu_metrics_retry_at = {}
+    node = Node(id="worker-3090-b", agent_url="http://10.3.34.14:9201")
+
+    assert await scheduler.node_agent_gpu_metrics(node) == {
+        "gpu_util_percent": 97.0,
+        "free_vram_mb": 13900,
+        "total_vram_mb": 24576,
+        "gpu_temperature_c": 71.0,
+        "gpu_power_w": 322.6,
+    }

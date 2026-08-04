@@ -61,6 +61,40 @@ async def test_gpu_model_comes_from_nvidia_smi_and_rejects_unsafe_values(
         _validated_gpu_model("NVIDIA RTX 4090 <script>")
 
 
+async def test_gpu_metrics_include_temperature_and_power(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: tuple[str, ...] = ()
+
+    class Process:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"73, 12000, 24576, 64, 287.4\n", b""
+
+    async def fake_subprocess(*args: str, **_: object) -> Process:
+        nonlocal called
+        called = args
+        return Process()
+
+    monkeypatch.setattr(node_agent, "_nvidia_smi_path", lambda: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+
+    assert await node_agent._gpu_metrics() == {
+        "gpu_util_percent": 73,
+        "free_vram_mb": 12000,
+        "total_vram_mb": 24576,
+        "gpu_temperature_c": 64.0,
+        "gpu_power_w": 287.4,
+    }
+    assert called[:3] == (
+        "/usr/bin/nvidia-smi",
+        "--query-gpu=utilization.gpu,memory.free,memory.total,temperature.gpu,power.draw",
+        "--format=csv,noheader,nounits",
+    )
+    assert node_agent._optional_gpu_metric("[N/A]", minimum=0, maximum=150) is None
+
+
 async def test_heartbeat_payload_includes_cached_gpu_model(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -239,8 +273,14 @@ async def test_node_agent_health_exposes_package_and_source_identity(monkeypatch
 async def test_gpu_metrics_are_signed_and_return_live_values(monkeypatch) -> None:
     secret = "node-agent-test-secret"
 
-    async def fake_gpu_metrics() -> dict[str, int]:
-        return {"gpu_util_percent": 73, "free_vram_mb": 12000, "total_vram_mb": 24576}
+    async def fake_gpu_metrics() -> dict[str, int | float | None]:
+        return {
+            "gpu_util_percent": 73,
+            "free_vram_mb": 12000,
+            "total_vram_mb": 24576,
+            "gpu_temperature_c": 64.0,
+            "gpu_power_w": 287.4,
+        }
 
     monkeypatch.setattr(node_agent, "_gpu_metrics", fake_gpu_metrics)
     app = create_app(Settings(environment="test", node_agent_hmac_secret=secret))
@@ -264,4 +304,6 @@ async def test_gpu_metrics_are_signed_and_return_live_values(monkeypatch) -> Non
                 "gpu_util_percent": 73,
                 "free_vram_mb": 12000,
                 "total_vram_mb": 24576,
+                "gpu_temperature_c": 64.0,
+                "gpu_power_w": 287.4,
             }
