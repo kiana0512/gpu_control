@@ -53,8 +53,30 @@ pipeline content was modified.
 - GPU Control Web production bundle built successfully and was hot-recreated
   without restarting API, Scheduler, Workers, or ComfyUI.
 
-## Acceptance rule
+## Advisory delivery override (2026-08-04)
 
-V6 is accepted only after a terminal `SUCCEEDED` response publishes both the
-formal BLEND and FBX artifacts and their SHA-256 values. Candidate or rejected
-artifacts remain diagnostic-only and must never be substituted for final output.
+The product owner explicitly changed V6 quality enforcement from fail-closed to
+advisory delivery. When an intact V6 candidate exists and the hard integrity
+checks pass, GPU Control now:
+
+- preserves or restores the candidate as `final_low.blend` and `final_low.fbx`;
+- continues independent QA and retains all eight gate results;
+- publishes both model files under the public `blend` and `fbx` artifact kinds;
+- returns terminal `SUCCEEDED` with
+  `qa_warning.code=RETOPOLOGY_QUALITY_GATE_WARNING` when QA does not pass;
+- keeps source SHA, artifact SHA/size, manifest identity, schema validity and
+  source immutability as hard failures.
+
+This override does not turn a missing, empty, corrupt, identity-mismatched or
+source-mutating output into a success. It only prevents topology-quality
+findings from withholding usable candidate model files.
+
+## Incident timing evidence
+
+Production job `1b1ec519-7b01-4576-85b7-f54c1e5ed68a` ran for 14m29s. Its first
+attempt lost about 5m30s to the inherited-stdout lease-renewal defect. The
+second attempt ran for about 8m59s: it reached the synthetic 70% marker in 2m,
+then spent about 6m58s on geometry correction, multiview evidence and wireflow
+inspection before the old fail-closed policy rejected the candidate. The
+lease-renewal fix removes the first delay; the advisory override returns the
+candidate BLEND/FBX with a warning instead of reporting a quality-gate failure.

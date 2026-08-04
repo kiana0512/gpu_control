@@ -3635,45 +3635,56 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 isinstance(gate, dict) and gate.get("passed") is True
                 for gate in gates.values()
             )
-            publish_allowed = (
+            strict_publish_allowed = (
                 result_payload.get("status") == "succeeded"
                 and result_payload.get("publish_allowed") is True
                 and result_payload.get("source", {}).get("unchanged") is True
                 and all_gates_passed
             )
-            if result_payload.get("publish_allowed") is True and not publish_allowed:
+            if result_payload.get("publish_allowed") is True and not strict_publish_allowed:
                 raise HTTPException(
                     422, detail={"code": "RETOPOLOGY_V6_PUBLISH_GATE_BYPASS"}
                 )
+
+            # In production advisory mode, QA controls the warning attached to
+            # a delivery, not whether intact candidate bytes are returned.
+            # Identity, source immutability, schema, hashes and artifact
+            # completeness above remain hard gates.
+            advisory_warning = (
+                cfg.retopology_qa_enforcement == "advisory"
+                and not strict_publish_allowed
+            )
+            delivery_allowed = strict_publish_allowed or advisory_warning
 
             fsync_completion_staging(staging)
             job = await lock_asset_completion_for_publish(snapshot, lease, db)
             cancelled = await cancel_at_completion_safe_point(db, job)
             if cancelled is not None:
                 return cancelled
-            if publish_allowed:
+            if delivery_allowed:
                 stem = Path(snapshot.options["project_filename"]).stem
                 staged_by_kind["final_low_blend"].kind = "blend"
                 staged_by_kind["final_low_blend"].filename = f"{stem}_GAME_LOW.blend"
                 staged_by_kind["final_low_exchange"].kind = "fbx"
                 staged_by_kind["final_low_exchange"].filename = f"{stem}_GAME_LOW.fbx"
             db.add_all(created)
-            job.status = "SUCCEEDED" if publish_allowed else "FAILED"
+            job.status = "SUCCEEDED" if delivery_allowed else "FAILED"
             job.progress = 100
-            job.stage = "SUCCEEDED" if publish_allowed else "FAILED"
-            job.stage_message = (
-                "V6 唯一正式低模已通过八项门禁并原子发布"
-                if publish_allowed
-                else "V6 正式低模未通过全部门禁；诊断证据已隔离保留"
-            )
+            job.stage = "SUCCEEDED" if delivery_allowed else "FAILED"
+            if strict_publish_allowed:
+                job.stage_message = "V6 低模已通过八项 QA 并原子发布"
+            elif advisory_warning:
+                job.stage_message = "V6 候选 BLEND/FBX 已交付；QA 未通过，请查看质量告警与完整报告"
+            else:
+                job.stage_message = "V6 候选未通过全部门禁；诊断证据已隔离保留"
             job.estimated_remaining_seconds = 0
             job.last_progress_at = datetime.now(UTC)
             job.finished_at = job.last_progress_at
             failure_codes = result_payload.get("failure_codes")
-            job.error_code = None if publish_allowed else "RETOPOLOGY_QUALITY_GATE_FAILED"
+            job.error_code = None if delivery_allowed else "RETOPOLOGY_QUALITY_GATE_FAILED"
             job.error_message = (
                 None
-                if publish_allowed
+                if delivery_allowed
                 else json.dumps(
                     failure_codes if isinstance(failure_codes, list) else [],
                     ensure_ascii=False,
@@ -3683,9 +3694,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 **job.options,
                 "v6_result": {
                     "status": result_payload.get("status"),
-                    "publish_allowed": publish_allowed,
+                    "publish_allowed": strict_publish_allowed,
+                    "delivered_with_warnings": advisory_warning,
                     "failure_codes": failure_codes if isinstance(failure_codes, list) else [],
                 },
+                **(
+                    {
+                        "qa_warning": {
+                            "code": "RETOPOLOGY_QUALITY_GATE_WARNING",
+                            "enforcement": "advisory",
+                            "failure_codes": (
+                                failure_codes if isinstance(failure_codes, list) else []
+                            ),
+                        }
+                    }
+                    if advisory_warning
+                    else {}
+                ),
             }
             job.lease_expires_at = None
             job.lease_token_hash = None
@@ -3694,9 +3719,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 db,
                 job,
                 details={
-                    "event": "asset.succeeded" if publish_allowed else "asset.qa_failed",
+                    "event": (
+                        "asset.succeeded_with_warnings"
+                        if advisory_warning
+                        else "asset.succeeded"
+                        if strict_publish_allowed
+                        else "asset.qa_failed"
+                    ),
                     "engine_contract": "retopology-v6",
-                    "publish_allowed": publish_allowed,
+                    "publish_allowed": strict_publish_allowed,
+                    "delivered_with_warnings": advisory_warning,
+                    "warning_code": (
+                        "RETOPOLOGY_QUALITY_GATE_WARNING" if advisory_warning else None
+                    ),
                     "failure_codes": failure_codes if isinstance(failure_codes, list) else [],
                 },
             )
@@ -3705,7 +3740,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {
                 "accepted": True,
                 "status": job.status,
-                "publish_allowed": publish_allowed,
+                "publish_allowed": strict_publish_allowed,
+                "delivered_with_warnings": advisory_warning,
             }
         finally:
             if not committed:
