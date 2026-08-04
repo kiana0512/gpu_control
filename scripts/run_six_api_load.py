@@ -30,6 +30,8 @@ from packages.gpu_control_core.load_testing import (  # noqa: E402
     build_plan,
     load_fixture_manifest,
     load_scenario,
+    verify_live_load_deployment,
+    verify_remote_load_release_evidence,
     write_result_manifest,
 )
 
@@ -115,11 +117,23 @@ def main() -> int:
         runtime = RuntimeSettings.from_environment()
         scenario = load_scenario(args.scenario)
         fixtures = load_fixture_manifest(args.fixtures)
+        verified_release_evidence = (
+            verify_remote_load_release_evidence(REPOSITORY_ROOT, runtime)
+            if args.execute and runtime.is_production_target()
+            else None
+        )
+        verified_live_deployment = (
+            verify_live_load_deployment(runtime, verified_release_evidence)
+            if verified_release_evidence is not None
+            else None
+        )
         plan = build_plan(
             runtime,
             scenario,
             fixtures,
             repository_root=REPOSITORY_ROOT,
+            verified_release_evidence=verified_release_evidence,
+            verified_live_deployment=verified_live_deployment,
         )
     except LoadTestConfigurationError as exc:
         print(f"load-test plan invalid: {exc}", file=sys.stderr)
@@ -137,6 +151,8 @@ def main() -> int:
             scenario,
             fixtures,
             repository_root=REPOSITORY_ROOT,
+            verified_release_evidence=verified_release_evidence,
+            verified_live_deployment=verified_live_deployment,
         )
     except LoadTestConfigurationError as exc:
         print(f"load-test execution refused: {exc}", file=sys.stderr)
@@ -179,6 +195,34 @@ def main() -> int:
         exit_code = int(completed.returncode)
     except OSError as exc:
         print(f"Locust could not start: {exc}", file=sys.stderr)
+    postrun_deployment: dict[str, object] = {
+        "required": runtime.is_production_target(),
+        "stable_since_start": True,
+        "evidence": None,
+    }
+    if runtime.is_production_target():
+        try:
+            final_live_deployment = verify_live_load_deployment(
+                runtime,
+                verified_release_evidence or {},
+            )
+            postrun_deployment["evidence"] = final_live_deployment
+            postrun_deployment["stable_since_start"] = (
+                final_live_deployment == verified_live_deployment
+            )
+        except LoadTestConfigurationError as exc:
+            postrun_deployment.update(
+                {
+                    "stable_since_start": False,
+                    "evidence": {
+                        "verified": False,
+                        "error": type(exc).__name__,
+                    },
+                }
+            )
+        if postrun_deployment["stable_since_start"] is not True:
+            exit_code = 2
+    write_json(result_dir / "postrun-deployment.json", postrun_deployment)
     try:
         # Locust's CSV/HTML writers may flush after test_stop. Refreshing here
         # makes the final checksum inventory cover those last files too.

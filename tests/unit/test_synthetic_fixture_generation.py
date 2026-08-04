@@ -174,7 +174,12 @@ def test_checksum_verifier_fails_closed_after_tamper(
         blender_binary=Path("/offline-test/blender"),
         blender_script=blender_script,
     )
-    with (generated / "roughness" / "material.png").open("ab") as target:
+    tamper_target = generated / "roughness" / "material.png"
+    # Production fixtures are intentionally frozen read-only.  The tamper test
+    # must explicitly simulate an attacker restoring write permission so it
+    # also works in the non-root quality container.
+    tamper_target.chmod(0o644)
+    with tamper_target.open("ab") as target:
         target.write(b"tampered")
     with pytest.raises(generator.FixtureGenerationError, match="checksum mismatch"):
         generator.verify_checksums(generated)

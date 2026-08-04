@@ -619,6 +619,106 @@ async def test_feed_respects_system_tenant_and_batch_window_limits(tmp_path: Pat
         await close_scheduler(scheduler)
 
 
+async def test_feed_reserves_system_queue_headroom_from_test_batches(
+    tmp_path: Path,
+) -> None:
+    scheduler = await make_scheduler(
+        tmp_path,
+        system_max_queued=4,
+        system_production_queue_reserve=2,
+        default_tenant_max_queued=10,
+        batch_feed_window=10,
+    )
+    await add_batch(
+        scheduler,
+        "test-batch",
+        "tenant-b",
+        6,
+        created_at=datetime.now(UTC),
+    )
+    async with scheduler.db.session() as session:
+        test_client = await session.get(ApiClient, "tenant-b")
+        assert test_client is not None
+        test_client.client_kind = "test"
+        await session.commit()
+
+    try:
+        await scheduler.feed_batch_items()
+        async with scheduler.db.session() as session:
+            queued = int(
+                await session.scalar(
+                    select(func.count(Job.id)).where(
+                        Job.status == JobStatus.QUEUED.value
+                    )
+                )
+                or 0
+            )
+            materialized = int(
+                await session.scalar(
+                    select(func.count(Job.id)).where(Job.batch_id == "test-batch")
+                )
+                or 0
+            )
+        assert queued == 2
+        assert materialized == 2
+    finally:
+        await close_scheduler(scheduler)
+
+
+async def test_feed_pauses_old_test_batch_when_production_arrives(
+    tmp_path: Path,
+) -> None:
+    scheduler = await make_scheduler(
+        tmp_path,
+        system_max_queued=8,
+        system_production_queue_reserve=2,
+        default_tenant_max_queued=10,
+        batch_feed_window=8,
+    )
+    now = datetime.now(UTC)
+    await add_batch(
+        scheduler,
+        "old-test-batch",
+        "tenant-b",
+        6,
+        created_at=now - timedelta(hours=1),
+    )
+    await add_batch(
+        scheduler,
+        "new-production-batch",
+        "tenant-a",
+        3,
+        created_at=now,
+    )
+    async with scheduler.db.session() as session:
+        test_client = await session.get(ApiClient, "tenant-b")
+        assert test_client is not None
+        test_client.client_kind = "test"
+        await session.commit()
+
+    try:
+        await scheduler.feed_batch_items()
+        async with scheduler.db.session() as session:
+            test_jobs = int(
+                await session.scalar(
+                    select(func.count(Job.id)).where(Job.batch_id == "old-test-batch")
+                )
+                or 0
+            )
+            production_jobs = int(
+                await session.scalar(
+                    select(func.count(Job.id)).where(
+                        Job.batch_id == "new-production-batch"
+                    )
+                )
+                or 0
+            )
+        assert test_jobs == 0
+        assert production_jobs == 3
+    finally:
+        await close_scheduler(scheduler)
+
+
 async def test_feed_rolls_back_database_and_all_promoted_job_dirs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

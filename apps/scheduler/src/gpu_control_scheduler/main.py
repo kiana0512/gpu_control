@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
 from packages.comfy_client import ComfyClient, ComfyError
+from packages.gpu_control_core.admission import active_production_work_exists
 from packages.gpu_control_core.batches import (
     ArchiveFrame,
     BatchContractError,
@@ -1662,17 +1663,44 @@ class Scheduler:
                 return
 
             await self.db.acquire_global_admission_transaction_lock(session)
-
-            queued_count, tenant_queued = await queued_job_counts(session)
-            system_remaining = max(0, self.settings.system_max_queued - queued_count)
-            if system_remaining == 0:
-                return
-
             tenant_ids = sorted({batch.tenant_id for batch in batches})
             clients = list(
                 (await session.scalars(select(ApiClient).where(ApiClient.id.in_(tenant_ids)))).all()
             )
             clients_by_id = {client.id: client for client in clients}
+
+            # Re-evaluate cross-plane production state only after taking the
+            # same global lock used by API admission. A production request that
+            # committed before this lock must stop all test-batch materializing
+            # in this transaction. Missing client rows fail closed as
+            # production, matching API admission and claim selection.
+            production_active = await active_production_work_exists(session)
+            if production_active:
+                batches = [
+                    batch
+                    for batch in batches
+                    if (clients_by_id.get(batch.tenant_id) is None)
+                    or clients_by_id[batch.tenant_id].client_kind != "test"
+                ]
+                if not batches:
+                    return
+
+            queued_count, tenant_queued = await queued_job_counts(session)
+            system_queue_limit = (
+                self.settings.system_max_queued
+                if production_active
+                else self.settings.test_system_max_queued
+            )
+            system_remaining = max(0, system_queue_limit - queued_count)
+            if system_remaining == 0:
+                return
+
+            tenant_ids = sorted({batch.tenant_id for batch in batches})
+            clients_by_id = {
+                tenant_id: clients_by_id[tenant_id]
+                for tenant_id in tenant_ids
+                if tenant_id in clients_by_id
+            }
             batch_ids = [batch.id for batch in batches]
             in_window_by_batch = await batch_in_window_counts(session, batch_ids)
             active_node_count = int(
@@ -1735,7 +1763,9 @@ class Scheduler:
             # Re-count only after the global and sorted tenant locks are held;
             # the preliminary read is never used as an admission decision.
             queued_count, tenant_queued = await queued_job_counts(session)
-            system_remaining = max(0, self.settings.system_max_queued - queued_count)
+            # The global lock remains held, so production cannot appear between
+            # the state decision above and this final capacity check.
+            system_remaining = max(0, system_queue_limit - queued_count)
             if system_remaining == 0:
                 return
             clients = list(
@@ -2159,8 +2189,23 @@ class Scheduler:
                 guard = await self.guard(session)
                 target_workflow = await session.scalar(
                     select(Job.workflow_key)
+                    .outerjoin(ApiClient, ApiClient.id == Job.tenant_id)
                     .where(Job.status == JobStatus.QUEUED.value)
-                    .order_by(Job.pinned.desc(), Job.created_at.asc())
+                    .order_by(
+                        case(
+                            (
+                                or_(
+                                    ApiClient.id.is_(None),
+                                    ApiClient.client_kind != "test",
+                                ),
+                                0,
+                            ),
+                            else_=1,
+                        ),
+                        Job.pinned.desc(),
+                        Job.created_at.asc(),
+                        Job.id.asc(),
+                    )
                     .limit(1)
                 )
                 warm_nodes = {

@@ -6,8 +6,9 @@
   manifest、文件完整性、租约和 SHA 门禁的正式 BLEND/FBX 继续原子交付；完整性错误仍硬失败。
 - Blender Worker 1.2.5 在最终 multipart 上传期间持续续租，取消或续租失败会安全终止上传，避免
   大文件或拥塞时出现“计算成功但交付失败”。
-- Windows Substance Baker Agent v5 在大文件分块哈希、最终上传和服务端校验阶段持续续租与心跳；
-  curl 退出码或服务端响应异常继续 fail closed，且不会清理或重启 ComfyUI 模型缓存。
+- Windows Substance Baker Agent v6 在大文件分块哈希、最终上传和服务端校验阶段持续续租与心跳；
+  无法证实 native Baker 已终止时强制进入 `RECOVERY_REQUIRED`，curl 退出码或服务端响应异常继续
+  fail closed，且不会清理或重启 ComfyUI 模型缓存。
 - 发布打包和身份验证扩展为五个一方镜像：API、Scheduler、Asset API、Web 与 Blender Worker；
   控制面 1.5.9 和 Worker 1.2.5 必须绑定同一个已推送的 40 位 Git SHA、不可变镜像身份和 SBOM。
 - 六 API 压测入口修复独立脚本导入路径，保留真实业务优先、空闲窗口、备份、凭据、allowlist、
@@ -22,8 +23,10 @@
   capacity 与 ETA 共用门禁，Asset API 自有 Substance drain 不会错误阻塞 CPU UV/重拓扑。
 - 管理员接管 drain 时保留 Substance pending/fence/recovery；节点 interrupt 使用稳定 Batch/Job 锁序和
   PostgreSQL `NOWAIT`，锁竞争返回可重试 409，不再等待成调度死锁或产生部分取消。
-- 1.5.8 Asset API 不接受 Worker 1.2.5 新增的 `node_id` claim 字段；正式滚动必须在零任务窗口先升级
-  Asset API，再逐台升级 Worker。先前 `b410a6a` 五个本地镜像已作废，最终 SHA 冻结后全部重建。
+- 1.5.8 Asset API 不接受 Worker 1.2.5 新增的 `node_id` claim 字段，旧 Asset API 又只接受 Windows
+  Agent v5。正式滚动必须在零任务且 intake 冻结的窗口严格按“四个 Windows v6 Agent → Asset API
+  1.5.9 → 三台 Linux Worker 1.2.5”执行；兼容窗口内不绕过 fail-closed 门禁。先前 `b410a6a`
+  五个本地镜像已作废，最终 SHA 冻结后全部重建。
 - Web lockfile 将仅开发链路中的 `brace-expansion` 更新到修复版本；完整 npm audit 与生产依赖 audit
   均为 0 vulnerability，业务依赖、页面行为和运行时镜像内容不变。
 - 不修改 ImageClip、ModelViewCreator、UV/重拓扑 Skill、工作流、模型、prompt、参数、图拓扑或

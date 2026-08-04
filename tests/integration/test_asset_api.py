@@ -24,6 +24,7 @@ from packages.gpu_control_core.models import (
     AssetArtifact,
     AssetIdempotencyKey,
     AssetJob,
+    AssetJobEvent,
     AssetWorker,
     Base,
     Job,
@@ -663,7 +664,7 @@ async def register_substance_worker(
             "display_name": worker_id,
             "hostname": "LILITHGAMES3",
             "blender_version": "substance-15.1.0",
-            "skill_version": "substance-baker-2026.08.03-v5",
+            "skill_version": "substance-baker-2026.08.03-v6",
             "cpu_count": 128,
             "max_concurrency": 1,
             "current_jobs": current_jobs,
@@ -680,6 +681,62 @@ async def register_substance_worker(
     if expected_status_code == 200:
         assert response.json()["status"] == expected_status
     return response
+
+
+@pytest.mark.parametrize(
+    (
+        "reported_worker_jobs",
+        "durable_worker_jobs",
+        "active_host_processes",
+        "durable_host_jobs",
+        "expected",
+    ),
+    [
+        (0, 0, 0, 0, True),
+        (0, 0, 1, 1, True),  # an idle sibling observes another Worker's Baker
+        (0, 1, 1, 1, False),  # restarted Agent lost its local CurrentJobs set
+        (1, 0, 1, 0, False),  # stale local counter and an unowned process
+        (0, 0, 1, 0, False),  # orphan process has no live durable lease
+        (1, 1, None, 1, False),  # failed host process provider is never zero
+    ],
+)
+def test_substance_process_count_consistency_is_fail_closed(
+    reported_worker_jobs: int,
+    durable_worker_jobs: int,
+    active_host_processes: int | None,
+    durable_host_jobs: int,
+    expected: bool,
+) -> None:
+    assert (
+        asset_api_main.substance_process_counts_consistent(
+            reported_worker_jobs=reported_worker_jobs,
+            durable_worker_jobs=durable_worker_jobs,
+            active_host_processes=active_host_processes,
+            durable_host_jobs=durable_host_jobs,
+        )
+        is expected
+    )
+
+
+async def test_substance_heartbeat_with_unowned_baker_process_is_drained(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        worker_id = "asset-worker-3090-b-windows-01"
+        heartbeat = await register_substance_worker(
+            client,
+            settings,
+            worker_id,
+            current_jobs=0,
+            active_baker_processes=1,
+            expected_status="DRAINING",
+        )
+        assert heartbeat.json() == {"accepted": True, "status": "DRAINING"}
+        created = await create_minimal_substance_job(client, "orphan-process-blocks-claim")
+        assert created.status_code == 202, created.text
+        claimed = await claim_substance_job(client, settings, worker_id)
+        assert claimed.status_code == 200, claimed.text
+        assert claimed.json()["job"] is None
 
 
 async def test_substance_worker_heartbeat_rejects_wrong_physical_node(
@@ -815,7 +872,7 @@ async def test_substance_v4_without_host_process_evidence_is_drained(
                 "display_name": "incomplete v4 Windows Substance Baker",
                 "hostname": "LILITHGAMES3",
                 "blender_version": "substance-15.1.0",
-                "skill_version": "substance-baker-2026.08.03-v5",
+                "skill_version": "substance-baker-2026.08.03-v6",
                 "cpu_count": 128,
                 "max_concurrency": 1,
                 "current_jobs": 0,
@@ -830,6 +887,68 @@ async def test_substance_v4_without_host_process_evidence_is_drained(
         assert created.status_code == 202, created.text
         claimed = await claim_substance_job(client, settings, worker_id)
         assert claimed.json()["job"] is None
+
+
+async def test_substance_v5_identity_is_drained_and_cannot_claim_v6_work(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        worker_id = "asset-worker-3090-b-windows-01"
+        checked_at = datetime.now(UTC)
+        heartbeat = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/workers/heartbeat",
+            {
+                "worker_id": worker_id,
+                "node_id": "worker-3090-b",
+                "display_name": "superseded v5 Windows Substance Baker",
+                "hostname": "LILITHGAMES3",
+                "blender_version": "substance-15.1.0",
+                "skill_version": "substance-baker-2026.08.03-v5",
+                "cpu_count": 128,
+                "max_concurrency": 1,
+                "current_jobs": 0,
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                **asset_worker_generation(
+                    worker_id,
+                    "v5-superseded",
+                    started_at=checked_at - timedelta(minutes=1),
+                ),
+                "substance_process_probe_status": "HEALTHY",
+                "substance_process_probe_checked_at": checked_at.isoformat(),
+                "substance_active_processes": 0,
+            },
+        )
+        assert heartbeat.status_code == 200, heartbeat.text
+        assert heartbeat.json() == {"accepted": True, "status": "DRAINING"}
+
+        created = await create_minimal_substance_job(client, "v5-cannot-claim-v6-work")
+        assert created.status_code == 202, created.text
+        claimed = await claim_substance_job(
+            client,
+            settings,
+            worker_id,
+            generation="v5-superseded",
+        )
+        assert claimed.status_code == 200, claimed.text
+        assert claimed.json()["job"] is None
+
+
+async def test_substance_v6_identity_is_online_and_can_claim(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        worker_id = "asset-worker-3090-b-windows-01"
+        heartbeat = await register_substance_worker(client, settings, worker_id)
+        assert heartbeat.json() == {"accepted": True, "status": "ONLINE"}
+
+        created = await create_minimal_substance_job(client, "v6-identity-can-claim")
+        assert created.status_code == 202, created.text
+        claimed = await claim_substance_job(client, settings, worker_id)
+        assert claimed.status_code == 200, claimed.text
+        assert claimed.json()["job"]["job_id"] == created.json()["job_id"]
 
 
 async def test_substance_claim_is_bound_to_heartbeat_agent_generation(
@@ -1408,6 +1527,70 @@ async def test_test_substance_submission_never_installs_pending_gpu_reservation(
             assert "substance_bake_pending_reservation" not in node.labels
 
 
+async def test_test_substance_claim_treats_missing_gpu_client_identity_as_production(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        app = client._transport.app  # type: ignore[attr-defined]
+        async with app.state.db.session() as db:
+            db.add(
+                ApiClient(
+                    id="load-test-client",
+                    name="Load Test Client",
+                    role="client",
+                    client_kind="test",
+                    max_queued=50,
+                    max_running=10,
+                )
+            )
+            db.add(
+                ApiKey(
+                    id=str(uuid.uuid4()),
+                    client_id="load-test-client",
+                    prefix="loadtest",
+                    secret_hash=hash_api_secret("secret", settings.api_key_pepper),
+                )
+            )
+            await db.commit()
+
+        created = await create_minimal_substance_job(
+            client,
+            "test-bake-before-unknown-production",
+            api_key="gpc_loadtest_secret",
+        )
+        assert created.status_code == 202, created.text
+
+        async with app.state.db.session() as db:
+            db.add(
+                Job(
+                    id="unknown-client-gpu-job",
+                    tenant_id="missing-client-row",
+                    workflow_key="imageclip-rgba",
+                    workflow_version="test",
+                    status="QUEUED",
+                    parameters={},
+                    request_hash="unknown-client-gpu-job",
+                    request_id="unknown-client-gpu-job",
+                    trace_id="unknown-client-gpu-job",
+                    job_dir=str(tmp_path / "unknown-client-gpu-job"),
+                )
+            )
+            await db.commit()
+
+        await register_substance_worker(
+            client,
+            settings,
+            "asset-worker-3090-b-windows-01",
+        )
+        claimed = await claim_substance_job(
+            client,
+            settings,
+            "asset-worker-3090-b-windows-01",
+        )
+        assert claimed.status_code == 200, claimed.text
+        assert claimed.json()["job"] is None
+
+
 async def test_test_substance_admission_waits_for_production_gpu_jobs_and_batches(
     tmp_path: Path,
 ) -> None:
@@ -1545,6 +1728,93 @@ async def test_substance_comfyui_continuity_failure_keeps_gpu_recovery_fence(
             assert recovery[0]["job_id"] == job_id
             assert recovery[0]["worker_id"] == worker_id
             assert recovery[0]["lease_expired_at"]
+
+
+async def test_unconfirmed_baker_termination_is_never_retried_and_recovers_two_phase(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        worker_id = "asset-worker-3090-b-windows-01"
+        await register_substance_worker(client, settings, worker_id)
+        created = await create_minimal_substance_job(
+            client, "baker-termination-unconfirmed"
+        )
+        assert created.status_code == 202, created.text
+        job_id = created.json()["job_id"]
+        claimed = await claim_substance_job(client, settings, worker_id)
+        assert claimed.status_code == 200, claimed.text
+        lease = claimed.json()["job"]["lease_token"]
+
+        # The server does not trust a Worker's retryable flag for an
+        # unverified native-process termination.  Requeueing here would let a
+        # new Baker overlap the still-running orphan.
+        failed = await client.post(
+            f"/internal/v1/assets/jobs/{job_id}/fail",
+            headers={"X-Asset-Lease": lease},
+            json={
+                "code": "SUBSTANCE_BAKER_TERMINATION_UNCONFIRMED",
+                "message": "Kill/WaitForExit could not prove native Baker exit",
+                "retryable": True,
+            },
+        )
+        assert failed.status_code == 200, failed.text
+        assert failed.json() == {"accepted": True, "status": "FAILED"}
+
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            job = await db.get(AssetJob, job_id)
+            node = await db.get(Node, "worker-3090-b")
+            assert job is not None and node is not None
+            assert job.status == "FAILED"
+            assert job.stage == "RECOVERY_REQUIRED"
+            assert job.error_code == "SUBSTANCE_BAKER_TERMINATION_UNCONFIRMED"
+            assert node.mode == "DRAINING"
+            assert node.labels["substance_bake_recovery_required"][0]["job_id"] == job_id
+            failure_event = await db.scalar(
+                select(AssetJobEvent)
+                .where(AssetJobEvent.job_id == job_id)
+                .order_by(AssetJobEvent.sequence.desc())
+            )
+            assert failure_event is not None
+            assert failure_event.details["recovery_required"] is True
+            assert failure_event.details["retryable"] is False
+            assert failure_event.details["reported_retryable"] is True
+            node.last_heartbeat_at = datetime.now(UTC)
+            await db.commit()
+
+        # A still-live host process makes the current Worker DRAINING and can
+        # never clear the durable physical-GPU recovery interlock.
+        await register_substance_worker(
+            client,
+            settings,
+            worker_id,
+            active_baker_processes=1,
+            expected_status="DRAINING",
+        )
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert "substance_bake_recovery_required" in node.labels
+
+        # First current-generation zero-process evidence only establishes the
+        # barrier; a later ComfyUI heartbeat must follow it.
+        await register_substance_worker(client, settings, worker_id)
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            recovery = node.labels["substance_bake_recovery_required"][0]
+            idle_observed_at = datetime.fromisoformat(recovery["idle_observed_at"])
+            assert node.last_heartbeat_at is not None
+            assert as_utc(node.last_heartbeat_at) < as_utc(idle_observed_at)
+            node.last_heartbeat_at = datetime.now(UTC)
+            assert as_utc(node.last_heartbeat_at) >= as_utc(idle_observed_at)
+            await db.commit()
+
+        await register_substance_worker(client, settings, worker_id)
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "ACTIVE"
+            assert "substance_bake_recovery_required" not in node.labels
 
 
 async def test_expired_substance_lease_blocks_reclaim_until_explicit_health_evidence(
@@ -1694,6 +1964,7 @@ async def test_substance_recovery_restores_asset_owned_drain_to_active(
             first_worker,
             generation="restarted",
             active_baker_processes=1,
+            expected_status="DRAINING",
         )
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")

@@ -1,26 +1,28 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-[[ "${1:-}" == -h || "${1:-}" == --help ]] && { echo "用法: $0"; exit 0; }
-[[ -f .env ]] || { echo "缺少 .env" >&2; exit 1; }
-compose=(docker compose --env-file .env -f deploy/control-plane/compose.yaml)
-alert_token="$(sed -n 's/^ALERTMANAGER_WEBHOOK_TOKEN=//p' .env | tail -n 1)"
-[[ -n "${alert_token}" && "${alert_token}" != CHANGE_ME* ]] || {
-  echo "ALERTMANAGER_WEBHOOK_TOKEN 未配置" >&2
-  exit 1
+
+usage() {
+  cat <<'TXT'
+用法: scripts/deploy_control.sh --build-only
+
+本脚本只构建控制面四镜像和 control-4090 Blender Worker 镜像，不激活服务。
+生产激活必须按滚动发布手册执行：先冻结新提交并将节点置为 DRAINING，确认
+GPU/批次/Asset/Worker/Windows Baker 全部为 0，再按四个 Windows v6 Agent ->
+Asset API 1.5.9 -> 三台 Linux Worker 1.2.5 -> API/Web/Scheduler 顺序逐项更新。
+禁止用全栈 compose up 触碰 ComfyUI。
+TXT
 }
-install -d -m 0700 /srv/gpu-control/secrets
-umask 077
-printf '%s' "${alert_token}" > /srv/gpu-control/secrets/alertmanager_webhook_token
+
+[[ "${1:-}" == -h || "${1:-}" == --help ]] && { usage; exit 0; }
+[[ "${1:-}" == --build-only && $# -eq 1 ]] || { usage >&2; exit 2; }
+[[ -f .env ]] || { echo "缺少 .env" >&2; exit 1; }
+
+compose=(docker compose --env-file .env -f deploy/control-plane/compose.yaml --profile asset-plane)
 "${compose[@]}" config --quiet
-"${compose[@]}" build api scheduler asset-api web
-"${compose[@]}" up -d postgres redis
-"${compose[@]}" run --rm api alembic upgrade head
-"${compose[@]}" run --rm api \
-  python scripts/bootstrap_nodes.py --config /app/configs/nodes.yaml
-if [[ -f output/deploy/INITIAL_ADMIN_PASSWORD.txt ]]; then
-  "${compose[@]}" run --rm -T api \
-    python scripts/bootstrap_admin.py --username admin --password-stdin --ensure \
-    < output/deploy/INITIAL_ADMIN_PASSWORD.txt
-fi
-"${compose[@]}" up -d
-"${compose[@]}" ps
+"${compose[@]}" build api scheduler asset-api web asset-worker-control
+
+cat <<'TXT'
+BUILD_ONLY_COMPLETE：未启动、停止、重建或重启任何生产容器。
+请继续使用 docs/83_2026-08-03_CONTROL_PLANE_1_5_9_RELEASE_AND_SIX_API_ACCEPTANCE.md
+中的排空、逐服务滚动和回滚流程。
+TXT

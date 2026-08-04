@@ -179,7 +179,7 @@ scp deploy/control-plane/nginx/certs/lan-ca.crt \
   "$WORKER_USER@$WORKER_IP:/tmp/gpu-control-lan-ca.crt"
 ```
 
-部署 B 时必须改用 `NODE_AGENT_HMAC_SECRET_WORKER_3090_B`。在 3090 安装文件并启动：
+部署 B 时必须改用 `NODE_AGENT_HMAC_SECRET_WORKER_3090_B`。在 3090 安装文件并只构建 Worker：
 
 ```bash
 sudo install -d -o root -g root -m 0755 /etc/gpu-control
@@ -192,8 +192,12 @@ sudo scripts/configure_ufw_gpu_node.sh \
   --control-ip 10.3.34.11 --ssh-cidr 10.3.34.0/24
 sudo scripts/install_node_agent.sh --role node
 GPU_CONTROL_ROLE=node scripts/gpuctl doctor
-GPU_CONTROL_ROLE=node scripts/gpuctl deploy node
+GPU_CONTROL_ROLE=node scripts/gpuctl deploy node --build-worker-only
 ```
+
+`--build-worker-only` 不启动或重建 Worker/ComfyUI。确认该节点已由控制面置为 `DRAINING`、
+`current_jobs=0`、无活动租约，并记录 ComfyUI container ID/StartedAt/RestartCount 后，才按当前发布手册
+单独更新 `blender-worker` service。禁止执行无 service 范围的 `compose up/down`。
 
 生成结果必须包含 `NODE_BIND_IP=0.0.0.0`、当前 `NODE_ADVERTISE_IP`、独立 `NODE_ID` 和
 `CONTROL_HOST=10.3.34.11`。业务端口虽然监听所有本机地址，但 UFW 只允许主控访问。

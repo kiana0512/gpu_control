@@ -854,6 +854,63 @@ async def test_production_jobs_precede_test_jobs_and_tests_use_idle_capacity(
     await database.close()
 
 
+async def test_new_production_job_is_not_hidden_by_two_hundred_older_test_jobs(
+    tmp_path: Path,
+) -> None:
+    database = await make_database(tmp_path / "production-before-limit.db")
+    await seed(database)
+    now = datetime.now(UTC)
+    async with database.session() as session:
+        test_client = await session.get(ApiClient, "tenant-b")
+        assert test_client is not None
+        test_client.client_kind = "test"
+        existing_jobs = list((await session.scalars(select(Job))).all())
+        for existing in existing_jobs:
+            existing.status = JobStatus.CANCELLED.value
+        for index in range(225):
+            session.add(
+                Job(
+                    id=f"old-test-{index:03d}",
+                    tenant_id="tenant-b",
+                    workflow_key="fake",
+                    workflow_version="1",
+                    status=JobStatus.QUEUED.value,
+                    priority="normal",
+                    parameters={},
+                    request_hash=f"old-test-{index:03d}",
+                    request_id=f"old-test-{index:03d}",
+                    trace_id=f"old-test-{index:03d}",
+                    job_dir=str(tmp_path / f"old-test-{index:03d}"),
+                    created_at=now - timedelta(days=1, seconds=index),
+                )
+            )
+        session.add(
+            Job(
+                id="new-production",
+                tenant_id="tenant-a",
+                workflow_key="fake",
+                workflow_version="1",
+                status=JobStatus.QUEUED.value,
+                priority="normal",
+                parameters={},
+                request_hash="new-production",
+                request_id="new-production",
+                trace_id="new-production",
+                job_dir=str(tmp_path / "new-production"),
+                created_at=now,
+            )
+        )
+        await session.commit()
+
+    async with database.session() as session:
+        async with session.begin():
+            claimed = await claim_next_job(session, "3090-a", 300)
+
+    assert claimed is not None
+    assert claimed[0].id == "new-production"
+    await database.close()
+
+
 async def test_retry_reuses_durable_lease_with_fresh_token(tmp_path: Path) -> None:
     database = await make_database(tmp_path / "retry-claim.db")
     await seed(database)

@@ -9,8 +9,8 @@ from pathlib import Path
 
 import httpx
 import pytest
-from gpu_control_asset_api.main import create_app
-from sqlalchemy import select, text
+from gpu_control_asset_api.main import create_app, decrement_asset_worker_jobs_atomic
+from sqlalchemy import func, select, text
 from sqlalchemy.engine import make_url
 
 from packages.gpu_control_core.models import ApiClient, AssetJob, AssetWorker, Base, Node
@@ -273,3 +273,217 @@ async def test_generation_takeover_serializes_with_lease_renewal(
         async with app.state.db.engine.begin() as connection:
             await connection.execute(text("DROP SCHEMA public CASCADE"))
             await connection.execute(text("CREATE SCHEMA public"))
+
+
+async def run_terminal_release_vs_claim_race(
+    tmp_path: Path,
+    *,
+    terminal_status: str,
+    lease_expired: bool,
+) -> None:
+    """Force a stale terminal Worker snapshot to overlap a real API claim."""
+
+    settings = Settings(
+        environment="test",
+        database_url=postgres_url(),
+        redis_url="redis://127.0.0.1:6399/15",
+        asset_root=tmp_path / "assets",
+        job_root=tmp_path / "jobs",
+        jwt_secret="test-jwt",
+        api_key_pepper="test-pepper",
+        node_agent_hmac_secret="test-agent",
+        asset_worker_hmac_secret="a" * 32,
+        alertmanager_webhook_token="development-only-change-me",
+        asset_worker_min_available_memory_mb=1024,
+    )
+    app = create_app(settings)
+    worker_id = "asset-worker-3090-a"
+    worker_instance_id = hashlib.sha256(b"counter-race-instance").hexdigest()[:32]
+    terminal_job_id = str(uuid.uuid4())
+    queued_job_id = str(uuid.uuid4())
+    now = datetime.now(UTC)
+    async with app.router.lifespan_context(app):
+        async with app.state.db.engine.begin() as connection:
+            await connection.execute(text("DROP SCHEMA public CASCADE"))
+            await connection.execute(text("CREATE SCHEMA public"))
+            await connection.run_sync(Base.metadata.create_all)
+        try:
+            async with app.state.db.session() as db:
+                db.add(
+                    ApiClient(
+                        id="asset-client",
+                        name="Asset",
+                        role="client",
+                        client_kind="production",
+                    )
+                )
+                db.add(
+                    Node(
+                        id="worker-3090-a",
+                        display_name="3090-A",
+                        base_url="http://127.0.0.1:8188",
+                        pool="PRIMARY",
+                        mode="ACTIVE",
+                        health="ONLINE",
+                        current_jobs=0,
+                        max_concurrency=1,
+                        labels={},
+                    )
+                )
+                db.add(
+                    AssetWorker(
+                        id=worker_id,
+                        display_name="3090-A CPU Worker",
+                        node_id="worker-3090-a",
+                        hostname="worker-3090-a",
+                        status="ONLINE",
+                        blender_version="5.1.2",
+                        skill_version="asset-skills-test",
+                        cpu_count=32,
+                        max_concurrency=2,
+                        current_jobs=1,
+                        agent_instance_id=worker_instance_id,
+                        agent_started_at=now - timedelta(minutes=1),
+                        last_heartbeat_at=now,
+                    )
+                )
+                # AssetJob.worker_id is an explicit FK without an ORM
+                # relationship; make the Worker durable before inserting the
+                # assigned terminal job.
+                await db.commit()
+                for job_id, external_id, status in (
+                    (terminal_job_id, "terminal-race", "RUNNING"),
+                    (queued_job_id, "claim-race", "QUEUED"),
+                ):
+                    db.add(
+                        AssetJob(
+                            id=job_id,
+                            client_id="asset-client",
+                            external_asset_id=external_id,
+                            job_type="UV_UNWRAP",
+                            status=status,
+                            source_filename=f"{external_id}.blend",
+                            input_path=str(tmp_path / f"{external_id}.blend"),
+                            input_sha256="a" * 64,
+                            input_size_bytes=1,
+                            options={},
+                            request_hash=("b" if status == "RUNNING" else "c") * 64,
+                            request_id=external_id,
+                            worker_id=worker_id if status == "RUNNING" else None,
+                            worker_instance_id=(
+                                worker_instance_id if status == "RUNNING" else None
+                            ),
+                            lease_token_hash=("d" * 64 if status == "RUNNING" else None),
+                            lease_expires_at=(
+                                now
+                                + (
+                                    timedelta(seconds=-1)
+                                    if lease_expired
+                                    else timedelta(minutes=2)
+                                )
+                                if status == "RUNNING"
+                                else None
+                            ),
+                            attempt_count=1 if status == "RUNNING" else 0,
+                            created_at=now,
+                        )
+                    )
+                await db.commit()
+
+            terminal = app.state.db.sessions()
+            try:
+                await terminal.begin()
+                locked_job = await terminal.scalar(
+                    select(AssetJob)
+                    .where(AssetJob.id == terminal_job_id)
+                    .with_for_update()
+                )
+                stale_worker = await terminal.get(AssetWorker, worker_id)
+                assert locked_job is not None and stale_worker is not None
+                assert stale_worker.current_jobs == 1
+
+                path = "/internal/v1/assets/jobs/claim"
+                claim_payload = {
+                    "worker_id": worker_id,
+                    "node_id": "worker-3090-a",
+                    "agent_instance_id": worker_instance_id,
+                    "load_1m": 0,
+                    "available_memory_mb": 100000,
+                }
+                encoded = json.dumps(claim_payload, separators=(",", ":")).encode()
+                transport = httpx.ASGITransport(app=app)
+                async with httpx.AsyncClient(
+                    transport=transport,
+                    base_url="http://test",
+                ) as client:
+                    claimed = await asyncio.wait_for(
+                        client.post(
+                            path,
+                            content=encoded,
+                            headers=worker_headers(settings, path, encoded),
+                        ),
+                        timeout=2,
+                    )
+                assert claimed.status_code == 200, claimed.text
+                assert claimed.json()["job"]["job_id"] == queued_job_id
+
+                # This session deliberately retains the pre-claim ORM value
+                # (1). The release must operate on the database value (2), not
+                # assign from this stale identity-map snapshot.
+                assert stale_worker.current_jobs == 1
+                await decrement_asset_worker_jobs_atomic(terminal, worker_id)
+                locked_job.status = terminal_status
+                locked_job.stage = terminal_status
+                locked_job.lease_token_hash = None
+                locked_job.lease_expires_at = None
+                if terminal_status == "QUEUED":
+                    locked_job.worker_id = None
+                    locked_job.worker_instance_id = None
+                else:
+                    locked_job.finished_at = datetime.now(UTC)
+                await terminal.commit()
+            finally:
+                if terminal.in_transaction():
+                    await terminal.rollback()
+                await terminal.close()
+
+            async with app.state.db.session() as db:
+                worker = await db.get(AssetWorker, worker_id)
+                terminal_job = await db.get(AssetJob, terminal_job_id)
+                active_jobs = int(
+                    await db.scalar(
+                        select(func.count(AssetJob.id)).where(
+                            AssetJob.worker_id == worker_id,
+                            AssetJob.status.in_(["CLAIMED", "RUNNING", "CANCELLING"]),
+                        )
+                    )
+                    or 0
+                )
+                assert worker is not None and terminal_job is not None
+                assert worker.current_jobs == 1
+                assert active_jobs == 1
+                assert terminal_job.status == terminal_status
+        finally:
+            async with app.state.db.engine.begin() as connection:
+                await connection.execute(text("DROP SCHEMA public CASCADE"))
+                await connection.execute(text("CREATE SCHEMA public"))
+
+
+async def test_worker_fail_counter_release_preserves_concurrent_claim(
+    tmp_path: Path,
+) -> None:
+    await run_terminal_release_vs_claim_race(
+        tmp_path,
+        terminal_status="FAILED",
+        lease_expired=False,
+    )
+
+
+async def test_lease_expiry_counter_release_preserves_concurrent_claim(
+    tmp_path: Path,
+) -> None:
+    await run_terminal_release_vs_claim_race(
+        tmp_path,
+        terminal_status="QUEUED",
+        lease_expired=True,
+    )

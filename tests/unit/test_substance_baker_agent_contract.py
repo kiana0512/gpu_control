@@ -66,6 +66,37 @@ def test_long_substance_commands_renew_the_lease_and_worker_heartbeat() -> None:
     assert all("$jobId $lease" in line for line in command_calls)
 
 
+def test_baker_kill_timeout_and_exception_require_durable_recovery() -> None:
+    source = (
+        Path(__file__).parents[2]
+        / "apps"
+        / "substance_baker_agent"
+        / "Invoke-GPUControlSubstanceAgent.ps1"
+    ).read_text(encoding="utf-8")
+    stop_function = source.split("function Stop-BakerProcess(", maxsplit=1)[1].split(
+        "\nfunction Stop-CompletionUploadProcess(", maxsplit=1
+    )[0]
+    command_catch = source.split("function Invoke-BakerCommand(", maxsplit=1)[1].split(
+        "\nfunction Invoke-LeasedMultipartUpload(", maxsplit=1
+    )[0]
+    execute_catch = source.split("function Execute-Bake(", maxsplit=1)[1]
+
+    assert "$BakerTerminationError = 'SUBSTANCE_BAKER_TERMINATION_UNCONFIRMED'" in source
+    assert "$Process.Kill()" in stop_function
+    assert "if (-not $Process.WaitForExit(10000))" in stop_function
+    assert "process did not exit within 10 seconds after Kill()" in stop_function
+    assert stop_function.count("$Process.Refresh()") == 2
+    assert "if (-not $Process.HasExited)" in stop_function
+    assert "Kill() failed" in stop_function
+    assert "exit verification failed" in stop_function
+    assert "Write-Warning" not in stop_function
+    assert "$null = Stop-BakerProcess $process" in command_catch
+    assert "$terminationUnconfirmed = $failureMessage.StartsWith" in execute_catch
+    assert "if (-not $terminationUnconfirmed)" in execute_catch
+    assert "$BakerTerminationError" in execute_catch
+    assert "retryable = -not ($cacheContinuityFailure -or $terminationUnconfirmed)" in source
+
+
 def test_hashing_large_substance_artifacts_keeps_the_lease_alive() -> None:
     source = (
         Path(__file__).parents[2]
@@ -207,7 +238,7 @@ def test_agent_reports_fail_closed_host_process_and_generation_evidence() -> Non
     assert "substance_process_probe_checked_at" in source
     assert "substance_active_processes" in source
     assert "worker_id = $WorkerId; agent_instance_id = $AgentInstanceId" in source
-    assert "substance-baker-2026.08.03-v5" in source
+    assert "substance-baker-2026.08.03-v6" in source
     assert '$AgentMutexName = "Global\\GPUControl.SubstanceAgent.$WorkerId"' in source
     assert "$AgentMutex.WaitOne(0, $false)" in source
     assert "SUBSTANCE_AGENT_INSTANCE_ALREADY_RUNNING" in source

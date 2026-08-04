@@ -5,7 +5,7 @@
 状态：`DEPLOYED_NOT_ACCEPTED`（Asset 组件局部部署）
 
 适用范围：GPU Control `1.5.8` 滚动发布、Linux Blender Worker `1.2.4`、Windows Substance
-Baker Agent v5。
+Baker Agent v5 已部署基线，以及 `1.5.9` / Agent v6 后续安全候选。
 
 边界：本文记录 GPU Control 仓库内的执行、交付和运行时挂载修复；不修改 Blender UV/重拓扑
 Skill 的算法、prompt、几何阈值或输出语义，也不清理、释放或重启 ComfyUI 模型缓存。
@@ -28,6 +28,9 @@ Skill 的算法、prompt、几何阈值或输出语义，也不清理、释放�
 - PBR 的四个旧失败样本是 Windows PowerShell 对已完成进程返回空 `ExitCode` 造成的假失败。v5 四槽已
   `ONLINE/HEALTHY`；真实 job `71f288d1-0a44-4188-bdde-ba7bbb1c073c` 已一次成功并原子发布
   12 项制品，ComfyUI 连续性通过。非零退出或缺少成功 marker 仍硬失败。
+- 上述 v5 只代表当时已部署事实；最新候选身份已升级为
+  `substance-baker-2026.08.03-v6`。v6 对 Kill/WaitForExit/HasExited 无法证明终止的场景强制
+  `RECOVERY_REQUIRED`，旧 v5 在新 Asset API 下只能 `DRAINING`、不能领取任务。
 - 两个自动重拓扑失败样本来自 Worker 对 Codex Skill 根目录的错误挂载假设，不是模型几何失败。
   Worker 已改为只管理两个明确业务 Skill 的子链接，并保留 Codex 自有的 `skills/.system`；真实 job
   `dfaa4370-8b0e-4ea6-842b-cd4c08c4f614` 已在 3090-B、attempt 1 完成，终态为
@@ -47,7 +50,7 @@ Skill 的算法、prompt、几何阈值或输出语义，也不清理、释放�
 PBR 原生日志中的成功标志和产物存在只能证明本轮属于假失败，不代表以后所有空退出码都可无条件忽略。
 已滚动上线的 v5 实现采用“双证据”判定，详见下一节。
 
-## 3. 已上线修复合同
+## 3. 已上线基线与 v6 候选修复合同
 
 ### 3.1 Substance Baker 空 ExitCode
 
@@ -63,7 +66,26 @@ Windows Agent 新增 `Assert-BakerCommandResult`，在 `WaitForExit()` 后执行
 Asset API 既有的结果 ZIP、Baker 日志、必需贴图、manifest 和 SHA 门禁继续生效。本修复只消除
 Agent 的假阴性，不降低服务端完整性要求。
 
-### 3.2 UV QA 改由 Asset API 统一决策
+### 3.2 Substance Agent v6 终止证明与恢复闭锁
+
+`substance-baker-2026.08.03-v6` 是新的不可变运行身份，不能用旧 v5 脚本冒充。v6 的
+`Stop-BakerProcess` 只有在 `Kill()` 未抛错、`WaitForExit(10000)` 明确返回成功、随后
+`Refresh()` 与 `HasExited=true` 均成立时才确认进程已结束。任一步无法证明都会上报：
+
+```text
+SUBSTANCE_BAKER_TERMINATION_UNCONFIRMED
+```
+
+Asset API 无条件把该错误映射为 `FAILED / RECOVERY_REQUIRED / retryable=false`，即使 Worker
+请求体错误填写了 `retryable=true` 也不会重新排队。服务端保留 3090-B durable recovery
+interlock；宿主进程探针仍大于零时，或 Worker 报告的 `current_jobs` 与 durable live lease
+矛盾时，Worker 只能处于 `DRAINING`。
+
+恢复必须依次满足：当前 Agent 代际首次报告 `HEALTHY/0` → Scheduler 在此后记录新的健康且空闲
+ComfyUI heartbeat → 当前 Agent 再次报告 `HEALTHY/0`。任何一步缺失都不释放闭锁，也不停止、重启
+或清理 ComfyUI。
+
+### 3.3 UV QA 改由 Asset API 统一决策
 
 这项能力必须由 **Asset API 1.5.8 和 Blender Worker 1.2.4 同时上线**；当前真实 UV canary 已证明
 配套链路生效：
@@ -123,7 +145,7 @@ SSE 终态 `details.event=asset.succeeded_with_warnings`，并返回
 - report 的输入文件身份与 job 源文件不一致；
 - 租约、job 类型、取消安全点、artifact 路径、大小或 SHA 校验失败。
 
-### 3.3 Codex 业务 Skill 挂载
+### 3.4 Codex 业务 Skill 挂载
 
 Worker 1.2.4 启动入口先执行 fail-closed bootstrap：
 
@@ -169,7 +191,7 @@ codex_error_code=SKILL_MOUNT_INVALID
 | 数据库 | `20260803_0012` | 已升级；升级前备份 `/tmp/pre-asset-1.5.8.sql`，SHA-256 `3bd3a8c275c0ee0fbf4b8af69650d0d874539cf013c22a26f6d153d71f09864f`；downgrade 演练待回填 |
 | 4090 Blender Worker | `1.2.4` / source `7f7fd197…` / local image ID `c6ce7df35a6d…` | UV/探针运行正常；registry digest/SBOM 待归档 |
 | 3090-A/B Blender Worker | `1.2.4` / source `e2cab4c…` | A 完成 warning UV，B 完成 clean UV 和连续两笔重拓扑；Worker 相关源码与批准 Skill SHA 一致，统一 OCI digest/SBOM 待归档 |
-| Windows Baker Agent | 四槽 `substance-baker-2026.08.03-v5` | 均 `ONLINE`，宿主进程探针 `HEALTHY/0`；真实 PBR canary 已一次成功 |
+| Windows Baker Agent | 已部署四槽 `substance-baker-2026.08.03-v5`；目标 v6 | v5 历史 canary 已成功；v6 尚待四槽安装、身份/终止闭锁 canary，不能写成已部署 |
 | UV 策略 | `UV_QA_ENFORCEMENT=advisory` | warning 与 clean 两类真实 canary 均通过 |
 | Retopology 策略 | `RETOPOLOGY_QA_ENFORCEMENT=advisory` | warning canary 已成功交付 22 项制品 |
 
@@ -187,16 +209,20 @@ codex_error_code=SKILL_MOUNT_INVALID
 1. 数据库升级到 `20260803_0012`；
 2. Asset API 更新到 1.5.8，并显式启用 UV/Retopology advisory；
 3. Linux Worker 1.2.4 已在三节点恢复接单；
-4. Windows Agent v5 四槽已 ONLINE，宿主 Baker 进程探针均为 `HEALTHY/0`；
+4. Windows Agent v5 四槽已 ONLINE，宿主 Baker 进程探针均为 `HEALTHY/0`；这是历史基线，v6 尚未部署；
 5. PBR、UV warning/clean 和连续两笔 Retopology warning 均已得到真实生产终态制品证据。
 
 剩余发布必须继续遵守：
 
-1. 等当前新真实重拓扑任务完成后，再评估 GPU API、Web、Scheduler 的安全滚动窗口，Scheduler 最后；
-2. 每个组件记录旧/新容器、source revision、image ID、registry digest、启动时间与健康结果；
-3. 补齐三节点 Worker 精确 image digest、Windows 已安装脚本 SHA 和数据库升级前备份 SHA；
-4. 对已生成 artifact 执行 API 下载，核对 body SHA、job JSON SHA 与 `X-Artifact-SHA256`；
-5. 完成回滚演练、连续观察和远端 Git/registry/SBOM 归档后，才评估 `PRODUCTION_ACCEPTED`。
+1. 冻结新 PBR intake，确认四槽 `current_jobs=0`、宿主 Baker 进程为 0，且 3090-B 无
+   pending/fence/recovery label；
+2. 先更新四个 Windows Agent 到精确 v6 脚本 SHA。旧 Asset API 仍要求 v5，因此该兼容窗口内 v6
+   Agent 必须为 `DRAINING`，不得把它当故障绕过；
+3. 再更新 Asset API 到要求 v6 的 1.5.9；确认四槽均报告 v6、`HEALTHY/0`、`ONLINE` 后才恢复
+   PBR intake；随后逐台滚动 Linux Worker，GPU API/Web/Scheduler 继续按既定顺序且 Scheduler 最后；
+4. 每个组件记录旧/新容器、source revision、image ID、registry digest、Windows 脚本 SHA、启动时间与健康结果；
+5. 对已生成 artifact 执行 API 下载，核对 body SHA、job JSON SHA 与 `X-Artifact-SHA256`；
+6. 完成回滚演练、连续观察和远端 Git/registry/SBOM 归档后，才评估 `PRODUCTION_ACCEPTED`。
 
 ## 6. 必做 canary 与验收清单
 
@@ -276,7 +302,7 @@ codex_error_code=SKILL_MOUNT_INVALID
 
 ## 7. 源码验证与尚未完成项
 
-已上线源码包含针对下列合同的自动测试：
+历史已上线基线与后续 v6 候选源码包含针对下列合同的自动测试：
 
 - PBR `null/0/nonzero ExitCode × success marker` 真值表；
 - UV advisory 五件套成功告警、strict 失败和 advisory 完整性硬失败；
@@ -285,7 +311,7 @@ codex_error_code=SKILL_MOUNT_INVALID
 - inspect、probe、heartbeat 的 `SKILL_MOUNT_INVALID` 漂移检测；
 - Worker `1.2.4` OCI version/revision 与启动 bootstrap 合同。
 
-本轮已核实的源码门禁：
+以下是该轮 1.5.8 局部上线时核实的历史源码门禁，不是后续 1.5.9 最终提交的测试计数：
 
 - 最终工作树全量 unit：`234 passed`；
 - 全量 integration：`116 passed, 5 skipped`；
@@ -300,13 +326,16 @@ codex_error_code=SKILL_MOUNT_INVALID
 
 - UV：将 Asset API/Worker 一起回滚到上一已验版本；不能只回滚其中一端。`UV_QA_ENFORCEMENT=strict`
   可恢复严格策略，但不替代二进制兼容性回滚。
-- Linux Worker：单节点保持 `DRAINING`，恢复 `1.2.3` 镜像和原配置，核对无运行任务后再 `ACTIVE`。
-- Windows Agent：停止对应 v5 计划任务，确认无 Baker 进程/租约后恢复已备份版本；Agent/API 协议代际必须
-  匹配。
+- Linux Worker：单节点保持 `DRAINING`，恢复发布前已记录的精确 `1.2.4` 镜像和原配置，核对无运行
+  任务后再 `ACTIVE`，不得凭 tag 猜测回滚镜像。
+- 完整回滚 1.5.9 时保持 PBR intake 冻结和 Baker/租约为 0，按
+  `Scheduler → Web → API → 3090-B/3090-A/4090 Linux Worker 1.2.4 → Asset API 1.5.8`
+  回到旧控制面；只有 Asset API 1.5.8 已健康后，才能恢复已归档且 SHA 已核对的四槽 v5 脚本。
+  禁止让 v5 Agent 对 1.5.9 Asset API 领取任务，也不能以放宽版本门禁代替回滚。
 - 控制面/数据库：按 80 号发布计划的备份与迁移回滚执行。回滚期间不删除 job、artifact 或审计证据。
 - 任一回滚都不得关闭整台 3090-B 或清理 ComfyUI 模型缓存。
 
-## 9. 发布后证据回填
+## 9. 1.5.8 局部部署历史证据
 
 ```text
 deployed Asset API / 4090 Worker source: 7f7fd197f86288ffbeeab622cc39199335e22c61

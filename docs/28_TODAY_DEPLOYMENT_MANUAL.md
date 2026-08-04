@@ -198,18 +198,26 @@ sha256sum --check "$COMFY_ARCHIVE.sha256"
 
 镜像可能需要较长时间构建 Python、PyTorch 和 ComfyUI；看到 `构建完成` 才继续。镜像内固定 ComfyUI commit、自定义节点和 Python 依赖；三机模型目录统一挂载到 `/opt/comfyui/models`。
 
-## 6. 启动 4090 控制面
+## 6. 构建 4090 控制面并受控激活
 
 ```bash
 cd /opt/gpu-control
 docker compose --env-file .env -f deploy/control-plane/compose.yaml config --quiet
-scripts/gpuctl deploy control
-docker compose -f deploy/control-plane/compose.yaml ps
+scripts/gpuctl deploy control --build-only
+```
+
+`deploy control --build-only` 只构建 API、Scheduler、Asset API、Web 和 control-4090 Blender Worker
+镜像，不启动、停止、迁移或重建任何服务。首次激活或生产滚动必须按当前发布手册执行零任务门禁，
+并使用 `--no-deps --no-build --pull never --force-recreate` 每次只更新一个明确 service；禁止运行无
+service 范围的 `compose up/down`。完成受控激活后再执行：
+
+```bash
+docker compose --env-file .env -f deploy/control-plane/compose.yaml --profile asset-plane ps
 scripts/smoke_test.sh "https://192.168.10.10" \
   --ca deploy/control-plane/nginx/certs/lan-ca.crt
 ```
 
-`deploy control` 会按顺序构建应用镜像、启动 PostgreSQL/Redis、升级 Alembic、写入三节点 inventory、幂等创建管理员、再启动完整控制面。初始管理员：
+初始管理员密码仅在受控首次激活流程实际生成后读取：
 
 ```bash
 cat output/deploy/INITIAL_ADMIN_PASSWORD.txt
@@ -280,11 +288,13 @@ sudo chown -R "$USER:$USER" /srv/comfyui/models
 ```bash
 cd /opt/gpu-control
 scripts/gpuctl models verify
-GPU_CONTROL_ROLE=node scripts/gpuctl deploy node
-curl -fsS http://$(hostname -I | awk '{print $1}'):8188/system_stats | jq
+GPU_CONTROL_ROLE=node scripts/gpuctl deploy node --build-worker-only
 ```
 
-三机 `scripts/verify_models.sh` 全部显示 `OK`、两台工作机 `system_stats` 都返回 JSON 后才继续第 9 节联通测试。
+该命令只构建 Blender Worker，不启动或重建 Worker/ComfyUI。节点 `DRAINING`、`current_jobs=0` 且已记录
+ComfyUI container ID/StartedAt/RestartCount 后，才按当前发布手册单独更新 `blender-worker` service。
+受控激活完成后再读取 `8188/system_stats`。三机 `scripts/verify_models.sh` 全部显示 `OK`、两台工作机
+`system_stats` 都返回 JSON 后才继续第 9 节联通测试。
 
 ## 9. 三机联通检查
 

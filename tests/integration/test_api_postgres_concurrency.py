@@ -1,7 +1,7 @@
 import asyncio
 import os
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -10,7 +10,20 @@ from gpu_control_api.main import create_app
 from sqlalchemy import select, text
 from sqlalchemy.engine import make_url
 
-from packages.gpu_control_core.models import ApiClient, AuditLog, Base, Job, JobBatch, Node
+from packages.gpu_control_core.database import Database
+from packages.gpu_control_core.enums import JobStatus
+from packages.gpu_control_core.models import (
+    ApiClient,
+    AuditLog,
+    Base,
+    Job,
+    JobBatch,
+    Node,
+    Workflow,
+    WorkflowNodeCompatibility,
+    WorkflowVersion,
+)
+from packages.gpu_control_core.repository import claim_next_job
 from packages.gpu_control_core.security import hash_password
 from packages.gpu_control_core.settings import Settings
 
@@ -175,3 +188,149 @@ async def test_node_interrupt_fails_fast_on_scheduler_owned_rows(
         async with app.state.db.engine.begin() as connection:
             await connection.execute(text("DROP SCHEMA public CASCADE"))
             await connection.execute(text("CREATE SCHEMA public"))
+
+
+async def test_concurrent_postgres_claims_cannot_skip_production_behind_test_backlog(
+    tmp_path: Path,
+) -> None:
+    database = Database(
+        Settings(
+            environment="test",
+            database_url=postgres_url(),
+            job_root=tmp_path / "jobs",
+            jwt_secret="test-jwt",
+            api_key_pepper="test-pepper",
+            node_agent_hmac_secret="test-agent",
+            alertmanager_webhook_token="development-only-change-me",
+        )
+    )
+    now = datetime.now(UTC)
+    try:
+        async with database.engine.begin() as connection:
+            await connection.execute(text("DROP SCHEMA public CASCADE"))
+            await connection.execute(text("CREATE SCHEMA public"))
+            await connection.run_sync(Base.metadata.create_all)
+        async with database.session() as db:
+            db.add_all(
+                [
+                    ApiClient(
+                        id="production",
+                        name="Production",
+                        role="client",
+                        client_kind="production",
+                        max_running=3,
+                    ),
+                    ApiClient(
+                        id="load-test",
+                        name="Load test",
+                        role="client",
+                        client_kind="test",
+                        max_running=3,
+                    ),
+                    Node(
+                        id="worker-a",
+                        display_name="Worker A",
+                        base_url="http://127.0.0.1:18188",
+                        pool="PRIMARY",
+                        mode="ACTIVE",
+                        health="ONLINE",
+                        max_concurrency=1,
+                        current_jobs=0,
+                    ),
+                    Node(
+                        id="worker-b",
+                        display_name="Worker B",
+                        base_url="http://127.0.0.1:28188",
+                        pool="PRIMARY",
+                        mode="ACTIVE",
+                        health="ONLINE",
+                        max_concurrency=1,
+                        current_jobs=0,
+                    ),
+                    Workflow(
+                        key="claim-test",
+                        display_name="Claim test",
+                        description="test",
+                    ),
+                ]
+            )
+            workflow = WorkflowVersion(
+                workflow_key="claim-test",
+                version="1",
+                template={"9": {"class_type": "SaveImage", "inputs": {}}},
+                parameter_schema={"type": "object"},
+                bindings={},
+                allowed_class_types=["SaveImage"],
+                required_models=[],
+                required_custom_nodes=[],
+                min_vram_mb=0,
+                timeout_seconds=60,
+                node_labels={},
+                output_nodes=["9"],
+                enabled=True,
+                template_sha256="f" * 64,
+            )
+            db.add(workflow)
+            await db.flush()
+            db.add_all(
+                [
+                    WorkflowNodeCompatibility(
+                        workflow_version_id=workflow.id,
+                        node_id=node_id,
+                        compatible=True,
+                        reasons=[],
+                    )
+                    for node_id in ("worker-a", "worker-b")
+                ]
+            )
+            for index in range(225):
+                db.add(
+                    Job(
+                        id=f"pg-test-{index:03d}",
+                        tenant_id="load-test",
+                        workflow_key="claim-test",
+                        workflow_version="1",
+                        status=JobStatus.QUEUED.value,
+                        priority="normal",
+                        parameters={},
+                        request_hash=f"pg-test-{index:03d}",
+                        request_id=f"pg-test-{index:03d}",
+                        trace_id=f"pg-test-{index:03d}",
+                        job_dir=str(tmp_path / f"pg-test-{index:03d}"),
+                        created_at=now - timedelta(days=1, seconds=index),
+                    )
+                )
+            for index in range(2):
+                db.add(
+                    Job(
+                        id=f"pg-production-{index}",
+                        tenant_id="production",
+                        workflow_key="claim-test",
+                        workflow_version="1",
+                        status=JobStatus.QUEUED.value,
+                        priority="normal",
+                        parameters={},
+                        request_hash=f"pg-production-{index}",
+                        request_id=f"pg-production-{index}",
+                        trace_id=f"pg-production-{index}",
+                        job_dir=str(tmp_path / f"pg-production-{index}"),
+                        created_at=now,
+                    )
+                )
+            await db.commit()
+
+        async def claim(node_id: str) -> Job:
+            async with database.session() as db:
+                async with db.begin():
+                    result = await claim_next_job(db, node_id, 300)
+                assert result is not None
+                return result[0]
+
+        claimed = await asyncio.gather(claim("worker-a"), claim("worker-b"))
+        assert {job.id for job in claimed} == {"pg-production-0", "pg-production-1"}
+        assert all(job.tenant_id == "production" for job in claimed)
+    finally:
+        async with database.engine.begin() as connection:
+            await connection.execute(text("DROP SCHEMA public CASCADE"))
+            await connection.execute(text("CREATE SCHEMA public"))
+        await database.close()

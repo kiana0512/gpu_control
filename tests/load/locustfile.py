@@ -48,7 +48,10 @@ from packages.gpu_control_core.load_testing import (  # noqa: E402
     LoadTestPreempted,
     RuntimeSettings,
     approved_load_tls_verify,
+    build_load_artifact_evidence,
+    capture_load_evidence_json,
     configure_locust_client_tls,
+    copy_load_evidence_json,
     discover_scoped_teardown_tasks,
     evaluate_load_lifecycle,
     evaluate_load_thresholds,
@@ -69,7 +72,10 @@ from packages.gpu_control_core.load_testing import (  # noqa: E402
     validate_asset_worker_roles,
     validate_downloaded_load_artifact,
     validate_load_artifact_manifest,
+    validate_load_service_provenance,
     validate_test_client_capacities,
+    verify_live_load_deployment,
+    verify_remote_load_release_evidence,
     write_result_manifest,
 )
 
@@ -88,10 +94,22 @@ FIXTURE_FILE = Path(
 RUNTIME = RuntimeSettings.from_environment()
 SCENARIO = load_scenario(SCENARIO_FILE)
 FIXTURES = load_fixture_manifest(FIXTURE_FILE)
+VERIFIED_RELEASE_EVIDENCE = (
+    verify_remote_load_release_evidence(REPOSITORY_ROOT, RUNTIME)
+    if RUNTIME.is_production_target()
+    else None
+)
+VERIFIED_LIVE_DEPLOYMENT = (
+    verify_live_load_deployment(RUNTIME, VERIFIED_RELEASE_EVIDENCE)
+    if VERIFIED_RELEASE_EVIDENCE is not None
+    else None
+)
 RUNTIME.assert_execution_allowed(
     SCENARIO,
     FIXTURES,
     repository_root=REPOSITORY_ROOT,
+    verified_release_evidence=VERIFIED_RELEASE_EVIDENCE,
+    verified_live_deployment=VERIFIED_LIVE_DEPLOYMENT,
 )
 if RUNTIME.result_dir is None or not RUNTIME.result_dir.is_dir():
     raise LoadTestConfigurationError(
@@ -118,6 +136,29 @@ def verify_plan_binding() -> tuple[dict[Path, str], dict[Path, tuple[int, int, i
     }
     if any(plan.get(key) != value for key, value in expected.items()):
         raise LoadTestConfigurationError("runtime is not bound to plan.json")
+    if plan.get("target_release_identity") != RUNTIME.target_release_identity:
+        raise LoadTestConfigurationError("target release identity changed after plan generation")
+    expected_evidence = (
+        VERIFIED_RELEASE_EVIDENCE
+        if VERIFIED_RELEASE_EVIDENCE is not None
+        else {"verified": False, "reason": "plan-only mode does not contact origin/main"}
+    )
+    if plan.get("release_evidence_verification") != expected_evidence:
+        raise LoadTestConfigurationError(
+            "remote release evidence changed after plan generation"
+        )
+    expected_live_deployment = (
+        VERIFIED_LIVE_DEPLOYMENT
+        if VERIFIED_LIVE_DEPLOYMENT is not None
+        else {
+            "verified": False,
+            "reason": "plan-only mode does not inspect production containers",
+        }
+    )
+    if plan.get("live_deployment_verification") != expected_live_deployment:
+        raise LoadTestConfigurationError(
+            "live deployment identity changed after plan generation"
+        )
     scenario_plan = plan.get("scenario")
     fixture_plan = plan.get("fixtures")
     if not isinstance(scenario_plan, dict) or not isinstance(fixture_plan, dict):
@@ -447,6 +488,8 @@ class SessionRegistry:
             "artifact_count": 0,
             "artifact_bytes": 0,
             "artifact_kinds": [],
+            "artifact_listing_metadata": [],
+            "artifact_evidence": [],
             "expected_artifact_kinds": sorted(set(expected_artifact_kinds)),
             "artifact_contract_verified": False,
             "direct_artifact_sha256": direct_artifact_sha256,
@@ -462,12 +505,16 @@ class SessionRegistry:
             traceparent=traceparent,
         )
 
-    def update_status(self, identifier: str, payload: Mapping[str, Any]) -> None:
+    def update_status(self, identifier: str, payload: Mapping[str, Any]) -> str | None:
         status = str(payload.get("status") or "UNKNOWN")
+        terminal_evidence: Any | None = None
+        evidence_error: str | None = None
+        if status in TERMINAL_STATUSES:
+            terminal_evidence, evidence_error = capture_load_evidence_json(payload)
         with self._lock:
             record = self._records.get(identifier)
             if record is None:
-                return
+                return None
             record["last_status"] = status
             record["node_id"] = payload.get("node_id") or record.get("node_id")
             record["worker_id"] = payload.get("worker_id") or record.get("worker_id")
@@ -480,6 +527,12 @@ class SessionRegistry:
             elif payload.get("counts"):
                 record["queue_position"] = None
             if status in TERMINAL_STATUSES:
+                if evidence_error is None:
+                    record["raw_terminal_status_json"] = terminal_evidence
+                else:
+                    record["terminal_evidence_error"] = evidence_error
+                    record["artifact_contract_failed"] = True
+                    record["artifact_contract_failure_reason"] = evidence_error
                 record["terminal_status"] = status
                 record["finished_at"] = utc_now()
                 record["total_ms"] = int(
@@ -495,7 +548,16 @@ class SessionRegistry:
                 performance = payload.get("performance")
                 if isinstance(performance, dict):
                     record["performance"] = performance
-        self.event("task.status", api=record["api"], task_id=identifier, status=status)
+        self.event(
+            "task.status",
+            api=record["api"],
+            task_id=identifier,
+            status=status,
+            terminal_evidence_captured=(
+                evidence_error is None if status in TERMINAL_STATUSES else None
+            ),
+        )
+        return evidence_error
 
     def add_retries(self, identifier: str, retries: int) -> None:
         if retries < 1:
@@ -506,13 +568,42 @@ class SessionRegistry:
                 record["retries"] = int(record.get("retries", 0)) + retries
                 record["recovered"] = True
 
-    def add_artifact(self, identifier: str, kind: str, size_bytes: int) -> None:
+    def record_artifact_listing(self, identifier: str, artifacts: object) -> str | None:
+        evidence, error = capture_load_evidence_json(artifacts)
+        if error is not None:
+            with self._lock:
+                record = self._records.get(identifier)
+                if record:
+                    record["artifact_listing_evidence_error"] = error
+                    record["artifact_contract_failed"] = True
+                    record["artifact_contract_failure_reason"] = error
+            self.event(
+                "artifact.listing_evidence_rejected",
+                task_id=identifier,
+                error=error,
+            )
+            return error
+        with self._lock:
+            record = self._records.get(identifier)
+            if record:
+                record["artifact_listing_metadata"] = evidence
+        return None
+
+    def add_artifact(
+        self,
+        identifier: str,
+        evidence: Mapping[str, Any],
+    ) -> None:
+        artifact_evidence = copy_load_evidence_json(evidence)
+        kind = str(artifact_evidence.get("kind") or "")
+        body_size_bytes = int(artifact_evidence.get("body_size_bytes") or 0)
         with self._lock:
             record = self._records.get(identifier)
             if record:
                 record["artifact_count"] = int(record.get("artifact_count", 0)) + 1
-                record["artifact_bytes"] = int(record.get("artifact_bytes", 0)) + size_bytes
+                record["artifact_bytes"] = int(record.get("artifact_bytes", 0)) + body_size_bytes
                 record.setdefault("artifact_kinds", []).append(kind)
+                record.setdefault("artifact_evidence", []).append(artifact_evidence)
 
     def mark_artifact_contract_verified(self, identifier: str) -> None:
         with self._lock:
@@ -575,6 +666,10 @@ class SessionRegistry:
                 "retry_events": dict(self._retry_events),
                 "http_retry_attempts": sum(self._retry_events.values()),
                 "batch_node_distribution": dict(node_distribution),
+                "target_release_identity": RUNTIME.target_release_identity,
+                "release_evidence_verification": VERIFIED_RELEASE_EVIDENCE,
+                "live_deployment_verification": VERIFIED_LIVE_DEPLOYMENT,
+                "external_anchor_status": "PENDING_GIT_PUBLISH",
                 "secrets_recorded": False,
             }
         )
@@ -711,9 +806,7 @@ def active_gpu_admin_jobs(
         response.raise_for_status()
         rows = response.json()
         if not isinstance(rows, list):
-            raise LoadTestConfigurationError(
-                "active GPU admin endpoint returned the wrong shape"
-            )
+            raise LoadTestConfigurationError("active GPU admin endpoint returned the wrong shape")
         if len(rows) >= 500:
             raise LoadTestConfigurationError("active GPU audit window is saturated")
         rows_scanned += len(rows)
@@ -765,6 +858,11 @@ def perform_preflight() -> dict[str, Any]:
         verify=httpx_verify(),
         follow_redirects=False,
     ) as client:
+        live_service_provenance = validate_load_service_provenance(
+            preflight_json(client, "/api/v1/version", {}),
+            preflight_json(client, "/api/v1/assets/version", {}),
+            expected_revision=RUNTIME.source_revision,
+        )
         client_capacities = [
             normalize_scheduler_capacity_v1(
                 preflight_json(
@@ -887,6 +985,16 @@ def perform_preflight() -> dict[str, Any]:
     cpu_workers = list(worker_roles["cpu_workers"])
     substance_workers = list(worker_roles["substance_workers"])
     substance_slots = int(worker_roles["substance_available_slots"])
+    if RUNTIME.is_production_target():
+        expected_substance = RUNTIME.target_release_identity["substance_agent"]
+        actual_substance_ids = sorted(str(item.get("id") or "") for item in substance_workers)
+        if actual_substance_ids != expected_substance["worker_ids"] or any(
+            item.get("skill_version") != expected_substance["skill_version"]
+            for item in substance_workers
+        ):
+            raise LoadTestConfigurationError(
+                "production requires exactly four online Windows Substance v6 Agents"
+            )
 
     contracts = asset_overview.get("contracts")
     if not isinstance(contracts, dict):
@@ -973,6 +1081,10 @@ def perform_preflight() -> dict[str, Any]:
         "session_id": RUNTIME.session_id,
         "target": RUNTIME.target,
         "client_kind": "test",
+        "target_release_identity": RUNTIME.target_release_identity,
+        "release_evidence_verification": VERIFIED_RELEASE_EVIDENCE,
+        "live_deployment_verification": VERIFIED_LIVE_DEPLOYMENT,
+        "live_service_provenance": live_service_provenance,
         "api_key_checks": client_checks,
         "gpu_capacity": capacity,
         "asset_capacity": asset_capacity,
@@ -1000,17 +1112,14 @@ def perform_preflight() -> dict[str, Any]:
         ],
         "online_cpu_asset_worker_ids": [item.get("id") for item in cpu_workers],
         "online_substance_worker_ids": [item.get("id") for item in substance_workers],
+        "substance_agent_identity": RUNTIME.target_release_identity["substance_agent"],
         "cpu_available_slots": worker_roles["cpu_available_slots"],
         "preexisting": {"gpu": len(active_gpu), "asset": len(active_assets)},
         "gpu_active_audit": gpu_audit,
         "session_history_scan": {
             "required": RUNTIME.is_production_target(),
-            "gpu_rows": len(historical_gpu_jobs)
-            if isinstance(historical_gpu_jobs, list)
-            else None,
-            "asset_rows": len(historical_asset_jobs)
-            if RUNTIME.is_production_target()
-            else None,
+            "gpu_rows": len(historical_gpu_jobs) if isinstance(historical_gpu_jobs, list) else None,
+            "asset_rows": len(historical_asset_jobs) if RUNTIME.is_production_target() else None,
             "collisions": 0 if RUNTIME.is_production_target() else None,
         },
         "substance_available_slots": substance_slots,
@@ -1599,9 +1708,7 @@ class SixApiUser(HttpUser):
             traceparent=traceparent,
             created_monotonic=started,
             submission_retries=retries,
-            expected_artifact_kinds=expected_load_artifact_kinds(
-                api_name, metadata=metadata
-            ),
+            expected_artifact_kinds=expected_load_artifact_kinds(api_name, metadata=metadata),
         )
         self.poll_and_collect(job_id, api_name, headers)
 
@@ -1631,7 +1738,13 @@ class SixApiUser(HttpUser):
                 gevent.sleep(SCENARIO.poll_interval_seconds)
                 continue
             final_payload = safe_json(response)
-            REGISTRY.update_status(identifier, final_payload)
+            terminal_evidence_error = REGISTRY.update_status(identifier, final_payload)
+            if terminal_evidence_error is not None:
+                self.validation_failure(
+                    api_name,
+                    "terminal-evidence",
+                    terminal_evidence_error,
+                )
             if str(final_payload.get("status")) in TERMINAL_STATUSES:
                 break
             gevent.sleep(SCENARIO.poll_interval_seconds)
@@ -1676,9 +1789,13 @@ class SixApiUser(HttpUser):
                     "ImageClip batch omitted its artifact list or singular alias",
                 )
                 return
-            if len(artifacts) != 1 or not isinstance(artifacts[0], Mapping) or any(
-                alias.get(key) != artifacts[0].get(key)
-                for key in ("id", "kind", "filename", "size_bytes", "sha256", "download_url")
+            if (
+                len(artifacts) != 1
+                or not isinstance(artifacts[0], Mapping)
+                or any(
+                    alias.get(key) != artifacts[0].get(key)
+                    for key in ("id", "kind", "filename", "size_bytes", "sha256", "download_url")
+                )
             ):
                 REGISTRY.mark_artifact_contract_failure(
                     identifier, "ImageClip artifact alias does not match the exact artifact"
@@ -1754,6 +1871,14 @@ class SixApiUser(HttpUser):
             REGISTRY.mark_artifact_contract_failure(identifier, str(exc))
             self.validation_failure(api_name, "artifact-contract", str(exc))
             return
+        listing_evidence_error = REGISTRY.record_artifact_listing(identifier, normalized)
+        if listing_evidence_error is not None:
+            self.validation_failure(
+                api_name,
+                "artifact-listing-evidence",
+                listing_evidence_error,
+            )
+            return
         direct_sha256 = str(record.get("direct_artifact_sha256") or "")
         if direct_sha256:
             listed_sha256 = str(normalized[0].get("sha256") or "")
@@ -1812,12 +1937,13 @@ class SixApiUser(HttpUser):
                 identifier, f"artifact download returned HTTP {response.status_code}"
             )
             return False
+        response_sha256 = str(response.headers.get("X-Artifact-SHA256") or "")
         try:
             actual_sha = validate_downloaded_load_artifact(
                 api_name,
                 artifact,
                 response.content,
-                header_sha256=response.headers.get("X-Artifact-SHA256"),
+                header_sha256=response_sha256,
             )
         except LoadTestConfigurationError as exc:
             REGISTRY.mark_artifact_contract_failure(identifier, str(exc))
@@ -1835,14 +1961,31 @@ class SixApiUser(HttpUser):
                 actual_sha256=hashlib.sha256(response.content).hexdigest(),
             )
             return False
-        kind = str(artifact.get("kind") or "")
-        REGISTRY.add_artifact(identifier, kind, len(response.content))
+        try:
+            artifact_evidence = build_load_artifact_evidence(
+                api_name,
+                artifact,
+                header_sha256=response_sha256,
+                body_sha256=actual_sha,
+                body_size_bytes=len(response.content),
+            )
+        except LoadTestConfigurationError as exc:
+            REGISTRY.mark_artifact_contract_failure(identifier, str(exc))
+            self.validation_failure(
+                api_name,
+                "artifact-evidence",
+                str(exc),
+            )
+            return False
+        REGISTRY.add_artifact(
+            identifier,
+            artifact_evidence,
+        )
         REGISTRY.event(
             "artifact.verified",
             api=api_name,
             task_id=identifier,
-            size_bytes=len(response.content),
-            sha256=actual_sha,
+            **artifact_evidence,
         )
         return True
 
@@ -2283,9 +2426,7 @@ def teardown_session_tasks() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         active_records.extend(recovered)
 
         def cancel_and_settle(records: list[dict[str, Any]]) -> None:
-            fresh_records = [
-                record for record in records if str(record["id"]) not in processed_ids
-            ]
+            fresh_records = [record for record in records if str(record["id"]) not in processed_ids]
             tasks: dict[str, dict[str, Any]] = {}
             for index, record in enumerate(fresh_records):
                 identifier = str(record["id"])
@@ -2366,15 +2507,10 @@ def teardown_session_tasks() -> tuple[list[dict[str, Any]], dict[str, Any]]:
                     time.monotonic() + TEARDOWN_SETTLE_PASS_TIMEOUT_SECONDS,
                 )
                 settle_teardown_tasks(client, tasks, outcomes, deadline=settle_deadline)
-                latest_outcome_by_id = {
-                    str(outcome["task_id"]): outcome for outcome in outcomes
-                }
+                latest_outcome_by_id = {str(outcome["task_id"]): outcome for outcome in outcomes}
                 for identifier in tasks:
                     latest = latest_outcome_by_id.get(identifier, {})
-                    if (
-                        latest.get("settled") is True
-                        and latest.get("cleanup_safe") is True
-                    ):
+                    if latest.get("settled") is True and latest.get("cleanup_safe") is True:
                         processed_ids.add(identifier)
 
         cancel_and_settle(active_records)
@@ -2405,9 +2541,7 @@ def teardown_session_tasks() -> tuple[list[dict[str, Any]], dict[str, Any]]:
                 )
                 break
             residual_ids = {str(record["id"]) for record in residual}
-            late_records = [
-                record for record in residual if str(record["id"]) not in processed_ids
-            ]
+            late_records = [record for record in residual if str(record["id"]) not in processed_ids]
             rescan_evidence.append(
                 {
                     "pass": pass_index,
@@ -2442,12 +2576,7 @@ def teardown_session_tasks() -> tuple[list[dict[str, Any]], dict[str, Any]]:
             recovery_scan.setdefault("error", "FinalScopeNotEmptyOrDeadlineExpired")
         # Keep one final outcome per task for lifecycle evaluation. Individual
         # retries remain preserved in events.jsonl.
-        outcomes = list(
-            {
-                str(outcome["task_id"]): outcome
-                for outcome in outcomes
-            }.values()
-        )
+        outcomes = list({str(outcome["task_id"]): outcome for outcome in outcomes}.values())
         for outcome in outcomes:
             REGISTRY.event(
                 "teardown.settled",
@@ -2512,6 +2641,28 @@ def finalize_results(environment: Any, **_: Any) -> None:
     teardown, recovery_scan = teardown_session_tasks()
     records = REGISTRY.records()
     summary = REGISTRY.summary()
+    final_live_deployment: dict[str, Any] | None = None
+    live_deployment_stable = True
+    if RUNTIME.is_production_target():
+        try:
+            final_live_deployment = verify_live_load_deployment(
+                RUNTIME,
+                VERIFIED_RELEASE_EVIDENCE or {},
+            )
+            live_deployment_stable = (
+                final_live_deployment == VERIFIED_LIVE_DEPLOYMENT
+            )
+        except LoadTestConfigurationError as exc:
+            final_live_deployment = {
+                "verified": False,
+                "error": type(exc).__name__,
+            }
+            live_deployment_stable = False
+    summary["final_live_deployment_verification"] = {
+        "required": RUNTIME.is_production_target(),
+        "stable_since_start": live_deployment_stable,
+        "evidence": final_live_deployment,
+    }
     lifecycle_evaluation = evaluate_load_lifecycle(
         records,
         teardown,
@@ -2621,6 +2772,7 @@ def finalize_results(environment: Any, **_: Any) -> None:
         or not summary["lifecycle_evaluation"]["passed"]
         or not telemetry["evidence_complete"]
         or not telemetry["gpu_saturation_objective"]["passed"]
+        or not live_deployment_stable
         or _production_watchdog_triggered
     ):
         environment.process_exit_code = environment.process_exit_code or 1

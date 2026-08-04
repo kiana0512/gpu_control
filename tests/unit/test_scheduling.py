@@ -251,3 +251,19 @@ def test_overflow_allowed_windows_parse_overnight() -> None:
     assert settings.overflow_windows[0][0].hour == 22
     assert settings.overflow_windows[0][1].hour == 6
     assert settings.overflow_windows[1][0].minute == 30
+
+
+def test_production_queue_reserve_is_backward_compatible_with_small_limits() -> None:
+    default = Settings()
+    assert default.system_max_queued == 500
+    assert default.system_production_queue_reserve == 50
+    assert default.test_system_max_queued == 450
+
+    existing_small_limit = Settings(system_max_queued=4)
+    assert existing_small_limit.test_system_max_queued == 0
+
+    explicitly_tuned = Settings(
+        system_max_queued=4,
+        system_production_queue_reserve=2,
+    )
+    assert explicitly_tuned.test_system_max_queued == 2

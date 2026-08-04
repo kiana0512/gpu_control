@@ -2,6 +2,7 @@ import ast
 import hashlib
 import json
 import os
+import subprocess
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -12,6 +13,9 @@ import yaml
 from packages.gpu_control_core.load_testing import (
     API_NAMES,
     FIXED_LOAD_ARTIFACT_KINDS,
+    MINIMUM_PRODUCTION_LOAD_IDENTITIES,
+    PRODUCTION_PREFLIGHT_EVIDENCE_RESERVE_SECONDS,
+    PRODUCTION_TEARDOWN_RESERVE_SECONDS,
     REQUIRED_FULL_BACKUP_PAYLOADS,
     RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS,
     SUBSTANCE_LOAD_ARTIFACT_KINDS,
@@ -20,8 +24,11 @@ from packages.gpu_control_core.load_testing import (
     LoadTestConfigurationError,
     LoadTestPreempted,
     RuntimeSettings,
+    build_load_artifact_evidence,
     build_plan,
+    capture_load_evidence_json,
     configure_locust_client_tls,
+    copy_load_evidence_json,
     discover_scoped_teardown_tasks,
     evaluate_load_lifecycle,
     evaluate_load_thresholds,
@@ -41,8 +48,12 @@ from packages.gpu_control_core.load_testing import (
     validate_asset_worker_roles,
     validate_downloaded_load_artifact,
     validate_load_artifact_manifest,
+    validate_load_service_provenance,
     validate_production_backup,
     validate_test_client_capacities,
+    verify_live_load_deployment,
+    verify_remote_load_release_evidence,
+    write_result_manifest,
 )
 from scripts.run_six_api_load import (
     SAFE_LOCUST_STOP_TIMEOUT_SECONDS,
@@ -214,6 +225,61 @@ def allowed_environment(tmp_path: Path, target: str = "https://staging.example")
     provisional = RuntimeSettings.from_environment(base)
     base["LOAD_TEST_CONFIRMATION_TOKEN"] = provisional.expected_confirmation_token
     return base
+
+
+def add_target_release_identity(environment: dict[str, str]) -> None:
+    environment.update(
+        {
+            "LOAD_TEST_SOURCE_REVISION": "a" * 40,
+            "LOAD_TEST_API_IMAGE_DIGEST": f"sha256:{'1' * 64}",
+            "LOAD_TEST_SCHEDULER_IMAGE_DIGEST": f"sha256:{'2' * 64}",
+            "LOAD_TEST_ASSET_API_IMAGE_DIGEST": f"sha256:{'3' * 64}",
+            "LOAD_TEST_WEB_IMAGE_DIGEST": f"sha256:{'4' * 64}",
+            "LOAD_TEST_WORKER_IMAGE_DIGEST": f"sha256:{'5' * 64}",
+            "LOAD_TEST_RELEASE_EVIDENCE_COMMIT": "b" * 40,
+            "LOAD_TEST_RELEASE_EVIDENCE_PATH": (
+                "artifacts/control-plane/1.5.9/deployment/"
+                "live-deployment-receipt.json"
+            ),
+            "LOAD_TEST_RELEASE_EVIDENCE_SHA256": "c" * 64,
+            "LOAD_TEST_SUBSTANCE_AGENT_SHA256": "d" * 64,
+        }
+    )
+
+
+def verified_release_evidence(runtime: RuntimeSettings) -> dict[str, object]:
+    return {
+        "schema_version": "gpu-control-load-release-evidence-verification.v1",
+        "verified": True,
+        "origin_url": "https://github.com/kiana0512/gpu_control.git",
+        "remote_ref": "refs/heads/main",
+        "evidence_commit": runtime.release_evidence_commit,
+        "evidence_path": runtime.release_evidence_path,
+        "evidence_sha256": runtime.release_evidence_sha256,
+        "source_revision": runtime.source_revision,
+        "images": {
+            component: {"local_image_id": digest}
+            for component, digest in runtime.target_release_identity["image_digests"].items()
+        },
+        "deployment_inventory": runtime.target_release_identity["deployment_inventory"],
+        "substance_agent": runtime.target_release_identity["substance_agent"],
+    }
+
+
+def verified_live_deployment(runtime: RuntimeSettings) -> dict[str, object]:
+    return {
+        "schema_version": "gpu-control-load-live-deployment-verification.v1",
+        "verified": True,
+        "release_evidence_commit": runtime.release_evidence_commit,
+        "source_revision": runtime.source_revision,
+        "inventory": runtime.target_release_identity["deployment_inventory"],
+        "substance_agent": runtime.target_release_identity["substance_agent"],
+    }
+
+
+def add_production_load_identities(environment: dict[str, str], count: int = 12) -> None:
+    environment["LOAD_TEST_API_KEYS"] = ",".join(f"gpc_test_{index:02d}" for index in range(count))
+    environment["LOAD_TEST_TENANT_IDS"] = ",".join(f"tenant-{index:02d}" for index in range(count))
 
 
 def complete_full_backup(tmp_path: Path, created_at: datetime) -> Path:
@@ -440,6 +506,569 @@ def test_downloaded_artifact_requires_size_and_three_matching_sha_values() -> No
             validate_downloaded_load_artifact(
                 "modelview_roughness", mutation, content, header_sha256=header
             )
+
+
+def test_artifact_manifest_rejects_query_bearing_download_urls() -> None:
+    artifact = {
+        "id": "artifact-output",
+        "kind": "output",
+        "size_bytes": 7,
+        "sha256": "a" * 64,
+        "download_url": "/api/v1/jobs/job/artifacts/output?token=secret",
+    }
+
+    with pytest.raises(LoadTestConfigurationError, match="non-local"):
+        validate_load_artifact_manifest(
+            "modelview_roughness", [artifact], expected_kinds={"output"}
+        )
+
+
+def test_raw_load_evidence_is_deep_copied_and_rejects_credentials() -> None:
+    payload = {"status": "SUCCEEDED", "artifacts": [{"kind": "output"}]}
+    copied = copy_load_evidence_json(payload)
+    payload["artifacts"][0]["kind"] = "mutated"
+
+    assert copied["artifacts"][0]["kind"] == "output"
+    with pytest.raises(LoadTestConfigurationError, match="credential"):
+        copy_load_evidence_json({"status": "SUCCEEDED", "authorization": "secret"})
+
+    captured, error = capture_load_evidence_json({"status": "SUCCEEDED", "authorization": "secret"})
+    assert captured is None
+    assert error is not None and "credential" in error
+
+    captured, error = capture_load_evidence_json(
+        {
+            "artifacts": [
+                {
+                    "download_url": "/api/v1/jobs/job/artifacts/output?token=secret",
+                }
+            ]
+        }
+    )
+    assert captured is None
+    assert error is not None and "query/fragment-bearing URL" in error
+
+
+def test_artifact_evidence_records_identity_metadata_header_and_body_proof() -> None:
+    body = b"artifact-body"
+    digest = hashlib.sha256(body).hexdigest()
+    artifact = {
+        "id": "artifact-123",
+        "kind": "blend",
+        "filename": "result.blend",
+        "size_bytes": len(body),
+        "sha256": digest,
+    }
+
+    evidence = build_load_artifact_evidence(
+        "uv_process",
+        artifact,
+        header_sha256=digest,
+        body_sha256=digest,
+        body_size_bytes=len(body),
+    )
+
+    assert evidence == {
+        "kind": "blend",
+        "id": "artifact-123",
+        "filename": "result.blend",
+        "metadata_size_bytes": len(body),
+        "metadata_sha256": digest,
+        "x_artifact_sha256": digest,
+        "body_size_bytes": len(body),
+        "body_sha256": digest,
+    }
+    with pytest.raises(LoadTestConfigurationError, match="SHA-256"):
+        build_load_artifact_evidence(
+            "uv_process",
+            artifact,
+            header_sha256="b" * 64,
+            body_sha256=digest,
+            body_size_bytes=len(body),
+        )
+
+
+def test_load_service_provenance_must_match_the_planned_revision() -> None:
+    revision = "a" * 40
+    api = {
+        "component": "api",
+        "package_version": "1.5.9",
+        "build_version": "1.5.9",
+        "source_revision": revision,
+        "version_aligned": True,
+        "provenance_complete": True,
+    }
+    asset_api = {**api, "component": "asset-api"}
+
+    assert validate_load_service_provenance(
+        api,
+        asset_api,
+        expected_revision=revision,
+    ) == {"api": api, "asset-api": asset_api}
+
+    with pytest.raises(LoadTestConfigurationError, match="live source revision"):
+        validate_load_service_provenance(
+            api,
+            {**asset_api, "source_revision": "b" * 40},
+            expected_revision=revision,
+        )
+
+    with pytest.raises(LoadTestConfigurationError, match="provenance"):
+        validate_load_service_provenance(
+            {**api, "provenance_complete": False},
+            asset_api,
+            expected_revision=revision,
+        )
+
+
+SUBSTANCE_SCRIPT_BLOB = b"# signed Windows Substance Agent v6 fixture\n"
+
+
+def candidate_evidence_blob(runtime: RuntimeSettings) -> bytes:
+    image_specs = {
+        "api": ("api", "gpu-control-api", "GPU Control API", "1.5.9"),
+        "scheduler": (
+            "scheduler",
+            "gpu-control-scheduler",
+            "GPU Control Scheduler",
+            "1.5.9",
+        ),
+        "asset_api": (
+            "asset-api",
+            "unified-scheduler-asset-api",
+            "GPU Control Asset API",
+            "1.5.9",
+        ),
+        "web": ("web", "gpu-control-web", "GPU Control Web", "1.5.9"),
+        "worker": (
+            "blender-worker",
+            "li3d/blender-worker",
+            "GPU Control Blender Worker",
+            "1.2.5",
+        ),
+    }
+    images: dict[str, object] = {}
+    offline: dict[str, object] = {}
+    for index, (runtime_key, specification) in enumerate(image_specs.items(), start=6):
+        evidence_key, repository, title, version = specification
+        digest = runtime.target_release_identity["image_digests"][runtime_key]
+        manifest_digest = f"sha256:{hex(index + 4)[-1] * 64}"
+        config_digest = f"sha256:{str(index)[-1] * 64}"
+        images[evidence_key] = {
+            "reference": f"{repository}:{version}",
+            "local_image_id": digest,
+            "oci_image_manifest_digest": manifest_digest,
+            "local_image_id_semantics": (
+                "ENGINE_LOCAL_CONTENT_ID_NOT_ASSUMED_CONFIG_DIGEST"
+            ),
+            "oci_config_digest": config_digest,
+            "docker_archive_config_digest": config_digest,
+            "docker_oci_config_match": True,
+            "registry_manifest_digest": "PENDING_REGISTRY_PUSH",
+            "oci_labels": {
+                "org.opencontainers.image.title": title,
+                "org.opencontainers.image.version": version,
+                "org.opencontainers.image.revision": runtime.source_revision,
+                "org.opencontainers.image.source": (
+                    "https://github.com/kiana0512/gpu_control.git"
+                ),
+            },
+        }
+        offline[evidence_key] = {
+            "oci_image_manifest_digest": manifest_digest,
+            "oci_config_digest": config_digest,
+            "docker_archive_config_digest": config_digest,
+            "docker_oci_config_match": True,
+        }
+    payload = {
+        "schema_version": "gpu-control-release-candidate.v2",
+        "release_status": "CANDIDATE_ARCHIVE_ONLY",
+        "deployed": False,
+        "production_accepted": False,
+        "version": "1.5.9",
+        "worker_version": "1.2.5",
+        "revision": runtime.source_revision,
+        "source": {
+            "repository": "https://github.com/kiana0512/gpu_control.git",
+            "remote_ref": "origin/main",
+            "remote_sha": runtime.source_revision,
+        },
+        "images": images,
+        "offline_oci_exports": offline,
+        "attestations": {"provenance_status": "VERIFIED_OFFLINE_OCI"},
+    }
+    return (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode()
+
+
+def live_deployment_receipt_blob(
+    runtime: RuntimeSettings,
+    candidate_blob: bytes,
+    substance_script_blob: bytes,
+) -> bytes:
+    candidate = json.loads(candidate_blob)
+    components: dict[str, object] = {}
+    component_keys = {
+        "api": "api",
+        "scheduler": "scheduler",
+        "asset_api": "asset-api",
+        "web": "web",
+        "worker": "blender-worker",
+    }
+    for runtime_key, evidence_key in component_keys.items():
+        image = candidate["images"][evidence_key]
+        components[runtime_key] = {
+            "evidence_component": evidence_key,
+            "reference": image["reference"],
+            "identity_type": "docker_local_image_id+offline_oci_manifest_and_config",
+            "local_image_id": image["local_image_id"],
+            "oci_image_manifest_digest": image["oci_image_manifest_digest"],
+            "oci_config_digest": image["oci_config_digest"],
+        }
+    substance_agent = dict(runtime.target_release_identity["substance_agent"])
+    substance_agent["repository_script_sha256"] = hashlib.sha256(
+        substance_script_blob
+    ).hexdigest()
+    payload = {
+        "schema_version": "gpu-control-live-deployment.v1",
+        "deployment_status": "DEPLOYED_NOT_ACCEPTED",
+        "deployed": True,
+        "production_accepted": False,
+        "source_revision": runtime.source_revision,
+        "source": {
+            "repository": "https://github.com/kiana0512/gpu_control.git",
+            "revision": runtime.source_revision,
+        },
+        "candidate_evidence": {
+            "path": (
+                "artifacts/control-plane/1.5.9/release-parts/"
+                "release-candidate-evidence.json"
+            ),
+            "sha256": hashlib.sha256(candidate_blob).hexdigest(),
+        },
+        "components": components,
+        "inventory": runtime.target_release_identity["deployment_inventory"],
+        "substance_agent": substance_agent,
+    }
+    return (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode()
+
+
+def test_production_release_identity_is_anchored_to_remote_git_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = allowed_environment(tmp_path)
+    add_target_release_identity(environment)
+    environment["LOAD_TEST_SUBSTANCE_AGENT_SHA256"] = hashlib.sha256(
+        SUBSTANCE_SCRIPT_BLOB
+    ).hexdigest()
+    provisional = RuntimeSettings.from_environment(environment)
+    candidate_blob = candidate_evidence_blob(provisional)
+    receipt_blob = live_deployment_receipt_blob(
+        provisional,
+        candidate_blob,
+        SUBSTANCE_SCRIPT_BLOB,
+    )
+    environment["LOAD_TEST_RELEASE_EVIDENCE_SHA256"] = hashlib.sha256(
+        receipt_blob
+    ).hexdigest()
+    runtime = RuntimeSettings.from_environment(environment)
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        commands.append(command)
+        assert kwargs == {"check": False, "capture_output": True, "timeout": 30}
+        operation = command[3:]
+        if operation == ["remote", "get-url", "origin"]:
+            stdout = b"https://github.com/kiana0512/gpu_control.git\n"
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=b"")
+        if operation == [
+            "ls-remote",
+            "--exit-code",
+            "--refs",
+            "origin",
+            "refs/heads/main",
+        ]:
+            stdout = f"{runtime.release_evidence_commit}\trefs/heads/main\n".encode()
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=b"")
+        if operation == ["rev-parse", "--verify", "HEAD"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=f"{runtime.release_evidence_commit}\n".encode(),
+                stderr=b"",
+            )
+        if operation == ["status", "--porcelain=v1", "--untracked-files=no"]:
+            return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+        if operation[:3] == ["show", "--no-ext-diff", "--no-textconv"]:
+            object_name = operation[3]
+            if object_name.endswith(runtime.release_evidence_path):
+                stdout = receipt_blob
+            elif object_name.endswith("release-candidate-evidence.json"):
+                stdout = candidate_blob
+            elif object_name.endswith("Invoke-GPUControlSubstanceAgent.ps1"):
+                stdout = SUBSTANCE_SCRIPT_BLOB
+            else:
+                raise AssertionError(f"unexpected Git object: {object_name}")
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=b"")
+        if operation == [
+            "merge-base",
+            "--is-ancestor",
+            runtime.source_revision,
+            runtime.release_evidence_commit,
+        ]:
+            return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+        raise AssertionError(f"unexpected Git command: {operation}")
+
+    monkeypatch.setattr(
+        "packages.gpu_control_core.load_testing.subprocess.run",
+        fake_run,
+    )
+
+    verified = verify_remote_load_release_evidence(tmp_path, runtime)
+
+    assert verified["verified"] is True
+    assert verified["evidence_commit"] == runtime.release_evidence_commit
+    assert verified["source_revision"] == runtime.source_revision
+    assert verified["images"]["worker"]["local_image_id"] == runtime.worker_image_digest
+    assert [command[3] for command in commands] == [
+        "remote",
+        "ls-remote",
+        "rev-parse",
+        "status",
+        "show",
+        "merge-base",
+        "show",
+        "show",
+    ]
+    assert all("shell" not in command for command in commands)
+
+
+def test_remote_release_evidence_rejects_candidate_as_live_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = allowed_environment(tmp_path)
+    add_target_release_identity(environment)
+    environment["LOAD_TEST_RELEASE_EVIDENCE_PATH"] = (
+        "artifacts/control-plane/1.5.9/release-parts/"
+        "release-candidate-evidence.json"
+    )
+    runtime = RuntimeSettings.from_environment(environment)
+
+    def unexpected_run(*_: object, **__: object) -> subprocess.CompletedProcess[bytes]:
+        raise AssertionError("Git must not run for a direct candidate anchor")
+
+    monkeypatch.setattr(
+        "packages.gpu_control_core.load_testing.subprocess.run",
+        unexpected_run,
+    )
+    with pytest.raises(LoadTestConfigurationError, match="live deployment receipt"):
+        verify_remote_load_release_evidence(tmp_path, runtime)
+
+
+def test_remote_release_evidence_rejects_environment_digest_self_assertion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = allowed_environment(tmp_path)
+    add_target_release_identity(environment)
+    environment["LOAD_TEST_SUBSTANCE_AGENT_SHA256"] = hashlib.sha256(
+        SUBSTANCE_SCRIPT_BLOB
+    ).hexdigest()
+    provisional = RuntimeSettings.from_environment(environment)
+    candidate_blob = candidate_evidence_blob(provisional)
+    receipt_blob = live_deployment_receipt_blob(
+        provisional,
+        candidate_blob,
+        SUBSTANCE_SCRIPT_BLOB,
+    )
+    environment["LOAD_TEST_RELEASE_EVIDENCE_SHA256"] = hashlib.sha256(
+        receipt_blob
+    ).hexdigest()
+    environment["LOAD_TEST_WORKER_IMAGE_DIGEST"] = f"sha256:{'f' * 64}"
+    runtime = RuntimeSettings.from_environment(environment)
+
+    def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        operation = command[3:]
+        if operation[0] == "remote":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=b"https://github.com/kiana0512/gpu_control.git\n",
+                stderr=b"",
+            )
+        if operation[0] == "ls-remote":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=f"{runtime.release_evidence_commit}\trefs/heads/main\n".encode(),
+                stderr=b"",
+            )
+        if operation[0] == "rev-parse":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=f"{runtime.release_evidence_commit}\n".encode(),
+                stderr=b"",
+            )
+        if operation[0] == "status":
+            return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+        if operation[0] == "show":
+            object_name = operation[3]
+            if object_name.endswith(runtime.release_evidence_path):
+                stdout = receipt_blob
+            elif object_name.endswith("release-candidate-evidence.json"):
+                stdout = candidate_blob
+            else:
+                stdout = SUBSTANCE_SCRIPT_BLOB
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=b"")
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(
+        "packages.gpu_control_core.load_testing.subprocess.run",
+        fake_run,
+    )
+
+    with pytest.raises(LoadTestConfigurationError, match="worker.*remote evidence"):
+        verify_remote_load_release_evidence(tmp_path, runtime)
+
+
+def test_remote_release_evidence_requires_origin_main_tip_and_blob_sha(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = allowed_environment(tmp_path)
+    add_target_release_identity(environment)
+    runtime = RuntimeSettings.from_environment(environment)
+
+    def stale_remote(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        operation = command[3:]
+        stdout = (
+            b"https://github.com/kiana0512/gpu_control.git\n"
+            if operation[0] == "remote"
+            else f"{'d' * 40}\trefs/heads/main\n".encode()
+        )
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=b"")
+
+    monkeypatch.setattr(
+        "packages.gpu_control_core.load_testing.subprocess.run",
+        stale_remote,
+    )
+    with pytest.raises(LoadTestConfigurationError, match="current origin/main"):
+        verify_remote_load_release_evidence(tmp_path, runtime)
+
+    def tampered_blob(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        operation = command[3:]
+        if operation[0] == "remote":
+            stdout = b"https://github.com/kiana0512/gpu_control.git\n"
+        elif operation[0] == "ls-remote":
+            stdout = f"{runtime.release_evidence_commit}\trefs/heads/main\n".encode()
+        elif operation[0] == "rev-parse":
+            stdout = f"{runtime.release_evidence_commit}\n".encode()
+        elif operation[0] == "status":
+            stdout = b""
+        else:
+            stdout = b'{"tampered":true}\n'
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=b"")
+
+    monkeypatch.setattr(
+        "packages.gpu_control_core.load_testing.subprocess.run",
+        tampered_blob,
+    )
+    with pytest.raises(LoadTestConfigurationError, match="SHA-256"):
+        verify_remote_load_release_evidence(tmp_path, runtime)
+
+
+def test_live_deployment_inventory_uses_fixed_docker_and_ssh_argv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = allowed_environment(tmp_path)
+    add_target_release_identity(environment)
+    runtime = RuntimeSettings.from_environment(environment)
+    release = verified_release_evidence(runtime)
+    expected_inventory = runtime.target_release_identity["deployment_inventory"]
+    expected_rows = list(expected_inventory.items())
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        ordinal = len(commands)
+        commands.append(command)
+        assert kwargs == {"check": False, "capture_output": True, "timeout": 20}
+        if ordinal == 7:
+            assert command[-2:] == [
+                "/usr/bin/sha256sum",
+                "/mnt/d/GPUControl/agent/Invoke-GPUControlSubstanceAgent.ps1",
+            ]
+            stdout = (
+                f"{runtime.substance_agent_sha256}  "
+                "/mnt/d/GPUControl/agent/Invoke-GPUControlSubstanceAgent.ps1\n"
+            ).encode()
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=b"")
+        row = expected_rows[ordinal]
+        assert command[-1] == row[1]["container_name"]
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=f"{row[1]['image_id']}\n".encode(),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(
+        "packages.gpu_control_core.load_testing.subprocess.run",
+        fake_run,
+    )
+
+    verified = verify_live_load_deployment(runtime, release)
+
+    assert verified == verified_live_deployment(runtime)
+    assert len(commands) == 8
+    assert all(command[0] == "/usr/bin/docker" for command in commands[:5])
+    assert commands[5] == [
+        "/usr/bin/ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-p",
+        "22",
+        "--",
+        "default@10.3.34.12",
+        "/usr/bin/docker",
+        "inspect",
+        "--type",
+        "container",
+        "--format={{.Image}}",
+        "gpu-control-node-blender-worker-1",
+    ]
+    assert commands[6][10:12] == ["gpucontrol@10.3.34.14", "/usr/bin/docker"]
+
+
+def test_live_deployment_inventory_rejects_one_mismatched_container(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = allowed_environment(tmp_path)
+    add_target_release_identity(environment)
+    runtime = RuntimeSettings.from_environment(environment)
+
+    def wrong_image(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=f"sha256:{'f' * 64}\n".encode(),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(
+        "packages.gpu_control_core.load_testing.subprocess.run",
+        wrong_image,
+    )
+
+    with pytest.raises(LoadTestConfigurationError, match="control-api.*remote"):
+        verify_live_load_deployment(runtime, verified_release_evidence(runtime))
 
 
 def test_session_collision_scan_uses_exact_current_tenant_identities() -> None:
@@ -1523,6 +2152,8 @@ def test_production_target_allows_only_explicit_change_window_gates(tmp_path: Pa
             ),
         }
     )
+    add_production_load_identities(environment)
+    add_target_release_identity(environment)
     provisional = RuntimeSettings.from_environment(environment)
     environment["LOAD_TEST_CONFIRMATION_TOKEN"] = provisional.expected_confirmation_token
     runtime = RuntimeSettings.from_environment(environment)
@@ -1532,6 +2163,87 @@ def test_production_target_allows_only_explicit_change_window_gates(tmp_path: Pa
         fixtures,
         repository_root=Path("/opt/gpu-control"),
         now=now,
+        verified_release_evidence=verified_release_evidence(runtime),
+        verified_live_deployment=verified_live_deployment(runtime),
+    )
+
+
+def test_production_requires_twelve_unique_identity_pairs_and_release_identity(
+    tmp_path: Path,
+) -> None:
+    scenario = load_scenario(write_yaml(tmp_path / "scenario.yaml", scenario_payload()))
+    fixtures = load_fixture_manifest(fixture_manifest(tmp_path))
+    now = datetime.now(UTC)
+    environment = allowed_environment(tmp_path, target="https://10.3.34.11")
+    environment.update(
+        {
+            "LOAD_TEST_ENVIRONMENT": "production",
+            "ALLOW_PRODUCTION_LOAD_TEST": "true",
+            "LOAD_TEST_CHANGE_ID": "CHG-identity-gate",
+            "LOAD_TEST_WINDOW_START": now.isoformat(),
+            "LOAD_TEST_WINDOW_END": (now + timedelta(hours=1)).isoformat(),
+        }
+    )
+    add_production_load_identities(environment, MINIMUM_PRODUCTION_LOAD_IDENTITIES - 1)
+    runtime = RuntimeSettings.from_environment(environment)
+
+    blockers = runtime.execution_blockers(
+        scenario,
+        fixtures,
+        repository_root=Path("/opt/gpu-control"),
+        now=now,
+        validate_backup=False,
+    )
+
+    assert any("at least 12 unique LOAD_TEST_API_KEYS" in item for item in blockers)
+    assert any("LOAD_TEST_SOURCE_REVISION" in item for item in blockers)
+    assert sum("IMAGE_DIGEST" in item for item in blockers) == 5
+
+
+def test_production_window_reserves_teardown_preflight_and_evidence(tmp_path: Path) -> None:
+    scenario = load_scenario(write_yaml(tmp_path / "scenario.yaml", scenario_payload()))
+    fixtures = load_fixture_manifest(fixture_manifest(tmp_path))
+    now = datetime.now(UTC)
+    required_seconds = (
+        scenario.total_duration_seconds
+        + PRODUCTION_TEARDOWN_RESERVE_SECONDS
+        + PRODUCTION_PREFLIGHT_EVIDENCE_RESERVE_SECONDS
+    )
+    environment = allowed_environment(tmp_path, target="https://10.3.34.11")
+    environment.update(
+        {
+            "LOAD_TEST_ENVIRONMENT": "production",
+            "ALLOW_PRODUCTION_LOAD_TEST": "true",
+            "LOAD_TEST_CHANGE_ID": "CHG-window-gate",
+            "LOAD_TEST_WINDOW_START": now.isoformat(),
+            "LOAD_TEST_WINDOW_END": (now + timedelta(seconds=required_seconds - 1)).isoformat(),
+        }
+    )
+    add_production_load_identities(environment)
+    add_target_release_identity(environment)
+    runtime = RuntimeSettings.from_environment(environment)
+
+    blockers = runtime.execution_blockers(
+        scenario,
+        fixtures,
+        repository_root=Path("/opt/gpu-control"),
+        now=now,
+        validate_backup=False,
+    )
+
+    assert any("300 seconds teardown and 540 seconds" in item for item in blockers)
+
+
+def test_formal_six_api_scenario_requires_a_45_minute_window() -> None:
+    scenario = load_scenario(
+        Path(__file__).resolve().parents[2] / "tests/load/scenarios/six_api_120_20260803.yaml"
+    )
+
+    assert (
+        scenario.total_duration_seconds
+        + PRODUCTION_TEARDOWN_RESERVE_SECONDS
+        + PRODUCTION_PREFLIGHT_EVIDENCE_RESERVE_SECONDS
+        == 45 * 60
     )
 
 
@@ -1788,6 +2500,9 @@ def test_plan_redacts_secrets_and_exposes_resource_mix(tmp_path: Path) -> None:
     scenario = load_scenario(write_yaml(tmp_path / "scenario.yaml", scenario_payload()))
     fixtures = load_fixture_manifest(fixture_manifest(tmp_path))
     environment = allowed_environment(tmp_path)
+    add_target_release_identity(environment)
+    provisional = RuntimeSettings.from_environment(environment)
+    environment["LOAD_TEST_CONFIRMATION_TOKEN"] = provisional.expected_confirmation_token
     runtime = RuntimeSettings.from_environment(environment)
     plan = build_plan(
         runtime,
@@ -1800,10 +2515,53 @@ def test_plan_redacts_secrets_and_exposes_resource_mix(tmp_path: Path) -> None:
     assert "gpc_test_one" not in serialized
     assert "read-only-admin-token" not in serialized
     assert plan["secret_inventory"]["api_key_count"] == 2
+    assert plan["secret_inventory"]["unique_api_key_count"] == 2
+    assert plan["target_release_identity"] == runtime.target_release_identity
     assert plan["scenario"]["resource_mix"] == {
         "gpu_consuming": 0.5,
         "cpu": 0.5,
     }
+
+
+def test_result_manifest_cannot_claim_external_acceptance_before_git_publish(
+    tmp_path: Path,
+) -> None:
+    result_dir = tmp_path / "result"
+    result_dir.mkdir()
+    (result_dir / "summary.json").write_text("{}\n", encoding="utf-8")
+
+    write_result_manifest(result_dir, session_id="session-1")
+
+    manifest = json.loads((result_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["external_anchor_status"] == "PENDING_GIT_PUBLISH"
+    assert manifest["production_acceptance_eligible"] is False
+
+
+def test_locust_records_terminal_json_artifact_sha_evidence_and_release_identity() -> None:
+    source_path = Path(__file__).resolve().parents[2] / "tests/load/locustfile.py"
+    source = source_path.read_text(encoding="utf-8")
+    runner_source = (
+        Path(__file__).resolve().parents[2] / "scripts/run_six_api_load.py"
+    ).read_text(encoding="utf-8")
+
+    for required_field in (
+        "raw_terminal_status_json",
+        "artifact_listing_metadata",
+        "artifact_evidence",
+        "target_release_identity",
+        "release_evidence_verification",
+        "live_deployment_verification",
+        "final_live_deployment_verification",
+        "stable_since_start",
+        "PENDING_GIT_PUBLISH",
+        "build_load_artifact_evidence",
+        '"artifact.verified"',
+        "**artifact_evidence",
+    ):
+        assert required_field in source
+    assert "postrun-deployment.json" in runner_source
+    assert "verify_live_load_deployment" in runner_source
+    assert "stable_since_start" in runner_source
 
 
 def test_summary_reports_required_percentiles_retries_and_nodes() -> None:

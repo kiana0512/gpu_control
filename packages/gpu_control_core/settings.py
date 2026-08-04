@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     default_tenant_max_queued: int = Field(20, ge=1, le=10_000)
     default_tenant_max_running: int = Field(1, ge=1, le=10)
     system_max_queued: int = Field(500, ge=1, le=100_000)
+    system_production_queue_reserve: int = Field(50, ge=1, le=100_000)
     priority_aging_seconds: int = Field(300, ge=10, le=86_400)
     overflow_queue_threshold: int = Field(20, ge=1, le=100_000)
     overflow_wait_threshold_seconds: int = Field(120, ge=1, le=86_400)
@@ -102,6 +103,19 @@ class Settings(BaseSettings):
             "control-4090": self.node_agent_hmac_secret_control_4090,
         }
         return per_node.get(node_id) or self.node_agent_hmac_secret
+
+    @property
+    def test_system_max_queued(self) -> int:
+        """Maximum shared GPU queue depth that synthetic traffic may occupy.
+
+        Keep the reserve inside ``system_max_queued`` even when an existing
+        deployment uses a smaller system limit than the new default reserve.
+        This makes the setting backward-compatible while failing closed for
+        test traffic when the configured queue is only one slot deep.
+        """
+
+        reserve = min(self.system_production_queue_reserve, self.system_max_queued)
+        return max(0, self.system_max_queued - reserve)
 
     @property
     def callback_hosts(self) -> set[str]:

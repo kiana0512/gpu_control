@@ -696,6 +696,78 @@ async def test_test_idempotency_replay_remains_available_after_preemption(
         assert rejected.status_code == 503, rejected.text
 
 
+async def test_test_jobs_and_batches_stop_before_production_queue_reserve(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        app.state.settings.system_max_queued = 4
+        app.state.settings.system_production_queue_reserve = 2
+        await install_imageclip_batch_workflow(app)
+        async with app.state.db.session() as db:
+            load_client = await db.get(ApiClient, "tenant-b")
+            assert load_client is not None
+            load_client.client_kind = "test"
+            now = datetime.now(UTC)
+            for index in range(2):
+                db.add(
+                    Job(
+                        id=f"queued-test-{index}",
+                        tenant_id="tenant-b",
+                        workflow_key="fake",
+                        workflow_version="1",
+                        status="QUEUED",
+                        priority="normal",
+                        parameters={},
+                        request_hash=f"queued-test-{index}",
+                        request_id=f"queued-test-{index}",
+                        trace_id=f"queued-test-{index}",
+                        job_dir=str(tmp_path / f"queued-test-{index}"),
+                        created_at=now - timedelta(minutes=1),
+                    )
+                )
+            await db.commit()
+
+        test_headers = {"X-API-Key": "gpc_tenantb1_secret-b"}
+        rejected_job = await client.post(
+            "/api/v1/jobs",
+            headers=test_headers,
+            files={
+                "workflow_key": (None, "fake"),
+                "workflow_version": (None, "1"),
+                "parameters": (None, '{"steps":20}'),
+            },
+        )
+        assert rejected_job.status_code == 429, rejected_job.text
+        assert rejected_job.json()["detail"]["reason"] == "PRODUCTION_QUEUE_RESERVED"
+
+        rejected_batch = await client.post(
+            "/api/v1/batches/imageclip-rgba",
+            headers={
+                **test_headers,
+                "Idempotency-Key": "test-batch-reserve",
+            },
+            files=imageclip_batch_files("test-batch-reserve"),
+        )
+        assert rejected_batch.status_code == 429, rejected_batch.text
+        assert rejected_batch.json()["detail"]["reason"] == "PRODUCTION_QUEUE_RESERVED"
+
+        production = await client.post(
+            "/api/v1/jobs",
+            headers={"X-API-Key": "gpc_abcd1234_secret"},
+            files={
+                "workflow_key": (None, "fake"),
+                "workflow_version": (None, "1"),
+                "parameters": (None, '{"steps":20}'),
+            },
+        )
+        assert production.status_code == 202, production.text
+        async with app.state.db.session() as db:
+            queued = await db.scalar(
+                select(func.count(Job.id)).where(Job.status == "QUEUED")
+            )
+        assert queued == 3
+
+
 async def test_active_production_asset_work_preempts_new_test_batch(
     tmp_path: Path,
 ) -> None:
@@ -2044,7 +2116,7 @@ async def test_admin_nodes_selects_linux_codex_worker_not_newer_windows_baker(
                         hostname="LILITHGAMES3",
                         status="ONLINE",
                         blender_version="substance-15.1.0",
-                        skill_version="substance-baker-2026.08.03-v5",
+                        skill_version="substance-baker-2026.08.03-v6",
                         max_concurrency=1,
                         current_jobs=0,
                         cpu_count=64,
@@ -2378,7 +2450,7 @@ async def test_admin_asset_processing_reports_full_substance_capacity(
                         hostname="3090-b-windows",
                         status="ONLINE",
                         blender_version="substance-15.1.0",
-                        skill_version="substance-baker-2026.08.03-v5",
+                        skill_version="substance-baker-2026.08.03-v6",
                         max_concurrency=1,
                         current_jobs=0,
                         cpu_count=64,

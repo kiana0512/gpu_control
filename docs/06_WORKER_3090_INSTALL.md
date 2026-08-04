@@ -4,8 +4,9 @@
 `/opt/imageclip` 与 `/opt/modelviewcreator` 两个独立 Git 工程。今天接入请优先按
 [3090 节点交接手册](33_3090_NODE_DEPLOYMENT_HANDOFF.md) 执行；本页保留分角色摘要。
 
-当前有效基线为 GPU Control `1.5.4`、ComfyUI `projects-0.2.3`；3090-A/3090-B
-均应注册为 `ONLINE/ACTIVE`，4090 主控保持 `ONLINE/OVERFLOW`。
+应用版本必须以 README 顶部的当前运行快照和最新发布记录为准，不得继续把历史 `1.5.4` 写成
+现行基线；ComfyUI 批准镜像仍须按交接记录做逐节点 SHA/身份校验。3090-A/3090-B 应注册为
+`ONLINE/ACTIVE`，4090 主控保持 `ONLINE/OVERFLOW`。
 
 1. 在 3090 克隆或同步当前 GPU Control 源码到 `/opt/gpu-control`。
 2. `cd /opt/gpu-control && sudo scripts/bootstrap_gpu_node.sh`。脚本会安装 Docker、Git LFS、rsync，并创建运行目录。
@@ -16,13 +17,17 @@
 7. 复制 `.env.node.example` 为 `.env`，填写本机与主控 IP。两台节点分别使用自己的 `NODE_ID/NODE_BIND_IP`；`NODE_AGENT_HMAC_SECRET` 使用主控为该节点生成的值。
 8. `sudo scripts/configure_ufw_gpu_node.sh --control-ip 10.3.34.11 --ssh-cidr ADMIN_CIDR`；配置 UFW 时保留第二个 SSH 会话。
 9. `sudo scripts/install_node_agent.sh --role node`，检查 `curl -fsS http://127.0.0.1:9201/health/live` 与 `systemctl status gpu-node-agent`。
-10. `GPU_CONTROL_ROLE=node scripts/gpuctl doctor`，然后 `GPU_CONTROL_ROLE=node scripts/gpuctl deploy node`。
+10. `GPU_CONTROL_ROLE=node scripts/gpuctl doctor`，然后执行
+    `GPU_CONTROL_ROLE=node scripts/gpuctl deploy node --build-worker-only`。该命令不激活 Worker 或
+    ComfyUI；只有节点已 `DRAINING` 且 `current_jobs=0` 时，才按当前发布手册单独更新
+    `blender-worker` service。
 11. 从 4090 检查 `8188/system_stats`、`9100/metrics`、`9400/metrics` 与 `9201/health/ready`。
 
-失败回滚只停止节点 Compose：
+失败回滚只处理 Blender Worker，不停止节点 ComfyUI：
 
 ```bash
-docker compose --env-file .env -f deploy/gpu-node/compose.yaml down
+docker compose --env-file .env -f deploy/gpu-node/compose.yaml stop blender-worker
 ```
 
-不要使用 `down -v`，不要删除镜像、两个项目、模型或 `/srv/comfyui/runtime`。
+不要使用无 service 范围的 `down` 或 `down -v`，不要删除镜像、两个项目、模型或
+`/srv/comfyui/runtime`。

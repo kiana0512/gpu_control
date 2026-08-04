@@ -18,7 +18,8 @@ GPU Control 统一启动器
   gpuctl comfy build|start|stop|restart|status|logs|shell
   gpuctl image export|import [脚本参数]
   gpuctl models sync|verify [脚本参数]
-  gpuctl deploy control|node
+  gpuctl deploy control --build-only
+  gpuctl deploy node --build-worker-only
   gpuctl diagnostics [job JOB_ID]
   gpuctl workflow import|validate|diff|enable|disable|test ...
 可设置 GPUCTL_YES=true 跳过已标记的确认（自动化环境使用）。
@@ -55,7 +56,13 @@ case "${1:-}" in
       *) usage; exit 2;; esac ;;
   image) action="${2:-}"; shift 2 || true; [[ "${action}" == export ]] && run "${script_dir}/export_comfyui_image.sh" "$@" || { [[ "${action}" == import ]] && run "${script_dir}/import_comfyui_image.sh" "$@" || { usage; exit 2; }; } ;;
   models) action="${2:-}"; shift 2 || true; [[ "${action}" == sync ]] && run "${script_dir}/sync_models.sh" "$@" || { [[ "${action}" == verify ]] && run "${script_dir}/verify_comfy_projects.sh" "$@" || { usage; exit 2; }; } ;;
-  deploy) role="${2:-}"; [[ "${role}" == control ]] && run "${script_dir}/deploy_control.sh" || { [[ "${role}" == node ]] && run "${script_dir}/deploy_node.sh" || { usage; exit 2; }; } ;;
+  deploy)
+    role="${2:-}"; shift 2 || true
+    case "${role}" in
+      control) run "${script_dir}/deploy_control.sh" "$@" ;;
+      node) run "${script_dir}/deploy_node.sh" "$@" ;;
+      *) usage; exit 2 ;;
+    esac ;;
   diagnostics) shift; run "${script_dir}/collect_diagnostics.sh" "$@" ;;
   workflow) shift; run python3 -m packages.gpu_control_core.workflow_cli "$@" ;;
   -h|--help|'') usage ;;

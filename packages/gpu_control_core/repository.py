@@ -4,9 +4,10 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, case, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .database import ADMISSION_LOCK_ID
 from .enums import TERMINAL_JOB_STATUSES, JobStatus, NodeMode, Priority
 from .models import (
     ApiClient,
@@ -190,6 +191,17 @@ async def claim_next_job(
     batch_max_running: int = 3,
 ) -> tuple[Job, NodeLease] | None:
     now = datetime.now(UTC)
+    # Claim selection shares the global admission transaction lock with API
+    # inserts and the batch feeder.  On PostgreSQL this serializes concurrent
+    # node claims at the exact production/test decision point, so SKIP LOCKED
+    # can never make a second claimant mistake production rows locked by the
+    # first claimant for an idle-capacity condition.  SQLite test/dev remains
+    # a no-op, matching Database.acquire_global_admission_transaction_lock.
+    if session.bind is not None and session.bind.dialect.name == "postgresql":
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_id)"),
+            {"lock_id": ADMISSION_LOCK_ID},
+        )
     node = await session.scalar(select(Node).where(Node.id == node_id).with_for_update())
     if node is None:
         return None
@@ -226,6 +238,7 @@ async def claim_next_job(
                         WorkflowVersion.enabled.is_(True),
                     ),
                 )
+                .outerjoin(ApiClient, ApiClient.id == Job.tenant_id)
                 .join(
                     WorkflowNodeCompatibility,
                     and_(
@@ -239,9 +252,26 @@ async def claim_next_job(
                 # work. Recovery must reconcile that intent with Comfy first.
                 .where(Job.submission_intent_at.is_(None))
                 .where((Job.not_before.is_(None)) | (Job.not_before <= now))
-                .order_by(Job.pinned.desc(), Job.created_at.asc())
+                # Classify before LIMIT and before row locking. Unknown/missing
+                # clients fail closed as production. This prevents hundreds of
+                # older synthetic rows from hiding a newly queued real job.
+                .order_by(
+                    case(
+                        (
+                            or_(
+                                ApiClient.id.is_(None),
+                                ApiClient.client_kind != "test",
+                            ),
+                            0,
+                        ),
+                        else_=1,
+                    ),
+                    Job.pinned.desc(),
+                    Job.created_at.asc(),
+                    Job.id.asc(),
+                )
                 .limit(200)
-                .with_for_update(skip_locked=True)
+                .with_for_update(skip_locked=True, of=Job)
             )
         ).all()
     )

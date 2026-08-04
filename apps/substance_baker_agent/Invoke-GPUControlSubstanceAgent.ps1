@@ -26,6 +26,7 @@ $WslDockerExe = '/usr/bin/docker'
 $CurlExe = 'C:\Windows\System32\curl.exe'
 $CurrentJobs = 0
 $ComfyContinuityError = 'SUBSTANCE_COMFYUI_CONTINUITY_FAILED'
+$BakerTerminationError = 'SUBSTANCE_BAKER_TERMINATION_UNCONFIRMED'
 $AgentInstanceId = [Guid]::NewGuid().ToString('N')
 $AgentStartedAt = [DateTimeOffset]::UtcNow.ToString('o')
 $AgentMutexName = "Global\GPUControl.SubstanceAgent.$WorkerId"
@@ -121,7 +122,7 @@ function Send-Heartbeat {
     $payload = [ordered]@{
         worker_id = $WorkerId; node_id = $NodeId
         display_name = ('3090-B Windows Substance Baker #{0:D2}' -f $InstanceId); hostname = $env:COMPUTERNAME
-        blender_version = 'substance-15.1.0'; skill_version = 'substance-baker-2026.08.03-v5'
+        blender_version = 'substance-15.1.0'; skill_version = 'substance-baker-2026.08.03-v6'
         cpu_count = [Environment]::ProcessorCount; max_concurrency = 1
         current_jobs = $script:CurrentJobs; load_1m = 0; available_memory_mb = $availableMb
         agent_instance_id = $AgentInstanceId; agent_started_at = $AgentStartedAt
@@ -285,14 +286,32 @@ function Get-FileSha256WithLeaseRenewal(
 }
 
 function Stop-BakerProcess($Process) {
-    if ($null -eq $Process) { return }
+    if ($null -eq $Process) { return $true }
     try {
+        $Process.Refresh()
+        if ($Process.HasExited) { return $true }
+        $Process.Kill()
+    }
+    catch {
+        throw "${BakerTerminationError}: Kill() failed: $($_.Exception.Message)"
+    }
+    try {
+        if (-not $Process.WaitForExit(10000)) {
+            throw "${BakerTerminationError}: process did not exit within 10 seconds after Kill()"
+        }
+        # Refresh and re-read HasExited instead of treating WaitForExit's
+        # return value alone as proof.  An unverified native process must keep
+        # the server-side physical-GPU recovery fence installed.
+        $Process.Refresh()
         if (-not $Process.HasExited) {
-            $Process.Kill()
-            $null = $Process.WaitForExit(10000)
+            throw "${BakerTerminationError}: process remained active after WaitForExit()"
         }
     }
-    catch { Write-Warning "failed to stop Substance Baker process: $($_.Exception.Message)" }
+    catch {
+        if ($_.Exception.Message.StartsWith($BakerTerminationError)) { throw }
+        throw "${BakerTerminationError}: exit verification failed: $($_.Exception.Message)"
+    }
+    return $true
 }
 
 function Stop-CompletionUploadProcess($Process) {
@@ -377,8 +396,13 @@ function Invoke-BakerCommand(
         $exitCode = $process.ExitCode
     }
     catch {
-        Stop-BakerProcess $process
-        throw
+        # Preserve the original execution failure only after native-process
+        # termination is positively verified.  Stop-BakerProcess throws the
+        # dedicated recovery-required error when Kill/WaitForExit/HasExited
+        # cannot prove that the GPU process is gone.
+        $commandFailureMessage = $_.Exception.Message
+        $null = Stop-BakerProcess $process
+        throw $commandFailureMessage
     }
     finally {
         foreach ($processLog in @($stdoutPath, $stderrPath)) {
@@ -698,23 +722,34 @@ function Execute-Bake($Job) {
     catch {
         $failureMessage = $_.Exception.Message
         $cacheContinuityFailure = $failureMessage.StartsWith($ComfyContinuityError)
+        $terminationUnconfirmed = $failureMessage.StartsWith($BakerTerminationError)
         if ($fenceEntered) {
-            try {
-                Exit-BakerGpuFence $jobId $comfyProcessIdentity
-                $fenceEntered = $false
-            }
-            catch {
-                $cacheContinuityFailure = $true
-                $failureMessage = $_.Exception.Message
-                Write-Error -ErrorAction Continue $_
+            if (-not $terminationUnconfirmed) {
+                try {
+                    Exit-BakerGpuFence $jobId $comfyProcessIdentity
+                    $fenceEntered = $false
+                }
+                catch {
+                    $cacheContinuityFailure = $true
+                    $failureMessage = $_.Exception.Message
+                    Write-Error -ErrorAction Continue $_
+                }
             }
         }
         try {
-            $failureCode = if ($cacheContinuityFailure) { $ComfyContinuityError } else { 'SUBSTANCE_EXECUTION_FAILED' }
+            $failureCode = if ($terminationUnconfirmed) {
+                $BakerTerminationError
+            }
+            elseif ($cacheContinuityFailure) {
+                $ComfyContinuityError
+            }
+            else {
+                'SUBSTANCE_EXECUTION_FAILED'
+            }
             $null = Invoke-LeasedJsonPost "/internal/v1/assets/jobs/$jobId/fail" $lease ([ordered]@{
                 code = $failureCode
                 message = $failureMessage.Substring(0, [Math]::Min(3900, $failureMessage.Length))
-                retryable = -not $cacheContinuityFailure
+                retryable = -not ($cacheContinuityFailure -or $terminationUnconfirmed)
             })
         } catch { Write-Error $_ }
         throw $failureMessage

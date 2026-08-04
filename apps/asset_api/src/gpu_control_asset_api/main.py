@@ -22,7 +22,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import UploadFile as StarletteUploadFile
@@ -144,6 +144,35 @@ class AssetCompletionSnapshot:
     options: dict[str, Any]
 
 
+async def decrement_asset_worker_jobs_atomic(
+    db: AsyncSession,
+    worker_id: str | None,
+) -> None:
+    """Release one durable Worker slot without overwriting a concurrent claim.
+
+    Terminal/retry callers keep their assigned ``AssetJob`` row locked and
+    non-QUEUED until this statement has executed.  Claims serialize on the
+    Worker row and only try to lock QUEUED jobs, so that state partition cannot
+    form a Worker -> Job / Job -> Worker deadlock cycle.  The in-database
+    arithmetic also preserves a claim increment that commits before this
+    decrement and clamps stale counters at zero.
+    """
+
+    if worker_id is None:
+        return
+    await db.execute(
+        update(AssetWorker)
+        .where(AssetWorker.id == worker_id)
+        .values(
+            current_jobs=case(
+                (AssetWorker.current_jobs > 0, AssetWorker.current_jobs - 1),
+                else_=0,
+            )
+        )
+        .execution_options(synchronize_session=False)
+    )
+
+
 async def persist_completion_upload(
     upload: UploadFile | StarletteUploadFile,
     destination: Path,
@@ -177,7 +206,7 @@ def fsync_completion_staging(staging: Path) -> None:
 
 
 SUBSTANCE_VERSION = "substance-15.1.0"
-SUBSTANCE_SKILL_VERSION = "substance-baker-2026.08.03-v5"
+SUBSTANCE_SKILL_VERSION = "substance-baker-2026.08.03-v6"
 RETOPOLOGY_AUDIT_ARTIFACTS = {
     "audit": ("retopology_audit.json", "application/json"),
     "manifest": ("retopology_manifest.json", "application/json"),
@@ -301,14 +330,38 @@ def is_substance_worker_id(worker_id: str | None) -> bool:
     )
 
 
+def substance_process_counts_consistent(
+    *,
+    reported_worker_jobs: int,
+    durable_worker_jobs: int,
+    active_host_processes: int | None,
+    durable_host_jobs: int,
+) -> bool:
+    """Reject stale local counters and unowned native Baker processes.
+
+    ``substance_active_processes`` is deliberately host-wide, while
+    ``current_jobs`` is scoped to one stable Worker ID.  Consequently an idle
+    sibling may legitimately observe a process owned by another Worker.  The
+    two unsafe contradictions are narrower: this Worker disagrees with its
+    own durable lease count, or the host reports more native processes than
+    all live durable Substance leases can account for.
+    """
+
+    return (
+        reported_worker_jobs == durable_worker_jobs
+        and active_host_processes is not None
+        and active_host_processes <= durable_host_jobs
+    )
+
+
 async def production_gpu_work_active(db: AsyncSession) -> bool:
     """Return whether real GPU work must take precedence over load-test Baker work."""
     terminal_jobs = [status.value for status in TERMINAL_JOB_STATUSES]
     active_job = await db.scalar(
         select(Job.id)
-        .join(ApiClient, ApiClient.id == Job.tenant_id)
+        .outerjoin(ApiClient, ApiClient.id == Job.tenant_id)
         .where(
-            ApiClient.client_kind != "test",
+            or_(ApiClient.id.is_(None), ApiClient.client_kind != "test"),
             Job.status.not_in(terminal_jobs),
         )
         .limit(1)
@@ -318,9 +371,9 @@ async def production_gpu_work_active(db: AsyncSession) -> bool:
     terminal_batches = [status.value for status in TERMINAL_BATCH_STATUSES]
     active_batch = await db.scalar(
         select(JobBatch.id)
-        .join(ApiClient, ApiClient.id == JobBatch.tenant_id)
+        .outerjoin(ApiClient, ApiClient.id == JobBatch.tenant_id)
         .where(
-            ApiClient.client_kind != "test",
+            or_(ApiClient.id.is_(None), ApiClient.client_kind != "test"),
             JobBatch.status.not_in(terminal_batches),
         )
         .limit(1)
@@ -2168,6 +2221,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if job.lease_expires_at is None
             or as_utc(job.lease_expires_at) >= heartbeat_at
         )
+        durable_substance_host_jobs = durable_current_jobs
+        if is_substance_worker_id(body.worker_id):
+            # ``substance_active_processes`` is a host-wide Win32 probe.  The
+            # physical Node lock serializes this snapshot with every Baker
+            # claim/completion/failure, so an excess native-process count is
+            # evidence of an orphan rather than usable capacity.
+            host_jobs = list(
+                (
+                    await db.scalars(
+                        select(AssetJob).where(
+                            AssetJob.job_type == "SUBSTANCE_BAKE_V1",
+                            AssetJob.status.in_(["CLAIMED", "RUNNING", "CANCELLING"]),
+                        )
+                    )
+                ).all()
+            )
+            durable_substance_host_jobs = sum(
+                1
+                for job in host_jobs
+                if job.lease_expires_at is None
+                or as_utc(job.lease_expires_at) >= heartbeat_at
+            )
         if worker is not None:
             stored_started_at = (
                 as_utc(worker.agent_started_at) if worker.agent_started_at is not None else None
@@ -2268,6 +2343,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             and process_checked_at
             >= heartbeat_at - timedelta(seconds=cfg.asset_worker_heartbeat_timeout_seconds)
             and process_checked_at <= heartbeat_at + timedelta(seconds=30)
+            and substance_process_counts_consistent(
+                reported_worker_jobs=body.current_jobs,
+                durable_worker_jobs=durable_current_jobs,
+                active_host_processes=body.substance_active_processes,
+                durable_host_jobs=durable_substance_host_jobs,
+            )
         )
         generation_evidence_ok = (
             body.agent_instance_id is not None
@@ -2286,7 +2367,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await confirm_substance_gpu_recovery(
                 db,
                 worker,
-                worker.current_jobs,
+                body.current_jobs,
                 body.agent_instance_id,
                 body.substance_process_probe_status,
                 body.substance_process_probe_checked_at,
@@ -2363,13 +2444,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         expired = [*expired_substance, *expired_non_substance]
         for stale in expired:
             expired_at = datetime.now(UTC)
+            assigned_worker_id = stale.worker_id
             previous_worker_id = str(stale.worker_id or "unknown")
-            previous_worker = (
-                await db.get(AssetWorker, stale.worker_id) if stale.worker_id else None
-            )
             substance_expired = stale.job_type == "SUBSTANCE_BAKE_V1"
-            if previous_worker is not None:
-                previous_worker.current_jobs = max(0, previous_worker.current_jobs - 1)
+            # ``stale`` is still locked and not visible as QUEUED here.  A
+            # concurrent claim may already have incremented this Worker, so
+            # release the old slot with in-database arithmetic rather than a
+            # stale ORM snapshot assignment.
+            await decrement_asset_worker_jobs_atomic(db, assigned_worker_id)
             if stale.cancel_requested:
                 stale.status = "CANCELLED"
                 stale.stage = "CANCELLED"
@@ -2744,10 +2826,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         snapshot: AssetCompletionSnapshot,
         token: str,
         db: AsyncSession,
-    ) -> tuple[AssetJob, AssetWorker | None]:
-        """Revalidate completion ownership in the global publication lock order."""
+    ) -> AssetJob:
+        """Revalidate completion ownership without taking a Worker snapshot."""
 
-        # Substance: Node -> Job -> Worker. Other asset work: Job -> Worker.
+        # The terminal counter mutation is a single in-database arithmetic
+        # UPDATE after this Job lock.  Loading AssetWorker here and later
+        # assigning a Python snapshot can overwrite a concurrent claim.
         job = await leased_job(
             snapshot.id,
             token,
@@ -2756,17 +2840,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         if job.job_type != snapshot.job_type or job.worker_id != snapshot.worker_id:
             raise HTTPException(409, detail={"code": "ASSET_LEASE_INVALID"})
-        worker = None
-        if job.worker_id:
-            worker = await db.scalar(
-                select(AssetWorker).where(AssetWorker.id == job.worker_id).with_for_update()
-            )
-        return job, worker
+        return job
 
     async def cancel_at_completion_safe_point(
         db: AsyncSession,
         job: AssetJob,
-        worker: AssetWorker | None,
     ) -> dict[str, Any] | None:
         """Finalize a requested cancellation before any artifact is published."""
         if not job.cancel_requested:
@@ -2780,8 +2858,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job.finished_at = now
         job.lease_token_hash = None
         job.lease_expires_at = None
-        if worker is not None:
-            worker.current_jobs = max(0, worker.current_jobs - 1)
+        await decrement_asset_worker_jobs_atomic(db, job.worker_id)
         await release_substance_gpu_fence(
             db,
             job,
@@ -2878,8 +2955,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not isinstance(hard_failures, list) or hard_failures:
                 raise HTTPException(422, detail={"code": "ASSET_QA_FAILED"})
             fsync_completion_staging(staging)
-            job, worker = await lock_asset_completion_for_publish(snapshot, lease, db)
-            cancelled = await cancel_at_completion_safe_point(db, job, worker)
+            job = await lock_asset_completion_for_publish(snapshot, lease, db)
+            cancelled = await cancel_at_completion_safe_point(db, job)
             if cancelled is not None:
                 return cancelled
             db.add_all(created)
@@ -2892,8 +2969,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.finished_at = datetime.now(UTC)
             job.lease_expires_at = None
             job.lease_token_hash = None
-            if worker is not None:
-                worker.current_jobs = max(0, worker.current_jobs - 1)
+            await decrement_asset_worker_jobs_atomic(db, job.worker_id)
             await append_asset_event(db, job, details={"event": "asset.succeeded"})
             await db.commit()
             committed = True
@@ -2963,8 +3039,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ):
                 raise HTTPException(422, detail={"code": "RETOPOLOGY_MANIFEST_MISMATCH"})
             fsync_completion_staging(staging)
-            job, worker = await lock_asset_completion_for_publish(snapshot, lease, db)
-            cancelled = await cancel_at_completion_safe_point(db, job, worker)
+            job = await lock_asset_completion_for_publish(snapshot, lease, db)
+            cancelled = await cancel_at_completion_safe_point(db, job)
             if cancelled is not None:
                 return cancelled
             db.add_all(created)
@@ -2989,8 +3065,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             job.lease_expires_at = None
             job.lease_token_hash = None
-            if worker is not None:
-                worker.current_jobs = max(0, worker.current_jobs - 1)
+            await decrement_asset_worker_jobs_atomic(db, job.worker_id)
             await release_substance_gpu_fence(
                 db,
                 job,
@@ -3196,8 +3271,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         detail={"code": "RETOPOLOGY_REVIEW_IMAGE_INVALID", "filename": filename},
                     ) from exc
             fsync_completion_staging(staging)
-            job, worker = await lock_asset_completion_for_publish(snapshot, lease, db)
-            cancelled = await cancel_at_completion_safe_point(db, job, worker)
+            job = await lock_asset_completion_for_publish(snapshot, lease, db)
+            cancelled = await cancel_at_completion_safe_point(db, job)
             if cancelled is not None:
                 return cancelled
             db.add_all(created)
@@ -3271,8 +3346,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             job.lease_expires_at = None
             job.lease_token_hash = None
-            if worker is not None:
-                worker.current_jobs = max(0, worker.current_jobs - 1)
+            await decrement_asset_worker_jobs_atomic(db, job.worker_id)
             await release_substance_gpu_fence(
                 db,
                 job,
@@ -3411,8 +3485,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not quality_passed and not advisory_warning:
                 raise HTTPException(422, detail={"code": "ASSET_QA_FAILED", "qa": failed_qa[0]})
             fsync_completion_staging(staging)
-            job, worker = await lock_asset_completion_for_publish(snapshot, lease, db)
-            cancelled = await cancel_at_completion_safe_point(db, job, worker)
+            job = await lock_asset_completion_for_publish(snapshot, lease, db)
+            cancelled = await cancel_at_completion_safe_point(db, job)
             if cancelled is not None:
                 return cancelled
             db.add_all(created)
@@ -3442,8 +3516,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.error_message = None
             job.lease_expires_at = None
             job.lease_token_hash = None
-            if worker is not None:
-                worker.current_jobs = max(0, worker.current_jobs - 1)
+            await decrement_asset_worker_jobs_atomic(db, job.worker_id)
             await append_asset_event(
                 db,
                 job,
@@ -3631,8 +3704,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(422, detail={"code": "SUBSTANCE_RESULT_INVALID"})
 
             fsync_completion_staging(staging)
-            job, worker = await lock_asset_completion_for_publish(snapshot, lease, db)
-            cancelled = await cancel_at_completion_safe_point(db, job, worker)
+            job = await lock_asset_completion_for_publish(snapshot, lease, db)
+            cancelled = await cancel_at_completion_safe_point(db, job)
             if cancelled is not None:
                 return cancelled
             db.add_all(created)
@@ -3645,8 +3718,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.finished_at = datetime.now(UTC)
             job.lease_expires_at = None
             job.lease_token_hash = None
-            if worker is not None:
-                worker.current_jobs = max(0, worker.current_jobs - 1)
+            await decrement_asset_worker_jobs_atomic(db, job.worker_id)
             await release_substance_gpu_fence(
                 db,
                 job,
@@ -3681,19 +3753,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         previous_worker_instance_id = job.worker_instance_id
         requires_runtime_recovery = (
             job.job_type == "SUBSTANCE_BAKE_V1"
-            and body.code == "SUBSTANCE_COMFYUI_CONTINUITY_FAILED"
+            and body.code
+            in {
+                "SUBSTANCE_COMFYUI_CONTINUITY_FAILED",
+                "SUBSTANCE_BAKER_TERMINATION_UNCONFIRMED",
+            }
             and previous_worker_id is not None
         )
-        worker = await db.get(AssetWorker, job.worker_id) if job.worker_id else None
-        if worker is not None:
-            worker.current_jobs = max(0, worker.current_jobs - 1)
-        if job.cancel_requested:
+        effective_retryable = body.retryable and not requires_runtime_recovery
+        await decrement_asset_worker_jobs_atomic(db, previous_worker_id)
+        if requires_runtime_recovery:
+            # An ambiguous native process may still own the physical GPU.
+            # Never requeue this attempt, even if the Agent marks the failure
+            # retryable; preserve its Worker identity for recovery evidence.
+            job.status = "FAILED"
+            job.stage = "RECOVERY_REQUIRED"
+            job.stage_message = (
+                "Substance Worker 终止或 ComfyUI 连续性无法确认；等待宿主恢复证据"
+            )
+            job.estimated_remaining_seconds = 0
+            job.finished_at = datetime.now(UTC)
+        elif job.cancel_requested:
             job.status = "CANCELLED"
             job.stage = "CANCELLED"
             job.stage_message = "任务已在 Worker 安全点取消"
             job.estimated_remaining_seconds = 0
             job.finished_at = datetime.now(UTC)
-        elif body.retryable and job.attempt_count < cfg.asset_job_max_attempts:
+        elif effective_retryable and job.attempt_count < cfg.asset_job_max_attempts:
             job.status = "QUEUED"
             job.stage = "RETRY_QUEUED"
             job.stage_message = "执行失败，任务已按策略返回队列重试"
@@ -3737,7 +3823,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     else "asset.retry_queued"
                 ),
                 "error_code": body.code,
-                "retryable": body.retryable,
+                "retryable": effective_retryable,
+                "reported_retryable": body.retryable,
                 "recovery_required": requires_runtime_recovery,
                 "worker_instance_id": previous_worker_instance_id,
             },

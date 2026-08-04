@@ -1197,7 +1197,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     },
                     200,
                 )
-        if await client_is_load_test(db, principal.id) and await active_production_work_exists(db):
+        is_load_test = await client_is_load_test(db, principal.id)
+        if is_load_test and await active_production_work_exists(db):
             storage.remove_tree(root)
             raise HTTPException(
                 503,
@@ -1225,11 +1226,25 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             raise HTTPException(
                 429, detail={"code": "RATE_LIMITED", "message": "今日任务配额已用完"}
             )
-        if int(queued or 0) >= cfg.system_max_queued or int(tenant_queued or 0) >= (
+        system_queue_limit = (
+            cfg.test_system_max_queued if is_load_test else cfg.system_max_queued
+        )
+        if int(queued or 0) >= system_queue_limit or int(tenant_queued or 0) >= (
             client.max_queued if client else cfg.default_tenant_max_queued
         ):
             storage.remove_tree(root)
-            raise HTTPException(429, detail={"code": "RATE_LIMITED", "message": "队列已达到限制"})
+            detail: dict[str, Any] = {
+                "code": "RATE_LIMITED",
+                "message": "队列已达到限制",
+            }
+            if is_load_test and int(queued or 0) >= system_queue_limit:
+                detail.update(
+                    {
+                        "reason": "PRODUCTION_QUEUE_RESERVED",
+                        "retryable": True,
+                    }
+                )
+            raise HTTPException(429, detail=detail)
         trace_id = uuid.uuid4().hex
         request_id = str(request.state.request_id)
         root = storage.promote_staging(root, job_id, job_now)
@@ -2010,8 +2025,20 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             (client.max_queued if client is not None else cfg.default_tenant_max_queued)
             - tenant_queued,
         )
+        client_kind = client.client_kind if client is not None else "production"
+        system_queue_limit = (
+            cfg.test_system_max_queued
+            if client_kind == "test"
+            else cfg.system_max_queued
+        )
+        production_preempting = (
+            client_kind == "test" and await active_production_work_exists(db)
+        )
         accepting_batches = (
-            queued_jobs < cfg.system_max_queued and tenant_queue_room > 0 and compatible_nodes > 0
+            not production_preempting
+            and queued_jobs < system_queue_limit
+            and tenant_queue_room > 0
+            and compatible_nodes > 0
         )
         suggested_max_new_batches = (
             min(tenant_queue_room, max(1, available_slots)) if accepting_batches else 0
@@ -2036,10 +2063,12 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "available_slots": available_slots,
                 "queued_jobs": queued_jobs,
                 "running_jobs": running_jobs,
+                "system_queue_limit": system_queue_limit,
+                "production_queue_reserve": cfg.system_max_queued - system_queue_limit,
             },
             "client": {
                 "id": principal.id,
-                "kind": client.client_kind if client is not None else "production",
+                "kind": client_kind,
                 "queued_jobs": tenant_queued,
                 "running_jobs": tenant_running,
                 "max_queued": client.max_queued
@@ -2315,9 +2344,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                         "message": "external_batch_id 已被其他幂等请求使用",
                     },
                 )
-            if await client_is_load_test(db, principal.id) and await active_production_work_exists(
-                db
-            ):
+            is_load_test = await client_is_load_test(db, principal.id)
+            if is_load_test and await active_production_work_exists(db):
                 storage.remove_tree(root)
                 raise HTTPException(
                     503,
@@ -2328,6 +2356,26 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     },
                     headers={"Retry-After": "5"},
                 )
+            if is_load_test:
+                queued = int(
+                    await db.scalar(
+                        select(func.count(Job.id)).where(
+                            Job.status == JobStatus.QUEUED.value
+                        )
+                    )
+                    or 0
+                )
+                if queued >= cfg.test_system_max_queued:
+                    storage.remove_tree(root)
+                    raise HTTPException(
+                        429,
+                        detail={
+                            "code": "RATE_LIMITED",
+                            "message": "测试队列已达到生产保留容量边界",
+                            "reason": "PRODUCTION_QUEUE_RESERVED",
+                            "retryable": True,
+                        },
+                    )
             trace_id = uuid.uuid4().hex
             batch = JobBatch(
                 id=batch_id,

@@ -30,7 +30,7 @@
 | `tests/load/locustfile.py` | 六接口闭环、只读预检、分阶段 VU、指标、session teardown |
 | `tests/load/scenarios/six_api_120.example.yaml` | 120 VU 计划示例；默认不可执行 |
 | `tests/load/fixtures/six_api.example.yaml` | 外部素材路径合同示例 |
-| `packages/gpu_control_core/load_testing.py` | 无网络的配置校验、授权门禁、素材校验、计划和结果清单 |
+| `packages/gpu_control_core/load_testing.py` | 配置/素材校验、生产远端发布证据门禁、计划和结果清单；plan-only 不联网 |
 | `tests/unit/test_load_testing.py` | 门禁、生产域、素材合同、脱敏和指标单测 |
 
 本文件不代表任何真实压测已经通过。只有结果目录中的原始文件、`manifest.json` 和
@@ -68,7 +68,8 @@ SHA-256，仍记录为 contract failure。
 2. `LOAD_TEST_TARGET` 是不含用户信息、query、fragment 和路径的 HTTP(S) origin；
 3. `LOAD_TEST_TARGET_ALLOWLIST` 含完全相同的 origin。仅 hostname、通配符、不同 scheme 或不同 port
    都拒绝，例如目标为 `https://staging.example:8443` 时 allowlist 必须包含这一完整值；
-4. `LOAD_TEST_SESSION_ID` 唯一且只含安全 ASCII 字符；
+4. `LOAD_TEST_SESSION_ID` 唯一且只含安全 ASCII 字符；生产执行必须是小写规范形式的 UUIDv4
+   （例如 `4c843c3a-4950-4ea2-8772-9e34c69a05ab`），禁止复用历史 session；
 5. `LOAD_TEST_CONFIRMATION_TOKEN` 与当前环境域、session、target 和 test tenant 清单精确绑定；
 6. `LOAD_TEST_API_KEYS` 至少一个，且预检逐个确认所有轮转 key 的 `client.kind=test` 与 admission 可用；
 7. `LOAD_TEST_TENANT_IDS` 必填、不可重复，按相同顺序与 `LOAD_TEST_API_KEYS` 一一对应；该精确清单也是
@@ -82,12 +83,13 @@ SHA-256，仍记录为 contract failure。
 12. fixture manifest 的所有素材存在、非空并位于仓库外，元数据和 SHA 合同全部通过。
 
 确认令牌是“精确执行意图绑定值”，不是 API 密钥。plan 会给出当前配置对应的
-`expected_confirmation_token`，值的域如下：
+`expected_confirmation_token`。`release-binding` 是 `source_revision`、五个环境声明 digest，以及
+`origin/main` 证据提交/路径/blob SHA 三元组的规范 JSON SHA-256；值的域如下：
 
 ```text
 tenant-binding = SHA-256("<tenant-1>,<tenant-2>,...")
-非生产：SHA-256("gpu-control-six-api:nonproduction:<session>:<target>:<tenant-binding>:execute")
-生产：  SHA-256("gpu-control-six-api:production:<change>:<start>:<end>:<backup-dir>:<session>:<target>:<tenant-binding>:execute")
+非生产：SHA-256("gpu-control-six-api:nonproduction:<session>:<target>:<tenant-binding>:<release-binding>:execute")
+生产：  SHA-256("gpu-control-six-api:production:<change>:<start>:<end>:<backup-dir>:<session>:<target>:<tenant-binding>:<release-binding>:execute")
 ```
 
 因此非生产令牌不能复用于生产；生产窗口、变更单、session、target 或 tenant 清单任一改变都必须
@@ -109,7 +111,35 @@ tenant-binding = SHA-256("<tenant-1>,<tenant-2>,...")
 - 从当前时刻计算，scenario 的全部 stage 必须能在窗口结束前完成；
 - `LOAD_TEST_BACKUP_DIR` 指向 `scripts/backup.sh --mode full` 在本窗口前创建的最新完整恢复点；
 - scenario 的 `maximum_preexisting_gpu_jobs` 和 `maximum_preexisting_asset_jobs` 必须均为 `0`；
+- `LOAD_TEST_SOURCE_REVISION` 和五个 `LOAD_TEST_*_IMAGE_DIGEST` 必须完整；五个 digest 声明必须逐项等于
+  远端发布证据中对应组件的 `local_image_id`，不能用 tag 或 `PENDING_REGISTRY_PUSH`；
+- `LOAD_TEST_RELEASE_EVIDENCE_COMMIT` 必须是当前 GitHub `origin/main` 的完整 tip `E`，本地 harness
+  `HEAD` 也必须等于 `E` 且 tracked worktree clean；`LOAD_TEST_RELEASE_EVIDENCE_PATH` 必须指向该提交下
+  `artifacts/control-plane/<version>/deployment/live-deployment-receipt.json`，
+  `LOAD_TEST_RELEASE_EVIDENCE_SHA256` 必须等于 `git show` 所得原始 receipt blob 的 SHA-256；
+- receipt 必须是 `gpu-control-live-deployment.v1`，且同时声明
+  `deployment_status=DEPLOYED_NOT_ACCEPTED`、`deployed=true`、`production_accepted=false`；它必须绑定
+  源码 `S`、候选证据 path/blob SHA、五组件 OCI 身份、七个实际容器及 Windows Substance v6 实装身份；
+- `LOAD_TEST_SUBSTANCE_AGENT_SHA256` 必须是 3090-B Windows 上四个
+  `substance-baker-2026.08.03-v6` Agent 共用的实装脚本 SHA-256；它与 Git blob 原始字节 SHA 分开记录，
+  允许受控的 LF/CRLF 差异，但不允许四实例之间漂移；
 - 生产域确认令牌完全匹配上述 change/window/backup/session/target/tenant 清单。
+
+runner 和 Locust 会分别以固定、不经 shell 的 Git argv 复验远端 tip 和 live receipt，再沿 receipt 的
+path/blob SHA 读取 `gpu-control-release-candidate.v2` 父证据，验证五组件 local image ID、offline OCI
+manifest/config、OCI labels 与 source revision。候选证据必须标记
+`CANDIDATE_ARCHIVE_ONLY / deployed=false / production_accepted=false`，不能直接授权生产。
+发布证据提交 `E` 可以是镜像源码提交 `S` 之后的纯证据提交，但 `S` 必须是 `E` 的祖先且 receipt 与
+候选证据都必须明确绑定 `S`。环境变量只用于一致性对照，不是权威来源；任何远端、checkout、提交、
+路径、blob、源码或组件身份差异都在创建 HTTP client 前 fail closed。
+
+远端离线证据通过后，runner 与 Locust 还会各自执行一轮固定只读 live inventory：本机五个控制面/Worker
+容器使用 `/usr/bin/docker inspect --format={{.Image}}`，3090-A 与 3090-B Worker 使用固定 IP、用户、端口、
+`BatchMode=yes`、`StrictHostKeyChecking=yes` 的 SSH argv 调用同一只读 inspect。七项实测 `.Image` 必须
+逐项等于 receipt/候选证据的 `local_image_id`，三台 Blender Worker 必须一致；另以固定 SSH argv
+在 3090-B 读取 Windows Agent 实装脚本 SHA。命令不经 shell，目标、容器名和远端命令均不可由环境
+注入；实测 inventory 会进入 plan、preflight 和 summary。Locust 启动前与 `test_stop`、wrapper 子进程
+退出后三处均重新核验 live inventory/脚本 SHA，运行中漂移会使本轮失败，不能沿用启动时的快照。
 
 备份门禁完全离线读取并逐文件校验：目录/文件权限与 owner、`BACKUP_COMPLETE` 的
 `STATUS=COMPLETE`/`MODE=full`、`BACKUP_MANIFEST` 的 `BACKUP_FORMAT=2`/`MODE=full`/
@@ -268,7 +298,7 @@ unset ALLOW_LOAD_TEST ALLOW_PRODUCTION_LOAD_TEST LOAD_TEST_CONFIRMATION_TOKEN
 export LOAD_TEST_SCENARIO_FILE=/srv/gpu-control/load-plans/<session>/scenario.yaml
 export LOAD_TEST_FIXTURE_MANIFEST=/srv/gpu-control/load-plans/<session>/fixtures.yaml
 export LOAD_TEST_TARGET=https://staging.example
-export LOAD_TEST_SESSION_ID=<unique-session>
+export LOAD_TEST_SESSION_ID=<canonical-lowercase-UUIDv4>
 export LOAD_TEST_ENVIRONMENT=staging
 export LOAD_TEST_TARGET_ALLOWLIST=https://staging.example
 export LOAD_TEST_RESULT_DIR=/srv/gpu-control/load-results/<unique-session>
@@ -305,10 +335,22 @@ export LOAD_TEST_CHANGE_ID=<approved-change-id>
 export LOAD_TEST_WINDOW_START=<RFC3339-with-timezone>
 export LOAD_TEST_WINDOW_END=<RFC3339-with-timezone>
 export LOAD_TEST_BACKUP_DIR=/srv/gpu-control/backups/<latest-complete-full-backup>
+export LOAD_TEST_SOURCE_REVISION=<40-char-image-source-commit-S>
+export LOAD_TEST_API_IMAGE_DIGEST=sha256:<64-hex-local-image-id>
+export LOAD_TEST_SCHEDULER_IMAGE_DIGEST=sha256:<64-hex-local-image-id>
+export LOAD_TEST_ASSET_API_IMAGE_DIGEST=sha256:<64-hex-local-image-id>
+export LOAD_TEST_WEB_IMAGE_DIGEST=sha256:<64-hex-local-image-id>
+export LOAD_TEST_WORKER_IMAGE_DIGEST=sha256:<64-hex-local-image-id>
+export LOAD_TEST_RELEASE_EVIDENCE_COMMIT=<40-char-origin-main-tip-E>
+export LOAD_TEST_RELEASE_EVIDENCE_PATH=artifacts/control-plane/<version>/deployment/live-deployment-receipt.json
+export LOAD_TEST_RELEASE_EVIDENCE_SHA256=<64-hex-git-blob-sha256>
+export LOAD_TEST_SUBSTANCE_AGENT_SHA256=<64-hex-Windows-installed-v6-script-sha256>
 ```
 
-scheme/port 必须按真实部署填写，不能照抄示例猜测。重新运行 plan，双人核对生产域 token、窗口和
-target 后再导出 `LOAD_TEST_CONFIRMATION_TOKEN`。任何变量改变都重新 plan 和审批。
+scheme/port 必须按真实部署填写，不能照抄示例猜测。plan-only 不访问 GitHub，因此生产计划会保留
+“远端证据尚未复验”阻塞；它仍会给出绑定全部声明的 token。双人核对 token、窗口、target 与证据三元组
+后再导出 `LOAD_TEST_CONFIRMATION_TOKEN`。`--execute` 会先完成远端复验，只有复验后的落盘
+`plan.json` 才能成为 `EXECUTION_ELIGIBLE`。任何变量改变都重新 plan 和审批。
 
 ## 8. 执行中（During）
 
@@ -378,6 +420,9 @@ watchdog 是自动二次保险，不替代生产 zero-work 门禁和独占测试
 6. 保存 change、观察记录、图表截图/导出、异常时间线和是否通过的签字；
 7. 只有证据完整且 owner 接受后，才把本次结果写成 `PASS`；被中止、预检失败或证据缺失应准确写
    `ABORTED`、`PREFLIGHT_REFUSED` 或 `INCONCLUSIVE`。
+8. 本机生成的 `manifest.json` 和 `summary.json` 固定写入
+   `external_anchor_status=PENDING_GIT_PUBLISH`；最终脱敏 result manifest 尚未提交并推送到批准的
+   GitHub `origin/main` 前，即使阈值通过也不能标记正式 `PRODUCTION_ACCEPTED`。
 
 结果目录布局：
 
@@ -417,6 +462,8 @@ sha256sum <session>.tar.gz > <session>.tar.gz.sha256
 ```
 
 把归档和摘要复制到独立受控存储后再次验证。不要将真实 fixture、secrets 或未脱敏日志提交 Git。
+Git 只允许归档脱敏后的最终 manifest/摘要及其 SHA；外部 commit/ref 回执形成后，才能在单独验收记录
+中解除 `PENDING_GIT_PUBLISH`，不得原地重写已产生的结果包再重新计算 checksums。
 
 负载工具只创建业务任务，不迁移 schema、不改节点模式、不更新镜像，因此正常停止不需要数据库
 restore。若压测暴露真实数据/系统损坏，先冻结现场并保存故障快照，再依据已验证

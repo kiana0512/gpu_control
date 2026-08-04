@@ -84,16 +84,23 @@ docker image inspect "$COMFY_IMAGE" --format '{{.Id}}'
 - [ ] tar.gz SHA 校验通过
 - [ ] 4090 image ID：`____________`
 
-## 4. 启动 4090 控制面
+## 4. 构建 4090 控制面并受控激活
 
 ```bash
 sudo scripts/configure_ufw_control.sh --lan-cidr 192.168.10.0/24 --ssh-cidr 192.168.10.0/24
 sudo scripts/install_node_agent.sh --role control
 scripts/gpuctl tls init --control-ip 192.168.10.10
-scripts/gpuctl deploy control
-curl --cacert deploy/control-plane/nginx/certs/lan-ca.crt https://192.168.10.10/health/ready
-docker compose -f deploy/control-plane/compose.yaml ps
+scripts/gpuctl deploy control --build-only
 ```
+
+该命令只构建五个第一方镜像。按当前发布手册完成零任务门禁并逐个指定 service 激活后，再执行：
+
+```bash
+curl --cacert deploy/control-plane/nginx/certs/lan-ca.crt https://192.168.10.10/health/ready
+docker compose --env-file .env -f deploy/control-plane/compose.yaml --profile asset-plane ps
+```
+
+禁止用无 service 范围的 `compose up/down` 代替受控激活。
 
 - [ ] `/health/ready` 返回成功
 - [ ] Compose 服务均为 running/healthy
@@ -125,9 +132,11 @@ docker image inspect "$COMFY_IMAGE" --format '{{.Id}}'
 
 ```bash
 scripts/verify_comfy_projects.sh
-GPU_CONTROL_ROLE=node scripts/gpuctl deploy node
-curl -fsS http://$(hostname -I | awk '{print $1}'):8188/system_stats | jq
+GPU_CONTROL_ROLE=node scripts/gpuctl deploy node --build-worker-only
 ```
+
+该命令不会启动或重建 Worker/ComfyUI。确认节点 `DRAINING`、任务为 0 后，只更新明确的
+`blender-worker` service；受控激活完成后再请求 `8188/system_stats`。
 
 - [ ] 4090 模型 manifest 全部 OK
 - [ ] 3090-A 模型 manifest 全部 OK，`system_stats` 返回 JSON

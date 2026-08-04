@@ -1,9 +1,9 @@
 """Safety and planning primitives for the six-API mixed load harness.
 
-This module is deliberately network-free.  The Locust entrypoint imports it to
-validate all execution gates before Locust can create an HTTP client, while the
-plan command and unit tests use the same validation logic without sending any
-traffic.
+The Locust entrypoint imports this module to validate all execution gates before
+it can create an HTTP client.  Production validation also uses fixed, shell-free
+Git, Docker, and SSH argv to bind the approved remote receipt to the checkout
+and the live deployment; plan-only and unit-test paths do not send load traffic.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import threading
 import time
 import zipfile
@@ -181,9 +182,154 @@ REQUIRED_FIXTURE_PATHS: dict[str, tuple[str, ...]] = {
 SESSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$")
 HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+IMAGE_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+LOAD_RELEASE_EVIDENCE_PATH_PATTERN = re.compile(
+    r"^artifacts/control-plane/[0-9A-Za-z.+-]+/deployment/"
+    r"live-deployment-receipt\.json$"
+)
+LOAD_CANDIDATE_EVIDENCE_PATH_PATTERN = re.compile(
+    r"^artifacts/control-plane/[0-9A-Za-z.+-]+/release-parts/"
+    r"release-candidate-evidence\.json$"
+)
 CHANGE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 DEFAULT_PRODUCTION_HOSTS = frozenset({"10.3.34.11"})
 NON_PRODUCTION_ENVIRONMENTS = frozenset({"test", "staging", "development"})
+MINIMUM_PRODUCTION_LOAD_IDENTITIES = 12
+PRODUCTION_TEARDOWN_RESERVE_SECONDS = 300
+PRODUCTION_PREFLIGHT_EVIDENCE_RESERVE_SECONDS = 540
+RELEASE_IMAGE_COMPONENTS = (
+    "api",
+    "scheduler",
+    "asset_api",
+    "web",
+    "worker",
+)
+LOAD_RELEASE_EVIDENCE_COMPONENTS = {
+    "api": ("api", "gpu-control-api", "GPU Control API"),
+    "scheduler": ("scheduler", "gpu-control-scheduler", "GPU Control Scheduler"),
+    "asset_api": (
+        "asset-api",
+        "unified-scheduler-asset-api",
+        "GPU Control Asset API",
+    ),
+    "web": ("web", "gpu-control-web", "GPU Control Web"),
+    "worker": ("blender-worker", "li3d/blender-worker", "GPU Control Blender Worker"),
+}
+LOAD_RELEASE_ORIGIN_URLS = frozenset(
+    {
+        "https://github.com/kiana0512/gpu_control.git",
+        "https://github.com/kiana0512/gpu_control",
+        "git@github.com:kiana0512/gpu_control.git",
+    }
+)
+LOAD_RELEASE_REMOTE_HEAD = "refs/heads/main"
+LOAD_RELEASE_OCI_SOURCE = "https://github.com/kiana0512/gpu_control.git"
+GIT_EXECUTABLE = "/usr/bin/git"
+DOCKER_EXECUTABLE = "/usr/bin/docker"
+SSH_EXECUTABLE = "/usr/bin/ssh"
+MAX_LOAD_RELEASE_EVIDENCE_BYTES = 5 * 1024 * 1024
+LOAD_DEPLOYMENT_HOSTS = {
+    "control-api": "control-4090",
+    "control-scheduler": "control-4090",
+    "control-asset-api": "control-4090",
+    "control-web": "control-4090",
+    "control-worker": "control-4090",
+    "worker-3090-a": "10.3.34.12",
+    "worker-3090-b": "10.3.34.14:2222",
+}
+LOAD_LIVE_DEPLOYMENT_TARGETS: tuple[
+    tuple[str, str, str, tuple[str, ...]], ...
+] = (
+    (
+        "control-api",
+        "api",
+        "gpu-control-api-1",
+        (DOCKER_EXECUTABLE, "inspect", "--type", "container", "--format={{.Image}}"),
+    ),
+    (
+        "control-scheduler",
+        "scheduler",
+        "gpu-control-scheduler-1",
+        (DOCKER_EXECUTABLE, "inspect", "--type", "container", "--format={{.Image}}"),
+    ),
+    (
+        "control-asset-api",
+        "asset_api",
+        "gpu-control-asset-api-1",
+        (DOCKER_EXECUTABLE, "inspect", "--type", "container", "--format={{.Image}}"),
+    ),
+    (
+        "control-web",
+        "web",
+        "gpu-control-web-1",
+        (DOCKER_EXECUTABLE, "inspect", "--type", "container", "--format={{.Image}}"),
+    ),
+    (
+        "control-worker",
+        "worker",
+        "gpu-control-asset-worker-control-1",
+        (DOCKER_EXECUTABLE, "inspect", "--type", "container", "--format={{.Image}}"),
+    ),
+    (
+        "worker-3090-a",
+        "worker",
+        "gpu-control-node-blender-worker-1",
+        (
+            SSH_EXECUTABLE,
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-p",
+            "22",
+            "--",
+            "default@10.3.34.12",
+            DOCKER_EXECUTABLE,
+            "inspect",
+            "--type",
+            "container",
+            "--format={{.Image}}",
+        ),
+    ),
+    (
+        "worker-3090-b",
+        "worker",
+        "gpu-control-node-blender-worker-1",
+        (
+            SSH_EXECUTABLE,
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-p",
+            "2222",
+            "--",
+            "gpucontrol@10.3.34.14",
+            DOCKER_EXECUTABLE,
+            "inspect",
+            "--type",
+            "container",
+            "--format={{.Image}}",
+        ),
+    ),
+)
+FORBIDDEN_EVIDENCE_FIELD_NAMES = frozenset(
+    {
+        "api_key",
+        "x-api-key",
+        "authorization",
+        "cookie",
+        "set-cookie",
+        "password",
+        "secret",
+        "access_token",
+        "refresh_token",
+    }
+)
 TRANSIENT_LOAD_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 SUBSTANCE_LOAD_WORKER_MARKER = "3090-b-windows"
 REQUIRED_FULL_BACKUP_PAYLOADS = frozenset(
@@ -229,6 +375,612 @@ class LoadTestPreempted(RuntimeError):
         self.reason = reason
         self.operation = operation
         super().__init__(f"load operation {operation} preempted: {reason}")
+
+
+def copy_load_evidence_json(value: Any) -> Any:
+    """Deep-copy JSON evidence while refusing credential-shaped response fields."""
+
+    def reject_credentials(item: Any) -> None:
+        if isinstance(item, Mapping):
+            for key, nested in item.items():
+                normalized_key = str(key).strip().lower()
+                if normalized_key in FORBIDDEN_EVIDENCE_FIELD_NAMES:
+                    raise LoadTestConfigurationError(
+                        "load evidence response contains a forbidden credential field"
+                    )
+                if (
+                    normalized_key == "url" or normalized_key.endswith("_url")
+                ) and isinstance(nested, str):
+                    parsed_url = urlsplit(nested)
+                    if parsed_url.query or parsed_url.fragment:
+                        raise LoadTestConfigurationError(
+                            "load evidence response contains a query/fragment-bearing URL"
+                        )
+                reject_credentials(nested)
+        elif isinstance(item, Sequence) and not isinstance(item, str | bytes):
+            for nested in item:
+                reject_credentials(nested)
+
+    reject_credentials(value)
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False))
+    except (TypeError, ValueError) as exc:
+        raise LoadTestConfigurationError("load evidence response is not JSON-compatible") from exc
+
+
+def capture_load_evidence_json(value: Any) -> tuple[Any | None, str | None]:
+    """Capture response evidence without allowing validation errors to escape a VU."""
+
+    try:
+        return copy_load_evidence_json(value), None
+    except LoadTestConfigurationError as exc:
+        return None, str(exc)
+
+
+def validate_load_service_provenance(
+    control_api: Mapping[str, Any],
+    asset_api: Mapping[str, Any],
+    *,
+    expected_revision: str,
+) -> dict[str, dict[str, Any]]:
+    """Verify the two HTTP-addressable services run the planned source revision."""
+
+    if not COMMIT_PATTERN.fullmatch(expected_revision):
+        raise LoadTestConfigurationError("planned source revision is not a full Git commit")
+    verified: dict[str, dict[str, Any]] = {}
+    for component, payload in (("api", control_api), ("asset-api", asset_api)):
+        if payload.get("component") != component:
+            raise LoadTestConfigurationError(
+                f"{component} version endpoint returned the wrong component identity"
+            )
+        if payload.get("source_revision") != expected_revision:
+            raise LoadTestConfigurationError(
+                f"{component} live source revision does not match the load-test plan"
+            )
+        if payload.get("version_aligned") is not True or payload.get("provenance_complete") is not True:
+            raise LoadTestConfigurationError(
+                f"{component} live build provenance is incomplete or version-misaligned"
+            )
+        package_version = payload.get("package_version")
+        build_version = payload.get("build_version")
+        if not isinstance(package_version, str) or not package_version or build_version != package_version:
+            raise LoadTestConfigurationError(
+                f"{component} package/build version evidence is invalid"
+            )
+        verified[component] = {
+            "component": component,
+            "package_version": package_version,
+            "build_version": build_version,
+            "source_revision": expected_revision,
+            "version_aligned": True,
+            "provenance_complete": True,
+        }
+    return verified
+
+
+def _load_evidence_git(
+    repository_root: Path,
+    *arguments: str,
+    check: bool = True,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run one fixed Git argv for externally anchored release evidence."""
+
+    try:
+        completed = subprocess.run(  # noqa: S603 -- executable and operations are fixed argv
+            [GIT_EXECUTABLE, "-C", str(repository_root.resolve()), *arguments],
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise LoadTestConfigurationError(
+            "release evidence Git verification could not complete"
+        ) from exc
+    if check and completed.returncode != 0:
+        operation = " ".join(arguments[:2])
+        raise LoadTestConfigurationError(
+            f"release evidence Git verification failed ({operation}, exit "
+            f"{completed.returncode})"
+        )
+    return completed
+
+
+def _required_release_evidence_string(
+    source: Mapping[str, Any],
+    field: str,
+    *,
+    pattern: re.Pattern[str] | None = None,
+) -> str:
+    value = source.get(field)
+    if not isinstance(value, str) or not value:
+        raise LoadTestConfigurationError(f"release evidence field {field} is missing")
+    if pattern is not None and not pattern.fullmatch(value):
+        raise LoadTestConfigurationError(f"release evidence field {field} is invalid")
+    return value
+
+
+def verify_remote_load_release_evidence(
+    repository_root: Path,
+    runtime: RuntimeSettings,
+) -> dict[str, Any]:
+    """Verify the production release identity from an origin/main-anchored JSON blob.
+
+    The environment is only an equality assertion.  Authority comes from the
+    exact evidence blob stored at the current remote ``main`` commit.  The
+    release/source commit may precede the evidence-only commit, but it must be
+    its ancestor.
+    """
+
+    evidence_commit = runtime.release_evidence_commit
+    evidence_path = runtime.release_evidence_path
+    evidence_sha256 = runtime.release_evidence_sha256
+    if not COMMIT_PATTERN.fullmatch(evidence_commit):
+        raise LoadTestConfigurationError(
+            "LOAD_TEST_RELEASE_EVIDENCE_COMMIT must be a full lowercase Git commit"
+        )
+    if not LOAD_RELEASE_EVIDENCE_PATH_PATTERN.fullmatch(evidence_path):
+        raise LoadTestConfigurationError(
+            "LOAD_TEST_RELEASE_EVIDENCE_PATH must name a packaged live deployment receipt"
+        )
+    if not HASH_PATTERN.fullmatch(evidence_sha256):
+        raise LoadTestConfigurationError(
+            "LOAD_TEST_RELEASE_EVIDENCE_SHA256 must be a lowercase SHA-256"
+        )
+
+    try:
+        origin_url = _load_evidence_git(
+            repository_root,
+            "remote",
+            "get-url",
+            "origin",
+        ).stdout.decode("utf-8", errors="strict").strip()
+    except UnicodeDecodeError as exc:
+        raise LoadTestConfigurationError("release evidence origin is not valid UTF-8") from exc
+    if origin_url not in LOAD_RELEASE_ORIGIN_URLS:
+        raise LoadTestConfigurationError(
+            f"release evidence origin is not the approved GitHub repository: {origin_url}"
+        )
+    try:
+        remote_output = _load_evidence_git(
+            repository_root,
+            "ls-remote",
+            "--exit-code",
+            "--refs",
+            "origin",
+            LOAD_RELEASE_REMOTE_HEAD,
+        ).stdout.decode("ascii", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise LoadTestConfigurationError(
+            "release evidence origin/main response is not ASCII"
+        ) from exc
+    remote_rows = [line.split() for line in remote_output.splitlines() if line.strip()]
+    remote_commits = [
+        row[0]
+        for row in remote_rows
+        if len(row) == 2 and row[1] == LOAD_RELEASE_REMOTE_HEAD
+    ]
+    if remote_commits != [evidence_commit]:
+        raise LoadTestConfigurationError(
+            "LOAD_TEST_RELEASE_EVIDENCE_COMMIT is not the current origin/main commit"
+        )
+
+    try:
+        checkout_head = _load_evidence_git(
+            repository_root,
+            "rev-parse",
+            "--verify",
+            "HEAD",
+        ).stdout.decode("ascii", errors="strict").strip()
+    except UnicodeDecodeError as exc:
+        raise LoadTestConfigurationError("local harness HEAD is not ASCII") from exc
+    if checkout_head != evidence_commit:
+        raise LoadTestConfigurationError(
+            "production load harness HEAD must equal the origin/main evidence commit"
+        )
+    tracked_status = _load_evidence_git(
+        repository_root,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=no",
+    ).stdout
+    if tracked_status.strip():
+        raise LoadTestConfigurationError(
+            "production load harness has modified tracked files"
+        )
+
+    evidence_blob = _load_evidence_git(
+        repository_root,
+        "show",
+        "--no-ext-diff",
+        "--no-textconv",
+        f"{evidence_commit}:{evidence_path}",
+    ).stdout
+    if not evidence_blob or len(evidence_blob) > MAX_LOAD_RELEASE_EVIDENCE_BYTES:
+        raise LoadTestConfigurationError("remote release evidence has an invalid size")
+    actual_evidence_sha256 = hashlib.sha256(evidence_blob).hexdigest()
+    if actual_evidence_sha256 != evidence_sha256:
+        raise LoadTestConfigurationError(
+            "remote release evidence SHA-256 does not match the approved anchor"
+        )
+    try:
+        payload = json.loads(evidence_blob)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LoadTestConfigurationError("remote release evidence is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise LoadTestConfigurationError("remote release evidence must be a JSON object")
+    if (
+        payload.get("schema_version") != "gpu-control-live-deployment.v1"
+        or payload.get("deployment_status") != "DEPLOYED_NOT_ACCEPTED"
+        or payload.get("deployed") is not True
+        or payload.get("production_accepted") is not False
+    ):
+        raise LoadTestConfigurationError(
+            "remote live deployment receipt status or schema is not approved"
+        )
+
+    source_revision = _required_release_evidence_string(
+        payload,
+        "source_revision",
+        pattern=COMMIT_PATTERN,
+    )
+    if source_revision != runtime.source_revision:
+        raise LoadTestConfigurationError(
+            "environment source revision does not match remote release evidence"
+        )
+    ancestry = _load_evidence_git(
+        repository_root,
+        "merge-base",
+        "--is-ancestor",
+        source_revision,
+        evidence_commit,
+        check=False,
+    )
+    if ancestry.returncode != 0:
+        raise LoadTestConfigurationError(
+            "release source revision is not an ancestor of the evidence commit"
+        )
+
+    receipt_source = payload.get("source")
+    if not isinstance(receipt_source, Mapping) or receipt_source != {
+        "repository": LOAD_RELEASE_OCI_SOURCE,
+        "revision": source_revision,
+    }:
+        raise LoadTestConfigurationError("live deployment receipt source identity is invalid")
+    candidate_anchor = payload.get("candidate_evidence")
+    if not isinstance(candidate_anchor, Mapping):
+        raise LoadTestConfigurationError(
+            "live deployment receipt omitted candidate evidence anchor"
+        )
+    candidate_path = _required_release_evidence_string(candidate_anchor, "path")
+    candidate_sha256 = _required_release_evidence_string(
+        candidate_anchor,
+        "sha256",
+        pattern=HASH_PATTERN,
+    )
+    if not LOAD_CANDIDATE_EVIDENCE_PATH_PATTERN.fullmatch(candidate_path):
+        raise LoadTestConfigurationError(
+            "live deployment receipt candidate evidence path is invalid"
+        )
+    candidate_blob = _load_evidence_git(
+        repository_root,
+        "show",
+        "--no-ext-diff",
+        "--no-textconv",
+        f"{evidence_commit}:{candidate_path}",
+    ).stdout
+    if (
+        not candidate_blob
+        or len(candidate_blob) > MAX_LOAD_RELEASE_EVIDENCE_BYTES
+        or hashlib.sha256(candidate_blob).hexdigest() != candidate_sha256
+    ):
+        raise LoadTestConfigurationError(
+            "live deployment receipt candidate evidence blob is invalid"
+        )
+    try:
+        candidate_payload = json.loads(candidate_blob)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LoadTestConfigurationError("candidate release evidence is not valid JSON") from exc
+    if (
+        not isinstance(candidate_payload, dict)
+        or candidate_payload.get("schema_version") != "gpu-control-release-candidate.v2"
+        or candidate_payload.get("release_status") != "CANDIDATE_ARCHIVE_ONLY"
+        or candidate_payload.get("deployed") is not False
+        or candidate_payload.get("production_accepted") is not False
+        or candidate_payload.get("revision") != source_revision
+    ):
+        raise LoadTestConfigurationError(
+            "live deployment receipt candidate evidence identity is invalid"
+        )
+
+    substance_script_blob = _load_evidence_git(
+        repository_root,
+        "show",
+        "--no-ext-diff",
+        "--no-textconv",
+        f"{evidence_commit}:apps/substance_baker_agent/Invoke-GPUControlSubstanceAgent.ps1",
+    ).stdout
+    substance_script_sha256 = hashlib.sha256(substance_script_blob).hexdigest()
+    expected_substance = runtime.target_release_identity["substance_agent"]
+    expected_receipt_substance = {
+        **expected_substance,
+        "repository_script_sha256": substance_script_sha256,
+    }
+    receipt_substance = payload.get("substance_agent")
+    if (
+        not substance_script_blob
+        or not isinstance(receipt_substance, Mapping)
+        or dict(receipt_substance) != expected_receipt_substance
+    ):
+        raise LoadTestConfigurationError(
+            "live deployment receipt Windows Substance Agent identity is invalid"
+        )
+
+    receipt_payload = payload
+    payload = candidate_payload
+
+    source = payload.get("source")
+    if not isinstance(source, Mapping):
+        raise LoadTestConfigurationError("remote release evidence omitted source identity")
+    if (
+        source.get("repository") != LOAD_RELEASE_OCI_SOURCE
+        or source.get("remote_ref") != "origin/main"
+        or source.get("remote_sha") != source_revision
+    ):
+        raise LoadTestConfigurationError("remote release evidence source identity is invalid")
+    version = _required_release_evidence_string(payload, "version")
+    worker_version = _required_release_evidence_string(payload, "worker_version")
+    images = payload.get("images")
+    offline_exports = payload.get("offline_oci_exports")
+    expected_image_keys = {
+        evidence_key for evidence_key, _, _ in LOAD_RELEASE_EVIDENCE_COMPONENTS.values()
+    }
+    if not isinstance(images, Mapping) or set(images) != expected_image_keys:
+        raise LoadTestConfigurationError(
+            "remote release evidence must contain exactly five first-party images"
+        )
+    if not isinstance(offline_exports, Mapping) or set(offline_exports) != expected_image_keys:
+        raise LoadTestConfigurationError(
+            "remote release evidence must contain exactly five offline OCI identities"
+        )
+    attestations = payload.get("attestations")
+    if not isinstance(attestations, Mapping) or attestations.get(
+        "provenance_status"
+    ) != "VERIFIED_OFFLINE_OCI":
+        raise LoadTestConfigurationError("remote release evidence has no verified OCI provenance")
+
+    declared_digests = runtime.target_release_identity["image_digests"]
+    verified_images: dict[str, dict[str, str]] = {}
+    for runtime_key, (
+        evidence_key,
+        repository,
+        title,
+    ) in LOAD_RELEASE_EVIDENCE_COMPONENTS.items():
+        image = images[evidence_key]
+        offline = offline_exports[evidence_key]
+        if not isinstance(image, Mapping) or not isinstance(offline, Mapping):
+            raise LoadTestConfigurationError(
+                f"remote release evidence image {evidence_key} has an invalid shape"
+            )
+        component_version = worker_version if runtime_key == "worker" else version
+        expected_reference = f"{repository}:{component_version}"
+        local_image_id = _required_release_evidence_string(
+            image,
+            "local_image_id",
+            pattern=IMAGE_DIGEST_PATTERN,
+        )
+        manifest_digest = _required_release_evidence_string(
+            image,
+            "oci_image_manifest_digest",
+            pattern=IMAGE_DIGEST_PATTERN,
+        )
+        config_digest = _required_release_evidence_string(
+            image,
+            "oci_config_digest",
+            pattern=IMAGE_DIGEST_PATTERN,
+        )
+        docker_config_digest = _required_release_evidence_string(
+            image,
+            "docker_archive_config_digest",
+            pattern=IMAGE_DIGEST_PATTERN,
+        )
+        if (
+            image.get("reference") != expected_reference
+            or image.get("local_image_id_semantics")
+            != "ENGINE_LOCAL_CONTENT_ID_NOT_ASSUMED_CONFIG_DIGEST"
+            or config_digest != docker_config_digest
+            or image.get("docker_oci_config_match") is not True
+            or offline.get("oci_image_manifest_digest") != manifest_digest
+            or offline.get("oci_config_digest") != config_digest
+            or offline.get("docker_archive_config_digest") != config_digest
+            or offline.get("docker_oci_config_match") is not True
+        ):
+            raise LoadTestConfigurationError(
+                f"remote release evidence OCI identity for {evidence_key} is inconsistent"
+            )
+        labels = image.get("oci_labels")
+        if not isinstance(labels, Mapping) or labels != {
+            "org.opencontainers.image.title": title,
+            "org.opencontainers.image.version": component_version,
+            "org.opencontainers.image.revision": source_revision,
+            "org.opencontainers.image.source": LOAD_RELEASE_OCI_SOURCE,
+        }:
+            raise LoadTestConfigurationError(
+                f"remote release evidence OCI labels for {evidence_key} are invalid"
+            )
+        declared_digest = declared_digests.get(runtime_key)
+        if declared_digest != local_image_id:
+            raise LoadTestConfigurationError(
+                f"environment image digest for {runtime_key} does not match remote evidence"
+            )
+        verified_images[runtime_key] = {
+            "evidence_component": evidence_key,
+            "reference": expected_reference,
+            "identity_type": "docker_local_image_id+offline_oci_manifest_and_config",
+            "local_image_id": local_image_id,
+            "oci_image_manifest_digest": manifest_digest,
+            "oci_config_digest": config_digest,
+        }
+
+    expected_deployment_inventory = runtime.target_release_identity[
+        "deployment_inventory"
+    ]
+    if receipt_payload.get("components") != verified_images:
+        raise LoadTestConfigurationError(
+            "live deployment receipt components do not match candidate OCI evidence"
+        )
+    if receipt_payload.get("inventory") != expected_deployment_inventory:
+        raise LoadTestConfigurationError(
+            "live deployment receipt inventory does not match the declared live topology"
+        )
+
+    return {
+        "schema_version": "gpu-control-load-release-evidence-verification.v1",
+        "verified": True,
+        "origin_url": origin_url,
+        "remote_ref": LOAD_RELEASE_REMOTE_HEAD,
+        "evidence_commit": evidence_commit,
+        "evidence_path": evidence_path,
+        "evidence_sha256": actual_evidence_sha256,
+        "source_revision": source_revision,
+        "candidate_evidence": {
+            "path": candidate_path,
+            "sha256": candidate_sha256,
+        },
+        "images": verified_images,
+        "deployment_inventory": expected_deployment_inventory,
+        "substance_agent": expected_receipt_substance,
+    }
+
+
+def verify_live_load_deployment(
+    runtime: RuntimeSettings,
+    release_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind every live first-party container to the remote release evidence."""
+
+    evidence_images = release_evidence.get("images")
+    if (
+        release_evidence.get("verified") is not True
+        or not isinstance(evidence_images, Mapping)
+        or release_evidence.get("deployment_inventory")
+        != runtime.target_release_identity["deployment_inventory"]
+    ):
+        raise LoadTestConfigurationError(
+            "live deployment verification requires verified remote release evidence"
+        )
+    declared_digests = runtime.target_release_identity["image_digests"]
+    inventory: dict[str, dict[str, str]] = {}
+    for target, component, container_name, command_prefix in LOAD_LIVE_DEPLOYMENT_TARGETS:
+        evidence_image = evidence_images.get(component)
+        if not isinstance(evidence_image, Mapping):
+            raise LoadTestConfigurationError(
+                f"remote release evidence omitted live component {component}"
+            )
+        expected_image_id = evidence_image.get("local_image_id")
+        if (
+            not isinstance(expected_image_id, str)
+            or not IMAGE_DIGEST_PATTERN.fullmatch(expected_image_id)
+            or expected_image_id != declared_digests.get(component)
+        ):
+            raise LoadTestConfigurationError(
+                f"remote release evidence does not authorize live component {component}"
+            )
+        command = [*command_prefix, container_name]
+        try:
+            completed = subprocess.run(  # noqa: S603 -- fully fixed executable and argv
+                command,
+                check=False,
+                capture_output=True,
+                timeout=20,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise LoadTestConfigurationError(
+                f"live deployment inspection could not complete for {target}"
+            ) from exc
+        if completed.returncode != 0:
+            raise LoadTestConfigurationError(
+                f"live deployment inspection failed for {target} "
+                f"(exit {completed.returncode})"
+            )
+        try:
+            output_lines = completed.stdout.decode("ascii", errors="strict").splitlines()
+        except UnicodeDecodeError as exc:
+            raise LoadTestConfigurationError(
+                f"live deployment inspection returned invalid output for {target}"
+            ) from exc
+        image_ids = [line.strip() for line in output_lines if line.strip()]
+        if image_ids != [expected_image_id]:
+            raise LoadTestConfigurationError(
+                f"live deployment image for {target} does not match remote release evidence"
+            )
+        inventory[target] = {
+            "component": component,
+            "host": LOAD_DEPLOYMENT_HOSTS[target],
+            "container_name": container_name,
+            "image_identity_type": "docker_container_config_image_id",
+            "image_id": expected_image_id,
+        }
+    worker_image_ids = {
+        item["image_id"]
+        for item in inventory.values()
+        if item["component"] == "worker"
+    }
+    if worker_image_ids != {runtime.worker_image_digest}:
+        raise LoadTestConfigurationError(
+            "all three live Blender Workers must use one release image ID"
+        )
+    substance_command = [
+        SSH_EXECUTABLE,
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-p",
+        "2222",
+        "--",
+        "gpucontrol@10.3.34.14",
+        "/usr/bin/sha256sum",
+        "/mnt/d/GPUControl/agent/Invoke-GPUControlSubstanceAgent.ps1",
+    ]
+    try:
+        substance_completed = subprocess.run(  # noqa: S603 -- fully fixed argv
+            substance_command,
+            check=False,
+            capture_output=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise LoadTestConfigurationError(
+            "live Windows Substance Agent script inspection could not complete"
+        ) from exc
+    try:
+        substance_output = substance_completed.stdout.decode(
+            "ascii", errors="strict"
+        ).split()
+    except UnicodeDecodeError as exc:
+        raise LoadTestConfigurationError(
+            "live Windows Substance Agent script inspection returned invalid output"
+        ) from exc
+    if (
+        substance_completed.returncode != 0
+        or len(substance_output) != 2
+        or substance_output[0] != runtime.substance_agent_sha256
+        or substance_output[1]
+        != "/mnt/d/GPUControl/agent/Invoke-GPUControlSubstanceAgent.ps1"
+    ):
+        raise LoadTestConfigurationError(
+            "live Windows Substance Agent script does not match the remote receipt"
+        )
+    return {
+        "schema_version": "gpu-control-load-live-deployment-verification.v1",
+        "verified": True,
+        "release_evidence_commit": release_evidence.get("evidence_commit"),
+        "source_revision": runtime.source_revision,
+        "inventory": inventory,
+        "substance_agent": runtime.target_release_identity["substance_agent"],
+    }
 
 
 def expected_load_artifact_kinds(
@@ -298,7 +1050,15 @@ def validate_load_artifact_manifest(
             raise LoadTestConfigurationError(f"{api_name} artifact {kind} has a non-positive size")
         if not HASH_PATTERN.fullmatch(sha256):
             raise LoadTestConfigurationError(f"{api_name} artifact {kind} has an invalid SHA-256")
-        if not download_url.startswith("/") or download_url.startswith("//"):
+        parsed_download_url = urlsplit(download_url)
+        if (
+            not download_url.startswith("/")
+            or download_url.startswith("//")
+            or parsed_download_url.scheme
+            or parsed_download_url.netloc
+            or parsed_download_url.query
+            or parsed_download_url.fragment
+        ):
             raise LoadTestConfigurationError(
                 f"{api_name} artifact {kind} has a non-local download URL"
             )
@@ -349,6 +1109,54 @@ def validate_downloaded_load_artifact(
             f"{api_name} artifact {kind} body SHA-256 does not match metadata"
         )
     return actual_sha256
+
+
+def build_load_artifact_evidence(
+    api_name: str,
+    artifact: Mapping[str, Any],
+    *,
+    header_sha256: str,
+    body_sha256: str,
+    body_size_bytes: int,
+) -> dict[str, Any]:
+    """Build one secret-free artifact proof after three-way SHA validation."""
+
+    kind = str(artifact.get("kind") or "")
+    identifier = str(artifact.get("id") or "")
+    filename = str(artifact.get("filename") or "")
+    metadata_size_bytes = artifact.get("size_bytes")
+    metadata_sha256 = str(artifact.get("sha256") or "")
+    if not kind or not identifier or (api_name != "modelview_roughness" and not filename):
+        raise LoadTestConfigurationError(f"{api_name} artifact evidence omitted identity metadata")
+    if (
+        isinstance(metadata_size_bytes, bool)
+        or not isinstance(metadata_size_bytes, int)
+        or metadata_size_bytes <= 0
+        or isinstance(body_size_bytes, bool)
+        or not isinstance(body_size_bytes, int)
+        or body_size_bytes <= 0
+        or metadata_size_bytes != body_size_bytes
+    ):
+        raise LoadTestConfigurationError(f"{api_name} artifact evidence size values do not match")
+    if (
+        not all(
+            HASH_PATTERN.fullmatch(value) for value in (metadata_sha256, header_sha256, body_sha256)
+        )
+        or len({metadata_sha256, header_sha256, body_sha256}) != 1
+    ):
+        raise LoadTestConfigurationError(
+            f"{api_name} artifact evidence SHA-256 values do not match"
+        )
+    return {
+        "kind": kind,
+        "id": identifier,
+        "filename": filename,
+        "metadata_size_bytes": metadata_size_bytes,
+        "metadata_sha256": metadata_sha256,
+        "x_artifact_sha256": header_sha256,
+        "body_size_bytes": body_size_bytes,
+        "body_sha256": body_sha256,
+    }
 
 
 def find_load_session_identity_collisions(
@@ -1246,6 +2054,16 @@ class RuntimeSettings:
     admin_bearer_token: str
     ca_file: Path | None
     result_dir: Path | None
+    source_revision: str
+    api_image_digest: str
+    scheduler_image_digest: str
+    asset_api_image_digest: str
+    web_image_digest: str
+    worker_image_digest: str
+    release_evidence_commit: str
+    release_evidence_path: str
+    release_evidence_sha256: str
+    substance_agent_sha256: str
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str] | None = None) -> RuntimeSettings:
@@ -1301,22 +2119,102 @@ class RuntimeSettings:
             admin_bearer_token=source.get("LOAD_TEST_ADMIN_BEARER_TOKEN", "").strip(),
             ca_file=Path(ca_value).expanduser() if ca_value else None,
             result_dir=Path(result_value).expanduser() if result_value else None,
+            source_revision=source.get("LOAD_TEST_SOURCE_REVISION", "").strip(),
+            api_image_digest=source.get("LOAD_TEST_API_IMAGE_DIGEST", "").strip(),
+            scheduler_image_digest=source.get("LOAD_TEST_SCHEDULER_IMAGE_DIGEST", "").strip(),
+            asset_api_image_digest=source.get("LOAD_TEST_ASSET_API_IMAGE_DIGEST", "").strip(),
+            web_image_digest=source.get("LOAD_TEST_WEB_IMAGE_DIGEST", "").strip(),
+            worker_image_digest=source.get("LOAD_TEST_WORKER_IMAGE_DIGEST", "").strip(),
+            release_evidence_commit=source.get(
+                "LOAD_TEST_RELEASE_EVIDENCE_COMMIT", ""
+            ).strip(),
+            release_evidence_path=source.get(
+                "LOAD_TEST_RELEASE_EVIDENCE_PATH", ""
+            ).strip(),
+            release_evidence_sha256=source.get(
+                "LOAD_TEST_RELEASE_EVIDENCE_SHA256", ""
+            ).strip(),
+            substance_agent_sha256=source.get(
+                "LOAD_TEST_SUBSTANCE_AGENT_SHA256", ""
+            ).strip(),
         )
+
+    @property
+    def target_release_identity(self) -> dict[str, Any]:
+        """Return the non-secret immutable release identity bound to this run."""
+
+        return {
+            "source_revision": self.source_revision or None,
+            "image_digests": {
+                "api": self.api_image_digest or None,
+                "scheduler": self.scheduler_image_digest or None,
+                "asset_api": self.asset_api_image_digest or None,
+                "web": self.web_image_digest or None,
+                "worker": self.worker_image_digest or None,
+            },
+            "release_evidence": {
+                "commit": self.release_evidence_commit or None,
+                "path": self.release_evidence_path or None,
+                "sha256": self.release_evidence_sha256 or None,
+                "remote_ref": LOAD_RELEASE_REMOTE_HEAD,
+            },
+            "deployment_inventory": {
+                target: {
+                    "component": component,
+                    "host": LOAD_DEPLOYMENT_HOSTS[target],
+                    "container_name": container_name,
+                    "image_identity_type": "docker_container_config_image_id",
+                    "image_id": {
+                        "api": self.api_image_digest,
+                        "scheduler": self.scheduler_image_digest,
+                        "asset_api": self.asset_api_image_digest,
+                        "web": self.web_image_digest,
+                        "worker": self.worker_image_digest,
+                    }[component]
+                    or None,
+                }
+                for target, component, container_name, _ in LOAD_LIVE_DEPLOYMENT_TARGETS
+            },
+            "substance_agent": {
+                "skill_version": "substance-baker-2026.08.03-v6",
+                "installed_path": (
+                    "D:\\GPUControl\\agent\\Invoke-GPUControlSubstanceAgent.ps1"
+                ),
+                "installed_script_sha256": self.substance_agent_sha256 or None,
+                "instance_count": 4,
+                "worker_ids": [
+                    f"asset-worker-3090-b-windows-{index:02d}" for index in range(1, 5)
+                ],
+            },
+        }
+
+    @property
+    def required_production_window_seconds(self) -> int:
+        """Reserved time is scenario-specific and is added in execution validation."""
+
+        return PRODUCTION_TEARDOWN_RESERVE_SECONDS + PRODUCTION_PREFLIGHT_EVIDENCE_RESERVE_SECONDS
 
     @property
     def expected_confirmation_token(self) -> str:
         tenant_binding = hashlib.sha256(",".join(self.tenant_ids).encode()).hexdigest()
+        release_binding = hashlib.sha256(
+            json.dumps(
+                self.target_release_identity,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
         if self.is_production_target():
             material = (
                 "gpu-control-six-api:production:"
                 f"{self.change_id}:{self.window_start}:{self.window_end}:"
                 f"{self.backup_dir or ''}:"
-                f"{self.session_id}:{self.target}:{tenant_binding}:execute"
+                f"{self.session_id}:{self.target}:{tenant_binding}:{release_binding}:execute"
             ).encode()
         else:
             material = (
                 "gpu-control-six-api:nonproduction:"
-                f"{self.session_id}:{self.target}:{tenant_binding}:execute"
+                f"{self.session_id}:{self.target}:{tenant_binding}:{release_binding}:execute"
             ).encode()
         return hashlib.sha256(material).hexdigest()
 
@@ -1354,6 +2252,8 @@ class RuntimeSettings:
         repository_root: Path,
         now: datetime | None = None,
         validate_backup: bool = True,
+        verified_release_evidence: Mapping[str, Any] | None = None,
+        verified_live_deployment: Mapping[str, Any] | None = None,
     ) -> list[str]:
         blockers: list[str] = []
         production = self.is_production_target()
@@ -1393,9 +2293,20 @@ class RuntimeSettings:
                 current = now or datetime.now(UTC)
                 if current < start or current >= end:
                     blockers.append("current time is outside the approved production window")
-                planned_end = current.timestamp() + scenario.total_duration_seconds
+                required_window_seconds = (
+                    scenario.total_duration_seconds + self.required_production_window_seconds
+                )
+                if (end - start).total_seconds() < required_window_seconds:
+                    blockers.append(
+                        "production window must cover all load stages plus 300 seconds "
+                        "teardown and 540 seconds preflight/evidence reserve"
+                    )
+                planned_end = current.timestamp() + required_window_seconds
                 if planned_end > end.timestamp():
-                    blockers.append("planned load stages extend beyond the production window")
+                    blockers.append(
+                        "remaining production window must cover all load stages plus "
+                        "300 seconds teardown and 540 seconds preflight/evidence reserve"
+                    )
             if (
                 scenario.preflight.get("maximum_preexisting_gpu_jobs") != 0
                 or scenario.preflight.get("maximum_preexisting_asset_jobs") != 0
@@ -1406,6 +2317,106 @@ class RuntimeSettings:
             if scenario.maximum_users != 120 or scenario.stages[-1].users != 120:
                 blockers.append(
                     "production six-API scenario must peak and finish at exactly 120 users"
+                )
+            if len(self.api_keys) < MINIMUM_PRODUCTION_LOAD_IDENTITIES or len(
+                set(self.api_keys)
+            ) != len(self.api_keys):
+                blockers.append("production requires at least 12 unique LOAD_TEST_API_KEYS")
+            if (
+                len(self.tenant_ids) < MINIMUM_PRODUCTION_LOAD_IDENTITIES
+                or len(set(self.tenant_ids)) != len(self.tenant_ids)
+                or len(self.tenant_ids) != len(self.api_keys)
+            ):
+                blockers.append(
+                    "production requires at least 12 unique LOAD_TEST_TENANT_IDS mapped "
+                    "one-to-one to unique API keys"
+                )
+            if not COMMIT_PATTERN.fullmatch(self.source_revision):
+                blockers.append(
+                    "LOAD_TEST_SOURCE_REVISION must be the target release's full 40-character "
+                    "lowercase Git revision"
+                )
+            image_digests = self.target_release_identity["image_digests"]
+            for component in RELEASE_IMAGE_COMPONENTS:
+                digest = str(image_digests[component] or "")
+                if not IMAGE_DIGEST_PATTERN.fullmatch(digest):
+                    env_name = f"LOAD_TEST_{component.upper()}_IMAGE_DIGEST"
+                    blockers.append(
+                        f"{env_name} must be an immutable lowercase sha256:<64-hex> digest"
+                    )
+            if not COMMIT_PATTERN.fullmatch(self.release_evidence_commit):
+                blockers.append(
+                    "LOAD_TEST_RELEASE_EVIDENCE_COMMIT must be the full origin/main evidence "
+                    "commit"
+                )
+            if not LOAD_RELEASE_EVIDENCE_PATH_PATTERN.fullmatch(
+                self.release_evidence_path
+            ):
+                blockers.append(
+                    "LOAD_TEST_RELEASE_EVIDENCE_PATH must name the packaged live deployment receipt"
+                )
+            if not HASH_PATTERN.fullmatch(self.release_evidence_sha256):
+                blockers.append(
+                    "LOAD_TEST_RELEASE_EVIDENCE_SHA256 must be the evidence blob SHA-256"
+                )
+            if not HASH_PATTERN.fullmatch(self.substance_agent_sha256):
+                blockers.append(
+                    "LOAD_TEST_SUBSTANCE_AGENT_SHA256 must bind the installed Windows v6 script"
+                )
+            expected_anchor = self.target_release_identity["release_evidence"]
+            verified_images = (
+                verified_release_evidence.get("images")
+                if isinstance(verified_release_evidence, Mapping)
+                else None
+            )
+            verified_image_ids_match = isinstance(verified_images, Mapping) and set(
+                verified_images
+            ) == set(RELEASE_IMAGE_COMPONENTS) and all(
+                isinstance(verified_images.get(component), Mapping)
+                and verified_images[component].get("local_image_id")
+                == image_digests[component]
+                for component in RELEASE_IMAGE_COMPONENTS
+            )
+            if (
+                not isinstance(verified_release_evidence, Mapping)
+                or verified_release_evidence.get("schema_version")
+                != "gpu-control-load-release-evidence-verification.v1"
+                or verified_release_evidence.get("verified") is not True
+                or verified_release_evidence.get("origin_url")
+                not in LOAD_RELEASE_ORIGIN_URLS
+                or verified_release_evidence.get("remote_ref")
+                != LOAD_RELEASE_REMOTE_HEAD
+                or verified_release_evidence.get("evidence_commit")
+                != expected_anchor["commit"]
+                or verified_release_evidence.get("evidence_path")
+                != expected_anchor["path"]
+                or verified_release_evidence.get("evidence_sha256")
+                != expected_anchor["sha256"]
+                or verified_release_evidence.get("source_revision")
+                != self.source_revision
+                or not verified_image_ids_match
+            ):
+                blockers.append(
+                    "production requires release evidence verified from the current "
+                    "GitHub origin/main"
+                )
+            if (
+                not isinstance(verified_live_deployment, Mapping)
+                or verified_live_deployment.get("schema_version")
+                != "gpu-control-load-live-deployment-verification.v1"
+                or verified_live_deployment.get("verified") is not True
+                or verified_live_deployment.get("release_evidence_commit")
+                != self.release_evidence_commit
+                or verified_live_deployment.get("source_revision")
+                != self.source_revision
+                or verified_live_deployment.get("inventory")
+                != self.target_release_identity["deployment_inventory"]
+                or verified_live_deployment.get("substance_agent")
+                != self.target_release_identity["substance_agent"]
+            ):
+                blockers.append(
+                    "production requires all seven live containers to match the remote "
+                    "release evidence"
                 )
             if self.backup_dir is None:
                 blockers.append("LOAD_TEST_BACKUP_DIR is required for production")
@@ -1458,9 +2469,16 @@ class RuntimeSettings:
         *,
         repository_root: Path,
         now: datetime | None = None,
+        verified_release_evidence: Mapping[str, Any] | None = None,
+        verified_live_deployment: Mapping[str, Any] | None = None,
     ) -> None:
         blockers = self.execution_blockers(
-            scenario, fixtures, repository_root=repository_root, now=now
+            scenario,
+            fixtures,
+            repository_root=repository_root,
+            now=now,
+            verified_release_evidence=verified_release_evidence,
+            verified_live_deployment=verified_live_deployment,
         )
         if blockers:
             raise LoadTestConfigurationError("; ".join(blockers))
@@ -2105,6 +3123,8 @@ def write_result_manifest(result_dir: Path, *, session_id: str) -> None:
                 "schema_version": "gpu-control-load-result-manifest.v1",
                 "session_id": session_id,
                 "created_at": datetime.now(UTC).isoformat(),
+                "external_anchor_status": "PENDING_GIT_PUBLISH",
+                "production_acceptance_eligible": False,
                 "files": inventory,
             },
             ensure_ascii=False,
@@ -2506,6 +3526,8 @@ def build_plan(
     fixtures: FixtureManifest,
     *,
     repository_root: Path,
+    verified_release_evidence: Mapping[str, Any] | None = None,
+    verified_live_deployment: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     backup_evidence: dict[str, Any] | None = None
     backup_error: str | None = None
@@ -2526,6 +3548,8 @@ def build_plan(
         fixtures,
         repository_root=repository_root,
         validate_backup=False,
+        verified_release_evidence=verified_release_evidence,
+        verified_live_deployment=verified_live_deployment,
     )
     if backup_error is not None and backup_error not in blockers:
         blockers.append(backup_error)
@@ -2561,12 +3585,44 @@ def build_plan(
             "backup_dir": str(runtime.backup_dir) if runtime.backup_dir else None,
             "backup_evidence": backup_evidence,
             "target_allowlist": list(runtime.target_allowlist),
+            "required_window_seconds": (
+                scenario.total_duration_seconds + runtime.required_production_window_seconds
+                if runtime.is_production_target()
+                else None
+            ),
+            "teardown_reserve_seconds": (
+                PRODUCTION_TEARDOWN_RESERVE_SECONDS if runtime.is_production_target() else None
+            ),
+            "preflight_evidence_reserve_seconds": (
+                PRODUCTION_PREFLIGHT_EVIDENCE_RESERVE_SECONDS
+                if runtime.is_production_target()
+                else None
+            ),
         },
+        "target_release_identity": runtime.target_release_identity,
+        "release_evidence_verification": (
+            copy_load_evidence_json(verified_release_evidence)
+            if verified_release_evidence is not None
+            else {
+                "verified": False,
+                "reason": "plan-only mode does not contact origin/main",
+            }
+        ),
+        "live_deployment_verification": (
+            copy_load_evidence_json(verified_live_deployment)
+            if verified_live_deployment is not None
+            else {
+                "verified": False,
+                "reason": "plan-only mode does not inspect production containers",
+            }
+        ),
         "expected_confirmation_token": runtime.expected_confirmation_token,
         "execution_blockers": blockers,
         "secret_inventory": {
             "api_key_count": len(runtime.api_keys),
+            "unique_api_key_count": len(set(runtime.api_keys)),
             "tenant_id_count": len(runtime.tenant_ids),
+            "unique_tenant_id_count": len(set(runtime.tenant_ids)),
             "admin_bearer_configured": bool(runtime.admin_bearer_token),
             "secret_values_recorded": False,
         },
