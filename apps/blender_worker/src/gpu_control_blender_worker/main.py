@@ -1322,23 +1322,122 @@ async def run_retopology_v6(
         "must fail its gate and publish_allowed must be false.\n"
         f"```json\n{json.dumps(qa_context, ensure_ascii=False, indent=2)}\n```\n"
     )
-    independent_result = await run_v6_codex_agent(
-        client,
-        settings,
-        job_id,
-        lease_headers,
-        workspace=workspace,
-        prompt=qa_prompt,
-        schema_path=result_schema_path,
-        result_path=independent_result_path,
-        events_path=qa_events_path,
-        reference_images=reference_paths,
-        progress_start=70,
-        progress_end=94,
-        stage="RETOPOLOGY_V6_INDEPENDENT_QA",
-        message="独立 QA 正在执行七视图、构造、密度、布线与制品门禁",
-        timeout_seconds=settings.codex_job_timeout_seconds,
-    )
+    try:
+        independent_result = await run_v6_codex_agent(
+            client,
+            settings,
+            job_id,
+            lease_headers,
+            workspace=workspace,
+            prompt=qa_prompt,
+            schema_path=result_schema_path,
+            result_path=independent_result_path,
+            events_path=qa_events_path,
+            reference_images=reference_paths,
+            progress_start=70,
+            progress_end=94,
+            stage="RETOPOLOGY_V6_INDEPENDENT_QA",
+            message="独立 QA 正在执行七视图、构造、密度、布线与制品门禁",
+            timeout_seconds=settings.codex_job_timeout_seconds,
+        )
+    except Exception as exc:
+        # QA is advisory. A QA runtime failure must never discard intact model
+        # bytes or restart the expensive formal build. Emit a schema-valid,
+        # auditable failed-QA result so the Asset API can deliver the candidate
+        # with a warning while preserving the exact exception.
+        qa_error = f"{type(exc).__name__}: {exc}"[-3000:]
+        gate_names = (
+            "source_preservation",
+            "topology_integrity",
+            "silhouette_6view",
+            "construction",
+            "adaptive_density",
+            "wire_distribution",
+            "shading",
+            "artifact_integrity",
+        )
+        advisory_gates = {
+            name: {
+                "passed": False,
+                "metrics": {},
+                "evidence": ["qa_report.json"],
+                "failure_codes": ["RETOPOLOGY_V6_QA_RUNTIME_FAILED"],
+            }
+            for name in gate_names
+        }
+        required_paths["qa_report"].write_text(
+            json.dumps(
+                {
+                    "schema_version": "6.0-advisory",
+                    "job_id": job_id,
+                    "gates": advisory_gates,
+                    "runtime_error": qa_error,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            "utf-8",
+        )
+        required_paths["manifest"].write_text(
+            json.dumps(
+                {
+                    "schema_version": "6.0-advisory",
+                    "job_id": job_id,
+                    "engine_contract": "retopology-v6",
+                    "policy_sha256": options.get("policy_sha256"),
+                    "source_sha256": source_sha_before,
+                    "qa_status": "runtime_failed_advisory",
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            "utf-8",
+        )
+        artifact_rows = [
+            {
+                "role": role,
+                "object_key": path.name,
+                "sha256": file_sha256(path),
+                "size_bytes": path.stat().st_size,
+            }
+            for role, path in required_paths.items()
+        ]
+        independent_result = {
+            "schema_version": "6.0",
+            "job_id": job_id,
+            "status": "failed",
+            "policy": {
+                "id": "li3d-retopology-v6",
+                "version": "6.0.0",
+                "sha256": options.get("policy_sha256"),
+            },
+            "source": {
+                "sha256_before": source_sha_before,
+                "sha256_after": file_sha256(project_path),
+                "unchanged": file_sha256(project_path) == source_sha_before,
+            },
+            "formal_low": None,
+            "gates": advisory_gates,
+            "artifacts": artifact_rows,
+            "publish_allowed": False,
+            "failure_codes": ["RETOPOLOGY_V6_QA_RUNTIME_FAILED"],
+            "warnings": [qa_error],
+        }
+        independent_result_path.write_text(
+            json.dumps(independent_result, ensure_ascii=False, indent=2), "utf-8"
+        )
+        qa_events_path.write_text(
+            json.dumps(
+                {
+                    "event": "qa.runtime_failed_advisory",
+                    "job_id": job_id,
+                    "error": qa_error,
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            "utf-8",
+        )
     current_protected = {
         "source": file_sha256(project_path),
         "final_low_blend": file_sha256(required_paths["final_low_blend"]),

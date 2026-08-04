@@ -4123,7 +4123,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
             and previous_worker_id is not None
         )
-        effective_retryable = body.retryable and not requires_runtime_recovery
+        v6_post_build_failure = (
+            job.job_type == "RETOPOLOGY_PROCESS_V2"
+            and job.progress >= 70
+            and body.code == "BLENDER_EXECUTION_FAILED"
+        )
+        effective_retryable = (
+            body.retryable
+            and not requires_runtime_recovery
+            and not v6_post_build_failure
+        )
         await decrement_asset_worker_jobs_atomic(db, previous_worker_id)
         if requires_runtime_recovery:
             # An ambiguous native process may still own the physical GPU.
@@ -4186,8 +4195,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     else "asset.retry_queued"
                 ),
                 "error_code": body.code,
+                "error_message": body.message,
                 "retryable": effective_retryable,
                 "reported_retryable": body.retryable,
+                "v6_post_build_retry_suppressed": v6_post_build_failure,
                 "recovery_required": requires_runtime_recovery,
                 "worker_instance_id": previous_worker_instance_id,
             },

@@ -80,3 +80,30 @@ then spent about 6m58s on geometry correction, multiview evidence and wireflow
 inspection before the old fail-closed policy rejected the candidate. The
 lease-renewal fix removes the first delay; the advisory override returns the
 candidate BLEND/FBX with a warning instead of reporting a quality-gate failure.
+
+## Fast advisory completion follow-up
+
+The next production attempt proved that the formal build could finish and
+write both model files, while the independent QA subprocess itself exited
+before writing a report. The old error path deleted the temporary workspace
+and classified the exception as retryable, causing the expensive formal build
+to start a second time.
+
+The follow-up release changes that control-plane behavior:
+
+- an independent-QA runtime exception now produces schema-valid advisory
+  `qa_report.json`, `result.json`, `manifest.json`, and an event record carrying
+  the exact exception;
+- intact `final_low.blend` and `final_low.fbx` remain publishable with
+  `RETOPOLOGY_V6_QA_RUNTIME_FAILED` recorded as a warning;
+- a V6 `BLENDER_EXECUTION_FAILED` reported at or after the 70% post-build stage
+  is not automatically retried from the beginning;
+- the complete Worker error message and retry-suppression decision are retained
+  in `asset_job_events` for diagnosis.
+
+Deployment images are
+`unified-scheduler-asset-api:1.6.2-retopo-v6-fast-advisory` and
+`li3d/blender-worker:1.3.2-retopo-v6-fast-advisory`. All three Linux Blender
+Workers were rolled while the production queue was empty, returned ONLINE with
+zero jobs, and 3090-B was returned from DRAINING to ACTIVE after its new
+heartbeat was observed.
