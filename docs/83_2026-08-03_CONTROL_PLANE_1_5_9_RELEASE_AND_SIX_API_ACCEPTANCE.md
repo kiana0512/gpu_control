@@ -1,18 +1,20 @@
 # GPU Control 1.5.9 / Worker 1.2.5 统一发布与六 API 联合验收
 
-- 日期：2026-08-03
+- 日期：2026-08-03；生产滚动回填：2026-08-04
 - 当前生产总状态：`DEPLOYED_NOT_ACCEPTED`
-- 1.5.9 / Worker 1.2.5 候选状态：`CANDIDATE_NOT_DEPLOYED`
-- 最终源码门禁：`PASSED_WORKTREE_PENDING_FINAL_COMMIT`
-- GitHub 源码推送授权：`AUTHORIZED_BY_OWNER_2026-08-03_PENDING_EXECUTION`
+- 1.5.9 / Worker 1.2.5 候选状态：`DEPLOYED_NOT_ACCEPTED`
+- 已部署源码 `S`：`e81c4cb45a360b83561c154867da7ae86cbbbc70`
+- GitHub 源码推送：`VERIFIED_ORIGIN_MAIN_e81c4cb45a360b83561c154867da7ae86cbbbc70`
 - 联合验收状态：`PENDING_JOINT_ACCEPTANCE`
 - 适用范围：GPU Control 控制面、Scheduler、Asset API、Web UI、Linux Blender Worker、Windows Substance Agent v6、六 API 联合验收与发布证据
 
-> 本文是本轮一次性交付的唯一发布与验收入口。任何 `PENDING_*` 字段在得到原始证据前都不得改写为通过，也不得据此宣称 `FROZEN`、`PRODUCTION ACCEPTED` 或 1.5.9 已部署。
+> 本文是本轮一次性交付的唯一发布与验收入口。2026-08-04 已完成 1.5.9 / 1.2.5
+> 生产滚动，但六 API canary、正式综合压测和联合签署尚未完成，因此状态只能是
+> `DEPLOYED_NOT_ACCEPTED`，不得宣称 `FROZEN` 或 `PRODUCTION_ACCEPTED`。
 
 ## 1. 执行结论
 
-本轮候选实现集中在 GPU Control 自身边界内：跨 GPU/Asset 平面的生产任务优先原子准入、Worker 进程代际与节点绑定、锁竞争快速失败、统一容量/ETA 口径、Worker/Agent 长上传期间的租约续期、六 API 精确产物契约与负载验收，以及五镜像可复现打包；既有 Web UI 可读性和运维入口纳入同一版本发布与复验。版本目标为 Control Plane `1.5.9`、Linux Blender Worker `1.2.5`；当前最终工作树基于 `ffe873ab2bc1ffbe8e7b48c2a77b45b436287744`，已通过源码门禁与独立 P0/P1 审计，但最终 source commit `S` 仍需在本文档收口后创建并推送。早期 `b410a6a` 五个本地 candidate 镜像已被后续修复取代，禁止部署。小型备份、合成素材 r2 和 plan-only 报告可以继续作为辅助证据，但正式镜像、正式全量备份、生产灰度、六 API canary、浏览器验收和正式综合压测均仍未完成。
+本轮实现集中在 GPU Control 自身边界内：跨 GPU/Asset 平面的生产任务优先原子准入、Worker 进程代际与节点绑定、锁竞争快速失败、统一容量/ETA 口径、Worker/Agent 长上传期间的租约续期、六 API 精确产物契约与负载验收，以及五镜像可复现打包；Web UI 可读性、GPU 温度/功率遥测和运维入口纳入同一版本。生产镜像统一绑定源码 `e81c4cb45a360b83561c154867da7ae86cbbbc70`，Control Plane 为 `1.5.9`、Linux Blender Worker 为 `1.2.5`。早期 `b410a6a` 等 candidate 已被取代，禁止部署。生产滚动已经完成；正式综合压测、全部六 API canary、浏览器正式验收和联合签署仍待完成。
 
 > 2026-08-04 追加门禁：源码 `4f055a0f284eed5e1a8274cef3922356b2023bc3` 及其
 > `b1d54e077bf00cb49cc7763ed483045945387721` Git LFS 候选包已被后续 Codex
@@ -21,15 +23,15 @@
 > 30 分钟低频巡检，失败时只在 Worker 空闲按 60 秒基础退避重探，业务任务运行时不执行
 > 恢复探针。新源码、新五镜像和新候选证据完成前，禁止部署上述旧候选包。
 
-当前生产仍是分组件基线，状态继续保持 `DEPLOYED_NOT_ACCEPTED`：
+当前生产统一基线如下，状态保持 `DEPLOYED_NOT_ACCEPTED`：
 
 | 组件 | 当前已记录生产基线 | 1.5.9 目标 | 本文状态 |
 |---|---|---|---|
-| API / Scheduler / Web | `1.5.7`，source `11844e7f...` | `1.5.9` 同一完整 commit | `PENDING_ROLLOUT` |
-| Asset API | `1.5.8`，source `7f7fd197...` | `1.5.9` 同一完整 commit | `PENDING_ROLLOUT` |
-| Linux Blender Worker | `1.2.4`，节点 revision 尚未完全统一 | `1.2.5` 同一完整 commit、同一镜像 digest | `PENDING_ROLLOUT` |
-| Windows Substance Agent | v5 在线健康（历史生产基线） | `substance-baker-2026.08.03-v6` 精确身份 | `PENDING_WINDOWS_V6_INSTALL_AND_CANARY` |
-| 数据库 | `20260803_0012` | 本候选未新增 migration；发布前复核 head | `PENDING_DB_HEAD_VERIFY` |
+| API / Scheduler / Web | `1.5.9`，source `e81c4cb...` | `1.5.9` 同一完整 commit | `DEPLOYED_VERIFIED` |
+| Asset API | `1.5.9`，source `e81c4cb...` | `1.5.9` 同一完整 commit | `DEPLOYED_VERIFIED` |
+| Linux Blender Worker | `1.2.5`，三节点同一 image ID、同一 source | `1.2.5` 同一完整 commit、同一镜像 identity | `DEPLOYED_VERIFIED` |
+| Windows Substance Agent | 四槽 `substance-baker-2026.08.03-v6`，`ONLINE/HEALTHY/0` | 精确 v6 身份 | `DEPLOYED_CANARY_PENDING` |
+| 数据库 | `20260803_0012` | 本候选未新增 migration | `VERIFIED` |
 
 ## 2. 本轮候选变更
 
@@ -316,15 +318,15 @@ Blender 5.1.2 验证报告 `passed=true`，报告 SHA-256 为
 |---|---|
 | 最早本地代码候选 Git commit | `b410a6a7994cdd06335a106ad5257eafb6378fdf`；已被后续修复取代，`SUPERSEDED` |
 | 本轮指标稳定性修复 Git commit | `cdd89fbb4c77f7e403a0b3af0bb93c09e083beac`；`PUSHED_GITHUB_MAIN` |
-| 最终可发布完整 Git commit | `PENDING_FINAL_EVIDENCE_COMMIT` |
+| 最终已部署源码 commit `S` | `e81c4cb45a360b83561c154867da7ae86cbbbc70` |
 | 完整仓库/历史推送到指定 GitHub `origin/main` 的精确授权 | `AUTHORIZED_BY_OWNER_2026-08-03` |
 | GitHub `main` 包含指标修复 commit | `VERIFIED_cdd89fbb4c77f7e403a0b3af0bb93c09e083beac` |
-| API image digest / SBOM | `PENDING_API_DIGEST` / `PENDING_API_SBOM` |
-| Scheduler image digest / SBOM | `PENDING_SCHEDULER_DIGEST` / `PENDING_SCHEDULER_SBOM` |
-| Asset API image digest / SBOM | `PENDING_ASSET_API_DIGEST` / `PENDING_ASSET_API_SBOM` |
-| Web image digest / SBOM | `PENDING_WEB_DIGEST` / `PENDING_WEB_SBOM` |
-| Worker image digest / SBOM | `PENDING_WORKER_DIGEST` / `PENDING_WORKER_SBOM` |
-| OCI/Docker config digest 对照 | `PENDING_CONFIG_DIGEST_MATCH` |
+| API local image ID / SBOM | `sha256:2984e2151a26e57953ba48816a4162214d73ea8ba7733ed91b31de78a59c5880` / `BUILDKIT_SBOM_ATTESTED` |
+| Scheduler local image ID / SBOM | `sha256:d0c8b718f1a108297b6180486494d283997c76211b29bc5e0766a68ae53174c5` / `BUILDKIT_SBOM_ATTESTED` |
+| Asset API local image ID / SBOM | `sha256:dcaeb9aa320b51eb742428c736168ca0cab660ca9ead79c348fddd6caaef8bff` / `BUILDKIT_SBOM_ATTESTED` |
+| Web local image ID / SBOM | `sha256:8fb78526c69d760ef74e244f73229949c02908ff4c884915c36ef2d3315f78f5` / `BUILDKIT_SBOM_ATTESTED` |
+| Worker local image ID | `sha256:877080c375d12dc3e20fdfe153e8dbfc5e5cff23716a74b6f9a8f8560aecd619`，三节点一致 |
+| OCI 版本/源码标签 | 五镜像均验证为目标版本并绑定 `e81c4cb45a360b83561c154867da7ae86cbbbc70` |
 | release archive 与 Git LFS 证据 | `PENDING_RELEASE_ARCHIVE_LFS` |
 | 小型候选备份 | `/srv/gpu-control/backups/20260803T130246Z-small`；清单 SHA `f3ed94fc...a6220ca`；`LOCAL_SMALL_BACKUP_ONLY` |
 | 全量备份路径、SHA、恢复验证 | `PENDING_BACKUP_AND_RESTORE_VERIFY` |
@@ -343,7 +345,18 @@ Blender 5.1.2 验证报告 `passed=true`，报告 SHA-256 为
 9. 六 API 各跑一个真实 canary，逐项校验终态、request/trace ID、时间字段和精确 artifact 三重 SHA；随后完成浏览器正式 QA。
 10. 只有上述通过、解除 intake freeze 且生产窗口无异常，才允许进入受控综合压测。
 
-当前发布结果：`PENDING_ROLLOUT`。
+### 8.2.1 2026-08-04 实际滚动记录
+
+- 排空门禁：三台节点 `DRAINING/current_jobs=0`，父批次、GPU/Asset 子任务、活动租约均为 0；三台 ComfyUI 的 running/pending 队列均为 0。
+- Windows Baker：先安装四槽 v6；旧 Asset API 下四槽按设计进入 `DRAINING`，切换 Asset API 1.5.9 后全部恢复 `ONLINE`，身份均为 `substance-baker-2026.08.03-v6`，宿主进程探针均为 `HEALTHY/0`。实装 Agent 脚本 SHA-256 为 `889af86a61f62bb769f06728b8f466555bac56c2190ae97626b17fe09f05761d`。
+- Linux Worker：按 `control-4090 → worker-3090-a → worker-3090-b` 逐台替换为 1.2.5；三台运行 image ID 均为 `sha256:877080c375d12dc3e20fdfe153e8dbfc5e5cff23716a74b6f9a8f8560aecd619`，每台均产生新的唯一 `agent_instance_id` 并恢复新鲜心跳。
+- 控制面：按 `API → Web → Scheduler` 单服务替换，所有 Compose 命令均使用 `--no-deps --no-build --pull never --force-recreate`；API、Asset API、Web、Scheduler 均为 `healthy`、RestartCount=0。
+- Node Agent 遥测：三台逐台排空，仅更新并重启 `gpu-node-agent.service`；实装模块 SHA-256 为 `f504302990bcc93c6fcf17ff374db79d60c0dcfbdbfa5adfbc2f3931569830be`。`/admin/nodes` 已实际返回三台 `gpu_temperature_c` 与 `gpu_power_w`，不支持或离线时 Web 显示 `—`。
+- 缓存连续性：未停止、重启或重建任何 ComfyUI 容器，未调用 `/free`，未清理模型缓存；3090-A/B ComfyUI RestartCount 均保持 0。
+- 接单恢复：`control-4090=OVERFLOW`、`worker-3090-a=ACTIVE`、`worker-3090-b=ACTIVE`，三台 `ONLINE`。本机与两台远端 `.env` 的持久版本标签已同步为 1.5.9/1.2.5，避免后续 Compose 操作回退旧镜像。
+- 兼容性：外部六 API 路径和请求/响应合同未改；源码测试、Web 构建和滚动后的 HTTPS/API 健康检查通过。真实六 API canary 与正式综合压测仍未完成，不得把本记录升级为生产验收。
+
+当前发布结果：`DEPLOYED_NOT_ACCEPTED`。
 
 ### 8.3 回滚
 
@@ -414,8 +427,9 @@ CANDIDATE_NOT_DEPLOYED → DEPLOYED_NOT_ACCEPTED → PRODUCTION_ACCEPTED
 
 ```text
 CURRENT_PRODUCTION = DEPLOYED_NOT_ACCEPTED
-CONTROL_1_5_9_WORKER_1_2_5 = CANDIDATE_NOT_DEPLOYED
-FINAL_SOURCE_GATES = PASSED_cdd89fb_FULL_PYTHON_RUFF_MYPY_PENDING_FINAL_EVIDENCE_COMMIT
+CONTROL_1_5_9_WORKER_1_2_5 = DEPLOYED_NOT_ACCEPTED
+DEPLOYED_SOURCE = e81c4cb45a360b83561c154867da7ae86cbbbc70
+FINAL_SOURCE_GATES = PASSED_PREDEPLOY_GATES_PLUS_TELEMETRY_REGRESSION
 SOURCE_PUSH_AUTHORIZATION = AUTHORIZED_BY_OWNER_2026-08-03
 FORMAL_LOAD_TEST = PENDING_SIX_API_LOAD_RESULT
 FIXED_B97_AND_3XB97 = PENDING_FIXED_BENCHMARK
