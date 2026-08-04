@@ -1035,7 +1035,7 @@ def test_live_deployment_inventory_uses_fixed_docker_and_ssh_argv(
         "-p",
         "22",
         "--",
-        "default@10.3.34.12",
+        "lilithgames@10.3.34.12",
         "/usr/bin/docker",
         "inspect",
         "--type",

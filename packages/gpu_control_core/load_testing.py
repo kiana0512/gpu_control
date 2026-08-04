@@ -285,7 +285,7 @@ LOAD_LIVE_DEPLOYMENT_TARGETS: tuple[
             "-p",
             "22",
             "--",
-            "default@10.3.34.12",
+            "lilithgames@10.3.34.12",
             DOCKER_EXECUTABLE,
             "inspect",
             "--type",
