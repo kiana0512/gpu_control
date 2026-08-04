@@ -479,6 +479,12 @@ class Scheduler:
         self.scheduler_lock_handle: SchedulerLockHandle | None = None
         self.scheduler_epoch: int | None = None
         self.object_info_checked_at: dict[str, float] = {}
+        # GPU metrics are optional scheduling telemetry.  A WSL/Windows host can
+        # temporarily serialize ``nvidia-smi`` while Substance or ComfyUI owns
+        # the adapter.  Do not turn that into a 3-second request on every
+        # five-second health pass: ComfyUI's system_stats remains the fallback
+        # source for VRAM while this bounded retry window is active.
+        self.gpu_metrics_retry_at: dict[str, float] = {}
 
     async def guard(self, session: AsyncSession) -> OverflowGuard:
         keys = {
@@ -815,6 +821,9 @@ class Scheduler:
     async def node_agent_gpu_metrics(self, node: Node) -> dict[str, Any] | None:
         if not node.agent_url:
             return None
+        now_monotonic = asyncio.get_running_loop().time()
+        if now_monotonic < self.gpu_metrics_retry_at.get(node.id, 0):
+            return None
         path = "/v1/gpu-metrics"
         timestamp = str(int(datetime.now(UTC).timestamp()))
         nonce = uuid.uuid4().hex
@@ -838,12 +847,16 @@ class Scheduler:
                 )
                 response.raise_for_status()
             payload = response.json()
+            self.gpu_metrics_retry_at.pop(node.id, None)
             return {
                 "gpu_util_percent": float(payload["gpu_util_percent"]),
                 "free_vram_mb": int(payload["free_vram_mb"]),
                 "total_vram_mb": int(payload["total_vram_mb"]),
             }
         except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            self.gpu_metrics_retry_at[node.id] = (
+                asyncio.get_running_loop().time() + 30.0
+            )
             logger().warning(
                 "node.gpu_metrics_failed",
                 node_id=node.id,
