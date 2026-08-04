@@ -107,3 +107,27 @@ Deployment images are
 Workers were rolled while the production queue was empty, returned ONLINE with
 zero jobs, and 3090-B was returned from DRAINING to ACTIVE after its new
 heartbeat was observed.
+
+## Three-node live acceptance
+
+After deployment, one real V6 request and two explicitly authorized lightweight
+acceptance requests were executed concurrently, one per Linux Blender Worker.
+All three completed on their first attempt and publicly delivered both BLEND and
+FBX artifacts:
+
+| Worker | Request | Elapsed | Result |
+| --- | --- | ---: | --- |
+| `asset-control-4090` | `li3d-hash128-b1d9af146b3c25236d386f6a63ab646e` | 11m06s | `SUCCEEDED` |
+| `asset-worker-3090-a` | `v6-3090a-fast-advisory-20260804` | 7m19s | `SUCCEEDED` |
+| `asset-worker-3090-b` | `v6-3090b-fast-advisory-20260804` | 6m33s | `SUCCEEDED` |
+
+The independent QA runtime failed in all three executions and was recorded as
+`RETOPOLOGY_V6_QA_RUNTIME_FAILED`. This exercised the new failure path: each
+request terminated as `SUCCEEDED` with
+`RETOPOLOGY_QUALITY_GATE_WARNING`, retained the warning evidence, published the
+model artifacts, and did not restart the formal build.
+
+The real request published a 24,873,278-byte BLEND with SHA-256
+`bc1bc9fccb042661c911e0eb0395125234381d4c3ea361ad80b50226050351e4`
+and a 476,796-byte FBX with SHA-256
+`ab594415efa169675c2996c2c8a5b1b8c72891eada7c7be29623cb4eb9b8dd1f`.
