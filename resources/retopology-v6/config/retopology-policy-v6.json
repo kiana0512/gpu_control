@@ -1,0 +1,125 @@
+{
+  "policy_id": "li3d-retopology-v6",
+  "policy_version": "6.0.0",
+  "budget_mode": "automatic",
+  "user_target_faces_allowed": false,
+  "source_authority": "high_poly_only",
+  "formal_candidate_count": 1,
+  "internal_correction_rounds_max": 2,
+  "methods": [
+    "semantic_reconstruction",
+    "controlled_direct_reduction",
+    "hybrid_per_component"
+  ],
+  "automatic_budget": {
+    "minimum_triangles": 200,
+    "maximum_triangles": 250000,
+    "hard_maximum_triangles": 500000,
+    "flat_region_bias": 0.08,
+    "silhouette_curvature_weight": 1.0,
+    "structural_feature_weight": 1.0,
+    "negative_space_weight": 1.0,
+    "thin_part_weight": 1.15,
+    "deformation_weight": 1.0,
+    "micro_detail_weight": 0.0,
+    "notes": "This is an internal adaptive range, not a requested target. Quality gates override budget estimates."
+  },
+  "method_selection": {
+    "controlled_direct_reduction_allowed_for": [
+      "complex_integrated_organic_or_soft_body",
+      "single_fused_shape_with_non_semantic_surface_detail"
+    ],
+    "controlled_direct_reduction_forbidden_for": [
+      "mechanical_assembly",
+      "hard_surface_multi_part",
+      "asset_with_critical_negative_spaces",
+      "asset_where_decimation_removes_required_small_silhouette_parts"
+    ],
+    "mechanical_default": "semantic_reconstruction",
+    "mixed_asset_default": "hybrid_per_component"
+  },
+  "comparison_views": [
+    "front_ortho",
+    "back_ortho",
+    "left_ortho",
+    "right_ortho",
+    "top_ortho",
+    "bottom_ortho",
+    "perspective_3q"
+  ],
+  "gates": {
+    "source_preservation": {
+      "required": true,
+      "source_sha256_unchanged": true
+    },
+    "topology_integrity": {
+      "required": true,
+      "finite_coordinates": true,
+      "degenerate_faces": 0,
+      "unexpected_loose_components": 0,
+      "non_manifold_policy": "allowed_only_when_declared_by_asset_construction"
+    },
+    "silhouette_6view": {
+      "required": true,
+      "minimum_mask_iou": 0.97,
+      "maximum_dimension_relative_error": 0.02,
+      "maximum_center_relative_error": 0.01,
+      "maximum_ground_relative_error": 0.01,
+      "maximum_contour_residual_fraction": 0.01,
+      "maximum_contour_residual_pixels_at_768": 8,
+      "all_views_must_pass": true
+    },
+    "construction": {
+      "required": true,
+      "critical_component_recall": 1.0,
+      "critical_negative_space_recall": 1.0,
+      "critical_protrusion_recall": 1.0,
+      "mechanical_parts_must_be_semantically_separated": true
+    },
+    "adaptive_density": {
+      "required": true,
+      "flat_regions_must_be_sparse": true,
+      "silhouette_and_turns_must_be_supported": true,
+      "uniform_high_density_forbidden": true,
+      "micro_relief_geometry_required": false
+    },
+    "wire_distribution": {
+      "required": true,
+      "minimum_triangle_angle_warning_degrees": 10,
+      "minimum_triangle_angle_hard_degrees": 5,
+      "maximum_fraction_below_warning_angle": 0.02,
+      "aspect_ratio_warning": 6,
+      "aspect_ratio_hard": 20,
+      "maximum_fraction_above_warning_aspect": 0.05,
+      "vertex_valence_warning": 8,
+      "vertex_valence_hard": 10,
+      "maximum_adjacent_face_area_ratio": 6,
+      "random_triangle_fans_forbidden": true
+    },
+    "shading": {
+      "required": true,
+      "consistent_normals": true,
+      "hard_edges_preserved": true,
+      "visible_unintended_shading_artifacts": 0
+    },
+    "artifact_integrity": {
+      "required": true,
+      "sha256_required": true,
+      "required_roles": [
+        "final_low_blend",
+        "final_low_exchange",
+        "execution_plan",
+        "qa_report",
+        "comparison_contact_sheet",
+        "wireframe_contact_sheet",
+        "manifest"
+      ]
+    }
+  },
+  "publish": {
+    "require_all_required_gates": true,
+    "atomic": true,
+    "publish_on_partial_success": false,
+    "preserve_failed_diagnostics": true
+  }
+}

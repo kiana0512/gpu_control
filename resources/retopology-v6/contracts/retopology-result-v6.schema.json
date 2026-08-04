@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://li3d.local/schemas/retopology-result-v6.schema.json",
+  "title": "Li3D Automatic Retopology V6 Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "job_id", "status", "policy", "source", "formal_low", "gates", "artifacts", "publish_allowed"],
+  "properties": {
+    "schema_version": { "const": "6.0" },
+    "job_id": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["succeeded", "failed", "cancelled"] },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "sha256"],
+      "properties": {
+        "id": { "const": "li3d-retopology-v6" },
+        "version": { "const": "6.0.0" },
+        "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256_before", "sha256_after", "unchanged"],
+      "properties": {
+        "sha256_before": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+        "sha256_after": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+        "unchanged": { "type": "boolean" }
+      }
+    },
+    "formal_low": {
+      "type": ["object", "null"],
+      "properties": {
+        "object_count": { "type": "integer", "minimum": 0 },
+        "vertices": { "type": "integer", "minimum": 0 },
+        "edges": { "type": "integer", "minimum": 0 },
+        "polygons": { "type": "integer", "minimum": 0 },
+        "triangles": { "type": "integer", "minimum": 0 },
+        "method": { "type": "string" }
+      },
+      "required": ["object_count", "vertices", "polygons", "triangles", "method"],
+      "additionalProperties": false
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_preservation", "topology_integrity", "silhouette_6view", "construction", "adaptive_density", "wire_distribution", "shading", "artifact_integrity"],
+      "properties": {
+        "source_preservation": { "$ref": "#/$defs/gate" },
+        "topology_integrity": { "$ref": "#/$defs/gate" },
+        "silhouette_6view": { "$ref": "#/$defs/gate" },
+        "construction": { "$ref": "#/$defs/gate" },
+        "adaptive_density": { "$ref": "#/$defs/gate" },
+        "wire_distribution": { "$ref": "#/$defs/gate" },
+        "shading": { "$ref": "#/$defs/gate" },
+        "artifact_integrity": { "$ref": "#/$defs/gate" }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "object_key", "sha256", "size_bytes"],
+        "properties": {
+          "role": { "type": "string", "minLength": 1 },
+          "object_key": { "type": "string", "minLength": 1 },
+          "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+          "size_bytes": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "publish_allowed": { "type": "boolean" },
+    "failure_codes": { "type": "array", "items": { "type": "string" } },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "metrics", "evidence"],
+      "properties": {
+        "passed": { "type": "boolean" },
+        "metrics": { "type": "object" },
+        "evidence": { "type": "array", "items": { "type": "string" } },
+        "failure_codes": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "succeeded" } } },
+      "then": {
+        "properties": {
+          "formal_low": { "type": "object" },
+          "publish_allowed": { "const": true }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "publish_allowed": { "const": true } } },
+      "then": {
+        "properties": {
+          "status": { "const": "succeeded" },
+          "source": {
+            "properties": { "unchanged": { "const": true } },
+            "required": ["unchanged"]
+          },
+          "gates": {
+            "properties": {
+              "source_preservation": { "properties": { "passed": { "const": true } }, "required": ["passed"] },
+              "topology_integrity": { "properties": { "passed": { "const": true } }, "required": ["passed"] },
+              "silhouette_6view": { "properties": { "passed": { "const": true } }, "required": ["passed"] },
+              "construction": { "properties": { "passed": { "const": true } }, "required": ["passed"] },
+              "adaptive_density": { "properties": { "passed": { "const": true } }, "required": ["passed"] },
+              "wire_distribution": { "properties": { "passed": { "const": true } }, "required": ["passed"] },
+              "shading": { "properties": { "passed": { "const": true } }, "required": ["passed"] },
+              "artifact_integrity": { "properties": { "passed": { "const": true } }, "required": ["passed"] }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

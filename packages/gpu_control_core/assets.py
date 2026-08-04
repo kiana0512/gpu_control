@@ -2,7 +2,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -121,7 +121,7 @@ class RetopologyReferenceView(BaseModel):
 
 
 class RetopologyProcessOptions(RetopologyAuditOptions):
-    """Deterministic generation, topology-style and evidence controls."""
+    """Legacy V5 controls retained only for rollback and historical tests."""
 
     generated_low_object: str = Field(
         default="GPUCTRL_Retopo_v001", min_length=1, max_length=128
@@ -157,6 +157,51 @@ class RetopologyProcessMetadata(BaseModel):
 
     external_asset_id: str = Field(min_length=1, max_length=128)
     options: RetopologyProcessOptions
+    reference_views: list[RetopologyReferenceView] = Field(default_factory=list, max_length=16)
+    user_request: str | None = Field(default=None, max_length=4000)
+
+    @field_validator("external_asset_id")
+    @classmethod
+    def valid_external_id(cls, value: str) -> str:
+        if not ASSET_ID_PATTERN.fullmatch(value):
+            raise ValueError("external_asset_id contains unsupported characters")
+        return value
+
+    @field_validator("reference_views")
+    @classmethod
+    def unique_reference_filenames(
+        cls, value: list[RetopologyReferenceView]
+    ) -> list[RetopologyReferenceView]:
+        names = [item.filename for item in value]
+        if len(names) != len(set(names)):
+            raise ValueError("reference view filenames must be unique")
+        return value
+
+
+class RetopologyV6ProcessOptions(BaseModel):
+    """V6 high-only controls; polygon budgets are never accepted from users."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    algorithm: Literal["agent"] = "agent"
+    budget_mode: Literal["automatic"] = "automatic"
+    topology_style: Literal["mixed_game_ready"] = "mixed_game_ready"
+    preserve_source: Literal[True] = True
+    preserve_sharp_edges: bool = True
+    preserve_boundaries: bool = True
+    delivery_profile: Literal[
+        "next_gen_game_prop",
+        "realtime_background_prop",
+        "mobile_game_prop",
+    ] = "next_gen_game_prop"
+
+
+class RetopologyV6ProcessMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    api_version: Literal["6.0"] = "6.0"
+    external_asset_id: str = Field(min_length=1, max_length=128)
+    options: RetopologyV6ProcessOptions = Field(default_factory=RetopologyV6ProcessOptions)
     reference_views: list[RetopologyReferenceView] = Field(default_factory=list, max_length=32)
     user_request: str | None = Field(default=None, max_length=4000)
 
@@ -176,6 +221,86 @@ class RetopologyProcessMetadata(BaseModel):
         if len(names) != len(set(names)):
             raise ValueError("reference view filenames must be unique")
         return value
+
+
+RETOPOLOGY_V6_POLICY_SHA256 = (
+    "e6781d6158a93e571c944f5913a600838fe28fc2edc38a3b1909f649f66f3d3d"
+)
+
+_RETOPOLOGY_V5_IGNORED_OPTIONS = frozenset(
+    {
+        "target_faces",
+        "high_object",
+        "reference_object",
+        "low_object",
+        "generated_low_object",
+        "bootstrap_mode",
+        "topology_mode",
+        "planar_reduction",
+        "planar_angle_threshold",
+        "preserve_hard_edges",
+        "preserve_components",
+        "allow_triangles",
+        "allow_ngons",
+        "render_resolution",
+        "max_repair_rounds",
+        "require_closed",
+    }
+)
+
+
+def adapt_retopology_v6_metadata_json(
+    metadata: str,
+) -> tuple[RetopologyV6ProcessMetadata, list[str]]:
+    """Canonicalize V6 metadata and safely absorb explicitly known V5 fields.
+
+    The adapter never translates ``target_faces`` into an internal budget or
+    generator parameter. Unknown fields remain rejected by Pydantic so this
+    compatibility window cannot silently widen the production contract.
+    """
+
+    try:
+        payload = json.loads(metadata)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("metadata must be valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("metadata must be one JSON object")
+    raw_options = payload.get("options")
+    if not isinstance(raw_options, dict):
+        raise ValueError("metadata.options must be one JSON object")
+
+    options: dict[str, Any] = dict(raw_options)
+    ignored = sorted(key for key in options if key in _RETOPOLOGY_V5_IGNORED_OPTIONS)
+    for key in ignored:
+        options.pop(key, None)
+
+    warnings: list[str] = []
+    if "target_faces" in ignored:
+        warnings.append("DEPRECATED_TARGET_FACES_IGNORED")
+    if any(key != "target_faces" for key in ignored):
+        warnings.append("DEPRECATED_RETOPOLOGY_FIELDS_IGNORED")
+
+    legacy_algorithm = options.get("algorithm")
+    if legacy_algorithm in {"quadriflow", "cleanup_existing"}:
+        options["algorithm"] = "agent"
+        warnings.append("DEPRECATED_RETOPOLOGY_ALGORITHM_IGNORED")
+    legacy_style = options.get("topology_style")
+    if legacy_style in {"mixed", "quad_dominant", "preserve_existing"}:
+        options["topology_style"] = "mixed_game_ready"
+        warnings.append("DEPRECATED_TOPOLOGY_STYLE_NORMALIZED")
+    if "preserve_sharp" in options:
+        options.setdefault("preserve_sharp_edges", options.pop("preserve_sharp"))
+        warnings.append("DEPRECATED_PRESERVE_SHARP_NORMALIZED")
+    if "preserve_boundary" in options:
+        options.setdefault("preserve_boundaries", options.pop("preserve_boundary"))
+        warnings.append("DEPRECATED_PRESERVE_BOUNDARY_NORMALIZED")
+
+    api_version = payload.get("api_version")
+    if api_version in {None, "4.0", "5.0"}:
+        payload["api_version"] = "6.0"
+        warnings.append("DEPRECATED_RETOPOLOGY_CONTRACT_ADAPTED_TO_V6")
+    payload["options"] = options
+    return RetopologyV6ProcessMetadata.model_validate(payload), list(dict.fromkeys(warnings))
 
 
 def validate_asset_filename(filename: str) -> str:
@@ -278,6 +403,27 @@ def retopology_process_request_hash(
 ) -> str:
     payload = {
         "job_type": "RETOPOLOGY_PROCESS_V1",
+        "external_asset_id": metadata.external_asset_id,
+        "options": metadata.options.model_dump(mode="json"),
+        "reference_views": [item.model_dump(mode="json") for item in metadata.reference_views],
+        "user_request": metadata.user_request,
+        "project_sha256": project_sha256,
+        "reference_sha256": dict(sorted(reference_sha256.items())),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def retopology_v6_process_request_hash(
+    metadata: RetopologyV6ProcessMetadata,
+    project_sha256: str,
+    reference_sha256: dict[str, str],
+) -> str:
+    payload = {
+        "job_type": "RETOPOLOGY_PROCESS_V2",
+        "engine_contract": "retopology-v6",
+        "policy_sha256": RETOPOLOGY_V6_POLICY_SHA256,
         "external_asset_id": metadata.external_asset_id,
         "options": metadata.options.model_dump(mode="json"),
         "reference_views": [item.model_dump(mode="json") for item in metadata.reference_views],

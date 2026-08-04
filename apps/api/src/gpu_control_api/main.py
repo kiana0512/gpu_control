@@ -3593,13 +3593,17 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 },
                 "retopology_process": {
                     "submit": "/api/v1/assets/retopology/process",
-                    "format": ".blend + optional reference images",
+                    "engine_contract": "retopology-v6",
+                    "format": ".fbx/.obj/.glb/.gltf/.blend + optional reference images",
                     "success_status": "SUCCEEDED",
-                    "delivery_policy": "strict_qa_auto_publish",
-                    "views": ["front", "side", "top", "perspective"],
-                    "roles": ["high", "reference", "generated"],
+                    "budget_mode": "automatic",
+                    "user_target_faces_allowed": False,
+                    "delivery_policy": "all_eight_gates_required",
+                    "shape_authority": "high_poly_only",
+                    "views": ["front", "back", "left", "right", "top", "bottom", "perspective"],
+                    "roles": ["source_high", "formal_low"],
                     "reference_views_optional": True,
-                    "maximum_reference_views": 32,
+                    "maximum_reference_views": 16,
                     "status": "/api/v1/assets/jobs/{job_id}",
                     "events": "/api/v1/assets/jobs/{job_id}/events",
                 },
@@ -3958,7 +3962,11 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             (
                 await db.scalars(
                     select(AssetJob)
-                    .where(AssetJob.job_type == "RETOPOLOGY_PROCESS_V1")
+                    .where(
+                        AssetJob.job_type.in_(
+                            {"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"}
+                        )
+                    )
                     .order_by(AssetJob.created_at.desc())
                     .limit(500)
                 )
@@ -4083,16 +4091,29 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                             ),
                             "user_request": codex_task.options.get("user_request"),
                         },
-                        "output_contract": [
-                            "retopology_candidate.blend",
-                            "retopology_candidate.fbx",
-                            "retopology_process_report.json",
-                            "retopology_final_audit.json",
-                            "retopology_manifest.json",
-                            "retopology_agent_prompt.txt",
-                            "retopology_agent_events.jsonl",
-                            "high/reference/generated × front/side/top/perspective PNG",
-                        ],
+                        "output_contract": (
+                            [
+                                "final_low.blend",
+                                "final_low.fbx",
+                                "execution_plan.json",
+                                "qa_report.json",
+                                "comparison_contact_sheet.png",
+                                "wireframe_contact_sheet.png",
+                                "manifest.json",
+                                "result.json",
+                            ]
+                            if codex_task.job_type == "RETOPOLOGY_PROCESS_V2"
+                            else [
+                                "retopology_candidate.blend",
+                                "retopology_candidate.fbx",
+                                "retopology_process_report.json",
+                                "retopology_final_audit.json",
+                                "retopology_manifest.json",
+                                "retopology_agent_prompt.txt",
+                                "retopology_agent_events.jsonl",
+                                "high/reference/generated × front/side/top/perspective PNG",
+                            ]
+                        ),
                         "is_active": codex_task.status in {"CLAIMED", "RUNNING"},
                     }
                     if codex_task

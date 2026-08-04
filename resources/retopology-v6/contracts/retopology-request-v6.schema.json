@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://li3d.local/schemas/retopology-request-v6.schema.json",
+  "title": "Li3D Automatic Retopology V6 Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "high_model", "options"],
+  "properties": {
+    "api_version": { "const": "6.0" },
+    "high_model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_key", "sha256", "filename"],
+      "properties": {
+        "object_key": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+        "filename": { "type": "string", "minLength": 1 },
+        "content_type": { "type": "string" },
+        "size_bytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "reference_images": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["object_key", "sha256"],
+        "properties": {
+          "object_key": { "type": "string", "minLength": 1 },
+          "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+          "view": { "type": "string" }
+        }
+      }
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "budget_mode", "topology_style", "preserve_source"],
+      "properties": {
+        "algorithm": { "const": "agent" },
+        "budget_mode": { "const": "automatic" },
+        "topology_style": { "const": "mixed_game_ready" },
+        "preserve_source": { "const": true },
+        "preserve_sharp_edges": { "type": "boolean", "default": true },
+        "preserve_boundaries": { "type": "boolean", "default": true },
+        "delivery_profile": {
+          "type": "string",
+          "enum": ["next_gen_game_prop", "realtime_background_prop", "mobile_game_prop"],
+          "default": "next_gen_game_prop"
+        }
+      }
+    },
+    "client_metadata": {
+      "type": "object",
+      "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+    }
+  }
+}

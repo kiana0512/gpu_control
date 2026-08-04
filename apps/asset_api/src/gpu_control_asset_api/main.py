@@ -34,13 +34,14 @@ from packages.gpu_control_core.admission import (
 )
 from packages.gpu_control_core.assets import (
     AssetCreateMetadata,
+    RETOPOLOGY_V6_POLICY_SHA256,
     RetopologyAuditMetadata,
-    RetopologyProcessMetadata,
     SubstanceBakeMetadata,
+    adapt_retopology_v6_metadata_json,
     asset_request_hash,
     lease_token_hash,
     retopology_audit_request_hash,
-    retopology_process_request_hash,
+    retopology_v6_process_request_hash,
     substance_bake_request_hash,
     uv_process_request_hash,
     validate_asset_filename,
@@ -52,6 +53,10 @@ from packages.gpu_control_core.database import Database
 from packages.gpu_control_core.enums import (
     TERMINAL_BATCH_STATUSES,
     TERMINAL_JOB_STATUSES,
+)
+from packages.gpu_control_core.retopology_v6 import (
+    validate_contract_payload,
+    verify_runtime_resources,
 )
 from packages.gpu_control_core.models import (
     ApiClient,
@@ -129,7 +134,10 @@ SUBSTANCE_BAKE_COMMAND_COUNTS = {
     "pbr-core-v1": 2,
     "li3d-pbr-full-v2": 10,
 }
-CODEX_REQUIRED_JOB_TYPES = frozenset({"RETOPOLOGY_PROCESS_V1"})
+CODEX_REQUIRED_JOB_TYPES = frozenset(
+    {"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"}
+)
+RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-retopology-v6.0.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,6 +251,31 @@ RETOPOLOGY_FINAL_MODEL_ARTIFACTS = {
     "candidate_blend": ("blend", "retopology_final.blend"),
     "candidate_fbx": ("fbx", "retopology_final.fbx"),
 }
+RETOPOLOGY_V6_ROOT = Path("/opt/li3d/retopology-v6")
+RETOPOLOGY_V6_ARTIFACTS = {
+    "final_low_blend": ("final_low.blend", "application/octet-stream"),
+    "final_low_exchange": ("final_low.fbx", "application/octet-stream"),
+    "execution_plan": ("execution_plan.json", "application/json"),
+    "qa_report": ("qa_report.json", "application/json"),
+    "comparison_contact_sheet": ("comparison_contact_sheet.png", "image/png"),
+    "wireframe_contact_sheet": ("wireframe_contact_sheet.png", "image/png"),
+    "manifest": ("manifest.json", "application/json"),
+    "result": ("result.json", "application/json"),
+    "formal_agent_receipt": ("formal_agent_receipt.json", "application/json"),
+    "formal_agent_events": ("formal_agent_events.jsonl", "application/x-ndjson"),
+    "qa_agent_events": ("qa_agent_events.jsonl", "application/x-ndjson"),
+}
+RETOPOLOGY_V6_RESULT_ARTIFACT_ROLES = frozenset(
+    {
+        "final_low_blend",
+        "final_low_exchange",
+        "execution_plan",
+        "qa_report",
+        "comparison_contact_sheet",
+        "wireframe_contact_sheet",
+        "manifest",
+    }
+)
 RETOPOLOGY_DIAGNOSTIC_ERROR_CODES = frozenset(
     {"RETOPOLOGY_AUDIT_FAILED", "RETOPOLOGY_QUALITY_GATE_FAILED"}
 )
@@ -1214,6 +1247,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "UV_PROCESS_V2": 240,
                 "RETOPOLOGY_AUDIT": 120,
                 "RETOPOLOGY_PROCESS_V1": 900,
+                "RETOPOLOGY_PROCESS_V2": 1800,
                 "SUBSTANCE_BAKE_V1": 600,
             }.get(job.job_type, 300)
             if slots > 0:
@@ -1231,6 +1265,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     def artifacts_are_downloadable(job: AssetJob) -> bool:
+        # V6 candidates that fail any formal gate are retained server-side for
+        # operators, but they are never part of the public delivery contract.
+        # V5 diagnostic downloads remain unchanged for rollback compatibility.
+        if job.job_type == "RETOPOLOGY_PROCESS_V2" and job.status == "FAILED":
+            return False
         return job.status in DOWNLOADABLE_ASSET_STATUSES or (
             job.status == "FAILED" and job.error_code in RETOPOLOGY_DIAGNOSTIC_ERROR_CODES
         )
@@ -1272,6 +1311,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "delivery_ready": job.status == "SUCCEEDED",
             "review_required": False,
             "artifacts_role": (
+                "isolated_diagnostic"
+                if job.job_type == "RETOPOLOGY_PROCESS_V2" and job.status == "FAILED"
+                else
                 "diagnostic"
                 if job.status == "FAILED" and job.error_code in RETOPOLOGY_DIAGNOSTIC_ERROR_CODES
                 else "delivery"
@@ -1798,12 +1840,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ],
         reference_images: Annotated[list[UploadFile] | None, File()] = None,
     ) -> JSONResponse:
-        """Create a source-preserving candidate with deterministic four-view evidence."""
+        """Create one V6 high-only automatic retopology job."""
         try:
-            parsed = RetopologyProcessMetadata.model_validate_json(metadata)
+            parsed, compatibility_warnings = adapt_retopology_v6_metadata_json(metadata)
             project_filename = validate_asset_filename(project.filename or "")
-            if not project_filename.lower().endswith(".blend"):
-                raise ValueError("retopology process requires one BLEND project")
             uploads = reference_images or []
             upload_names = [
                 validate_reference_image_filename(item.filename or "") for item in uploads
@@ -1861,12 +1901,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 reference_sha[filename] = digest
                 reference_sizes[filename] = size
 
-            request_hash = retopology_process_request_hash(parsed, project_sha, reference_sha)
+            request_hash = retopology_v6_process_request_hash(
+                parsed, project_sha, reference_sha
+            )
             reference_by_name = {
                 item.filename: item.model_dump(mode="json") for item in parsed.reference_views
             }
             input_manifest = {
-                "schema_version": "retopology_input.v1",
+                "schema_version": "retopology_input.v6",
+                "engine_contract": "retopology-v6",
+                "api_version": parsed.api_version,
+                "policy_sha256": RETOPOLOGY_V6_POLICY_SHA256,
                 "project": {
                     "filename": project_filename,
                     "sha256": project_sha,
@@ -1881,6 +1926,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     for filename in sorted(reference_sha)
                 ],
                 "user_request": parsed.user_request,
+                "deprecated_fields_ignored": compatibility_warnings,
             }
             publish_root, bundle_sha, bundle_size = await asyncio.to_thread(
                 build_retopology_input_bundle,
@@ -1916,6 +1962,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             options = parsed.options.model_dump(mode="json")
             options.update(
                 {
+                    "engine_contract": "retopology-v6",
+                    "policy_sha256": RETOPOLOGY_V6_POLICY_SHA256,
+                    "deprecated_fields_ignored": compatibility_warnings,
                     "project_filename": project_filename,
                     "project_sha256": project_sha,
                     "reference_views": input_manifest["reference_views"],
@@ -1926,7 +1975,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 id=job_id,
                 client_id=principal.id,
                 external_asset_id=parsed.external_asset_id,
-                job_type="RETOPOLOGY_PROCESS_V1",
+                job_type="RETOPOLOGY_PROCESS_V2",
                 status="QUEUED",
                 source_filename="retopology_input.zip",
                 input_path=str(job_root / "retopology_input.zip"),
@@ -1939,7 +1988,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.add(job)
             await db.flush()
             await append_asset_event(
-                db, job, details={"event": "asset.queued", "request_id": job.request_id}
+                db,
+                job,
+                details={
+                    "event": "asset.queued",
+                    "request_id": job.request_id,
+                    "engine_contract": "retopology-v6",
+                    "warnings": compatibility_warnings,
+                },
             )
             db.add(
                 AssetIdempotencyKey(
@@ -2657,6 +2713,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 claim_query = claim_query.where(AssetJob.id.in_(pending_substance_job_ids))
         else:
             claim_query = claim_query.where(AssetJob.job_type != "SUBSTANCE_BAKE_V1")
+            if worker.skill_version == RETOPOLOGY_V6_SKILL_VERSION:
+                # A V6 canary consumes only the new high-only contract. V5
+                # audit/process work stays on the rollback pool because the
+                # two Skill contracts intentionally have incompatible inputs.
+                claim_query = claim_query.where(
+                    AssetJob.job_type.not_in(
+                        {"RETOPOLOGY_AUDIT", "RETOPOLOGY_PROCESS_V1"}
+                    )
+                )
+            else:
+                # Old Workers must never claim a V6 job: they still execute
+                # bootstrap-low/target-face semantics and would corrupt the
+                # new contract even if the external route is unchanged.
+                claim_query = claim_query.where(
+                    AssetJob.job_type != "RETOPOLOGY_PROCESS_V2"
+                )
             codex_probe_cutoff = datetime.now(UTC) - timedelta(
                 seconds=cfg.asset_codex_probe_max_age_seconds
             )
@@ -2735,6 +2807,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "UV_PROCESS_V2": 240,
             "RETOPOLOGY_AUDIT": 120,
             "RETOPOLOGY_PROCESS_V1": 900,
+            "RETOPOLOGY_PROCESS_V2": 1800,
             "SUBSTANCE_BAKE_V1": 600,
         }.get(job.job_type, 300)
         job.last_progress_at = now
@@ -3379,6 +3452,252 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "quality_gate_passed": quality_passed,
                 "qa_enforcement": cfg.retopology_qa_enforcement,
                 "delivered_with_warnings": advisory_warning,
+            }
+        finally:
+            if not committed:
+                await cleanup_uncommitted_completion(request, staging, created)
+
+    @app.post("/internal/v1/assets/jobs/{job_id}/retopology-v6-complete")
+    async def worker_complete_retopology_v6(
+        job_id: str,
+        request: Request,
+        db: Annotated[AsyncSession, Depends(session)],
+        lease: Annotated[str, Header(alias="X-Asset-Lease")],
+    ) -> dict[str, Any]:
+        """Validate V6 evidence and publish only an all-gates-passed formal low."""
+
+        verify_runtime_resources(RETOPOLOGY_V6_ROOT)
+        snapshot = await prepare_asset_completion(job_id, lease, db, "RETOPOLOGY_PROCESS_V2")
+        form = await request.form()
+        uploads: dict[str, StarletteUploadFile] = {}
+        for kind in RETOPOLOGY_V6_ARTIFACTS:
+            upload = form.get(kind)
+            if not isinstance(upload, StarletteUploadFile):
+                raise HTTPException(
+                    422, detail={"code": "ASSET_ARTIFACT_MISSING", "kind": kind}
+                )
+            uploads[kind] = upload
+        unknown = set(form.keys()) - set(RETOPOLOGY_V6_ARTIFACTS)
+        if unknown:
+            raise HTTPException(
+                422,
+                detail={"code": "ASSET_ARTIFACT_UNEXPECTED", "kinds": sorted(unknown)},
+            )
+
+        staging = cfg.asset_root / snapshot.id / f".outputs-{uuid.uuid4().hex}"
+        staging.mkdir(parents=True, exist_ok=False)
+        created: list[AssetArtifact] = []
+        committed = False
+        try:
+            for kind, upload in uploads.items():
+                filename, content_type = RETOPOLOGY_V6_ARTIFACTS[kind]
+                if upload.filename != filename:
+                    raise HTTPException(
+                        422,
+                        detail={"code": "ASSET_ARTIFACT_FILENAME_MISMATCH", "kind": kind},
+                    )
+                path = staging / filename
+                digest, size = await persist_completion_upload(upload, path)
+                if size <= 0:
+                    raise HTTPException(
+                        422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind}
+                    )
+                created.append(
+                    AssetArtifact(
+                        id=str(uuid.uuid4()),
+                        job_id=snapshot.id,
+                        kind=kind,
+                        filename=filename,
+                        path=str(path),
+                        content_type=content_type,
+                        size_bytes=size,
+                        sha256=digest,
+                    )
+                )
+
+            try:
+                result_payload = json.loads((staging / "result.json").read_text("utf-8"))
+                plan_payload = json.loads(
+                    (staging / "execution_plan.json").read_text("utf-8")
+                )
+                qa_payload = json.loads((staging / "qa_report.json").read_text("utf-8"))
+                manifest_payload = json.loads((staging / "manifest.json").read_text("utf-8"))
+            except (OSError, ValueError) as exc:
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_V6_JSON_INVALID"}
+                ) from exc
+            try:
+                validate_contract_payload(
+                    RETOPOLOGY_V6_ROOT,
+                    "retopology-plan-v6.schema.json",
+                    plan_payload,
+                )
+                validate_contract_payload(
+                    RETOPOLOGY_V6_ROOT,
+                    "retopology-result-v6.schema.json",
+                    result_payload,
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_V6_SCHEMA_INVALID"}
+                ) from exc
+
+            if (
+                result_payload.get("job_id") != snapshot.id
+                or result_payload.get("policy", {}).get("sha256")
+                != snapshot.options.get("policy_sha256")
+                or result_payload.get("source", {}).get("sha256_before")
+                != snapshot.options.get("project_sha256")
+                or result_payload.get("source", {}).get("sha256_after")
+                != snapshot.options.get("project_sha256")
+            ):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_V6_IDENTITY_MISMATCH"}
+                )
+            if not isinstance(qa_payload, dict) or qa_payload.get("gates") != result_payload.get(
+                "gates"
+            ):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_V6_QA_RESULT_MISMATCH"}
+                )
+            if (
+                not isinstance(manifest_payload, dict)
+                or manifest_payload.get("job_id") != snapshot.id
+                or manifest_payload.get("engine_contract") != "retopology-v6"
+                or manifest_payload.get("policy_sha256")
+                != snapshot.options.get("policy_sha256")
+                or manifest_payload.get("source_sha256")
+                != snapshot.options.get("project_sha256")
+            ):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_V6_MANIFEST_MISMATCH"}
+                )
+
+            staged_by_kind = {item.kind: item for item in created}
+            result_artifacts = result_payload.get("artifacts")
+            if not isinstance(result_artifacts, list):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_V6_ARTIFACT_IDENTITIES_MISSING"}
+                )
+            result_by_role = {
+                str(item.get("role")): item
+                for item in result_artifacts
+                if isinstance(item, dict)
+            }
+            if RETOPOLOGY_V6_RESULT_ARTIFACT_ROLES.difference(result_by_role):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_V6_ARTIFACT_ROLES_MISSING"}
+                )
+            for role in RETOPOLOGY_V6_RESULT_ARTIFACT_ROLES:
+                row = result_by_role[role]
+                artifact = staged_by_kind[role]
+                if (
+                    Path(str(row.get("object_key"))).name != artifact.filename
+                    or row.get("sha256") != artifact.sha256
+                    or row.get("size_bytes") != artifact.size_bytes
+                ):
+                    raise HTTPException(
+                        422,
+                        detail={
+                            "code": "RETOPOLOGY_V6_ARTIFACT_IDENTITY_MISMATCH",
+                            "role": role,
+                        },
+                    )
+
+            for kind in ("comparison_contact_sheet", "wireframe_contact_sheet"):
+                try:
+                    with Image.open(staging / RETOPOLOGY_V6_ARTIFACTS[kind][0]) as image:
+                        if image.width * image.height > cfg.max_image_pixels:
+                            raise HTTPException(
+                                413,
+                                detail={
+                                    "code": "RETOPOLOGY_REVIEW_IMAGE_TOO_LARGE",
+                                    "kind": kind,
+                                },
+                            )
+                        image.verify()
+                except (OSError, UnidentifiedImageError) as exc:
+                    raise HTTPException(
+                        422,
+                        detail={"code": "RETOPOLOGY_REVIEW_IMAGE_INVALID", "kind": kind},
+                    ) from exc
+
+            gates = result_payload.get("gates")
+            all_gates_passed = isinstance(gates, dict) and len(gates) == 8 and all(
+                isinstance(gate, dict) and gate.get("passed") is True
+                for gate in gates.values()
+            )
+            publish_allowed = (
+                result_payload.get("status") == "succeeded"
+                and result_payload.get("publish_allowed") is True
+                and result_payload.get("source", {}).get("unchanged") is True
+                and all_gates_passed
+            )
+            if result_payload.get("publish_allowed") is True and not publish_allowed:
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_V6_PUBLISH_GATE_BYPASS"}
+                )
+
+            fsync_completion_staging(staging)
+            job = await lock_asset_completion_for_publish(snapshot, lease, db)
+            cancelled = await cancel_at_completion_safe_point(db, job)
+            if cancelled is not None:
+                return cancelled
+            if publish_allowed:
+                stem = Path(snapshot.options["project_filename"]).stem
+                staged_by_kind["final_low_blend"].kind = "blend"
+                staged_by_kind["final_low_blend"].filename = f"{stem}_GAME_LOW.blend"
+                staged_by_kind["final_low_exchange"].kind = "fbx"
+                staged_by_kind["final_low_exchange"].filename = f"{stem}_GAME_LOW.fbx"
+            db.add_all(created)
+            job.status = "SUCCEEDED" if publish_allowed else "FAILED"
+            job.progress = 100
+            job.stage = "SUCCEEDED" if publish_allowed else "FAILED"
+            job.stage_message = (
+                "V6 唯一正式低模已通过八项门禁并原子发布"
+                if publish_allowed
+                else "V6 正式低模未通过全部门禁；诊断证据已隔离保留"
+            )
+            job.estimated_remaining_seconds = 0
+            job.last_progress_at = datetime.now(UTC)
+            job.finished_at = job.last_progress_at
+            failure_codes = result_payload.get("failure_codes")
+            job.error_code = None if publish_allowed else "RETOPOLOGY_QUALITY_GATE_FAILED"
+            job.error_message = (
+                None
+                if publish_allowed
+                else json.dumps(
+                    failure_codes if isinstance(failure_codes, list) else [],
+                    ensure_ascii=False,
+                )
+            )
+            job.options = {
+                **job.options,
+                "v6_result": {
+                    "status": result_payload.get("status"),
+                    "publish_allowed": publish_allowed,
+                    "failure_codes": failure_codes if isinstance(failure_codes, list) else [],
+                },
+            }
+            job.lease_expires_at = None
+            job.lease_token_hash = None
+            await decrement_asset_worker_jobs_atomic(db, job.worker_id)
+            await append_asset_event(
+                db,
+                job,
+                details={
+                    "event": "asset.succeeded" if publish_allowed else "asset.qa_failed",
+                    "engine_contract": "retopology-v6",
+                    "publish_allowed": publish_allowed,
+                    "failure_codes": failure_codes if isinstance(failure_codes, list) else [],
+                },
+            )
+            await db.commit()
+            committed = True
+            return {
+                "accepted": True,
+                "status": job.status,
+                "publish_allowed": publish_allowed,
             }
         finally:
             if not committed:

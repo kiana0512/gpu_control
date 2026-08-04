@@ -67,10 +67,11 @@ services:
       ASSET_WORKER_HMAC_SECRET: ${ASSET_WORKER_HMAC_SECRET}
       ASSET_WORKER_MAX_CONCURRENCY: ${ASSET_WORKER_MAX_CONCURRENCY:-2}
       BLENDER_VERSION: 5.1.2
-      BLENDER_SKILL_VERSION: ${BLENDER_SKILL_VERSION:-asset-skills-2026.07.28}
+      BLENDER_SKILL_VERSION: ${BLENDER_SKILL_VERSION:-asset-skills-retopology-v6.0.0}
       UV_SKILL_ROOT: /opt/codex/skills/blender-pbr-uv
-      RETOPOLOGY_SKILL_ROOT: /opt/codex/skills/blender-retopology-compare-iterate
-      CODEX_SKILLS_ROOT: /opt/codex/skills
+      RETOPOLOGY_SKILL_ROOT: /opt/li3d/retopology-v6/skill/blender-retopology-compare-iterate
+      RETOPOLOGY_V6_ROOT: /opt/li3d/retopology-v6
+      CODEX_SKILLS_ROOT: /opt
       RETOPOFLOW_ADDON_ROOT: /opt/blender-addons/RetopoFlow
       CODEX_BINARY: /usr/local/bin/codex
       CODEX_AUTH_SOURCE: /run/secrets/codex-auth.json
@@ -81,7 +82,7 @@ services:
       - ${CODEX_SKILL_ROOT:-/opt/gpu-control/runtime/asset-skills}:/opt/codex/skills:ro
       - ${CODEX_BINARY_PATH:-/opt/gpu-control/runtime/codex/codex}:/usr/local/bin/codex:ro
       - ${CODEX_ASSET_AUTH_PATH:-/home/lilithgames/.codex/auth.json}:/run/secrets/codex-auth.json:ro
-      - ${CODEX_RUNTIME_ROOT:-/opt/gpu-control/runtime/codex}/${NODE_ID}-home:/home/assetworker/.codex
+      - ${CODEX_RUNTIME_ROOT:-/opt/gpu-control/runtime/codex}/${NODE_ID}-v6-home:/home/assetworker/.codex
       - ${RETOPOFLOW_RUNTIME_ROOT:-/opt/gpu-control/runtime/retopoflow/RetopoFlow}:/opt/blender-addons/RetopoFlow:ro
     logging: *default-logging
 

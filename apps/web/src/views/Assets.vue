@@ -23,7 +23,7 @@ const jobType = ref<
   | "ALL"
   | "UV_PROCESS_V2"
   | "RETOPOLOGY_AUDIT"
-  | "RETOPOLOGY_PROCESS_V1"
+  | "RETOPOLOGY_PROCESS_V2"
   | "SUBSTANCE_BAKE_V1"
 >("ALL");
 const jobState = ref<"ALL" | "ACTIVE" | "SUCCEEDED" | "FAILED">("ALL");
@@ -80,7 +80,9 @@ const filteredJobs = computed(() => {
     const typeMatches =
       jobType.value === "ALL" ||
       job.job_type === jobType.value ||
-      (jobType.value === "UV_PROCESS_V2" && job.job_type === "UV_UNWRAP");
+      (jobType.value === "UV_PROCESS_V2" && job.job_type === "UV_UNWRAP") ||
+      (jobType.value === "RETOPOLOGY_PROCESS_V2" &&
+        job.job_type === "RETOPOLOGY_PROCESS_V1");
     const stateMatches =
       jobState.value === "ALL" ||
       (jobState.value === "ACTIVE" &&
@@ -214,7 +216,8 @@ function retopoflowProbeLabel(worker: AssetWorkerInfo) {
 function jobTypeLabel(value: string) {
   if (value === "UV_PROCESS_V2") return "PBR UV";
   if (value === "RETOPOLOGY_AUDIT") return "拓扑审计";
-  if (value === "RETOPOLOGY_PROCESS_V1") return "AI 重拓扑";
+  if (["RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"].includes(value))
+    return value === "RETOPOLOGY_PROCESS_V2" ? "AI 重拓扑 V6" : "AI 重拓扑 V5";
   if (value === "SUBSTANCE_BAKE_V1") return "Substance PBR 烘焙";
   if (value === "UV_UNWRAP") return "UV 兼容接口";
   return value;
@@ -224,7 +227,7 @@ function jobApiPath(value: string) {
   if (value === "UV_PROCESS_V2" || value === "UV_UNWRAP")
     return "/api/v1/assets/uv/process";
   if (value === "RETOPOLOGY_AUDIT") return "/api/v1/assets/retopology/audit";
-  if (value === "RETOPOLOGY_PROCESS_V1")
+  if (["RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"].includes(value))
     return "/api/v1/assets/retopology/process";
   if (value === "SUBSTANCE_BAKE_V1") return "/api/v1/assets/bake/process";
   return "未登记 API";
@@ -236,7 +239,9 @@ function jobTypeCount(value: typeof jobType.value) {
   return rows.filter(
     (job) =>
       job.job_type === value ||
-      (value === "UV_PROCESS_V2" && job.job_type === "UV_UNWRAP"),
+      (value === "UV_PROCESS_V2" && job.job_type === "UV_UNWRAP") ||
+      (value === "RETOPOLOGY_PROCESS_V2" &&
+        job.job_type === "RETOPOLOGY_PROCESS_V1"),
   ).length;
 }
 
@@ -628,10 +633,10 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
               拓扑审计 {{ jobTypeCount("RETOPOLOGY_AUDIT") }}
             </button>
             <button
-              :class="{ active: jobType === 'RETOPOLOGY_PROCESS_V1' }"
-              @click="jobType = 'RETOPOLOGY_PROCESS_V1'"
+              :class="{ active: jobType === 'RETOPOLOGY_PROCESS_V2' }"
+              @click="jobType = 'RETOPOLOGY_PROCESS_V2'"
             >
-              AI 重拓扑 {{ jobTypeCount("RETOPOLOGY_PROCESS_V1") }}
+              AI 重拓扑 {{ jobTypeCount("RETOPOLOGY_PROCESS_V2") }}
             </button>
             <button
               :class="{ active: jobType === 'SUBSTANCE_BAKE_V1' }"
@@ -891,7 +896,11 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
                 ><code>{{ selectedJob.input_sha256 }}</code>
               </div>
               <div
-                v-if="selectedJob.job_type === 'RETOPOLOGY_PROCESS_V1'"
+                v-if="
+                  ['RETOPOLOGY_PROCESS_V1', 'RETOPOLOGY_PROCESS_V2'].includes(
+                    selectedJob.job_type,
+                  )
+                "
                 class="wide"
               >
                 <span>用户要求</span><strong>{{ selectedUserRequest }}</strong>

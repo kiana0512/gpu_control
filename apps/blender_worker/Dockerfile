@@ -11,6 +11,7 @@ COPY pyproject.toml README.md ./
 COPY packages ./packages
 COPY apps/blender_worker/src ./apps/blender_worker/src
 COPY scripts/probe_retopoflow_blender.py ./scripts/probe_retopoflow_blender.py
+COPY resources/retopology-v6 /opt/li3d/retopology-v6
 RUN python3 -m pip install --no-cache-dir .
 RUN useradd --uid 10002 --create-home assetworker
 USER assetworker

@@ -78,6 +78,7 @@ ASSET_JOB_TYPE_TO_API = {
     "UV_PROCESS_V2": "uv_process",
     "RETOPOLOGY_AUDIT": "retopology_audit",
     "RETOPOLOGY_PROCESS_V1": "retopology_process",
+    "RETOPOLOGY_PROCESS_V2": "retopology_process",
     "SUBSTANCE_BAKE_V1": "substance_bake",
 }
 

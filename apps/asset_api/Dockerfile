@@ -4,6 +4,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY packages ./packages
 COPY apps/asset_api/src ./apps/asset_api/src
+COPY resources/retopology-v6 /opt/li3d/retopology-v6
 RUN python -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir .
 
 FROM ${PYTHON_BASE_IMAGE} AS runtime
@@ -19,6 +20,7 @@ LABEL org.opencontainers.image.title="GPU Control Asset API" \
 RUN groupadd --gid 10001 gpucontrol && useradd --uid 10001 --gid gpucontrol --create-home gpucontrol
 WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /opt/li3d/retopology-v6 /opt/li3d/retopology-v6
 USER gpucontrol
 EXPOSE 8010
 HEALTHCHECK --interval=15s --timeout=3s --retries=5 CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health/live', timeout=2)"

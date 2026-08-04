@@ -182,6 +182,7 @@ export interface AssetJobInfo {
     | "UV_PROCESS_V2"
     | "RETOPOLOGY_AUDIT"
     | "RETOPOLOGY_PROCESS_V1"
+    | "RETOPOLOGY_PROCESS_V2"
     | string;
   status: string;
   source_filename: string;

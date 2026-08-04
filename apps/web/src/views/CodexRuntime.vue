@@ -44,7 +44,11 @@ const workerNode = computed(() => {
 const recentExecutions = computed(() =>
   (assets.value?.jobs ?? [])
     .filter((job) =>
-      ["RETOPOLOGY_AUDIT", "RETOPOLOGY_PROCESS_V1"].includes(job.job_type),
+      [
+        "RETOPOLOGY_AUDIT",
+        "RETOPOLOGY_PROCESS_V1",
+        "RETOPOLOGY_PROCESS_V2",
+      ].includes(job.job_type),
     )
     .slice(0, 8),
 );

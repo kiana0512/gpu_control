@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://li3d.local/schemas/retopology-plan-v6.schema.json",
+  "title": "Li3D Automatic Retopology V6 Execution Plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "asset_class",
+    "shape_authority",
+    "method",
+    "automatic_budget",
+    "critical_features",
+    "component_decisions",
+    "validation_plan"
+  ],
+  "properties": {
+    "schema_version": { "const": "6.0" },
+    "asset_class": {
+      "type": "string",
+      "enum": ["mechanical", "organic_integrated", "mixed"]
+    },
+    "shape_authority": { "const": "high_poly_only" },
+    "method": {
+      "type": "string",
+      "enum": ["semantic_reconstruction", "controlled_direct_reduction", "hybrid_per_component"]
+    },
+    "automatic_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["estimated_triangle_range", "basis"],
+      "properties": {
+        "estimated_triangle_range": {
+          "type": "array",
+          "prefixItems": [
+            { "type": "integer", "minimum": 1 },
+            { "type": "integer", "minimum": 1 }
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "basis": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "critical_features": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type", "description", "views", "retention"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "type": {
+            "type": "string",
+            "enum": ["silhouette", "opening", "negative_space", "support", "protrusion", "hard_turn", "curved_outline", "deformation_zone"]
+          },
+          "description": { "type": "string", "minLength": 1 },
+          "views": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+          "retention": { "type": "string", "enum": ["geometry", "normal_map", "omit"] }
+        }
+      }
+    },
+    "component_decisions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["component_id", "construction_role", "method", "density_reason"],
+        "properties": {
+          "component_id": { "type": "string", "minLength": 1 },
+          "construction_role": { "type": "string", "minLength": 1 },
+          "method": {
+            "type": "string",
+            "enum": ["semantic_reconstruction", "controlled_direct_reduction", "reuse_clean_source_component", "normal_map_only", "omit_noncritical_micro_detail"]
+          },
+          "density_reason": { "type": "string", "minLength": 1 },
+          "must_remain_separate": { "type": "boolean", "default": false }
+        }
+      }
+    },
+    "validation_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["views", "gates"],
+      "properties": {
+        "views": { "type": "array", "minItems": 7, "items": { "type": "string" } },
+        "gates": { "type": "array", "minItems": 8, "items": { "type": "string" } }
+      }
+    },
+    "known_risks": { "type": "array", "items": { "type": "string" } }
+  }
+}
