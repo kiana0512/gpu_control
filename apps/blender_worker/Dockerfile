@@ -5,7 +5,10 @@ ARG GPU_CONTROL_REVISION=unknown
 USER root
 WORKDIR /app
 RUN apt-get update -qq \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends xvfb xauth \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+        bubblewrap \
+        xvfb \
+        xauth \
     && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml README.md ./
 COPY packages ./packages

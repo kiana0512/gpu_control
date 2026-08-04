@@ -217,7 +217,9 @@ function jobTypeLabel(value: string) {
   if (value === "UV_PROCESS_V2") return "PBR UV";
   if (value === "RETOPOLOGY_AUDIT") return "拓扑审计";
   if (["RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"].includes(value))
-    return value === "RETOPOLOGY_PROCESS_V2" ? "AI 重拓扑 V6" : "AI 重拓扑 V5";
+    return value === "RETOPOLOGY_PROCESS_V2"
+      ? "V6 自动拓扑"
+      : "V5 兼容拓扑";
   if (value === "SUBSTANCE_BAKE_V1") return "Substance PBR 烘焙";
   if (value === "UV_UNWRAP") return "UV 兼容接口";
   return value;
@@ -843,7 +845,10 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
               {{ assetDeliveryPolicy(selectedJob).label }}
             </span>
           </section>
-          <section v-if="selectedJob.error" class="asset-failure-summary">
+          <section
+            v-if="selectedJob.error && isTerminal(selectedJob)"
+            class="asset-failure-summary"
+          >
             <h3>失败原因</h3>
             <strong>{{ selectedJob.error.code }}</strong>
             <p>{{ diagnosticSummary(selectedJob) }}</p>
@@ -922,7 +927,9 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
                 >
               </button>
             </div>
-            <pre v-if="selectedJob.error">{{ selectedJob.error.message }}</pre>
+            <pre v-if="selectedJob.error && isTerminal(selectedJob)">{{
+              selectedJob.error.message
+            }}</pre>
           </details>
         </div>
       </aside>

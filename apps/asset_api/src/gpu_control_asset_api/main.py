@@ -1009,7 +1009,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         control-plane overview.  API callers get a concise, actionable contract
         and never need to interpret Blender stdout/stderr.
         """
-        if not job.error_code:
+        # A prior attempt's error remains in the immutable event history, but
+        # must never be exposed as the current outcome after the job has been
+        # re-queued or claimed again.  External clients otherwise render a
+        # contradictory "RUNNING + failed" state.
+        if job.status not in TERMINAL_ASSET_WORK_STATUSES or not job.error_code:
             return None
         messages = {
             "UV_QA_FAILED": (
@@ -2793,6 +2797,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         token = secrets.token_urlsafe(32)
         now = datetime.now(UTC)
         job.status = "CLAIMED"
+        # The previous attempt remains auditable through AssetJobEvent.  The
+        # mutable job row represents the active attempt only.
+        job.error_code = None
+        job.error_message = None
         job.worker_id = worker.id
         job.worker_instance_id = body.agent_instance_id
         job.lease_token_hash = lease_token_hash(token)

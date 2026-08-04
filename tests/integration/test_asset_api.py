@@ -2760,10 +2760,19 @@ async def test_linux_worker_restart_can_reconcile_an_expired_durable_lease(
             worker = await db.get(AssetWorker, "asset-worker-3090-a")
             assert job is not None and worker is not None
             assert job.status == "CLAIMED"
+            assert job.error_code is None
+            assert job.error_message is None
             assert job.worker_instance_id == asset_worker_generation(
                 "asset-worker-3090-a", "new"
             )["agent_instance_id"]
             assert worker.current_jobs == 1
+        public = await client.get(
+            f"/api/v1/assets/jobs/{created.json()['job_id']}",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert public.status_code == 200, public.text
+        assert public.json()["status"] == "CLAIMED"
+        assert public.json().get("error") is None
 
 
 async def test_linux_worker_newer_idle_generation_cannot_be_replaced_by_stale_instance(

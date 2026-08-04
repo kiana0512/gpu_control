@@ -59,6 +59,11 @@ services:
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
     image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.2.5}
     restart: unless-stopped
+    # Required for Codex's nested bubblewrap workspace sandbox.
+    cap_add: [SYS_ADMIN]
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
     environment:
       ASSET_API_URL: https://${CONTROL_HOST}
       ASSET_WORKER_ID: asset-${NODE_ID}
@@ -76,6 +81,7 @@ services:
       CODEX_BINARY: /usr/local/bin/codex
       CODEX_AUTH_SOURCE: /run/secrets/codex-auth.json
       CODEX_RUNTIME_HOME: /home/assetworker/.codex
+      CODEX_JOB_TIMEOUT_SECONDS: ${CODEX_JOB_TIMEOUT_SECONDS:-1800}
       SSL_CERT_FILE: /run/certs/lan-ca.crt
     volumes:
       - ${LAN_CA_PATH:-/opt/gpu-control/deploy/control-plane/nginx/certs/lan-ca.crt}:/run/certs/lan-ca.crt:ro

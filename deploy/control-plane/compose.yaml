@@ -84,6 +84,14 @@ services:
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
     image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.2.5}
     restart: unless-stopped
+    # Codex workspace-write uses bubblewrap inside the already isolated Worker
+    # container. SYS_ADMIN plus unconfined seccomp/AppArmor are required for
+    # the nested mount namespace; business inputs remain limited to the job
+    # workspace by Codex's own sandbox.
+    cap_add: [SYS_ADMIN]
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
     environment:
       ASSET_API_URL: http://asset-api:8010
       ASSET_WORKER_ID: asset-control-4090
@@ -101,6 +109,7 @@ services:
       CODEX_BINARY: /usr/local/bin/codex
       CODEX_AUTH_SOURCE: /run/secrets/codex-auth.json
       CODEX_RUNTIME_HOME: /home/assetworker/.codex
+      CODEX_JOB_TIMEOUT_SECONDS: ${CODEX_JOB_TIMEOUT_SECONDS:-1800}
     volumes:
       - ${CODEX_SKILL_ROOT:-/opt/gpu-control/runtime/asset-skills}:/opt/codex/skills:ro
       - ${CODEX_BINARY_PATH:-/opt/gpu-control/runtime/codex/codex}:/usr/local/bin/codex:ro

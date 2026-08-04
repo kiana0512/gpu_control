@@ -696,7 +696,13 @@ def extract_retopology_bundle(bundle: Path, destination: Path) -> dict[str, Any]
                 shutil.copyfileobj(source, output, length=1024 * 1024)
     manifest_path = destination / "input_manifest.json"
     manifest = json.loads(manifest_path.read_text("utf-8"))
-    if manifest.get("schema_version") != "retopology_input.v1":
+    # Bundle extraction is shared by the frozen V1 rollback path and the V6
+    # executor.  Keep version-specific enforcement in each executor; rejecting
+    # V6 here would make every valid V6 package fail before dispatch.
+    if manifest.get("schema_version") not in {
+        "retopology_input.v1",
+        "retopology_input.v6",
+    }:
         raise RuntimeError("retopology input manifest schema is invalid")
     project = manifest.get("project")
     if not isinstance(project, dict):
@@ -1441,13 +1447,51 @@ async def wait_for_blender(
                 if status.json().get("cancel_requested"):
                     await terminate_subprocess(process)
                     raise RuntimeError("asset job cancelled") from exc
+        # Codex/Blender may spawn a short-lived descendant that inherits the
+        # stdout pipe after the direct child exits.  Draining that pipe is part
+        # of the execution time and must continue renewing the job lease.
+        while not output_task.done():
+            elapsed = time.monotonic() - started
+            if hard_timeout_seconds is not None and elapsed >= hard_timeout_seconds:
+                output_task.cancel()
+                await asyncio.gather(output_task, return_exceptions=True)
+                raise RuntimeError("subprocess output drain hard timeout exceeded")
+            wait_seconds = 15.0
+            if hard_timeout_seconds is not None:
+                wait_seconds = min(
+                    wait_seconds, max(0.1, hard_timeout_seconds - elapsed)
+                )
+            done, _ = await asyncio.wait({output_task}, timeout=wait_seconds)
+            if done:
+                break
+            status = await client.post(
+                f"/internal/v1/assets/jobs/{job_id}/progress",
+                headers=lease_headers,
+                json={
+                    "progress": progress,
+                    "stage": stage,
+                    "message": message,
+                    "estimated_remaining_seconds": max(
+                        0, estimated_stage_seconds - int(time.monotonic() - started)
+                    ),
+                },
+            )
+            status.raise_for_status()
+            if status.json().get("cancel_requested"):
+                output_task.cancel()
+                await asyncio.gather(output_task, return_exceptions=True)
+                raise RuntimeError("asset job cancelled while draining output")
     except asyncio.CancelledError:
         await terminate_subprocess(process)
-        await output_task
+        if not output_task.done():
+            output_task.cancel()
+        await asyncio.gather(output_task, return_exceptions=True)
         raise
     except Exception:
         await terminate_subprocess(process)
-        await output_task
+        if not output_task.done():
+            output_task.cancel()
+        await asyncio.gather(output_task, return_exceptions=True)
         raise
     output, truncated = await output_task
     if truncated:
