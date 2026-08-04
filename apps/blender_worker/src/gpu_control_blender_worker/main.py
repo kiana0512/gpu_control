@@ -85,6 +85,7 @@ class WorkerSettings(BaseSettings):
     codex_auth_source: Path = Path("/run/secrets/codex-auth.json")
     codex_runtime_home: Path = Path("/home/assetworker/.codex")
     codex_health_probe_interval_seconds: int = Field(1800, ge=300, le=86400)
+    codex_health_probe_failure_retry_seconds: int = Field(60, ge=30, le=1800)
     codex_health_probe_timeout_seconds: int = Field(90, ge=20, le=300)
     codex_job_timeout_seconds: int = Field(600, ge=60, le=3600)
     codex_health_probe_jitter_seconds: int = Field(120, ge=0, le=900)
@@ -561,7 +562,15 @@ async def codex_health_loop(
     while True:
         if runtime["running"] == 0:
             await run_codex_health_probe(settings, health)
-        await asyncio.sleep(settings.codex_health_probe_interval_seconds + jitter)
+        if health.get("codex_probe_status") == "HEALTHY":
+            delay = settings.codex_health_probe_interval_seconds + jitter
+        else:
+            # A transient network/provider failure must remain visible, but it
+            # must not be cached for the full healthy-probe interval.  Retry
+            # only while the Worker is idle so production Asset work always
+            # takes precedence over the observability round-trip.
+            delay = settings.codex_health_probe_failure_retry_seconds + min(jitter, 30)
+        await asyncio.sleep(delay)
 
 
 def retopoflow_revision(root: Path) -> str | None:

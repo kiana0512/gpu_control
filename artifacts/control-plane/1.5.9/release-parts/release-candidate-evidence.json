@@ -326,7 +326,9 @@
     }
   },
   "production_accepted": false,
-  "release_status": "CANDIDATE_ARCHIVE_ONLY",
+  "release_status": "SUPERSEDED_ARCHIVE_ONLY",
+  "superseded_at": "2026-08-04",
+  "superseded_reason": "A later Blender Worker source revision adds idle-only short-backoff recovery for transient Codex probe failures; this archive was never deployed and must not be activated.",
   "revision": "4f055a0f284eed5e1a8274cef3922356b2023bc3",
   "schema_version": "gpu-control-release-candidate.v2",
   "source": {

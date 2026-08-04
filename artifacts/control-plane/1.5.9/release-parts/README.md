@@ -1,9 +1,13 @@
-# GPU Control control-plane 1.5.9 candidate archive
+# GPU Control control-plane 1.5.9 superseded candidate archive
 
-> Status: **CANDIDATE_ARCHIVE_ONLY / NOT DEPLOYED / NOT PRODUCTION ACCEPTED**
+> Status: **SUPERSEDED / NOT DEPLOYED / NOT PRODUCTION ACCEPTED**
 >
 > Source revision: `4f055a0f284eed5e1a8274cef3922356b2023bc3`. Registry manifest digests and strict
 > `verify_release_identity.py` acceptance remain `PENDING_REGISTRY_PUSH`.
+>
+> This archive was superseded on 2026-08-04 by the idle-only fast recovery fix for
+> transient Codex probe failures. It remains immutable historical build evidence and
+> **must not be deployed**; a replacement archive must bind the later source commit.
 
 ## Images
 

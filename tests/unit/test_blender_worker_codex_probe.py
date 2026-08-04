@@ -8,12 +8,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import gpu_control_blender_worker.bootstrap as bootstrap_module
+import gpu_control_blender_worker.main as worker_main
 import httpx
 import pytest
 from gpu_control_blender_worker.bootstrap import ensure_codex_skill_links
 from gpu_control_blender_worker.main import (
     WorkerSettings,
     classify_codex_error,
+    codex_health_loop,
     heartbeat,
     inspect_codex_runtime,
     prepare_codex_runtime_home,
@@ -419,3 +421,31 @@ async def test_codex_probe_timeout_terminates_and_reaps_child(
     assert health["codex_probe_status"] == "FAILED"
     assert health["codex_error_code"] == "PROBE_TIMEOUT"
     assert marker.read_text("utf-8") == "terminated"
+
+
+@pytest.mark.parametrize(
+    ("probe_status", "expected_delay"),
+    [("HEALTHY", 1800), ("FAILED", 60), ("NOT_RUN", 60)],
+)
+async def test_codex_health_loop_uses_short_idle_retry_after_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    probe_status: str,
+    expected_delay: int,
+) -> None:
+    settings = codex_settings(tmp_path)
+    object.__setattr__(settings, "codex_health_probe_jitter_seconds", 0)
+    health = {"codex_probe_status": probe_status}
+
+    async def preserve_status(_settings: WorkerSettings, _health: dict[str, object]) -> None:
+        return None
+
+    async def capture_sleep(delay: float) -> None:
+        assert delay == expected_delay
+        raise RuntimeError("one loop iteration complete")
+
+    monkeypatch.setattr(worker_main, "run_codex_health_probe", preserve_status)
+    monkeypatch.setattr(worker_main.asyncio, "sleep", capture_sleep)
+
+    with pytest.raises(RuntimeError, match="one loop iteration complete"):
+        await codex_health_loop(settings, health, {"running": 0})
