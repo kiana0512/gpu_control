@@ -147,7 +147,8 @@ ComfyUI 运行约束：
 
 ## 6. 六 API 综合压力验收计划
 
-固定场景文件：`tests/load/scenarios/six_api_120_20260803.yaml`。
+基础场景文件：`tests/load/scenarios/six_api_120_20260803.yaml`。2026-08-04 业主要求的
+扩展高压场景为：`tests/load/scenarios/six_api_120_extended_20260804.yaml`。
 
 ### 6.1 流量模型
 
@@ -161,6 +162,12 @@ ComfyUI 运行约束：
 | PBR | 5 |
 
 阶段为：1 用户 60 秒（spawn rate 1）、10 用户 120 秒（2）、25 用户 180 秒（5）、50 用户 300 秒（10）、100 用户 600 秒（20）、120 用户 600 秒（10）；模式为 `bounded_stress`。
+
+扩展场景仍保留审计批准的 120 用户硬上限，但把 120 用户平台期延长到 2400 秒；流量权重调整为
+ImageClip 35、Roughness 20、UV 15、重拓扑审计 10、重拓扑处理 10、PBR 10，使 GPU 消耗类
+占 65%、CPU 类占 35%，并提高 Windows Substance 覆盖。扩展场景本身总计 3660 秒，加 300 秒
+teardown 和 540 秒预检/证据余量，正式变更窗口至少 **4500 秒（75 分钟）**。提高压力不能绕过
+零生产任务、生产 watchdog、12 组隔离身份、备份和 live deployment receipt 门禁。
 
 ### 6.2 固定业务身份
 
@@ -177,7 +184,7 @@ ComfyUI 运行约束：
 4. 至少 3 个健康 GPU 节点、3 个在线 Asset worker、至少 1 个 CPU slot 和 1 个 Substance slot。
 5. watchdog 一旦发现外来生产任务，立即停止新增压测流量；生产准入门禁为第二道保护，不替代 watchdog。
 6. teardown 只能清理本次 session 创建的资源，不得跨 tenant 删除或取消用户任务。
-7. 生产时间窗口必须覆盖全部阶段 `1860s`、有界 teardown `300s` 以及预检/证据落盘余量 `540s`，合计至少 **2700 秒（45 分钟）**；启动时剩余窗口也必须不少于该值，不能让正式阶段或清场跨窗。
+7. 基础场景时间窗口必须覆盖全部阶段 `1860s`、有界 teardown `300s` 以及预检/证据落盘余量 `540s`，合计至少 **2700 秒（45 分钟）**；扩展场景对应至少 **4500 秒（75 分钟）**。启动时剩余窗口也必须不少于所选场景的完整要求，不能让正式阶段或清场跨窗。
 8. 正式执行必须通过环境安全注入并写入 `plan.json`、`preflight.json` 和 `summary.json` 的目标发布身份：完整 40 位小写 `source_revision`，以及 API、Scheduler、Asset API、Web、Worker 五个不可变 `sha256:<64-hex>` 镜像 digest。缺一、使用短 SHA、tag 或非 immutable digest 均 fail closed；确认 token 同时绑定这组身份，计划生成后替换身份会被 Locust 拒绝。预检还会实时读取 Control API 与 Asset API 的版本端点，只有两者的 `source_revision` 精确匹配计划且 package/build 对齐、provenance 完整时才允许发压。
 9. 上述环境字段只是“一致性声明”，不是发布身份的权威来源。生产 runner 和 Locust 必须分别以固定 Git argv 验证 `origin` 是批准的 GitHub 仓库、`refs/heads/main` 的远端 tip 精确等于完整提交 `E`，本地 harness `HEAD == E` 且 tracked worktree clean；再从 `E` 用 `git show` 读取 `artifacts/control-plane/<version>/deployment/live-deployment-receipt.json` 并校验其 blob SHA-256。权威 receipt 必须使用 `gpu-control-live-deployment.v1`，状态精确为 `DEPLOYED_NOT_ACCEPTED / deployed=true / production_accepted=false`，并绑定源码 `S`、候选证据 path/blob SHA、五组件身份、七个实际容器和 Windows Substance v6 实装身份。receipt 再锚定 `gpu-control-release-candidate.v2` 父证据以验证 offline OCI manifest/config、OCI label 与 source revision；candidate 必须标记 `CANDIDATE_ARCHIVE_ONLY / deployed=false / production_accepted=false`，不能直接授权生产。`S` 必须是 `E` 的祖先；`PENDING_REGISTRY_PUSH` 不是部署 digest。三元组 `E + receipt path + receipt blob SHA-256`、候选父证据和预期 live inventory 同时进入确认 token、计划、HTTP 预检和最终结果，任一变化都会拒绝发压。
 10. receipt 必须与当前部署做只读 live binding：以固定 `docker inspect` argv 校验本机 API、Scheduler、Asset API、Web、控制机 Blender Worker，以固定 `BatchMode=yes`、`StrictHostKeyChecking=yes` 的 SSH argv 校验 `default@10.3.34.12:22` 和 `gpucontrol@10.3.34.14:2222` 的 Blender Worker；七个容器的 `.Image` 必须逐项等于 receipt/候选证据的 `local_image_id`，三台 Worker 必须完全一致。另以固定 SSH argv 读取 3090-B Windows 实装 `Invoke-GPUControlSubstanceAgent.ps1` 的 SHA-256；Git blob SHA 与 Windows 实装字节 SHA 分开绑定，避免把 LF/CRLF 转换误判为漂移。HTTP 预检必须恰好看到 `asset-worker-3090-b-windows-01`、`-02`、`-03`、`-04` 四个在线实例且 `skill_version=substance-baker-2026.08.03-v6`。上述检查在发压前、Locust `test_stop` 和 wrapper 子进程退出后重复执行；任一运行中漂移均使本轮失败。容器名、组件、identity type、实测 image ID 与 Substance 身份写入 plan/preflight/summary，并由确认 token 绑定。结果 `manifest.json` 和 `summary.json` 必须保持 `external_anchor_status=PENDING_GIT_PUBLISH`；把最终结果 manifest 提交并推送到 GitHub 前，任何本机 checksums 都不得宣称正式接受。

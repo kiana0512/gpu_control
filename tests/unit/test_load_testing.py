@@ -2247,6 +2247,23 @@ def test_formal_six_api_scenario_requires_a_45_minute_window() -> None:
     )
 
 
+def test_extended_six_api_scenario_requires_a_75_minute_window() -> None:
+    scenario = load_scenario(
+        Path(__file__).resolve().parents[2]
+        / "tests/load/scenarios/six_api_120_extended_20260804.yaml"
+    )
+
+    assert scenario.maximum_users == 120
+    assert scenario.stages[-1].users == 120
+    assert scenario.resource_mix() == {"gpu_consuming": 0.65, "cpu": 0.35}
+    assert (
+        scenario.total_duration_seconds
+        + PRODUCTION_TEARDOWN_RESERVE_SECONDS
+        + PRODUCTION_PREFLIGHT_EVIDENCE_RESERVE_SECONDS
+        == 75 * 60
+    )
+
+
 @pytest.mark.parametrize("users", [100, 121])
 def test_production_six_api_profile_requires_exactly_120_users(tmp_path: Path, users: int) -> None:
     payload = scenario_payload()
