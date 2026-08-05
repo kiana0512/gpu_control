@@ -49,6 +49,7 @@ from packages.gpu_control_core.database import Database
 from packages.gpu_control_core.enums import (
     TERMINAL_BATCH_STATUSES,
     TERMINAL_JOB_STATUSES,
+    BatchItemStatus,
     BatchStatus,
     JobStatus,
     NodeMode,
