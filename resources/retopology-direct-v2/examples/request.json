@@ -1,0 +1,5 @@
+{
+  "input_blend": "/jobs/asset-001/source.blend",
+  "output_blend": "/jobs/asset-001/retopology.blend",
+  "high_objects": ["H01_HIGH", "H02_HIGH"]
+}

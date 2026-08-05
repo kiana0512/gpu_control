@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import socket
+import subprocess
 import tempfile
 import time
 import uuid
@@ -76,6 +77,7 @@ class WorkerSettings(BaseSettings):
         "/opt/codex/skills/blender-retopology-compare-iterate"
     )
     retopology_v6_root: Path = Path("/opt/li3d/retopology-v6")
+    retopology_direct_v2_root: Path = Path("/opt/li3d/retopology-direct-v2")
     retopology_process_script: Path = Path(
         "/app/packages/asset_processing/blender_retopology_process.py"
     )
@@ -92,7 +94,7 @@ class WorkerSettings(BaseSettings):
     codex_health_probe_interval_seconds: int = Field(1800, ge=300, le=86400)
     codex_health_probe_failure_retry_seconds: int = Field(60, ge=30, le=1800)
     codex_health_probe_timeout_seconds: int = Field(90, ge=20, le=300)
-    codex_job_timeout_seconds: int = Field(600, ge=60, le=3600)
+    codex_job_timeout_seconds: int = Field(7200, ge=60, le=7200)
     codex_health_probe_jitter_seconds: int = Field(120, ge=0, le=900)
     asset_poll_seconds: float = 1.0
 
@@ -298,7 +300,23 @@ def validate_job_skill_contract(settings: WorkerSettings, job_type: str) -> None
     if approved_skill is not None:
         validate_codex_skill_link(settings.codex_runtime_home, approved_skill)
     if job_type == "RETOPOLOGY_PROCESS_V2":
-        verify_runtime_resources(settings.retopology_v6_root)
+        verify_retopology_direct_v2_package(settings.retopology_direct_v2_root)
+
+
+def verify_retopology_direct_v2_package(root: Path) -> None:
+    verifier = root / "server" / "verify_package.py"
+    completed = subprocess.run(
+        ["python3", str(verifier)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "Retopology Direct V2 package verification failed: "
+            + (completed.stdout + completed.stderr)[-3000:]
+        )
 
 
 def update_codex_skill_mount_health(
@@ -702,6 +720,7 @@ def extract_retopology_bundle(bundle: Path, destination: Path) -> dict[str, Any]
     if manifest.get("schema_version") not in {
         "retopology_input.v1",
         "retopology_input.v6",
+        "retopology_input.direct-v2",
     }:
         raise RuntimeError("retopology input manifest schema is invalid")
     project = manifest.get("project")
@@ -1102,7 +1121,7 @@ async def run_v6_codex_agent(
     return cast(dict[str, Any], payload)
 
 
-async def run_retopology_v6(
+async def run_retopology_v6_legacy(
     client: httpx.AsyncClient,
     settings: WorkerSettings,
     job_id: str,
@@ -1494,6 +1513,231 @@ async def run_retopology_v6(
         "formal_agent_receipt": formal_receipt_path.name,
         "formal_agent_events": formal_events_path.name,
         "qa_agent_events": qa_events_path.name,
+    }
+
+
+async def run_retopology_v6(
+    client: httpx.AsyncClient,
+    settings: WorkerSettings,
+    job_id: str,
+    lease_headers: dict[str, str],
+    bundle_path: Path,
+    output_dir: Path,
+    options: dict[str, Any],
+    input_sha256: str,
+) -> dict[str, str]:
+    """Run the user-approved Direct V2 package once and stop after Blend delivery."""
+
+    del input_sha256  # The extracted source identity is verified below.
+    verify_retopology_direct_v2_package(settings.retopology_direct_v2_root)
+    workspace = bundle_path.parent
+    extracted = workspace / "retopology-direct-v2-input"
+    input_manifest = extract_retopology_bundle(bundle_path, extracted)
+    if input_manifest.get("schema_version") != "retopology_input.direct-v2":
+        raise RuntimeError("Retopology Direct V2 input manifest has the wrong contract")
+    if input_manifest.get("engine_contract") != "retopology-direct-v2":
+        raise RuntimeError("Retopology Direct V2 engine contract is missing")
+    if input_manifest.get("package_sha256") != options.get("package_sha256"):
+        raise RuntimeError("Retopology Direct V2 package identity drifted between API and Worker")
+    project = input_manifest.get("project")
+    if not isinstance(project, dict):
+        raise RuntimeError("Retopology Direct V2 project manifest is missing")
+    project_path = extracted / str(project.get("filename") or "")
+    if not project_path.is_file() or file_sha256(project_path) != project.get("sha256"):
+        raise RuntimeError("Retopology Direct V2 source project SHA-256 mismatch")
+    source_sha_before = file_sha256(project_path)
+    project_path.chmod(0o444)
+    output_dir.mkdir(parents=True, exist_ok=False)
+
+    direct_source_path = project_path
+    if project_path.suffix.lower() != ".blend":
+        direct_source_path = workspace / "retopology-direct-v2-source.blend"
+        import_process = await start_blender(
+            settings,
+            "--background",
+            "--factory-startup",
+            "-P",
+            "/app/packages/asset_processing/import_retopology_source.py",
+            "--",
+            "--input",
+            str(project_path),
+            "--output",
+            str(direct_source_path),
+        )
+        import_log = await wait_for_blender(
+            client,
+            job_id,
+            lease_headers,
+            import_process,
+            4,
+            8,
+            "RETOPOLOGY_DIRECT_V2_INPUT_NORMALIZATION",
+            "正在把上传模型无损归一化为 Direct V2 Blender 输入",
+            60,
+            hard_timeout_seconds=300,
+        )
+        (output_dir / "source_import.log").write_bytes(import_log)
+        if not direct_source_path.is_file() or direct_source_path.stat().st_size <= 0:
+            raise RuntimeError("Retopology Direct V2 source normalization failed")
+        direct_source_path.chmod(0o444)
+    direct_source_sha = file_sha256(direct_source_path)
+
+    result_blend = output_dir / "final_low.blend"
+    runtime_root = output_dir / "runtime"
+    command = [
+        "python3",
+        str(settings.retopology_direct_v2_root / "server" / "one_click_retopology.py"),
+        "--input",
+        str(direct_source_path),
+        "--output",
+        str(result_blend),
+        "--job-root",
+        str(runtime_root),
+        "--job-id",
+        job_id,
+        "--timeout-seconds",
+        str(settings.codex_job_timeout_seconds),
+        "--package-root",
+        str(settings.retopology_direct_v2_root),
+    ]
+    environment = codex_environment(settings)
+    environment.update(
+        {
+            "BLENDER_EXECUTABLE": settings.blender_binary,
+            "CODEX_BIN": settings.codex_binary,
+            "CODEX_AUTH_SOURCE": str(settings.codex_auth_source),
+            "CODEX_EXEC_ARGS_JSON": json.dumps(
+                [
+                    "exec",
+                    "--full-auto",
+                    "--skip-git-repo-check",
+                    "--sandbox",
+                    "workspace-write",
+                    "--json",
+                    "-C",
+                    "{job_dir}",
+                    "-",
+                ]
+            ),
+            "RETOPOLOGY_TIMEOUT_SECONDS": str(settings.codex_job_timeout_seconds),
+        }
+    )
+    async with CODEX_EXEC_LOCK:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            env=environment,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        wrapper_output = await wait_for_blender(
+            client,
+            job_id,
+            lease_headers,
+            process,
+            8,
+            92,
+            "RETOPOLOGY_DIRECT_V2_BUILD",
+            "Direct V2 正在按只读高模生成一个低模；保存后立即交付",
+            settings.codex_job_timeout_seconds,
+            hard_timeout_seconds=settings.codex_job_timeout_seconds + 60,
+        )
+
+    task_root = runtime_root / job_id
+    wrapper_log = output_dir / "wrapper_events.jsonl"
+    wrapper_log.write_bytes(wrapper_output)
+    artifact_sources = {
+        "generation_report": task_root / "generation_report.json",
+        "result": task_root / "result.json",
+        "agent_events": task_root / "agent_events.jsonl",
+    }
+    for kind, source in artifact_sources.items():
+        if not source.is_file() or source.stat().st_size <= 0:
+            raise RuntimeError(f"Retopology Direct V2 omitted {kind}")
+        shutil.copy2(source, output_dir / source.name)
+    if not result_blend.is_file() or result_blend.stat().st_size <= 0:
+        raise RuntimeError("Retopology Direct V2 did not create the output Blend")
+    if file_sha256(project_path) != source_sha_before:
+        raise RuntimeError("Retopology Direct V2 changed the source project")
+
+    generation = json.loads((output_dir / "generation_report.json").read_text("utf-8"))
+    result = json.loads((output_dir / "result.json").read_text("utf-8"))
+    if generation.get("status") != "generated_for_user_inspection":
+        raise RuntimeError("Retopology Direct V2 generation report has the wrong status")
+    if not isinstance(generation.get("assets"), list) or not generation["assets"]:
+        raise RuntimeError("Retopology Direct V2 generation report has no asset records")
+    low_objects = [
+        item.get("low_object")
+        for item in generation["assets"]
+        if isinstance(item, dict)
+    ]
+    if not low_objects or not all(isinstance(name, str) and name for name in low_objects):
+        raise RuntimeError("Retopology Direct V2 report has invalid low object names")
+    if result.get("status") != "generated_for_user_inspection":
+        raise RuntimeError("Retopology Direct V2 result has the wrong status")
+    if result.get("input_sha256") != direct_source_sha:
+        raise RuntimeError("Retopology Direct V2 result source identity mismatch")
+    if result.get("output_sha256") != file_sha256(result_blend):
+        raise RuntimeError("Retopology Direct V2 result output identity mismatch")
+    if result.get("automatic_post_generation_review") is not False:
+        raise RuntimeError("Retopology Direct V2 unexpectedly enabled automatic review")
+    if result.get("automatic_retry") is not False:
+        raise RuntimeError("Retopology Direct V2 unexpectedly enabled automatic retry")
+
+    final_fbx = output_dir / "final_low.fbx"
+    export_process = await start_blender(
+        settings,
+        "-b",
+        str(result_blend),
+        "-P",
+        "/app/packages/asset_processing/export_retopology_fbx.py",
+        "--",
+        "--output",
+        str(final_fbx),
+        "--objects-json",
+        json.dumps(low_objects, ensure_ascii=False),
+    )
+    export_log = await wait_for_blender(
+        client,
+        job_id,
+        lease_headers,
+        export_process,
+        92,
+        94,
+        "RETOPOLOGY_DIRECT_V2_FBX_EXPORT",
+        "低模已生成，正在确定性导出正式 FBX 交付",
+        120,
+        hard_timeout_seconds=300,
+    )
+    (output_dir / "fbx_export.log").write_bytes(export_log)
+    if not final_fbx.is_file() or final_fbx.stat().st_size <= 0:
+        raise RuntimeError("Retopology Direct V2 FBX export is empty")
+    delivery_manifest = {
+        "schema_version": "retopology_direct_delivery.v2",
+        "job_id": job_id,
+        "engine_contract": "retopology-direct-v2",
+        "package_sha256": options.get("package_sha256"),
+        "source_sha256": source_sha_before,
+        "normalized_blend_sha256": direct_source_sha,
+        "agent_blend_sha256": file_sha256(result_blend),
+        "delivery_fbx_sha256": file_sha256(final_fbx),
+        "delivery_fbx_size_bytes": final_fbx.stat().st_size,
+        "low_objects": low_objects,
+        "status": "generated_for_user_inspection",
+        "automatic_post_generation_review": False,
+        "automatic_retry": False,
+    }
+    (output_dir / "delivery_manifest.json").write_text(
+        json.dumps(delivery_manifest, ensure_ascii=False, indent=2), "utf-8"
+    )
+
+    shutil.rmtree(runtime_root)
+    return {
+        "fbx": final_fbx.name,
+        "generation_report": "generation_report.json",
+        "delivery_manifest": "delivery_manifest.json",
+        "result": "result.json",
+        "agent_events": "agent_events.jsonl",
+        "wrapper_events": wrapper_log.name,
     }
 
 
@@ -2402,7 +2646,7 @@ async def execute_job(
 
 
 async def worker_loop(settings: WorkerSettings) -> None:
-    verify_runtime_resources(settings.retopology_v6_root)
+    verify_retopology_direct_v2_package(settings.retopology_direct_v2_root)
     timeout = httpx.Timeout(30, read=3600)
     codex_health = await inspect_codex_runtime(settings)
     retopoflow_health: dict[str, Any] = {

@@ -34,6 +34,7 @@ from packages.gpu_control_core.admission import (
 )
 from packages.gpu_control_core.assets import (
     AssetCreateMetadata,
+    RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
     RETOPOLOGY_V6_POLICY_SHA256,
     RetopologyAuditMetadata,
     SubstanceBakeMetadata,
@@ -137,7 +138,7 @@ SUBSTANCE_BAKE_COMMAND_COUNTS = {
 CODEX_REQUIRED_JOB_TYPES = frozenset(
     {"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"}
 )
-RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-retopology-v6.0.0"
+RETOPOLOGY_V6_SKILL_VERSION = "blender-retopology-direct-v2.0.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,6 +277,14 @@ RETOPOLOGY_V6_RESULT_ARTIFACT_ROLES = frozenset(
         "manifest",
     }
 )
+RETOPOLOGY_DIRECT_V2_ARTIFACTS = {
+    "fbx": ("final_low.fbx", "application/octet-stream"),
+    "generation_report": ("generation_report.json", "application/json"),
+    "delivery_manifest": ("delivery_manifest.json", "application/json"),
+    "result": ("result.json", "application/json"),
+    "agent_events": ("agent_events.jsonl", "application/x-ndjson"),
+    "wrapper_events": ("wrapper_events.jsonl", "application/x-ndjson"),
+}
 RETOPOLOGY_DIAGNOSTIC_ERROR_CODES = frozenset(
     {"RETOPOLOGY_AUDIT_FAILED", "RETOPOLOGY_QUALITY_GATE_FAILED"}
 )
@@ -1912,10 +1921,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 item.filename: item.model_dump(mode="json") for item in parsed.reference_views
             }
             input_manifest = {
-                "schema_version": "retopology_input.v6",
-                "engine_contract": "retopology-v6",
+                "schema_version": "retopology_input.direct-v2",
+                "engine_contract": "retopology-direct-v2",
                 "api_version": parsed.api_version,
-                "policy_sha256": RETOPOLOGY_V6_POLICY_SHA256,
+                "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
                 "project": {
                     "filename": project_filename,
                     "sha256": project_sha,
@@ -1966,8 +1975,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             options = parsed.options.model_dump(mode="json")
             options.update(
                 {
-                    "engine_contract": "retopology-v6",
-                    "policy_sha256": RETOPOLOGY_V6_POLICY_SHA256,
+                    "engine_contract": "retopology-direct-v2",
+                    "package_version": "2.0.0",
+                    "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
                     "deprecated_fields_ignored": compatibility_warnings,
                     "project_filename": project_filename,
                     "project_sha256": project_sha,
@@ -1997,7 +2007,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 details={
                     "event": "asset.queued",
                     "request_id": job.request_id,
-                    "engine_contract": "retopology-v6",
+                    "engine_contract": "retopology-direct-v2",
+                    "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
                     "warnings": compatibility_warnings,
                 },
             )
@@ -2718,7 +2729,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         else:
             claim_query = claim_query.where(AssetJob.job_type != "SUBSTANCE_BAKE_V1")
             if worker.skill_version == RETOPOLOGY_V6_SKILL_VERSION:
-                # A V6 canary consumes only the new high-only contract. V5
+                # A Direct V2 worker consumes only the new high-only contract. V5
                 # audit/process work stays on the rollback pool because the
                 # two Skill contracts intentionally have incompatible inputs.
                 claim_query = claim_query.where(
@@ -2727,7 +2738,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     )
                 )
             else:
-                # Old Workers must never claim a V6 job: they still execute
+                # Old Workers must never claim a Direct V2 job: they still execute
                 # bootstrap-low/target-face semantics and would corrupt the
                 # new contract even if the external route is unchanged.
                 claim_query = claim_query.where(
@@ -3465,8 +3476,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not committed:
                 await cleanup_uncommitted_completion(request, staging, created)
 
-    @app.post("/internal/v1/assets/jobs/{job_id}/retopology-v6-complete")
-    async def worker_complete_retopology_v6(
+    async def worker_complete_retopology_v6_legacy(
         job_id: str,
         request: Request,
         db: Annotated[AsyncSession, Depends(session)],
@@ -3742,6 +3752,160 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "status": job.status,
                 "publish_allowed": strict_publish_allowed,
                 "delivered_with_warnings": advisory_warning,
+            }
+        finally:
+            if not committed:
+                await cleanup_uncommitted_completion(request, staging, created)
+
+    @app.post("/internal/v1/assets/jobs/{job_id}/retopology-v6-complete")
+    async def worker_complete_retopology_direct_v2(
+        job_id: str,
+        request: Request,
+        db: Annotated[AsyncSession, Depends(session)],
+        lease: Annotated[str, Header(alias="X-Asset-Lease")],
+    ) -> dict[str, Any]:
+        """Publish the Direct V2 generated FBX without running the retired V6 QA."""
+
+        snapshot = await prepare_asset_completion(job_id, lease, db, "RETOPOLOGY_PROCESS_V2")
+        form = await request.form()
+        uploads: dict[str, StarletteUploadFile] = {}
+        for kind in RETOPOLOGY_DIRECT_V2_ARTIFACTS:
+            upload = form.get(kind)
+            if not isinstance(upload, StarletteUploadFile):
+                raise HTTPException(
+                    422, detail={"code": "ASSET_ARTIFACT_MISSING", "kind": kind}
+                )
+            uploads[kind] = upload
+        unknown = set(form.keys()) - set(RETOPOLOGY_DIRECT_V2_ARTIFACTS)
+        if unknown:
+            raise HTTPException(
+                422,
+                detail={"code": "ASSET_ARTIFACT_UNEXPECTED", "kinds": sorted(unknown)},
+            )
+
+        staging = cfg.asset_root / snapshot.id / f".outputs-{uuid.uuid4().hex}"
+        staging.mkdir(parents=True, exist_ok=False)
+        created: list[AssetArtifact] = []
+        committed = False
+        try:
+            for kind, upload in uploads.items():
+                filename, content_type = RETOPOLOGY_DIRECT_V2_ARTIFACTS[kind]
+                if upload.filename != filename:
+                    raise HTTPException(
+                        422,
+                        detail={"code": "ASSET_ARTIFACT_FILENAME_MISMATCH", "kind": kind},
+                    )
+                path = staging / filename
+                digest, size = await persist_completion_upload(upload, path)
+                if size <= 0:
+                    raise HTTPException(
+                        422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind}
+                    )
+                created.append(
+                    AssetArtifact(
+                        id=str(uuid.uuid4()),
+                        job_id=snapshot.id,
+                        kind=kind,
+                        filename=filename,
+                        path=str(path),
+                        content_type=content_type,
+                        size_bytes=size,
+                        sha256=digest,
+                    )
+                )
+
+            try:
+                generation = json.loads(
+                    (staging / "generation_report.json").read_text("utf-8")
+                )
+                result = json.loads((staging / "result.json").read_text("utf-8"))
+                manifest = json.loads(
+                    (staging / "delivery_manifest.json").read_text("utf-8")
+                )
+            except (OSError, ValueError) as exc:
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_DIRECT_V2_JSON_INVALID"}
+                ) from exc
+
+            if (
+                generation.get("status") != "generated_for_user_inspection"
+                or not isinstance(generation.get("assets"), list)
+                or not generation["assets"]
+                or result.get("status") != "generated_for_user_inspection"
+                or result.get("automatic_post_generation_review") is not False
+                or result.get("automatic_retry") is not False
+            ):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_DIRECT_V2_RESULT_INVALID"}
+                )
+            staged_by_kind = {item.kind: item for item in created}
+            if (
+                manifest.get("schema_version") != "retopology_direct_delivery.v2"
+                or manifest.get("job_id") != snapshot.id
+                or manifest.get("engine_contract") != "retopology-direct-v2"
+                or manifest.get("package_sha256")
+                != snapshot.options.get("package_sha256")
+                or manifest.get("source_sha256") != snapshot.options.get("project_sha256")
+                or manifest.get("agent_blend_sha256") != result.get("output_sha256")
+                or manifest.get("delivery_fbx_sha256")
+                != staged_by_kind["fbx"].sha256
+                or manifest.get("delivery_fbx_size_bytes")
+                != staged_by_kind["fbx"].size_bytes
+                or manifest.get("automatic_post_generation_review") is not False
+                or manifest.get("automatic_retry") is not False
+            ):
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_DIRECT_V2_IDENTITY_MISMATCH"}
+                )
+
+            fsync_completion_staging(staging)
+            job = await lock_asset_completion_for_publish(snapshot, lease, db)
+            cancelled = await cancel_at_completion_safe_point(db, job)
+            if cancelled is not None:
+                return cancelled
+            stem = Path(snapshot.options["project_filename"]).stem
+            staged_by_kind["fbx"].kind = "fbx"
+            staged_by_kind["fbx"].filename = f"{stem}_GAME_LOW.fbx"
+            db.add_all(created)
+            job.status = "SUCCEEDED"
+            job.progress = 100
+            job.stage = "SUCCEEDED"
+            job.stage_message = "Direct V2 低模 FBX 已生成并交付；等待用户检查"
+            job.estimated_remaining_seconds = 0
+            job.last_progress_at = datetime.now(UTC)
+            job.finished_at = job.last_progress_at
+            job.error_code = None
+            job.error_message = None
+            job.options = {
+                **job.options,
+                "direct_v2_result": {
+                    "status": "generated_for_user_inspection",
+                    "delivery_format": "fbx",
+                    "automatic_post_generation_review": False,
+                    "automatic_retry": False,
+                    "assets": generation["assets"],
+                },
+            }
+            job.lease_expires_at = None
+            job.lease_token_hash = None
+            await decrement_asset_worker_jobs_atomic(db, job.worker_id)
+            await append_asset_event(
+                db,
+                job,
+                details={
+                    "event": "asset.succeeded",
+                    "engine_contract": "retopology-direct-v2",
+                    "delivery_format": "fbx",
+                    "automatic_post_generation_review": False,
+                },
+            )
+            await db.commit()
+            committed = True
+            return {
+                "accepted": True,
+                "status": job.status,
+                "delivery_format": "fbx",
+                "generated_for_user_inspection": True,
             }
         finally:
             if not committed:

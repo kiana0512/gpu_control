@@ -218,7 +218,7 @@ function jobTypeLabel(value: string) {
   if (value === "RETOPOLOGY_AUDIT") return "拓扑审计";
   if (["RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"].includes(value))
     return value === "RETOPOLOGY_PROCESS_V2"
-      ? "V6 自动拓扑"
+      ? "Direct V2 自动拓扑"
       : "V5 兼容拓扑";
   if (value === "SUBSTANCE_BAKE_V1") return "Substance PBR 烘焙";
   if (value === "UV_UNWRAP") return "UV 兼容接口";
@@ -465,9 +465,9 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
         ><small>{{ usedAssetSlots }} 个使用中；Baker 共享 1 张 3090-B</small>
       </section>
       <section>
-        <span>严格 QA 失败</span
+        <span>质量告警 / 失败</span
         ><strong>{{ overview?.summary.qa_failed ?? 0 }}</strong
-        ><small>不发布交付物，保留诊断证据</small>
+        ><small>Direct V2 不执行旧自动 QA；这里只统计仍启用检查的任务</small>
       </section>
       <section>
         <span>烘焙输出</span><strong>10 图</strong

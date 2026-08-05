@@ -16,6 +16,9 @@ function hasQaWarning(job: AssetJobInfo): boolean {
 
 export function assetDeliveryPolicy(job: AssetJobInfo): AssetDeliveryPolicy {
   if (job.delivery_ready) {
+    if (job.options.direct_v2_result) {
+      return { label: "FBX 已交付 · 等待检查", className: "ready" };
+    }
     if (job.status === "SUCCEEDED" && hasQaWarning(job)) {
       return { label: "已交付 · QA 告警", className: "warning" };
     }

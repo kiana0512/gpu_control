@@ -1,0 +1,17 @@
+# Build this layer on top of the existing Worker image that already has
+# Python 3, Blender, Codex CLI, queue/storage access and credentials.
+ARG WORKER_IMAGE
+FROM ${WORKER_IMAGE}
+
+USER 0
+COPY blender-retopology-compare-iterate/ /opt/li3d/retopology/blender-retopology-compare-iterate/
+COPY server/ /opt/li3d/retopology/server/
+COPY examples/ /opt/li3d/retopology/examples/
+RUN chmod 0755 /opt/li3d/retopology/server/one_click_retopology.py \
+    /opt/li3d/retopology/server/verify_package.py \
+    /opt/li3d/retopology/blender-retopology-compare-iterate/scripts/guard_shape_authority_plan.py \
+    && python3 /opt/li3d/retopology/server/verify_package.py
+
+ENV RETOPOLOGY_PACKAGE_ROOT=/opt/li3d/retopology
+
+# Keep the original Worker entrypoint and command.

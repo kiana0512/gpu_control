@@ -1,0 +1,13 @@
+{
+  "status": "generated_for_user_inspection",
+  "assets": [
+    {
+      "high_object": "H01_HIGH",
+      "low_object": "H01_LOW",
+      "faces": 860,
+      "triangles": 1712,
+      "method_decision": "semantic_reconstruction",
+      "actual_plugin_use": false
+    }
+  ]
+}

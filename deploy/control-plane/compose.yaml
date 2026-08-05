@@ -61,7 +61,7 @@ services:
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
       sbom: true
       provenance: mode=max
-    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}unified-scheduler-asset-api:${ASSET_API_IMAGE_TAG:-1.6.2-retopo-v6-fast-advisory}
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}unified-scheduler-asset-api:${ASSET_API_IMAGE_TAG:-1.6.3-retopo-direct-v2}
     environment:
       TMPDIR: /srv/gpu-control/assets
       ASSET_ROOT: ${ASSET_ROOT:-/srv/gpu-control/assets}
@@ -80,9 +80,9 @@ services:
       dockerfile: apps/blender_worker/Dockerfile
       args:
         BLENDER_BASE_IMAGE: ${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}
-        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.2.5}
+        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.3.3-retopo-direct-v2}
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
-    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.3.2-retopo-v6-fast-advisory}
+    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.3.3-retopo-direct-v2}
     restart: unless-stopped
     # Codex workspace-write uses bubblewrap inside the already isolated Worker
     # container. SYS_ADMIN plus unconfined seccomp/AppArmor are required for
@@ -100,16 +100,16 @@ services:
       ASSET_WORKER_HMAC_SECRET: ${ASSET_WORKER_HMAC_SECRET}
       ASSET_WORKER_MAX_CONCURRENCY: ${ASSET_WORKER_MAX_CONCURRENCY_CONTROL:-2}
       BLENDER_VERSION: 5.1.2
-      BLENDER_SKILL_VERSION: ${BLENDER_SKILL_VERSION:-asset-skills-retopology-v6.0.0}
+      BLENDER_SKILL_VERSION: ${BLENDER_SKILL_VERSION:-blender-retopology-direct-v2.0.0}
       UV_SKILL_ROOT: /opt/codex/skills/blender-pbr-uv
-      RETOPOLOGY_SKILL_ROOT: /opt/li3d/retopology-v6/skill/blender-retopology-compare-iterate
-      RETOPOLOGY_V6_ROOT: /opt/li3d/retopology-v6
+      RETOPOLOGY_SKILL_ROOT: /opt/li3d/retopology-direct-v2/blender-retopology-compare-iterate
+      RETOPOLOGY_DIRECT_V2_ROOT: /opt/li3d/retopology-direct-v2
       CODEX_SKILLS_ROOT: /opt
       RETOPOFLOW_ADDON_ROOT: /opt/blender-addons/RetopoFlow
       CODEX_BINARY: /usr/local/bin/codex
       CODEX_AUTH_SOURCE: /run/secrets/codex-auth.json
       CODEX_RUNTIME_HOME: /home/assetworker/.codex
-      CODEX_JOB_TIMEOUT_SECONDS: ${CODEX_JOB_TIMEOUT_SECONDS:-1800}
+      CODEX_JOB_TIMEOUT_SECONDS: ${CODEX_JOB_TIMEOUT_SECONDS:-7200}
     volumes:
       - ${CODEX_SKILL_ROOT:-/opt/gpu-control/runtime/asset-skills}:/opt/codex/skills:ro
       - ${CODEX_BINARY_PATH:-/opt/gpu-control/runtime/codex/codex}:/usr/local/bin/codex:ro
@@ -141,7 +141,7 @@ services:
     healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9108/metrics',timeout=2)"], interval: 15s, timeout: 3s, retries: 5}
 
   web:
-    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-web:${APP_IMAGE_TAG:-1.5.10}
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-web:${WEB_IMAGE_TAG:-1.5.10-retopo-direct-v2}
     build:
       context: ../../apps/web
       args:
