@@ -162,6 +162,37 @@ def test_result_archive_preserves_paths_order_hashes_and_alpha(tmp_path: Path) -
     assert no_alpha.value.code == "OUTPUT_ALPHA_MISSING"
 
 
+def test_partial_result_archive_keeps_original_total_and_success_subset(tmp_path: Path) -> None:
+    output = tmp_path / "0092.png"
+    output.write_bytes(png_bytes("RGBA"))
+    digest = hashlib.sha256(output.read_bytes()).hexdigest()
+    built = build_result_archive(
+        "partial-batch",
+        "assetclaw:video:matting:g1",
+        tmp_path / "batch",
+        [
+            ArchiveFrame(
+                ordinal=92,
+                input_relative_path="video/0092.png",
+                output_relative_path="video/0092.png",
+                input_sha256="c" * 64,
+                output_path=output,
+                expected_output_sha256=digest,
+                job_id="job-92",
+                node_id="worker-3090-a",
+                attempts=2,
+            )
+        ],
+        total_items=97,
+    )
+    with zipfile.ZipFile(built.path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        assert archive.namelist() == ["manifest.json", "results/video/0092.png"]
+    assert manifest["total"] == 97
+    assert len(manifest["items"]) == 1
+    assert manifest["items"][0]["ordinal"] == 92
+
+
 def test_workflow_identity_is_fail_closed_and_normalizes_output_node() -> None:
     workflow = WorkflowVersion(
         workflow_key="imageclip-rgba",

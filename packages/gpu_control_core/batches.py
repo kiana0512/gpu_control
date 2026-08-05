@@ -180,10 +180,16 @@ _BATCH_TRANSITIONS: dict[BatchStatus, frozenset[BatchStatus]] = {
         {BatchStatus.ASSEMBLING, BatchStatus.CANCELLING, BatchStatus.FAILED}
     ),
     BatchStatus.ASSEMBLING: frozenset(
-        {BatchStatus.SUCCEEDED, BatchStatus.CANCELLING, BatchStatus.FAILED}
+        {
+            BatchStatus.SUCCEEDED,
+            BatchStatus.PARTIAL_SUCCESS,
+            BatchStatus.CANCELLING,
+            BatchStatus.FAILED,
+        }
     ),
     BatchStatus.CANCELLING: frozenset({BatchStatus.CANCELLED, BatchStatus.FAILED}),
     BatchStatus.SUCCEEDED: frozenset(),
+    BatchStatus.PARTIAL_SUCCESS: frozenset(),
     BatchStatus.CANCELLED: frozenset(),
     BatchStatus.FAILED: frozenset(),
 }
@@ -216,7 +222,7 @@ async def transition_batch(
     if target == BatchStatus.ASSEMBLING:
         if batch.assembling_at is None:
             batch.assembling_at = now
-    if target == BatchStatus.SUCCEEDED and batch.artifact_ready_at is None:
+    if target in {BatchStatus.SUCCEEDED, BatchStatus.PARTIAL_SUCCESS} and batch.artifact_ready_at is None:
         batch.artifact_ready_at = now
     if target in TERMINAL_BATCH_STATUSES:
         if batch.finished_at is None:
@@ -557,6 +563,7 @@ def build_result_archive(
     workflow_identity: dict[str, str | None] | None = None,
     staging_path: Path | None = None,
     cancel_event: Event | None = None,
+    total_items: int | None = None,
 ) -> BuiltBatchArchive:
     """Build and hash a private archive without publishing the final path."""
 
@@ -623,7 +630,10 @@ def build_result_archive(
         "batch_id": batch_id,
         "external_batch_id": external_batch_id,
         **(workflow_identity or {}),
-        "total": len(items),
+        # A partial-success archive contains only verified successful frames,
+        # while ``total`` remains the original parent cardinality so a caller
+        # can calculate the exact repair set without guessing.
+        "total": total_items if total_items is not None else len(items),
         "items": items,
     }
     assembly_root = batch_dir / "output" / ".assembly"

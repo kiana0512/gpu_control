@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.10（部分成功与失败帧修复）— 2026-08-05
+
+- 序列帧子任务在 `COMFY_TIMEOUT`、`JOB_TIMEOUT`、`GPU_OOM` 或执行错误后，按最多三次且跨物理节点的方式重试；成功帧不会因单帧失败被清理。
+- 新增终态 `PARTIAL_SUCCESS`、结构化 `failed_items` 和只含已验证成功帧的 `ZIP_STORED` 结果包；包内 `total` 保持原批次总帧数，ordinal 允许缺口。
+- API、SSE、下载端点和 Web UI 均识别部分成功；GPU OOM 证据持久化异常类型、Comfy 节点、物理节点与原始摘要。
+
 ## 1.5.9（候选）— 2026-08-03
 
 - UV 与自动重拓扑的生产默认策略统一为 `advisory`：几何质量未达标保留结构化告警，但通过身份、

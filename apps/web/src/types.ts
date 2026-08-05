@@ -73,6 +73,17 @@ export interface JobInfo {
   counts?: BatchCounts;
   node_distribution?: Record<string, number>;
   artifacts?: BatchArtifact[];
+  failed_items?: FailedBatchItem[];
+}
+export interface FailedBatchItem {
+  ordinal: number;
+  input_relative_path: string;
+  input_sha256: string;
+  code: string;
+  message: string;
+  node_id: string | null;
+  attempts: number;
+  attempted_node_ids: string[];
 }
 export interface BatchCounts {
   total: number;

@@ -16,14 +16,14 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 
 def test_source_release_versions_are_aligned() -> None:
     assert source_versions(REPOSITORY) == {
-        "python": "1.5.9",
-        "web": "1.5.9",
-        "web_lock": "1.5.9",
+        "python": "1.5.10",
+        "web": "1.5.10",
+        "web_lock": "1.5.10",
     }
 
 
 def test_control_plane_build_defaults_match_release_version() -> None:
-    expected_version = "1.5.9"
+    expected_version = "1.5.10"
     for dockerfile in (
         "apps/api/Dockerfile",
         "apps/asset_api/Dockerfile",
@@ -39,7 +39,7 @@ def test_control_plane_build_defaults_match_release_version() -> None:
 
     compose = (REPOSITORY / "deploy/control-plane/compose.yaml").read_text(encoding="utf-8")
     assert compose.count(f"GPU_CONTROL_VERSION: ${{GPU_CONTROL_VERSION:-{expected_version}}}") == 4
-    assert compose.count(f"APP_IMAGE_TAG:-{expected_version}") == 4
+    assert compose.count(f"APP_IMAGE_TAG:-{expected_version}") == 3
 
 
 def test_worker_release_versions_and_evidence_contract_are_aligned() -> None:

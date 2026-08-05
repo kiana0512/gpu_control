@@ -14,6 +14,7 @@ const labels: Record<string, string> = {
   FAILING: "失败收尾中",
   CANCELLING: "取消中",
   SUCCEEDED: "已成功",
+  PARTIAL_SUCCESS: "部分成功",
   FAILED: "失败",
   CANCELLED: "已取消",
   TIMED_OUT: "已超时",

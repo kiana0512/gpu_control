@@ -8,7 +8,7 @@ COPY resources/retopology-v6 /opt/li3d/retopology-v6
 RUN python -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir .
 
 FROM ${PYTHON_BASE_IMAGE} AS runtime
-ARG GPU_CONTROL_VERSION=1.5.9
+ARG GPU_CONTROL_VERSION=1.5.10
 ARG GPU_CONTROL_REVISION=unknown
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PATH=/opt/venv/bin:$PATH
 ENV GPU_CONTROL_BUILD_VERSION=${GPU_CONTROL_VERSION} \

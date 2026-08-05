@@ -303,6 +303,26 @@ async def claim_next_job(
     ]
     if not jobs:
         return None
+    # Frame retries must move away from every physical node already used by
+    # that child.  This prevents a poisoned/warm-corrupt worker from consuming
+    # all attempts for the same ordinal and gives a three-node fleet A -> B -> C.
+    retried_batch_job_ids = {
+        job.id for job in jobs if job.batch_id is not None and job.attempt_count > 0
+    }
+    if retried_batch_job_ids:
+        attempted_on_node = set(
+            (
+                await session.scalars(
+                    select(JobAttempt.job_id).where(
+                        JobAttempt.job_id.in_(retried_batch_job_ids),
+                        JobAttempt.node_id == node_id,
+                    )
+                )
+            ).all()
+        )
+        jobs = [job for job in jobs if job.id not in attempted_on_node]
+    if not jobs:
+        return None
     tenant_ids = {job.tenant_id for job in jobs}
     clients = list(
         (await session.scalars(select(ApiClient).where(ApiClient.id.in_(tenant_ids)))).all()

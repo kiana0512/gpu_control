@@ -341,6 +341,9 @@ main {
 .status-mark.succeeded i {
   background: var(--green);
 }
+.status-mark.partial_success i {
+  background: #f59e0b;
+}
 .status-mark.reserved i,
 .status-mark.draining i {
   background: var(--amber);

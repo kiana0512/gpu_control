@@ -1389,7 +1389,13 @@ class Scheduler:
                         and job.error_code not in FAIL_CLOSED_SUBMISSION_ERRORS
                         and (
                             job.prompt_id is None
-                            or job.error_code == "COMFY_EXECUTION_ERROR"
+                            or job.error_code
+                            in {
+                                "COMFY_EXECUTION_ERROR",
+                                "COMFY_TIMEOUT",
+                                "GPU_OOM",
+                                "JOB_TIMEOUT",
+                            }
                         )
                         and batch.status
                         not in {BatchStatus.CANCELLING.value, BatchStatus.ASSEMBLING.value}
@@ -1434,11 +1440,10 @@ class Scheduler:
                     item.status = BatchItemStatus.RUNNING.value
                     active_progress += max(0.0, min(job.progress, 99.0)) / 100
 
-            # A child failure is not a user cancellation.  Keep feeding and
-            # processing the other frames so the failure remains isolated and
-            # observable.  The all-or-nothing contract is enforced only at the
-            # final parent transition: any exhausted child makes the parent
-            # FAILED and no result archive is published.
+            # A child failure is not a user cancellation. Keep successful
+            # frames durable and process every remaining ordinal. Exhausted
+            # failures are published with a partial archive after all children
+            # reach terminal state.
             if failure_item is not None and not batch.cancel_requested:
                 if not batch.error_code:
                     batch.error_code = failure_item.error_code
@@ -1545,16 +1550,16 @@ class Scheduler:
                 and gpu_started_attempts == gpu_finished_attempts
             ):
                 batch.execution_finished_at = last_gpu_finished
-            if (
-                terminal_count == batch.total_items
-                and batch.failed_items
-                and not batch.cancel_requested
-            ):
+            if terminal_count == batch.total_items and batch.failed_items and not batch.cancel_requested:
+                if batch.succeeded_items:
+                    await transition_batch(
+                        session, batch, BatchStatus.ASSEMBLING, "batch.partial_assembling",
+                        {"succeeded_items": batch.succeeded_items, "failed_items": batch.failed_items},
+                    )
+                    await self.commit_as_leader(session)
+                    return True
                 await transition_batch(
-                    session,
-                    batch,
-                    BatchStatus.FAILED,
-                    "batch.failed_after_all_items",
+                    session, batch, BatchStatus.FAILED, "batch.failed_after_all_items",
                     {"failed_items": batch.failed_items},
                 )
                 await self.commit_as_leader(session)
@@ -2056,7 +2061,7 @@ class Scheduler:
                     )
                 ).all()
             )
-            if len(items) != batch.total_items:
+            if not items:
                 return
             if any(not item.job_id or not item.output_sha256 for item in items):
                 return
@@ -2107,6 +2112,7 @@ class Scheduler:
                 workflow_identity,
                 staging_path,
                 cancel_event,
+                batch.total_items,
             )
         )
         try:
@@ -2201,19 +2207,34 @@ class Scheduler:
                         existing.size_bytes = built.size_bytes
                         existing.sha256 = built.sha256
                     batch.progress = 100
+                    target = (
+                        BatchStatus.PARTIAL_SUCCESS
+                        if batch.failed_items
+                        else BatchStatus.SUCCEEDED
+                    )
                     await transition_batch(
                         session,
                         batch,
-                        BatchStatus.SUCCEEDED,
-                        "batch.succeeded",
-                        {"result_sha256": built.sha256, "total": batch.total_items},
+                        target,
+                        "batch.partial_success" if batch.failed_items else "batch.succeeded",
+                        {
+                            "result_sha256": built.sha256,
+                            "total": batch.total_items,
+                            "succeeded_items": batch.succeeded_items,
+                            "failed_items": batch.failed_items,
+                        },
                     )
         finally:
             # This is safe only after the builder returned. If cancellation
             # timed out earlier, its unique file is deliberately left for the
             # age-based orphan cleanup instead of racing the live thread.
             staging_path.unlink(missing_ok=True)
-        await self.publish({"event": "batch.succeeded", "batch_id": batch_id})
+        await self.publish(
+            {
+                "event": "batch.partial_success" if target == BatchStatus.PARTIAL_SUCCESS else "batch.succeeded",
+                "batch_id": batch_id,
+            }
+        )
 
     async def schedule_available(self) -> None:
         started = asyncio.get_running_loop().time()
@@ -2904,7 +2925,7 @@ class Scheduler:
                 finally:
                     await client.close()
         except ComfyError as exc:
-            await self.fail_job(job_id, exc.code, str(exc))
+            await self.fail_job(job_id, exc.code, str(exc), exc.details)
         except asyncio.CancelledError:
             if not timeout_event.is_set():
                 raise
@@ -2999,6 +3020,8 @@ class Scheduler:
                         attempt_error={
                             "code": "JOB_TIMEOUT",
                             "message": job.error_message,
+                            "node_id": job.node_id,
+                            "timeout_seconds": timeout_seconds,
                         },
                     )
                     await self.commit_as_leader(session)
@@ -3053,6 +3076,7 @@ class Scheduler:
         status = entry.get("status", {})
         if status.get("status_str") == "error":
             error_message = "ComfyUI execution error"
+            error_details: dict[str, Any] = {"status": status}
             for message in reversed(status.get("messages", [])):
                 if (
                     isinstance(message, list)
@@ -3064,12 +3088,24 @@ class Scheduler:
                     node = details.get("node_id", "?")
                     node_type = details.get("node_type", "unknown")
                     exception = details.get("exception_message") or details.get("exception_type")
+                    error_details = {
+                        "exception_type": details.get("exception_type"),
+                        "comfy_node_id": str(node),
+                        "node_type": node_type,
+                        "raw_summary": str(details.get("exception_message") or "")[:8192],
+                    }
                     if exception:
                         error_message = f"node {node} {node_type}: {exception}"
                     break
-            raise ComfyError(
-                "COMFY_EXECUTION_ERROR", error_message[:1000], {"status": status}
-            )
+            oom_evidence = " ".join(
+                str(error_details.get(key) or "")
+                for key in ("exception_type", "raw_summary")
+            ).lower()
+            code = "GPU_OOM" if any(
+                marker in oom_evidence
+                for marker in ("outofmemory", "out of memory", "cuda oom", "cuda error: out of memory")
+            ) else "COMFY_EXECUTION_ERROR"
+            raise ComfyError(code, error_message[:1000], error_details)
         outputs = client.outputs(
             history,
             job.prompt_id or "",
@@ -3191,7 +3227,13 @@ class Scheduler:
             # cancelled download can therefore never erase a published file.
             shutil.rmtree(staging_dir, ignore_errors=True)
 
-    async def fail_job(self, job_id: str, code: str, message: str) -> None:
+    async def fail_job(
+        self,
+        job_id: str,
+        code: str,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         cancelled = False
         async with self.db.session() as session:
             await self.assert_scheduler_epoch(session)
@@ -3204,7 +3246,7 @@ class Scheduler:
                 return
             job.error_code = code
             job.error_message = message[:1000]
-            if job.node_id and code == "COMFY_EXECUTION_ERROR":
+            if job.node_id and code in {"COMFY_EXECUTION_ERROR", "GPU_OOM"}:
                 node = await session.scalar(
                     select(Node).where(Node.id == job.node_id).with_for_update()
                 )
@@ -3229,7 +3271,7 @@ class Scheduler:
                     session,
                     job,
                     attempt_status=JobStatus.CANCELLED,
-                    attempt_error={"code": code, "message": message[:1000]},
+                    attempt_error={"code": code, "message": message[:1000], "node_id": job.node_id, **(details or {})},
                 )
                 cancelled = True
             elif (
@@ -3248,7 +3290,7 @@ class Scheduler:
                     session,
                     job,
                     attempt_status=JobStatus.FAILED,
-                    attempt_error={"code": code, "message": message[:1000]},
+                    attempt_error={"code": code, "message": message[:1000], "node_id": job.node_id, **(details or {})},
                 )
                 await transition_job(session, job, JobStatus.QUEUED, "executor.retry_queued")
                 job.node_id = None
@@ -3269,7 +3311,7 @@ class Scheduler:
                     session,
                     job,
                     attempt_status=JobStatus.FAILED,
-                    attempt_error={"code": code, "message": message[:1000]},
+                    attempt_error={"code": code, "message": message[:1000], "node_id": job.node_id, **(details or {})},
                 )
             await self.commit_as_leader(session)
         if cancelled:

@@ -46,7 +46,13 @@ const statusFilter = ref("all");
 const currentPage = ref(1);
 const pageSize = ref(20);
 
-const terminalStatuses = ["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT"];
+const terminalStatuses = [
+  "SUCCEEDED",
+  "PARTIAL_SUCCESS",
+  "FAILED",
+  "CANCELLED",
+  "TIMED_OUT",
+];
 const isBatch = computed(() => selectedJob.value?.kind === "batch");
 const selectedDisplayStatus = computed(() =>
   selectedJob.value?.kind === "batch" &&
@@ -568,6 +574,8 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
                 ? isBatch
                   ? "全部序列帧已校验并生成完整结果包"
                   : "任务处理成功，最终结果已返回"
+                : selectedJob.status === "PARTIAL_SUCCESS"
+                  ? "部分帧已校验并生成结果包；失败帧可定向补算"
                 : selectedJob.status === "FAILED"
                   ? isBatch
                     ? "父批次失败，未发布不完整结果"
@@ -751,7 +759,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             v-if="isBatch && selectedJob.artifacts?.length"
             class="batch-artifacts"
           >
-            <h3>完整结果归档</h3>
+            <h3>{{ selectedJob.status === "PARTIAL_SUCCESS" ? "部分成功结果归档" : "完整结果归档" }}</h3>
             <a
               v-for="artifact in selectedJob.artifacts"
               :key="artifact.id"
@@ -767,6 +775,20 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             </a>
           </section>
 
+          <section
+            v-if="selectedJob.failed_items?.length"
+            class="task-error"
+          >
+            <h3>待补算帧（{{ selectedJob.failed_items.length }}）</h3>
+            <p
+              v-for="item in selectedJob.failed_items"
+              :key="`${item.ordinal}:${item.input_sha256}`"
+            >
+              #{{ item.ordinal }} · {{ item.input_relative_path }} ·
+              {{ item.code }} · 已尝试 {{ item.attempts }} 次
+            </p>
+          </section>
+
           <section v-if="selectedJob.error" class="task-error">
             <h3>失败原因</h3>
             <strong>{{ selectedJob.error.code }}</strong>
@@ -774,13 +796,13 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           </section>
           <section v-else class="task-help">
             <h3>
-              {{ selectedJob.status === "SUCCEEDED" ? "结果说明" : "操作说明" }}
+              {{ ["SUCCEEDED", "PARTIAL_SUCCESS"].includes(selectedJob.status) ? "结果说明" : "操作说明" }}
             </h3>
             <p>
               {{
-                selectedJob.status === "SUCCEEDED"
+                ["SUCCEEDED", "PARTIAL_SUCCESS"].includes(selectedJob.status)
                   ? isBatch
-                    ? "结果 ZIP 仅在全部帧、路径、顺序、SHA-256 和 Alpha 校验通过后发布给动画管家。"
+                    ? "结果 ZIP 只包含已通过路径、身份、SHA-256 和 Alpha 校验的帧；部分成功时由动画管家仅补算 failed_items。"
                     : "同步图片 API 返回最终图片；管理端保留任务记录与诊断信息。"
                   : "状态每 10 秒自动刷新。运行中的任务可取消，独立失败任务可安全重试。"
               }}

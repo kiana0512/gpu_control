@@ -107,6 +107,7 @@ UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重
 | Asset V4 UV/自动拓扑最新合同 | `81_2026-08-03_ASSET_V4_UV_RETOPOLOGY_LATEST_HANDOFF.md` | 当前分组件基线：CA、幂等、仅 BLEND、UV/拓扑双 advisory、正式制品、SSE、SHA 和真实 canary |
 | Asset 失败修复与发布验收 | `82_2026-08-03_ASSET_FAILURES_UV_ADVISORY_AND_RELEASE_ACCEPTANCE.md` | PBR 假失败、UV advisory 五件套、Codex Skill 子链接与真实 canary；统一 OCI/SBOM、API 三重 SHA 与观察待回填 |
 | 1.5.9 统一发布与六 API 验收 | `83_2026-08-03_CONTROL_PLANE_1_5_9_RELEASE_AND_SIX_API_ACCEPTANCE.md` | 生产优先全局准入、精确 artifact 合同、五镜像身份、三节点灰度、浏览器 QA、120 用户压测及动画管家回执的唯一回填入口 |
+| 1.5.10 部分成功与失败帧补算 | `84_2026-08-05_PARTIAL_SUCCESS_AND_FAILED_FRAME_REPAIR_HANDOFF.md` | PARTIAL_SUCCESS、跨节点帧级重试、成功子集归档、failed_items、OOM 证据与动画管家补算合同 |
 | 分角色安装 | `03`—`11` | 网络、准备、4090、3090、镜像、模型、工作流、首次部署 |
 | 使用手册 | `12_WEB_ADMIN_GUIDE.md`、`13_PUBLIC_API_GUIDE.md` | 管理后台和业务 API |
 | 运维 | `15`—`22` | 日志、告警、备份、升级、故障、容量和 FAQ |

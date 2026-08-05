@@ -94,12 +94,13 @@ export function statusGroup(job: TaskJob): string {
   if (["CLAIMED", "RUNNING", "ASSEMBLING", "CANCELLING"].includes(status))
     return "active";
   if (status === "SUCCEEDED") return "succeeded";
+  if (status === "PARTIAL_SUCCESS") return "attention";
   if (["FAILED", "TIMED_OUT", "CANCELLED"].includes(status)) return "attention";
   return "other";
 }
 
 export function isTerminal(job: TaskJob): boolean {
-  return ["SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"].includes(
+  return ["SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "TIMED_OUT", "CANCELLED"].includes(
     job.status.toUpperCase(),
   );
 }

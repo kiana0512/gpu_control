@@ -1619,7 +1619,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             if item.node_id:
                 distribution[item.node_id] = distribution.get(item.node_id, 0) + 1
         artifacts: list[dict[str, Any]] = []
-        if batch.status == BatchStatus.SUCCEEDED.value:
+        if batch.status in {BatchStatus.SUCCEEDED.value, BatchStatus.PARTIAL_SUCCESS.value}:
             artifact_rows = (
                 await db.scalars(
                     select(BatchArtifact)
@@ -1685,6 +1685,23 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         attempts_by_job: dict[str, list[JobAttempt]] = {}
         for attempt in attempts:
             attempts_by_job.setdefault(attempt.job_id, []).append(attempt)
+
+        failed_items = [
+            {
+                "ordinal": item.ordinal,
+                "input_relative_path": item.input_relative_path,
+                "input_sha256": item.input_sha256,
+                "code": item.error_code or "CHILD_JOB_FAILED",
+                "message": item.error_message or "frame processing failed",
+                "node_id": item.node_id,
+                "attempts": item.attempts,
+                "attempted_node_ids": [
+                    attempt.node_id for attempt in attempts_by_job.get(item.job_id or "", [])
+                ],
+            }
+            for item in items
+            if item.status == BatchItemStatus.FAILED.value
+        ]
 
         reassignments_in: dict[str, int] = {}
         reassignments_out: dict[str, int] = {}
@@ -1928,6 +1945,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             else None,
             "artifact": artifacts[0] if artifacts else None,
             "artifacts": artifacts,
+            "failed_items": failed_items,
             "performance": performance,
             **cancel_payload,
         }
@@ -2570,12 +2588,12 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         db: Annotated[AsyncSession, Depends(session)],
     ) -> FileResponse:
         batch = await owned_batch(batch_id, principal, db)
-        if batch.status != BatchStatus.SUCCEEDED.value:
+        if batch.status not in {BatchStatus.SUCCEEDED.value, BatchStatus.PARTIAL_SUCCESS.value}:
             raise HTTPException(
                 409,
                 detail={
                     "code": "ARTIFACT_NOT_READY",
-                    "message": "批次完整成功前不提供结果包",
+                    "message": "批次尚未生成已验证结果包",
                 },
             )
         artifact = await db.scalar(
@@ -2946,6 +2964,10 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             BatchStatus.ASSEMBLING.value: JobStatus.RUNNING.value,
             BatchStatus.CANCELLING.value: JobStatus.CANCELLING.value,
             BatchStatus.SUCCEEDED.value: JobStatus.SUCCEEDED.value,
+            # Dashboard success totals include batches that published a
+            # verified success subset; the detailed batch payload preserves
+            # the PARTIAL_SUCCESS distinction and failed-frame list.
+            BatchStatus.PARTIAL_SUCCESS.value: JobStatus.SUCCEEDED.value,
             BatchStatus.CANCELLED.value: JobStatus.CANCELLED.value,
             BatchStatus.FAILED.value: JobStatus.FAILED.value,
         }
@@ -3797,7 +3819,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         batch = await db.get(JobBatch, batch_id)
         if batch is None:
             raise HTTPException(404, detail={"code": "BATCH_NOT_FOUND"})
-        if batch.status != BatchStatus.SUCCEEDED.value:
+        if batch.status not in {BatchStatus.SUCCEEDED.value, BatchStatus.PARTIAL_SUCCESS.value}:
             raise HTTPException(409, detail={"code": "ARTIFACT_NOT_READY"})
         artifact = await db.scalar(
             select(BatchArtifact).where(
