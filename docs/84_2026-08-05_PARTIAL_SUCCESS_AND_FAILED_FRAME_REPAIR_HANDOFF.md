@@ -199,19 +199,29 @@ RUNNING
 
 ```text
 GPU Control 版本：1.5.10
-实现源码 commit：发布后回填
-部署 commit：发布后回填
-部署时间：发布后回填
-API 镜像 digest：发布后回填
-Scheduler 镜像 digest：发布后回填
-Web 镜像 digest：发布后回填
+实现源码 commit：d504a820239797dd66d5ffe11178127743b99d6d
+部署 commit：d504a820239797dd66d5ffe11178127743b99d6d
+部署时间：2026-08-05 15:16–15:20（Asia/Singapore）
+API 镜像 digest：sha256:67822b8c68722cb07c0d5f92541fbdba1df544e245260c7b660447e343e166a7
+Scheduler 镜像 digest：sha256:3e88acd6881ccfdf12e8dc5116f600ca763a2bd24e5ddf982aa040d9fd73268f
+Web 镜像 digest：sha256:0835073a2fc6da9297ab28a8e599cecd11c91bec16d9384cd422bca84168648b
 PARTIAL_SUCCESS 已实现：是
 FAILED + partial artifact 兼容：不采用；正式使用 PARTIAL_SUCCESS
 failed_items 已实现：是
 失败帧换节点重试：是，最多三次且排除已尝试节点
 成功帧保留：沿用批次持久化保留策略，不因单帧失败清理
 历史事故批次恢复：按双方最新决定不执行
-B1/B2/B3/B4：部署后联合回填
+B1/B2/B3/B4：B1/B2/B3/B4 故障注入待双方联合执行；构建期部分归档合同冒烟已通过
 ```
 
-在镜像 digest、部署 commit 和 B1–B4 证据回填前，状态为 `IMPLEMENTED_PENDING_DEPLOYMENT_ACCEPTANCE`。
+## 12. 2026-08-05 部署核验
+
+- 发布前活动 GPU job 与活动父批次：`0`，未中断生产任务。
+- API `/health/ready`：`database=ok`、`redis=ok`。
+- Scheduler 构建指标：版本 `1.5.10`、源码 `d504a820239797dd66d5ffe11178127743b99d6d`、`version_aligned=True`、`provenance_complete=True`。
+- Web 生产构建：`vue-tsc -b && vite build` 通过。
+- 部分结果归档冒烟：原总数 97、成功子集 1、ordinal 93、`ZIP_STORED`，通过。
+- 节点：`control-4090`、`worker-3090-a`、`worker-3090-b` 均为 `ONLINE / ACTIVE / 0 jobs / 1 slot`。
+- 历史事故批次：按双方最新决定不恢复、不改写。
+
+当前状态：`DEPLOYED_PENDING_JOINT_B1_B4_ACCEPTANCE`。新任务已使用 1.5.10 逻辑；B1–B4 生产故障注入必须在双方约定的隔离测试批次执行，不应通过破坏真实用户任务取证。
