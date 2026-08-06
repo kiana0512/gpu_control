@@ -35,6 +35,7 @@ CODEX_ERROR_CAPTURE_LIMIT = 64 * 1024
 SUBPROCESS_OUTPUT_LIMIT = 16 * 1024 * 1024
 COMPLETION_UPLOAD_KEEPALIVE_SECONDS = 15.0
 COMPLETION_UPLOAD_RENEWAL_GRACE_SECONDS = 2.0
+CODEX_REQUIRED_JOB_TYPES = frozenset({"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"})
 
 UV_UNWRAP_SCRIPT_SHA256 = "ebfa3546d61c548a11c0e7561c75f93b6ef93308d8da9f27788bf35643303758"
 UV_QA_SCRIPT_SHA256 = "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
@@ -104,6 +105,29 @@ def available_memory_mb() -> int:
         if line.startswith("MemAvailable:"):
             return int(line.split()[1]) // 1024
     return 0
+
+
+def job_requires_codex(job: dict[str, Any]) -> bool:
+    """Return whether a claimed Asset job owns the process-wide Codex slot."""
+
+    return str(job.get("job_type") or "") in CODEX_REQUIRED_JOB_TYPES
+
+
+def worker_can_claim_another_job(
+    running_jobs: dict[asyncio.Task[None], dict[str, Any]],
+    max_concurrency: int,
+) -> bool:
+    """Protect the single Codex runtime without reducing Blender-only capacity.
+
+    The Worker can run multiple Blender-only jobs, but every Codex-backed job
+    uses ``CODEX_EXEC_LOCK``. Claiming a second such job makes it wait outside
+    the lease-renewal loop; after five minutes the server requeues it while the
+    old process is still alive. Keep at most one Codex-backed job per process.
+    """
+
+    return len(running_jobs) < max_concurrency and not any(
+        job_requires_codex(job) for job in running_jobs.values()
+    )
 
 
 def signed_headers(settings: WorkerSettings, method: str, path: str, body: bytes) -> dict[str, str]:
@@ -2670,11 +2694,11 @@ async def worker_loop(settings: WorkerSettings) -> None:
         retopoflow_health_loop(settings, retopoflow_health, runtime)
     )
     async with httpx.AsyncClient(base_url=settings.asset_api_url, timeout=timeout) as client:
-        running: set[asyncio.Task[None]] = set()
+        running: dict[asyncio.Task[None], dict[str, Any]] = {}
         control_plane_backoff = 1.0
         try:
             while True:
-                running = {task for task in running if not task.done()}
+                running = {task: job for task, job in running.items() if not task.done()}
                 runtime["running"] = len(running)
                 try:
                     await heartbeat(
@@ -2686,7 +2710,9 @@ async def worker_loop(settings: WorkerSettings) -> None:
                         agent_instance_id,
                         agent_started_at,
                     )
-                    while len(running) < settings.asset_worker_max_concurrency:
+                    while worker_can_claim_another_job(
+                        running, settings.asset_worker_max_concurrency
+                    ):
                         response = await signed_post(
                             client,
                             settings,
@@ -2704,7 +2730,7 @@ async def worker_loop(settings: WorkerSettings) -> None:
                         if job is None:
                             break
                         task = asyncio.create_task(execute_job(client, settings, job))
-                        running.add(task)
+                        running[task] = job
                     control_plane_backoff = 1.0
                 except httpx.HTTPError as exc:
                     # A control-plane restart, DNS refresh, or brief network outage
