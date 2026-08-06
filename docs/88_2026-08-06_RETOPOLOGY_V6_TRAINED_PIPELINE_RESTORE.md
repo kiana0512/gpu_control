@@ -54,3 +54,23 @@
 
 构建校验已确认：Asset API 同时注册 V6 正式完成与旧 Direct V2 完成路由；Worker 冻结资源
 共 19 项全部通过 SHA 校验。未自动提交真实模型任务，结果几何由用户下一次拓扑请求验收。
+
+## 生产滚动结果
+
+更新时资产队列没有 `QUEUED`、`RUNNING` 或 `CANCEL_REQUESTED` 任务。只重建 Asset API 和
+三台 Blender Worker，未重启 ComfyUI、Scheduler、GPU API、UV 或 PBR Windows Worker。
+
+- GitHub `main`：`d889bed`（主体修复 `5990d43`，Skill 门禁 `2c011d8`）；
+- Asset API image ID：
+  `sha256:e7c093951281d1305c7a54a0f088df473d27329e2ca503b190ef03a83067bc9c`；
+- Blender Worker image ID：
+  `sha256:3b8fd931c68b3741d1d44be443da36afef1135902b79c833be4cfaf3340381bc`；
+- `asset-control-4090`、`asset-worker-3090-a`、`asset-worker-3090-b`：均为
+  `ONLINE / asset-skills-retopology-v6.0.0 / 0 jobs`；
+- 三台 Worker 容器 `RestartCount=0`，revision label 均为
+  `2c011d898c0e4d6f2cec4708eee257026e42d193`；
+- 控制面 readiness：数据库与 Redis 均为 `ok`。
+
+Direct V2 与 V6 使用独立 Codex Home，避免旧 Skill 软链接进入新任务。尚未自动提交真实
+模型；用户下一次提交同一桶模型时，应在任务 options/事件中看到
+`engine_contract=retopology-v6`，并以七视图接触表、线框接触表和 V6 计划作为质量证据。
