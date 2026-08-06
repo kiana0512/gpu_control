@@ -8,6 +8,7 @@ COPY blender-retopology-compare-iterate/ /opt/li3d/retopology/blender-retopology
 COPY server/ /opt/li3d/retopology/server/
 COPY examples/ /opt/li3d/retopology/examples/
 RUN chmod 0755 /opt/li3d/retopology/server/one_click_retopology.py \
+    /opt/li3d/retopology/server/batch_retopology.py \
     /opt/li3d/retopology/server/verify_package.py \
     /opt/li3d/retopology/blender-retopology-compare-iterate/scripts/guard_shape_authority_plan.py \
     && python3 /opt/li3d/retopology/server/verify_package.py

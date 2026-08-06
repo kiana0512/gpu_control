@@ -1,6 +1,6 @@
 ---
 name: blender-retopology-compare-iterate
-description: Generate sparse next-generation game low-poly meshes directly from the current Blender high-poly source, using learned high-shape, component, silhouette, topology-density, and bake decisions. Use for Blender 自动或辅助重拓扑、次世代游戏低模、高模减面、机械分件重建、有机一体模型直接减面、RetopoFlow/QuadriFlow 辅助、批量高模生成低模和高低模分排展示。Generation ends immediately after saving and arranging the result for user inspection; this skill never starts automatic post-generation review, scoring, comparison, reopening, correction, retry, or acceptance.
+description: Import FBX high-poly uploads or use the current Blender high-poly source to generate sparse next-generation game low-poly meshes, using learned high-shape, component, silhouette, topology-density, and bake decisions. Use for FBX 高模上传一键拓扑、Blender 自动或辅助重拓扑、次世代游戏低模、高模减面、机械分件重建、有机一体模型直接减面、RetopoFlow/QuadriFlow 辅助、批量高模生成低模和高低模分排展示。 Generation ends immediately after saving and arranging the result for user inspection; this skill never starts automatic post-generation review, scoring, comparison, reopening, correction, retry, or acceptance.
 ---
 
 # Blender Direct-output Game Retopology
@@ -35,7 +35,9 @@ These guards protect the scene; they must not become geometry-quality review or 
 
 Input:
 
-- The user's current Blender scene, or a model file, containing one or more high-poly meshes.
+- The user's current Blender scene, a `.blend`, or a static-mesh `.fbx` containing one or more high-poly mesh parts.
+- For a server FBX upload, import the FBX into a clean task-local scene with `scripts/prepare_fbx_source.py` before measuring or creating any low geometry.
+- Treat the prepared `SOURCE_HIGH` object as the requested high. Do not require the client to know or submit internal FBX object names.
 - Optional platform, LOD, deformation, texture, or bake constraints.
 
 Output:
@@ -50,7 +52,29 @@ Output:
 
 Do not require or use an old low-poly reference. Preserve unrelated old lows as user data unless the user explicitly asks to remove them. Never use a rejected yellow low, previous Decimate result, generic proxy, or historical accepted mesh as shape authority.
 
+## Prepare an FBX upload
+
+For server or unattended `.fbx` input, run this preparation step before the normal shape-authority plan:
+
+    blender --background --factory-startup --disable-autoexec --python-exit-code 1 \
+      --python scripts/prepare_fbx_source.py -- \
+      --input <source.fbx> \
+      --output <task-working.blend> \
+      --manifest <source-manifest.json>
+
+The preparation script must:
+
+- Import every static Mesh from the FBX and reject armatures, instances, constraints, modifiers, or shape keys that cannot be preserved safely.
+- Preserve world-space position, rotation, scale, vertex count, polygon count, and combined bounds.
+- Join multiple imported Mesh objects into the single high object `SOURCE_HIGH` without changing their world-space shape; disconnected components remain disconnected geometry inside that high.
+- Remove only safe auxiliary `EMPTY`, `CAMERA`, and `LIGHT` objects.
+- Save a new task-local Blend and source manifest. Never overwrite the uploaded FBX.
+
+FBX preparation is source ingestion, not retopology and not a low-poly candidate. Do not create a Decimate bootstrap, reference low, current low, density variant, or proxy during import. Use `SOURCE_HIGH` as the only shape authority and continue with the normal pre-generation plan and guard.
+
 ## Secure the live Blender session
+
+For a server FBX job, the prepared task-local Blend is the authorized Blender session. The live-session PID and bridge rules below apply only when operating the user's already-open Blender.
 
 1. Re-query the Blender process at the start of the work period; never trust an old PID.
 2. Confirm responsiveness and the bridge listener.
@@ -103,10 +127,17 @@ Use controlled direct reduction from a fresh high duplicate only when:
 - The object is genuinely integrated and structurally complex.
 - The high already contains the correct macro surface, proportions, openings, and silhouette.
 - Semantic proxy reconstruction would lose identity.
+- No identifiable mechanical, planar, rotational, vessel-shell, or assembled structural region needs deliberate topology.
 
 Typical cases include an integrated boot, glove/hand-like form, poultry or similarly irregular organic prop, and other one-piece scans where the surface itself is the design.
 
-A single source mesh is not enough evidence for direct reduction. Mechanical or hard-surface construction remains semantic reconstruction even when the high happens to be joined into one object.
+A single source mesh is not enough evidence for direct reduction. `SOURCE_HIGH` is deliberately joined during FBX preparation, so its joined state is zero evidence that the asset is one integrated organic form. Inspect disconnected islands, macro sections, openings, occlusion, and structural regions before selecting the method. Mechanical or hard-surface construction remains semantic reconstruction even when the high happens to be joined into one object.
+
+When a high contains a recognizable vessel, bowl, bucket, tray, box, housing, or other structured shell plus irregular contents, inserts, debris, food, cloth, or organic fill, use a per-component hybrid even if scanning or FBX ingestion fused everything into one mesh:
+
+- Reconstruct the structured shell, rim, wall, base, cavity, handles, and other hard-surface controls from high-derived sections.
+- Apply controlled direct reduction, qualified remeshing, or a fresh high-derived cage only to the irregular content region whose surface is the design.
+- Preserve the visible separation, contact/occlusion boundary, opening, and contents silhouette. Do not reduce the combined asset as one triangle field.
 
 Use semantic reconstruction when:
 
@@ -114,7 +145,9 @@ Use semantic reconstruction when:
 - Main components, openings, pivots, latches, handles, panels, rails, ribs, or negative spaces need deliberate construction.
 - Whole-object reduction would fuse gaps, distort openings, destroy part logic, or retain uniform noise density.
 
-Use a per-component hybrid only when the high proves which components are integrated and which are mechanical.
+Use a per-component hybrid only when the high proves the structural regions and their responsibilities. Proof may come from true gaps and disconnected islands, but also from distinct profile systems, a stable rim/cavity boundary, separate occlusion order, or an irregular content region contained by a structured shell. Do not require the source FBX to have clean object separation.
+
+For `per_component_hybrid`, record a `component_method_map` in the execution plan. Every routed region needs a high-evidence ID, explicit boundary measurement, and its own construction method. The map must include semantic reconstruction for the structured region and a qualified high-derived organic method only for the irregular region.
 
 Record method_decision as controlled_direct_reduction, semantic_reconstruction, or per_component_hybrid. Do not propagate one asset's method to the rest of a batch by category alone.
 
@@ -162,7 +195,7 @@ Record method_decision as controlled_direct_reduction, semantic_reconstruction, 
 
 - Use RetopoFlow for deliberate surface drawing when available and appropriate.
 - Use QuadriFlow or another remesher for qualified integrated organic objects only when driven by the current high and bounded fitting.
-- Use Decimate only as a controlled direct-reduction operator on a fresh high duplicate, never as a uniform batch recipe.
+- Use Decimate only as a controlled direct-reduction operator on a fresh high duplicate for an eligible integrated region, never as a uniform batch recipe or a whole-asset shortcut around a structured shell.
 - Never use whole-object voxel/remesh or raw Decimate as the final construction method for mechanical/hard-surface assemblies.
 - Record a plugin as used only when its operator actually generated or modified the delivered mesh.
 - Do not open another Blender to run a plugin when the user required the current session.

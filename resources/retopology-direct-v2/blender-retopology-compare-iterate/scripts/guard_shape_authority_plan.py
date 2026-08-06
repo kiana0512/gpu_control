@@ -21,6 +21,12 @@ ALLOWED_CORRESPONDENCE = {
     "per_component_hybrid",
 }
 ALLOWED_CONSTANT_PROVENANCE = {"high_measurement", "topology_density_only"}
+ALLOWED_COMPONENT_METHODS = {
+    "semantic_reconstruction",
+    "controlled_direct_reduction",
+    "qualified_remeshing",
+    "fresh_high_derived_cage",
+}
 
 
 def nonempty_list(value: object) -> bool:
@@ -202,6 +208,40 @@ def guard(plan: object) -> tuple[list[str], list[str]]:
                 errors.append("direct reduction requires integrated_continuous_object=true")
             if evidence.get("fresh_high_duplicate") is not True:
                 errors.append("direct reduction must start from a fresh high duplicate")
+            if evidence.get("structural_subregions_checked") is not True:
+                errors.append("direct reduction requires structural_subregions_checked=true")
+            if evidence.get("structured_shell_or_assembly_absent") is not True:
+                errors.append("direct reduction cannot cover a structured shell or assembly")
+            if evidence.get("joined_source_state_used_as_integration_evidence") is not False:
+                errors.append("joined SOURCE_HIGH state cannot be used as integration evidence")
+
+    if method == "per_component_hybrid":
+        method_map = plan.get("component_method_map")
+        if not isinstance(method_map, list) or len(method_map) < 2:
+            errors.append("per-component hybrid requires at least two component_method_map entries")
+            method_map = []
+        routed_methods: set[str] = set()
+        for index, route in enumerate(method_map):
+            if not isinstance(route, dict):
+                errors.append(f"component_method_map[{index}] must be an object")
+                continue
+            if route.get("evidence_id") not in component_ids:
+                errors.append(f"component_method_map[{index}] lacks component evidence")
+            if not isinstance(route.get("boundary_measurement"), str) or not route[
+                "boundary_measurement"
+            ].strip():
+                errors.append(f"component_method_map[{index}] lacks boundary_measurement")
+            component_method = route.get("method")
+            if component_method not in ALLOWED_COMPONENT_METHODS:
+                errors.append(f"component_method_map[{index}] has unsupported method")
+            else:
+                routed_methods.add(component_method)
+        if "semantic_reconstruction" not in routed_methods:
+            errors.append("per-component hybrid requires a semantic-reconstruction region")
+        if not routed_methods.intersection(
+            {"controlled_direct_reduction", "qualified_remeshing", "fresh_high_derived_cage"}
+        ):
+            errors.append("per-component hybrid requires a high-derived organic region")
 
     return errors, warnings
 

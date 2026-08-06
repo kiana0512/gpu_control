@@ -11,6 +11,9 @@ Minimum example:
   "automatic_post_generation_actions": [],
   "source_identity": {
     "blend_filepath": "D:/assets/current.blend",
+    "original_source_filepath": "D:/assets/current.fbx",
+    "original_source_format": "fbx",
+    "source_manifest_filepath": "D:/assets/source-manifest.json",
     "object_name": "H08_HIGH",
     "mesh_data_name": "H08_HIGH_MESH",
     "measurement_space": "high_local",
@@ -90,8 +93,36 @@ For a direct-reduction asset, set `method_decision` to `controlled_direct_reduct
 "direct_reduction_evidence": {
   "structurally_complex": true,
   "integrated_continuous_object": true,
-  "fresh_high_duplicate": true
+  "fresh_high_duplicate": true,
+  "structural_subregions_checked": true,
+  "structured_shell_or_assembly_absent": true,
+  "joined_source_state_used_as_integration_evidence": false
 }
 ```
 
+`SOURCE_HIGH` is joined by the FBX preparation step, so its object count cannot satisfy direct-reduction evidence. A vessel/container plus irregular contents must use `per_component_hybrid`; record separate component decisions for the structured shell and content region, including the measured rim/cavity or contact/occlusion boundary that routes each component.
+
+For a per-component hybrid asset, add:
+
+```json
+"component_method_map": [
+  {
+    "component_id": "vessel_shell",
+    "evidence_id": "vessel_shell",
+    "boundary_measurement": "measured rim, inner wall, cavity and base sections",
+    "method": "semantic_reconstruction"
+  },
+  {
+    "component_id": "irregular_contents",
+    "evidence_id": "irregular_contents",
+    "boundary_measurement": "measured rim occlusion and content contact boundary",
+    "method": "fresh_high_derived_cage"
+  }
+]
+```
+
+Allowed component methods are `semantic_reconstruction`, `controlled_direct_reduction`, `qualified_remeshing`, and `fresh_high_derived_cage`. A hybrid plan must contain both a semantic-reconstruction region and at least one high-derived organic region.
+
 The plan may contain additional asset-specific measurements. Shape-defining constants must come from `high_measurement`; only topology-density settings may use `topology_density_only`.
+
+For direct `.blend` input, the three `original_source_*` / `source_manifest_filepath` fields may be omitted. For an FBX upload, `blend_filepath` is the prepared task-local Blend, `object_name` is `SOURCE_HIGH`, and the additional fields record the immutable uploaded FBX and its preparation manifest.

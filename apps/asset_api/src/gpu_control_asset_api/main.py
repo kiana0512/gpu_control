@@ -33,8 +33,8 @@ from packages.gpu_control_core.admission import (
     client_is_load_test,
 )
 from packages.gpu_control_core.assets import (
+    RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
     AssetCreateMetadata,
-    RETOPOLOGY_V6_POLICY_SHA256,
     RetopologyAuditMetadata,
     SubstanceBakeMetadata,
     adapt_retopology_v6_metadata_json,
@@ -54,10 +54,6 @@ from packages.gpu_control_core.enums import (
     TERMINAL_BATCH_STATUSES,
     TERMINAL_JOB_STATUSES,
 )
-from packages.gpu_control_core.retopology_v6 import (
-    validate_contract_payload,
-    verify_runtime_resources,
-)
 from packages.gpu_control_core.models import (
     ApiClient,
     ApiKey,
@@ -69,6 +65,10 @@ from packages.gpu_control_core.models import (
     Job,
     JobBatch,
     Node,
+)
+from packages.gpu_control_core.retopology_v6 import (
+    validate_contract_payload,
+    verify_runtime_resources,
 )
 from packages.gpu_control_core.scheduling import (
     SUBSTANCE_DRAIN_OWNER,
@@ -137,7 +137,7 @@ SUBSTANCE_BAKE_COMMAND_COUNTS = {
 CODEX_REQUIRED_JOB_TYPES = frozenset(
     {"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"}
 )
-RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-retopology-v6.0.1"
+RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-retopology-v2.3.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -919,6 +919,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "package_version": runtime_version,
             "build_version": build_version,
             "source_revision": source_revision,
+            "retopology": {
+                "engine_contract": "retopology-direct-v2",
+                "package_version": "2.3.0",
+                "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
+                "submission_mode": "one_file_per_job",
+                "recommended_upload_concurrency": 3,
+            },
             "version_aligned": runtime_version == build_version,
             "provenance_complete": runtime_version == build_version
             and re.fullmatch(r"[0-9a-f]{40}", source_revision) is not None,
@@ -1942,10 +1949,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 item.filename: item.model_dump(mode="json") for item in parsed.reference_views
             }
             input_manifest = {
-                "schema_version": "retopology_input.v6",
-                "engine_contract": "retopology-v6",
+                "schema_version": "retopology_input.direct-v2",
+                "engine_contract": "retopology-direct-v2",
                 "api_version": parsed.api_version,
-                "policy_sha256": RETOPOLOGY_V6_POLICY_SHA256,
+                "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
                 "project": {
                     "filename": project_filename,
                     "sha256": project_sha,
@@ -1996,9 +2003,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             options = parsed.options.model_dump(mode="json")
             options.update(
                 {
-                    "engine_contract": "retopology-v6",
-                    "policy_version": "6.0.1",
-                    "policy_sha256": RETOPOLOGY_V6_POLICY_SHA256,
+                    "engine_contract": "retopology-direct-v2",
+                    "package_version": "2.3.0",
+                    "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
                     "deprecated_fields_ignored": compatibility_warnings,
                     "project_filename": project_filename,
                     "project_sha256": project_sha,
@@ -2028,8 +2035,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 details={
                     "event": "asset.queued",
                     "request_id": job.request_id,
-                    "engine_contract": "retopology-v6",
-                    "policy_sha256": RETOPOLOGY_V6_POLICY_SHA256,
+                    "engine_contract": "retopology-direct-v2",
+                    "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
                     "warnings": compatibility_warnings,
                 },
             )

@@ -5,6 +5,7 @@ import json
 import threading
 import time
 import uuid
+import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -67,6 +68,15 @@ async def test_asset_api_version_exposes_aligned_immutable_provenance(
             "package_version": "1.5.5",
             "build_version": "1.5.5",
             "source_revision": "a" * 40,
+            "retopology": {
+                "engine_contract": "retopology-direct-v2",
+                "package_version": "2.3.0",
+                "package_sha256": (
+                    "d86f218d2194bd6260a491da66f89b8954a72ef8e5309c0ff1062c639d8f6ec4"
+                ),
+                "submission_mode": "one_file_per_job",
+                "recommended_upload_concurrency": 3,
+            },
             "version_aligned": True,
             "provenance_complete": True,
         }
@@ -462,6 +472,29 @@ async def post_retopology_process(
             ),
         },
     )
+
+
+async def test_retopology_process_creates_v230_direct_contract(tmp_path: Path) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        response = await post_retopology_process(
+            client,
+            "asset:retopo:v230:create",
+            "asset:retopo:v230:create",
+        )
+        assert response.status_code == 202, response.text
+        payload = response.json()
+        assert payload["options"]["engine_contract"] == "retopology-direct-v2"
+        assert payload["options"]["package_version"] == "2.3.0"
+        assert payload["options"]["package_sha256"] == (
+            "d86f218d2194bd6260a491da66f89b8954a72ef8e5309c0ff1062c639d8f6ec4"
+        )
+
+        bundle = settings.asset_root / payload["job_id"] / "retopology_input.zip"
+        with zipfile.ZipFile(bundle) as archive:
+            manifest = json.loads(archive.read("input_manifest.json"))
+        assert manifest["schema_version"] == "retopology_input.direct-v2"
+        assert manifest["engine_contract"] == "retopology-direct-v2"
+        assert manifest["package_sha256"] == payload["options"]["package_sha256"]
 
 
 async def test_expired_asset_idempotency_keys_are_reusable_on_all_create_paths(

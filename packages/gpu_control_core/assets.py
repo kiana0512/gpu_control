@@ -227,7 +227,7 @@ RETOPOLOGY_V6_POLICY_SHA256 = (
     "e7b24c93c11d550ac9fedd167ff23f9ddd70cba4db014caaf2e157cddeafb266"
 )
 RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256 = (
-    "5f8e66324f3bf9a804699b8976b2938ffc88cf7b7f68ef7bc4bfe4d9e38242ef"
+    "d86f218d2194bd6260a491da66f89b8954a72ef8e5309c0ff1062c639d8f6ec4"
 )
 
 _RETOPOLOGY_V5_IGNORED_OPTIONS = frozenset(
@@ -425,8 +425,8 @@ def retopology_v6_process_request_hash(
 ) -> str:
     payload = {
         "job_type": "RETOPOLOGY_PROCESS_V2",
-        "engine_contract": "retopology-v6",
-        "policy_sha256": RETOPOLOGY_V6_POLICY_SHA256,
+        "engine_contract": "retopology-direct-v2",
+        "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
         "external_asset_id": metadata.external_asset_id,
         "options": metadata.options.model_dump(mode="json"),
         "reference_views": [item.model_dump(mode="json") for item in metadata.reference_views],

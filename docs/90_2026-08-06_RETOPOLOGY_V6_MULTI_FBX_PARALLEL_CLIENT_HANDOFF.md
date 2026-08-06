@@ -15,6 +15,33 @@
 
 ## 当前服务端能力
 
+### v2.3.0 包接入边界
+
+冻结上游包：`blender-retopology-compare-iterate-server-package-v2.3.0.zip`。
+
+- 原包 SHA-256：`d86f218d2194bd6260a491da66f89b8954a72ef8e5309c0ff1062c639d8f6ec4`；
+- Skill SHA-256：`03dff7efe9ffac9a365a0b81637bc3065fd4fe7259c67a9d2eb4ebf697e450aa`；
+- 原包 `verify_package.py` 已通过，清单中的 17 个文件逐项 SHA 已核对；
+- 原包 `batch_retopology.py` 按上传顺序串行调用单文件入口，因此只作为上游批量参考，生产
+  Worker 不调用该脚本；
+- GPU Control 使用同一个上游 `one_click_retopology.py` 处理每个独立任务，调度器负责把多个
+  FBX 分配给不同健康 Worker；
+- 一个 FBX 内的多个 Mesh 属于同一个资产，由上游准备脚本无损归一为一个 `SOURCE_HIGH`，
+  不得把不同道具合进同一个 FBX。
+
+原 ZIP 的 `manifest/FILES.sha256` 使用 CRLF；Linux 命令行核验时需先去掉行尾 `\r`。该格式问题
+不改变任何文件摘要，也不影响包内 `verify_package.py`。
+
+用户端可以在启动或进入页面时读取：
+
+```text
+GET /api/v1/assets/version
+```
+
+其中 `retopology` 返回 `engine_contract`、`package_version`、`package_sha256`、
+`submission_mode=one_file_per_job` 和建议上传并发数。客户端不应把建议上传并发数解释为实际建模
+并发数；实际并发仍由健康 Worker 数决定。
+
 创建接口保持不变：
 
 ```text

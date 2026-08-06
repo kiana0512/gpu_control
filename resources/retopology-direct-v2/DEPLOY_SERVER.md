@@ -1,144 +1,115 @@
-# Blender 一键拓扑服务器接入
+# 批量 FBX 一键拓扑服务器接入
 
-这个包只解决一件事：服务器收到一个 Blender 高模文件后，完整调用
-`blender-retopology-compare-iterate` 技能，生成新的低模 Blend。
+本包用于一次上传一个或多个静态高模 `.fbx`。每个 FBX 独立准备、独立完整调用
+`blender-retopology-compare-iterate`，最后返回各自的低模 `.blend` 和统一结果 ZIP。
 
-## 包内文件
-
-- `blender-retopology-compare-iterate/`：当前技能完整快照，共 6 个源文件。
-- `server/one_click_retopology.py`：服务器 Worker 的一键入口。
-- `server/agent_prompt.md`：把输入、输出和对象名传给技能的任务模板。
-- `server/worker.env.example`：4 个必要运行参数。
-- `server/verify_package.py`：安装前自检。
-- `Dockerfile.layer`：把本包叠加到现有 Worker 镜像。
-- `examples/`：请求与生成报告格式。
-
-没有自动 QA、旧失败证据、Golden 文件、渲染器或第二套拓扑算法。
+一份 FBX 代表一个独立资产。FBX 内的桶身、把手、扣件等多个 Mesh 会作为同一高模的组件保留；
+不同道具必须分别上传为多个 FBX，批量入口不会把它们合并成一个 `SOURCE_HIGH`。
 
 ## 运行条件
 
-现有 Worker 需要提供：
-
-- Python 3.10 以上；本包脚本只使用标准库。
-- Blender；推荐与当前 Codex 拓扑环境一致的 Blender 5.1.2。
-- 可执行的 Codex CLI，并已通过服务器密钥完成认证。
-- Codex Worker 能执行 Blender headless 命令，并能读写单个任务目录。
-- 原有的 HTTP 上传、队列、对象存储和鉴权。它们仍由现有服务器负责。
+- Python 3.10+。
+- Blender 5.1.x；已用 Blender 5.1.2 实测。
+- 已认证且可执行的 Codex CLI。
+- Worker 能读写独立任务目录并执行 Blender headless。
 
 ## 安装
 
-直接安装到已有 Worker：
-
 ```bash
-unzip blender-retopology-compare-iterate-server-package-v2.zip -d /opt/li3d/
-cd /opt/li3d/blender-retopology-compare-iterate-server-package-v2
+unzip blender-retopology-compare-iterate-server-package-v2.3.0.zip -d /opt/li3d/
+cd /opt/li3d/blender-retopology-compare-iterate-server-package-v2.3.0
 python3 server/verify_package.py
 cp server/worker.env.example server/worker.env
 ```
 
-修改 `server/worker.env` 中两个真实路径：
+在 `server/worker.env` 配置真实路径：
 
 ```dotenv
 BLENDER_EXECUTABLE=/opt/blender/blender
 CODEX_BIN=/usr/local/bin/codex
 ```
 
-如果使用现有 Worker 镜像构建：
-
-```bash
-docker build \
-  --build-arg WORKER_IMAGE=你的现有Worker镜像@sha256:固定摘要 \
-  -f Dockerfile.layer \
-  -t li3d/blender-retopology-skill:v2 .
-```
-
-这个 Layer 不替换原有 Worker 入口，只加入技能和一键调用器。
-
-## 一键调用
-
-服务器把上传文件保存后，只需要调用一次：
+## 批量调用
 
 ```bash
 set -a
-. /opt/li3d/blender-retopology-compare-iterate-server-package-v2/server/worker.env
+. server/worker.env
 set +a
 
-python3 /opt/li3d/blender-retopology-compare-iterate-server-package-v2/server/one_click_retopology.py \
-  --input /jobs/asset-001/source.blend \
-  --output /jobs/asset-001/retopology.blend \
-  --high H01_HIGH \
-  --high H02_HIGH \
+python3 server/batch_retopology.py \
+  --input /jobs/batch-001/chair.fbx \
+  --input /jobs/batch-001/bucket.fbx \
+  --input /jobs/batch-001/toolbox.fbx \
+  --output-dir /jobs/batch-001/output \
+  --job-root /jobs/runtime \
+  --batch-id batch-001
+```
+
+批量入口按上传顺序逐个调用 `server/one_click_retopology.py`。每个 FBX 都会：
+
+1. 复制到独立任务目录，原 FBX 不修改。
+2. 用技能内的 `prepare_fbx_source.py` 创建独立 `SOURCE_HIGH` 和工作 Blend。
+3. 把完整技能安装到该任务独立的 `CODEX_HOME/skills/`。
+4. 以 `$blender-retopology-compare-iterate` 调用 Codex，只生成一个低模候选。
+5. 保存后立即停止，不自动复查、修正或重试建模。
+
+方法路由不会把直接减面整条能力删除：一体有机区域仍可受控直接减面；但预处理后的
+`SOURCE_HIGH` 是 joined 对象不能作为选择依据。容器外壳加不规则内容物会按组件混合处理，
+避免服务器把整个资产统一减成随机三角面。
+
+一个文件失败不会阻止后续文件执行。批量终态为：
+
+- 全部成功：`generated_for_user_inspection`
+- 部分失败：`partial_failure`
+- 全部失败：`failed`
+
+输出目录包含：
+
+```text
+output/
+├── batch-results.zip
+├── batch_report.json
+├── results/
+│   ├── 001_chair_retopology.blend
+│   ├── 002_bucket_retopology.blend
+│   └── 003_toolbox_retopology.blend
+└── logs/
+```
+
+`batch-results.zip` 包含批量报告和全部成功低模；失败项目的日志也会放入 ZIP。
+
+## 单文件调用
+
+原来的单 FBX 入口继续保留：
+
+```bash
+python3 server/one_click_retopology.py \
+  --input /jobs/asset-001/model.fbx \
+  --output /jobs/asset-001/model_retopology.blend \
   --job-root /jobs/runtime
 ```
 
-`--high` 可重复；建议客户端把用户在 Blender 中选中的高模对象名一并提交。没有传
-`--high` 时，代理会按技能规则识别文件中的高模 Mesh，同时保留无关旧低模。
+## HTTP 接口映射
 
-成功时标准输出返回：
+上传接口接收可重复的 multipart 字段 `assets`：
 
-```json
-{
-  "status": "generated_for_user_inspection",
-  "output": "/jobs/asset-001/retopology.blend",
-  "assets": []
-}
-```
-
-HTTP 接口只需把现有请求字段映射为上述参数：
-
-| HTTP/队列字段 | 一键脚本参数 |
+| 请求字段 | 批量 Worker 参数 |
 |---|---|
-| 上传后的 Blend 绝对路径 | `--input` |
-| 新输出 Blend 绝对路径 | `--output` |
-| 选中的高模对象名数组 | 多个 `--high` |
-| 任务工作目录 | `--job-root` |
+| 每个上传后的 FBX 路径 | 重复一个 `--input` |
+| 批量输出目录 | `--output-dir` |
+| 任务工作根目录 | `--job-root` |
+| 父任务 ID | `--batch-id` |
 
-不要用 shell 拼接用户输入；服务端应以参数数组调用脚本。API 收到任务后可返回原有
-`job_id`，Worker 进程退出码即为任务成功或失败。
+必须以参数数组启动进程，不要用 shell 拼接用户文件名。
 
-## 技能没有遗漏的调用链
-
-一键脚本会自动完成：
-
-1. 复制输入 Blend 到独立任务目录，原文件不修改。
-2. 核对技能恰好包含当前 6 个源文件。
-3. 把完整技能复制到该任务的 `CODEX_HOME/skills/blender-retopology-compare-iterate/`。
-4. 渲染任务提示词，并明确调用 `$blender-retopology-compare-iterate`。
-5. Codex 读取完整 `SKILL.md`、构造规则、经验规则和计划格式。
-6. 每个高模在生成前写 shape-authority plan，并运行技能自带的 guard。
-7. Codex 真正调用 Blender；每个高模只生成一个低模。
-8. Blender 保存输出和 `generation_report.json` 后立即停止。
-9. 一键脚本只检查文件是否成功生成、报告字段是否齐全和源文件哈希是否不变；不做
-   几何复查，也不会自动重试建模。
-
-这四项不能在服务器实现里删掉：任务独立 `CODEX_HOME`、完整技能目录、带 `$技能名`
-的提示词、生成前 plan guard。只复制 `SKILL.md` 或只把技能名写进普通提示词，都不算
-完整接入。
-
-## 输出与失败
-
-成功输出：
-
-- 指定的新 `.blend`；包含保留的高模和每个指定高模对应的一个低模。
-- 任务目录内的 `generation_report.json`、`result.json`、Codex 事件和错误日志。
-- 状态固定为 `generated_for_user_inspection`。
-
-以下情况直接失败，不自动重跑：
-
-- 技能缺文件或哈希复制失败。
-- 输入不是有效路径下的 `.blend`。
-- 高模计划 guard 不通过。
-- Codex/Blender 退出失败或超时。
-- 输出 Blend 或生成报告没有写出。
-
-## 更新技能
-
-以后技能修改时，只替换包内整个
-`blender-retopology-compare-iterate/` 目录，不要手工挑文件。然后运行：
+## Docker Layer
 
 ```bash
-python3 server/verify_package.py
+docker build \
+  --build-arg WORKER_IMAGE=现有Worker镜像@sha256:固定摘要 \
+  -f Dockerfile.layer \
+  -t li3d/blender-retopology-skill:v2.3.0 .
 ```
 
-验证通过后重新构建 Worker 镜像。旧任务使用旧镜像，新任务使用新镜像，避免运行中
-技能版本漂移。
+本 Layer 不替换现有 HTTP、队列、存储或鉴权，只加入完整技能、FBX 预处理、单文件入口和
+批量入口。

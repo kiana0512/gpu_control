@@ -1,4 +1,4 @@
 interface:
-  display_name: "Blender 次世代低模直出"
-  short_description: "按当前高模生成稀疏低模，保存摆排后立即停止"
-  default_prompt: "使用 $blender-retopology-compare-iterate 从当前高模一次生成低模；保存并摆排后立即停止，由我查看，不要自动检查、复查、纠错或重试。"
+  display_name: "Blender FBX 一键拓扑"
+  short_description: "上传 FBX 或使用当前高模生成稀疏低模"
+  default_prompt: "使用 $blender-retopology-compare-iterate 导入 FBX 高模或使用当前 Blender 高模，一次生成低模，保存摆排后立即停止并交给我查看。"

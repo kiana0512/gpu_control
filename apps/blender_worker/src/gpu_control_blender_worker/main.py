@@ -339,8 +339,8 @@ def validate_job_skill_contract(settings: WorkerSettings, job_type: str) -> None
 
 def verify_retopology_direct_v2_package(root: Path) -> None:
     verifier = root / "server" / "verify_package.py"
-    completed = subprocess.run(
-        ["python3", str(verifier)],
+    completed = subprocess.run(  # noqa: S603 - frozen in-image verifier path
+        ["/usr/local/bin/python3", str(verifier)],
         capture_output=True,
         text=True,
         timeout=30,
@@ -1072,14 +1072,6 @@ RETOPOLOGY_V6_REQUIRED_OUTPUTS = {
 }
 
 
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 async def run_v6_codex_agent(
     client: httpx.AsyncClient,
     settings: WorkerSettings,
@@ -1647,7 +1639,11 @@ async def run_retopology_v6(
     output_dir.mkdir(parents=True, exist_ok=False)
 
     direct_source_path = project_path
-    if project_path.suffix.lower() != ".blend":
+    # The approved v2.3.0 adapter owns FBX preparation and its immutable
+    # SOURCE_HIGH manifest. Other legacy upload formats retain the existing
+    # GPU Control normalization path so the public single-file API stays
+    # backward compatible.
+    if project_path.suffix.lower() not in {".fbx", ".blend"}:
         direct_source_path = workspace / "retopology-direct-v2-source.blend"
         import_process = await start_blender(
             settings,
@@ -1701,7 +1697,8 @@ async def run_retopology_v6(
     environment.update(
         {
             "BLENDER_EXECUTABLE": settings.blender_binary,
-            "CODEX_BIN": settings.codex_binary,
+            "CODEX_BIN": "/app/packages/asset_processing/codex_job_launcher.py",
+            "GPU_CONTROL_REAL_CODEX_BIN": settings.codex_binary,
             "CODEX_AUTH_SOURCE": str(settings.codex_auth_source),
             "CODEX_EXEC_ARGS_JSON": json.dumps(
                 [
@@ -1814,7 +1811,10 @@ async def run_retopology_v6(
         "engine_contract": "retopology-direct-v2",
         "package_sha256": options.get("package_sha256"),
         "source_sha256": source_sha_before,
-        "normalized_blend_sha256": direct_source_sha,
+        "adapter_input_sha256": direct_source_sha,
+        "normalized_blend_sha256": (
+            direct_source_sha if direct_source_path.suffix.lower() == ".blend" else None
+        ),
         "agent_blend_sha256": file_sha256(result_blend),
         "delivery_blend_sha256": file_sha256(result_blend),
         "delivery_blend_size_bytes": result_blend.stat().st_size,

@@ -1,5 +1,8 @@
 {
-  "input_blend": "/jobs/asset-001/source.blend",
-  "output_blend": "/jobs/asset-001/retopology.blend",
-  "high_objects": ["H01_HIGH", "H02_HIGH"]
+  "input_fbx": [
+    "/jobs/batch-001/chair.fbx",
+    "/jobs/batch-001/bucket.fbx",
+    "/jobs/batch-001/toolbox.fbx"
+  ],
+  "output_directory": "/jobs/batch-001/output"
 }

@@ -1,0 +1,26 @@
+{
+  "batch_id": "batch-001",
+  "status": "generated_for_user_inspection",
+  "item_count": 2,
+  "success_count": 2,
+  "failure_count": 0,
+  "archive": "batch-results.zip",
+  "automatic_post_generation_review": false,
+  "automatic_retry": false,
+  "items": [
+    {
+      "index": 1,
+      "source_filename": "chair.fbx",
+      "job_id": "batch-001-001",
+      "status": "generated_for_user_inspection",
+      "output": "results/001_chair_retopology.blend"
+    },
+    {
+      "index": 2,
+      "source_filename": "bucket.fbx",
+      "job_id": "batch-001-002",
+      "status": "generated_for_user_inspection",
+      "output": "results/002_bucket_retopology.blend"
+    }
+  ]
+}

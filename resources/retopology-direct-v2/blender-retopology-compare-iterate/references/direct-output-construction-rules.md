@@ -92,6 +92,8 @@ When required evidence is missing, stop before geometry. Emitting a generic prox
 
 Use only for structurally complex, genuinely integrated forms whose surface identity would be lost by semantic proxy reconstruction.
 
+The FBX preparation step joins imported meshes into `SOURCE_HIGH`; that joined object is transport normalization, not integration evidence. Before selecting direct reduction, inspect disconnected mesh islands and macro structural regions. Reject whole-asset direct reduction when a planar, rotational, vessel-shell, mechanical, or assembled region can be reconstructed deliberately.
+
 Procedure:
 
 1. Duplicate the original high without altering it.
@@ -119,7 +121,16 @@ Do not reconstruct high-poly surface noise, repeated shallow relief, wood grain,
 
 ### Per-component hybrid
 
-Use direct reduction for an integrated organic component and semantic reconstruction for clearly mechanical attachments only when both decisions are proven from the same high.
+Use direct reduction for an integrated organic or irregular component and semantic reconstruction for clearly structured regions only when both decisions are proven from the same high.
+
+A vessel, bowl, bucket, tray, box, or housing with irregular contents is a hybrid case even when the scan or imported FBX fuses the regions:
+
+- Reconstruct the shell, rim, wall, base, cavity, handles, and other hard-surface controls from measured sections.
+- Isolate the content responsibility from high-derived boundaries and use controlled direct reduction, qualified remeshing, or a fresh high-derived cage only there.
+- Preserve the rim/cavity boundary, visible separation, contact/occlusion, and contents silhouette.
+- Never apply one whole-object reduction to both structured shell and irregular contents.
+
+Record the split before geometry in `component_method_map`: each entry names its component evidence, measured responsibility boundary, and construction method. A hybrid is not proven unless the plan contains at least one semantic-reconstruction region and at least one eligible high-derived organic region.
 
 ## Face allocation
 
@@ -226,7 +237,7 @@ Intersecting closed parts are allowed only when the intersection is hidden and c
 
 - RetopoFlow: use for deliberate PolyStrips, Contours, patches, and manual cage flow.
 - QuadriFlow or similar: use for qualified integrated organic surfaces with current-high correspondence.
-- Decimate: use only as a controlled direct-reduction operator on a fresh high duplicate.
+- Decimate: use only as a controlled direct-reduction operator on a fresh high duplicate for an eligible integrated region; never use the joined `SOURCE_HIGH` state to justify whole-asset Decimate.
 - Shrinkwrap or projection: use temporarily and bound it to the responsible high region.
 - Primitive/profile builders: use for mechanical and hard-surface macro geometry after current-high measurement.
 - Boolean: use only for an isolated, proven construction. Prefer explicitly authored openings and stitched profiles.

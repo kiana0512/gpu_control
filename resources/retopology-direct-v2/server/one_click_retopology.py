@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-click server adapter for the complete blender-retopology skill."""
+"""One-click FBX/Blend server adapter for the complete retopology skill."""
 
 from __future__ import annotations
 
@@ -24,8 +24,15 @@ EXPECTED_SKILL_FILES = {
     "references/execution-plan-schema.md",
     "references/learned-asset-lessons.md",
     "scripts/guard_shape_authority_plan.py",
+    "scripts/prepare_fbx_source.py",
 }
 DEFAULT_CODEX_ARGS = ["exec", "--full-auto", "--json", "-C", "{job_dir}", "-"]
+SUPPORTED_INPUTS = {".fbx", ".blend"}
+ALLOWED_METHODS = {
+    "controlled_direct_reduction",
+    "semantic_reconstruction",
+    "per_component_hybrid",
+}
 
 
 def sha256(path: Path) -> str:
@@ -54,6 +61,11 @@ def atomic_write(path: Path, text: str) -> None:
     temporary.replace(path)
 
 
+def write_result(path: Path, payload: dict) -> None:
+    atomic_write(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
 def render_prompt(template: str, values: dict[str, str]) -> str:
     rendered = template
     for key, value in values.items():
@@ -73,124 +85,104 @@ def load_codex_args(job_dir: Path) -> list[str]:
     return [item.replace("{job_dir}", str(job_dir)) for item in values]
 
 
-def recent_agent_events(path: Path, limit: int = 6) -> list[dict]:
-    """Return a bounded, structured diagnostic tail without leaking auth state."""
-    if not path.is_file():
-        return []
-    parsed: list[dict] = []
-    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+def valid_blend(path: Path) -> bool:
+    if not path.is_file() or path.stat().st_size < 7:
+        return False
+    with path.open("rb") as handle:
+        return handle.read(7) == b"BLENDER"
+
+
+def prepare_fbx(
+    blender: str,
+    installed_skill: Path,
+    input_copy: Path,
+    working_blend: Path,
+    manifest_path: Path,
+    job_dir: Path,
+) -> tuple[bool, str | None]:
+    stdout_path = job_dir / "fbx_import_stdout.log"
+    stderr_path = job_dir / "fbx_import_stderr.log"
+    command = [
+        blender,
+        "--background",
+        "--factory-startup",
+        "--disable-autoexec",
+        "--python-exit-code",
+        "1",
+        "--python",
+        str(installed_skill / "scripts" / "prepare_fbx_source.py"),
+        "--",
+        "--input",
+        str(input_copy),
+        "--output",
+        str(working_blend),
+        "--manifest",
+        str(manifest_path),
+    ]
+    timeout = int(os.environ.get("RETOPOLOGY_FBX_IMPORT_TIMEOUT_SECONDS", "600"))
+    with stdout_path.open("w", encoding="utf-8", newline="\n") as stdout, stderr_path.open(
+        "w", encoding="utf-8", newline="\n"
+    ) as stderr:
         try:
-            event = json.loads(raw_line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(event, dict):
-            parsed.append(event)
-    return parsed[-limit:]
+            completed = subprocess.run(
+                command,
+                stdout=stdout,
+                stderr=stderr,
+                cwd=job_dir,
+                timeout=timeout,
+                check=False,
+                env={**os.environ, "PYTHONNOUSERSITE": "1"},
+            )
+        except subprocess.TimeoutExpired:
+            return False, "fbx_import_timeout"
+    if completed.returncode != 0:
+        return False, "fbx_import_failed"
+    if not valid_blend(working_blend) or not manifest_path.is_file():
+        return False, "fbx_import_missing_artifact"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("prepared_high_object") != "SOURCE_HIGH":
+        return False, "fbx_import_wrong_high_object"
+    return True, None
 
 
-def mesh_inventory(blender: str, blend: Path, output: Path, package_root: Path) -> list[dict]:
-    completed = subprocess.run(
-        [
-            blender,
-            "--background",
-            str(blend),
-            "-P",
-            str(package_root / "server" / "mesh_inventory.py"),
-            "--",
-            "--output",
-            str(output),
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=300,
-        check=False,
-    )
-    if completed.returncode != 0 or not output.is_file():
-        raise RuntimeError(f"mesh inventory failed: {completed.stderr[-1000:]}")
-    payload = json.loads(output.read_text(encoding="utf-8"))
-    meshes = payload.get("meshes")
-    if not isinstance(meshes, list):
-        raise RuntimeError("mesh inventory has the wrong schema")
-    return meshes
-
-
-def validate_generation_report(
-    path: Path,
-    requested_highs: list[str],
-    source_meshes: list[dict],
-    output_meshes: list[dict],
-) -> dict:
+def validate_generation_report(path: Path, requested_highs: list[str]) -> dict:
     if not path.is_file():
         raise RuntimeError("generation_report.json was not created")
     report = json.loads(path.read_text(encoding="utf-8"))
     if report.get("status") != "generated_for_user_inspection":
         raise RuntimeError("generation report has the wrong status")
-    source_names = {str(item.get("name")) for item in source_meshes}
-    output_by_name = {str(item.get("name")): item for item in output_meshes}
-    missing_source = sorted(source_names - set(output_by_name))
-    if missing_source:
-        raise RuntimeError(f"output Blend removed source mesh objects: {missing_source}")
-    generated = [item for item in output_meshes if str(item.get("name")) not in source_names]
-    generated = [item for item in generated if int(item.get("faces") or 0) > 0]
-    if not generated:
-        raise RuntimeError("output Blend contains no new non-empty low mesh objects")
-
     assets = report.get("assets")
-    warnings = report.get("contract_warnings")
-    warnings = list(warnings) if isinstance(warnings, list) else []
     if not isinstance(assets, list) or not assets:
-        assets = []
-        for index, low in enumerate(generated):
-            high = source_meshes[index]["name"] if len(source_meshes) == len(generated) else "AUTO_DISCOVERED_HIGH_MESHES"
-            assets.append(
-                {
-                    "high_object": high,
-                    "low_object": low["name"],
-                    "faces": low["faces"],
-                    "triangles": low["triangles"],
-                    "method_decision": "not_reported_by_agent",
-                    "actual_plugin_use": "not_reported_by_agent",
-                }
-            )
-        warnings.append("AGENT_ASSET_RECORDS_RECONSTRUCTED_FROM_BLEND_INVENTORY")
-    if requested_highs:
-        delivered = {item.get("high_object") for item in assets if isinstance(item, dict)}
-        missing = sorted(set(requested_highs) - delivered)
-        if missing:
-            raise RuntimeError(f"generation report misses requested highs: {missing}")
-    normalized_assets = []
+        raise RuntimeError("generation report has no asset records")
+    delivered = {item.get("high_object") for item in assets if isinstance(item, dict)}
+    missing = sorted(set(requested_highs) - delivered)
+    if missing:
+        raise RuntimeError(f"generation report misses requested highs: {missing}")
     for index, item in enumerate(assets):
         if not isinstance(item, dict):
             raise RuntimeError(f"generation report asset {index} is invalid")
-        normalized = dict(item)
-        low_name = normalized.get("low_object") or normalized.get("low_name") or normalized.get("object")
-        if not isinstance(low_name, str) or low_name not in output_by_name or low_name in source_names:
-            if index >= len(generated):
-                raise RuntimeError(f"generation report asset {index} has no matching generated low")
-            low_name = generated[index]["name"]
-            warnings.append(f"AGENT_LOW_OBJECT_REPAIRED:{index}")
-        low = output_by_name[low_name]
-        normalized["low_object"] = low_name
-        normalized["high_object"] = normalized.get("high_object") or normalized.get("high_name") or (
-            source_meshes[index]["name"] if len(source_meshes) == len(assets) else "AUTO_DISCOVERED_HIGH_MESHES"
-        )
-        normalized["faces"] = int(normalized.get("faces") or normalized.get("face_count") or low["faces"])
-        normalized["triangles"] = int(normalized.get("triangles") or normalized.get("triangle_count") or low["triangles"])
-        normalized["method_decision"] = normalized.get("method_decision") or normalized.get("method") or "not_reported_by_agent"
-        normalized["actual_plugin_use"] = normalized.get("actual_plugin_use") or normalized.get("plugin_use") or "not_reported_by_agent"
-        normalized_assets.append(normalized)
-    report["assets"] = normalized_assets
-    report["contract_warnings"] = sorted(set(warnings))
-    atomic_write(path, json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+        for field in (
+            "high_object",
+            "low_object",
+            "faces",
+            "triangles",
+            "method_decision",
+            "actual_plugin_use",
+        ):
+            if field not in item:
+                raise RuntimeError(f"generation report asset {index} misses {field}")
+        if item.get("method_decision") not in ALLOWED_METHODS:
+            raise RuntimeError(
+                f"generation report asset {index} has unsupported method_decision"
+            )
     return report
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run one complete retopology skill job")
-    parser.add_argument("--input", type=Path, required=True, help="source .blend")
+    parser = argparse.ArgumentParser(description="Run one complete FBX/Blend retopology job")
+    parser.add_argument("--input", type=Path, required=True, help="source .fbx or .blend")
     parser.add_argument("--output", type=Path, required=True, help="new result .blend")
-    parser.add_argument("--high", action="append", default=[], help="high object name; repeatable")
+    parser.add_argument("--high", action="append", default=[], help="Blend high object name; repeatable")
     parser.add_argument("--job-root", type=Path, default=Path(os.environ.get("JOB_ROOT", "jobs")))
     parser.add_argument("--job-id", default=None)
     parser.add_argument("--timeout-seconds", type=int, default=int(os.environ.get("RETOPOLOGY_TIMEOUT_SECONDS", "7200")))
@@ -199,8 +191,9 @@ def main() -> int:
 
     source = args.input.resolve()
     destination = args.output.resolve()
-    if source.suffix.lower() != ".blend" or not source.is_file():
-        raise SystemExit(f"input must be an existing .blend file: {source}")
+    input_suffix = source.suffix.lower()
+    if input_suffix not in SUPPORTED_INPUTS or not source.is_file() or source.stat().st_size == 0:
+        raise SystemExit(f"input must be a non-empty FBX or Blend file: {source}")
     if destination.suffix.lower() != ".blend":
         raise SystemExit("output must use the .blend suffix")
     if destination.exists():
@@ -220,47 +213,70 @@ def main() -> int:
     job_dir = (args.job_root.resolve() / job_id).resolve()
     if job_dir.exists():
         raise SystemExit(f"job directory already exists: {job_dir}")
-    input_copy = job_dir / "input" / "source.blend"
+    input_copy = job_dir / "input" / f"source{input_suffix}"
+    working_blend = input_copy if input_suffix == ".blend" else job_dir / "work" / "source.blend"
+    source_manifest = job_dir / "source-manifest.json"
     job_output = job_dir / "artifacts" / "result.blend"
-    plans_dir = job_dir / "plans"
+    result_path = job_dir / "result.json"
     codex_home = job_dir / "codex-home"
     installed_skill = codex_home / "skills" / SKILL_ID
-    for directory in (input_copy.parent, job_output.parent, plans_dir, installed_skill.parent):
+    for directory in (
+        input_copy.parent,
+        working_blend.parent,
+        job_output.parent,
+        job_dir / "plans",
+        installed_skill.parent,
+    ):
         directory.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, input_copy)
     shutil.copytree(bundled_skill, installed_skill)
     if skill_inventory(installed_skill) != source_inventory:
         raise SystemExit("job-local skill installation failed hash verification")
 
-    # GPU Control provisions the authenticated Codex credential as a read-only
-    # secret.  The upstream package intentionally creates an isolated
-    # CODEX_HOME per job, so seed that private home without sharing mutable
-    # state between concurrent jobs.
-    auth_source = Path(os.environ.get("CODEX_AUTH_SOURCE", "/run/secrets/codex-auth.json"))
-    if not auth_source.is_file():
-        raise SystemExit(f"Codex auth source is missing: {auth_source}")
-    auth_destination = codex_home / "auth.json"
-    shutil.copyfile(auth_source, auth_destination)
-    auth_destination.chmod(0o600)
-
     blender = os.environ.get("BLENDER_EXECUTABLE", "/opt/blender/blender")
     codex = os.environ.get("CODEX_BIN", "/usr/local/bin/codex")
+    if input_suffix == ".fbx":
+        prepared, preparation_error = prepare_fbx(
+            blender,
+            installed_skill,
+            input_copy,
+            working_blend,
+            source_manifest,
+            job_dir,
+        )
+        if not prepared:
+            result = {
+                "job_id": job_id,
+                "status": "failed_preparation",
+                "error": preparation_error,
+                "input_format": "fbx",
+                "stderr_log": str(job_dir / "fbx_import_stderr.log"),
+                "automatic_retry": False,
+            }
+            write_result(result_path, result)
+            return 2
+        requested_highs = ["SOURCE_HIGH"]
+        manifest_value = str(source_manifest)
+    else:
+        if not valid_blend(working_blend):
+            raise SystemExit("input does not have a valid Blend signature")
+        requested_highs = args.high
+        manifest_value = "not_applicable_direct_blend_input"
+
     prompt = render_prompt(
         prompt_template.read_text(encoding="utf-8"),
         {
-            "INPUT_BLEND": str(input_copy),
+            "INPUT_SOURCE": str(input_copy),
+            "WORKING_BLEND": str(working_blend),
+            "SOURCE_MANIFEST": manifest_value,
             "OUTPUT_BLEND": str(job_output),
-            "HIGH_OBJECTS": json.dumps(args.high or ["ALL_HIGH_MESH_OBJECTS"], ensure_ascii=False),
+            "HIGH_OBJECTS": json.dumps(requested_highs or ["ALL_HIGH_MESH_OBJECTS"], ensure_ascii=False),
             "BLENDER_EXECUTABLE": blender,
             "JOB_DIR": str(job_dir),
         },
     )
     prompt_path = job_dir / "agent_prompt.md"
     atomic_write(prompt_path, prompt)
-    source_inventory_path = job_dir / "source_mesh_inventory.json"
-    source_meshes = mesh_inventory(blender, input_copy, source_inventory_path, package_root)
-    if not source_meshes:
-        raise SystemExit("input Blend contains no mesh objects")
 
     environment = os.environ.copy()
     environment.update(
@@ -268,7 +284,8 @@ def main() -> int:
             "CODEX_HOME": str(codex_home),
             "BLENDER_EXECUTABLE": blender,
             "RETOPOLOGY_SKILL_ROOT": str(installed_skill),
-            "RETOPOLOGY_INPUT_BLEND": str(input_copy),
+            "RETOPOLOGY_INPUT_SOURCE": str(input_copy),
+            "RETOPOLOGY_INPUT_BLEND": str(working_blend),
             "RETOPOLOGY_OUTPUT_BLEND": str(job_output),
         }
     )
@@ -293,7 +310,6 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             completed = None
 
-    result_path = job_dir / "result.json"
     if completed is None:
         result = {
             "job_id": job_id,
@@ -301,8 +317,7 @@ def main() -> int:
             "error": "codex_timeout",
             "automatic_retry": False,
         }
-        atomic_write(result_path, json.dumps(result, ensure_ascii=False, indent=2) + "\n")
-        print(json.dumps(result, ensure_ascii=False))
+        write_result(result_path, result)
         return 124
     if completed.returncode != 0:
         result = {
@@ -313,33 +328,15 @@ def main() -> int:
             "automatic_retry": False,
             "stderr_log": str(stderr_path),
         }
-        atomic_write(result_path, json.dumps(result, ensure_ascii=False, indent=2) + "\n")
-        print(json.dumps(result, ensure_ascii=False))
+        write_result(result_path, result)
         return completed.returncode
-    if not job_output.is_file() or job_output.stat().st_size == 0:
-        result = {
-            "job_id": job_id,
-            "status": "failed",
-            "error": "codex_output_blend_missing",
-            "automatic_retry": False,
-            "agent_event_tail": recent_agent_events(events_path),
-            "stderr_log": str(stderr_path),
-        }
-        atomic_write(result_path, json.dumps(result, ensure_ascii=False, indent=2) + "\n")
-        print(json.dumps(result, ensure_ascii=False))
-        return 3
+    if not valid_blend(job_output):
+        raise SystemExit("Codex completed but did not create a valid output Blend")
 
     report_path = job_dir / "generation_report.json"
-    output_inventory_path = job_dir / "output_mesh_inventory.json"
-    output_meshes = mesh_inventory(blender, job_output, output_inventory_path, package_root)
-    report = validate_generation_report(
-        report_path,
-        args.high,
-        source_meshes,
-        output_meshes,
-    )
+    report = validate_generation_report(report_path, requested_highs)
     if sha256(source) != sha256(input_copy):
-        raise SystemExit("source copy hash mismatch")
+        raise SystemExit("uploaded source copy hash mismatch")
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary_output = destination.with_suffix(destination.suffix + ".tmp")
     shutil.copy2(job_output, temporary_output)
@@ -348,7 +345,10 @@ def main() -> int:
     result = {
         "job_id": job_id,
         "status": "generated_for_user_inspection",
+        "input_format": input_suffix.removeprefix("."),
         "input_sha256": sha256(source),
+        "prepared_blend": str(working_blend),
+        "source_manifest": manifest_value,
         "output": str(destination),
         "output_sha256": sha256(destination),
         "generation_report": str(report_path),
@@ -358,8 +358,7 @@ def main() -> int:
         "automatic_post_generation_review": False,
         "automatic_retry": False,
     }
-    atomic_write(result_path, json.dumps(result, ensure_ascii=False, indent=2) + "\n")
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    write_result(result_path, result)
     return 0
 
 

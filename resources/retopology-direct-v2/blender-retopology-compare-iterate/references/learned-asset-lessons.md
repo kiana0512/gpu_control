@@ -13,6 +13,7 @@ This file preserves construction knowledge from earlier H01-H15 and N01-N08 work
 | A continuous product was fragmented or a mechanical assembly was fused | Source islands, materials, or category labels decided component count | Split only from real gaps, motion, overlap, occlusion, or independent construction evidence |
 | Flat regions contain uniform grids, bevel stacks, or center fans | Face count was distributed uniformly or all-quads were treated as the goal | Use broad faces on planes and spend topology only on silhouette, profile events, openings, and junctions |
 | Direct reduction produced noisy hard-surface topology | Direct reduction was applied by batch or source-object count | Restrict it to genuinely integrated complex objects such as boots, gloves, or irregular organic props |
+| A vessel and its contents became one uniformly decimated triangle field | FBX preparation joined the source and the joined state was mistaken for one integrated organic form | Reconstruct the vessel structure and limit organic reduction/cage work to the proven content region |
 | The result is hard to inspect | Transparency, high wire, or display changes obscured shape | Keep the high solid with wire off and the low opaque yellow with wire on |
 | Production time is lost to repeated reviews and rebuilds | Training-style iteration leaked into formal execution | Make all decisions before geometry, generate once, arrange/save/report, and stop for user inspection |
 
@@ -69,6 +70,19 @@ The exact object-to-ID mapping may change between files. Identify the current hi
 - Derive radial samples and section changes from the high.
 - Treat loose contents, pebbles, food pieces, and surface noise as bake or separate content according to silhouette.
 - Do not close the opening merely to obtain a simpler shell.
+
+### Vessel with irregular contents routing failure
+
+A server result that turns a dense vessel-plus-contents high into one lower-density all-triangle mesh is still whole-object reduction, even when the face target is met. The visible clues are random triangles across straight shell walls and rims, loss of deliberate rings, and the same reduction texture on both hard shell and irregular contents.
+
+Correct the method before the next build:
+
+- Do not treat the prepared `SOURCE_HIGH` object count as component evidence; preparation intentionally joins imported meshes.
+- Prove the vessel using its axis/sections, rim, inner wall, cavity, base, and any handles.
+- Reconstruct that structured region with sparse radial/profile topology.
+- Bound controlled reduction, qualified remeshing, or a high-derived cage to only the irregular content region when that surface affects silhouette.
+- Preserve the high-derived contact and occlusion boundary between shell and contents.
+- Do not try to fix this routing error by raising or lowering one global target face count.
 
 ### H03-style pump or handled container failure
 
