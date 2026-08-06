@@ -37,6 +37,8 @@ def main() -> int:
         "guard_shape_authority_plan.py",
         "generated_for_user_inspection",
         "必须真正执行 Blender",
+        "已授权的服务器 headless 执行",
+        "generation_report.json",
     ):
         if token not in prompt:
             errors.append(f"prompt misses {token}")

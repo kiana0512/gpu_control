@@ -73,6 +73,21 @@ def load_codex_args(job_dir: Path) -> list[str]:
     return [item.replace("{job_dir}", str(job_dir)) for item in values]
 
 
+def recent_agent_events(path: Path, limit: int = 6) -> list[dict]:
+    """Return a bounded, structured diagnostic tail without leaking auth state."""
+    if not path.is_file():
+        return []
+    parsed: list[dict] = []
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            parsed.append(event)
+    return parsed[-limit:]
+
+
 def validate_generation_report(path: Path, requested_highs: list[str]) -> dict:
     if not path.is_file():
         raise RuntimeError("generation_report.json was not created")
@@ -230,7 +245,17 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=False))
         return completed.returncode
     if not job_output.is_file() or job_output.stat().st_size == 0:
-        raise SystemExit("Codex completed but did not create the output Blend")
+        result = {
+            "job_id": job_id,
+            "status": "failed",
+            "error": "codex_output_blend_missing",
+            "automatic_retry": False,
+            "agent_event_tail": recent_agent_events(events_path),
+            "stderr_log": str(stderr_path),
+        }
+        atomic_write(result_path, json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+        print(json.dumps(result, ensure_ascii=False))
+        return 3
 
     report_path = job_dir / "generation_report.json"
     report = validate_generation_report(report_path, args.high)

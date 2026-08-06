@@ -33,3 +33,15 @@
 服务器没有交互式 Blender 窗口时，可用给定 Blender 可执行文件执行 headless Python。
 允许在创建几何前做测量调用；正式 builder 对每个高模只运行一次。不要在生成后再读取网格
 做质量审查。
+
+这是已授权的服务器 headless 执行，不存在需要等待的交互式 Blender bridge。
+如果“需要处理的高模对象”为 `ALL_HIGH_MESH_OBJECTS`，必须在输入 Blend 内识别所有
+需要处理的高模 Mesh，不得因为没有显式对象名而停止。
+
+结束本次 Agent 执行前，必须用文件系统命令确认以下两个文件存在且非空：
+
+- `{{OUTPUT_BLEND}}`
+- `{{JOB_DIR}}/generation_report.json`
+
+任一文件不存在时，不得输出最终文字答复或宣布完成；应继续执行已计划的单次
+Blender builder，直到两个文件已写出，或返回真实的执行错误。
