@@ -1,6 +1,6 @@
 # Validated batch retrospective: H01-H15 and the N06 boot failure
 
-Read this reference before starting a new batch, choosing an automatic generator, or accepting a direct-reduction candidate. It records the verified production history that led to the current workflow. Treat the accepted numbers as comparable-case evidence, not universal budgets.
+Read this reference before starting a new batch or choosing an assisted reconstruction tool. It records historical trials that led to the current workflow. Direct-reduction examples below are rejected history, not production permission.
 
 ## Contents
 
@@ -86,7 +86,7 @@ Reusable lesson:
 
 The first N06 boot attempts used a clean semantic proxy. They were structurally tidy but read as a different object. This violated the top acceptance priority and should have been rejected immediately from the first perspective comparison.
 
-The method was corrected after user feedback: a complex, integrated boot may use controlled direct reduction from a fresh high because a coarse manual proxy loses identity. This permission applies to the construction, not to the material category and not to every shoe.
+The historical method briefly allowed controlled direct reduction for a complex integrated boot because a coarse proxy lost identity. Production policy 6.0.1 revokes that permission: the lesson is to derive better contour rings and local patches from the high, not to collapse the high.
 
 The second N06 failure was subtler. Fresh-high Decimate candidates at 6,000, 4,000, and 1,000 triangles matched the high silhouette extremely well. The 1,000-triangle candidate reached worst-view IoU about 0.9902 and mean IoU about 0.9911. It was also closed and manifold. Nevertheless, its visible wire distribution was unacceptable.
 
@@ -108,8 +108,8 @@ The source boot also contained 77 mesh components and 12,306 boundary edges, whi
 Reusable lesson:
 
 - High silhouette IoU plus manifold status does not prove usable topology.
-- A raw Decimate collapse is a density stress test or candidate generator, not an accepted final topology.
-- If direct reduction preserves identity but fails wire quality, keep the direct-reduction method and change the generator or rebuild local flow. Do not return to a guessed semantic proxy.
+- A raw Decimate collapse is a disposable density stress test, never a candidate or accepted final topology.
+- If reduction preserves identity but fails wire quality, preserve only the measured contour evidence and rebuild deliberate local flow. Do not retain the reduced mesh.
 - Never weld across source shells or close source boundaries without an explicit construction reason and visual verification of every opening.
 
 ## Accepted H01-H15 calibration
@@ -164,16 +164,7 @@ For a complex integrated object:
 
 ## Mandatory method decision
 
-Choose `controlled_direct_reduction` only when both conditions are demonstrated:
-
-- `structurally_complex`: a coarse semantic proxy would predictably lose identity.
-- `integrated_continuous_object`: the product construction reads as one integrated continuous form even if the source scan contains technical shells.
-
-Also require the high to have the correct macro surface, silhouette, proportions, openings, ground contact, and attachment placement.
-
-Do not infer eligibility from shoe, cloth, leather, organic, scanned, or generated appearance. A complex integrated boot is the positive reference case. A multipart shoe, detachable sole assembly, mechanical prop, box, crate, lantern, or soft-looking assembly still requires semantic reconstruction or a hybrid cage.
-
-Choose `semantic_reconstruction` for broad planes, hard-surface multipart assets, repeated structures, rotational products with clear profile logic, and any source whose direct reduction fuses gaps, closes openings, destroys construction, or produces unusable density.
+Choose `semantic_reconstruction` or `hybrid_per_component`. For integrated complex forms, record the RetopoFlow-assisted, contour-ring, cage, or patch strategy that will preserve identity. Never choose `controlled_direct_reduction`; the historical boot trial is evidence that silhouette fidelity alone cannot make collapsed topology production-ready.
 
 ## Mandatory representative-asset stop gate
 

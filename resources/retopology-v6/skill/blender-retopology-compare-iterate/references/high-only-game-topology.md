@@ -30,32 +30,16 @@ For each asset, write a compact plan containing:
 
 Do not run a remesher before this plan exists.
 
-## Select the method before building a cage
+## Select the structured reconstruction strategy before building a cage
 
-Use `controlled_direct_reduction` when all of these are true:
+All production assets use structured reconstruction. There is no direct-reduction exception for boots, cloth, leather, scanned meshes, generated meshes, or other integrated organic forms.
 
-- The object is structurally complex enough that a coarse manual or parametric proxy would predictably lose identity.
-- The construction is genuinely integrated as one continuous object rather than an assembly of separable parts.
-- The original high already reads correctly in front, side, top, and perspective.
-- Its macro surface is continuous enough that reducing density will not require inventing construction.
-- Its openings, silhouette, ground contact, and major attachments already exist in the right place.
-
-An integrated complex boot is the reference case: duplicating the high and running an asset-specific controlled collapse is more faithful than rebuilding a coarse parametric envelope. Preserve the cuff, rim, toe, sole, heel, straps, and other controlling features; send fine wrinkles, stitching, and grain to baking. Do not generalize this decision to every shoe, cloth, leather, organic, scanned, or generated asset. Material class does not prove integrated construction.
-
-Use `semantic_reconstruction` when the asset is mechanical, multipart, planar, repeated, soft-looking but assembled from distinct parts, or direct reduction damages construction, openings, negative space, or density placement. Rebuild logical pieces instead of simplifying the whole object.
-
-For controlled direct reduction:
-
-1. Duplicate the untouched high; never use an earlier rejected low as the source.
-2. Inventory source component count, open boundaries, true openings, thin layers, and intersecting shells before cleanup. Distinguish product-level continuity from technical mesh connectivity.
-3. Apply only duplicate-side weld/degenerate cleanup that cannot alter product construction. Do not weld across shells, close boundaries, or turn a multi-shell/open high into one closed low without an explicit construction reason and matched-view proof.
-4. Generate at least two density levels independently from the same fresh high, using asset-specific targets rather than one batch ratio. Make one level a genuinely aggressive very-low stress test; do not choose only two nearby conservative targets and do not create the very-low version by decimating an already reduced mesh.
-5. Treat raw collapse as a density-floor stress test. When it produces slivers, wrinkle-following triangles, high-valence fans, or abrupt density changes, keep the high-derived fidelity strategy but replace the generator with regularized remeshing, RetopoFlow-assisted drawing, or local cage reconstruction.
-6. Compare both against the high in six orthographic views and perspective. Reject any candidate that damages a controlling outline, cuff, rim, strap, finger, sole, heel, handle, or true opening.
-7. Keep the lower density only when worst-view IoU loss is at most 0.005, target-distance shading remains stable, and the wire-distribution gate passes.
-8. Audit components and tiny islands. Remove only proven debris; do not delete small but silhouette-critical construction.
-
-This is not permission to deliver raw Decimate output or apply the boot decision across a batch. It is a per-asset method-selection rule: for a complex integrated object, a faithful high-derived candidate plus cleanup and visual correction is preferable to a clean hand-built proxy that reads as a different object. If the first primary-view comparison shows a large identity gap, stop immediately instead of refining the wrong proxy.
+- Use semantic multipart reconstruction for mechanical, hard-surface, planar, repeated, and assembled assets.
+- Use RetopoFlow-assisted surface drawing, deliberate local cages/patches, contour rings, and bounded Shrinkwrap fitting for integrated organic or soft assets.
+- Inventory source components, boundaries, openings, thin layers, silhouette controls, attachment roots, deformation zones, and highlight flow before building.
+- A high duplicate processed by Decimate, voxel remesh, QuadriFlow, automatic remesh, or equivalent collapse may be inspected only as a disposable density-floor diagnostic. Never export it, clean it into the result, or use it as the authoritative low.
+- If a coarse cage loses identity, add high-derived contour events and local patches. Do not fall back to direct reduction.
+- Compare the authoritative reconstruction against the untouched high in six orthographic views and perspective; rebuild any region that damages a controlling outline, opening, attachment, or construction relationship.
 
 ## Start with a face band, not a fixed target
 
@@ -203,9 +187,9 @@ Prefer a center quad with corner transitions, or several small local fans, when 
 
 ## Use plugins as assistants
 
-- Use QuadriFlow to propose a starting cage for continuous organic or rounded forms. Rebuild misplaced flow and restore construction afterward.
+- QuadriFlow may be used only as a disposable diagnostic for continuous organic or rounded forms; its generated mesh and cleaned derivatives cannot become the formal low.
 - Use RetopoFlow for deliberate surface drawing and cleanup. Record whether it was used interactively or only for mesh cleanup.
-- Treat AutoRemesher, voxel remesh, and Decimate as trials. Reject them when they merge parts, erase negative space, create uniform density, or produce uncontrolled triangle flow.
+- Treat AutoRemesher, voxel remesh, QuadriFlow, and Decimate as disposable diagnostics. Their generated meshes and cleaned derivatives are forbidden as formal output.
 - Never describe a scripted or automatic candidate as hand-retopologized.
 - Do not count an add-on as used merely because it is installed, enabled, or reported during Blender startup. Background mode may explicitly skip initialization.
 

@@ -24,6 +24,10 @@ from gpu_control_blender_worker.bootstrap import (
     validate_codex_skill_link,
 )
 from packages.gpu_control_core.retopology_v6 import (
+    POLICY_SHA256,
+    POLICY_VERSION,
+    assert_no_forbidden_generator_scripts,
+    assert_structured_retopology_plan,
     validate_contract_payload,
     verify_runtime_resources,
 )
@@ -1165,6 +1169,11 @@ async def run_retopology_v6_legacy(
     """Execute the approved V6 formal Agent then a separate fail-closed QA Agent."""
 
     verified = verify_runtime_resources(settings.retopology_v6_root)
+    if options.get("policy_sha256") != POLICY_SHA256:
+        raise RuntimeError(
+            "RETOPOLOGY_V6_POLICY_SUPERSEDED: queued task must be resubmitted "
+            "under the current structured-reconstruction policy"
+        )
     workspace = bundle_path.parent
     extracted = workspace / "retopology-v6-input"
     input_manifest = extract_retopology_bundle(bundle_path, extracted)
@@ -1323,6 +1332,8 @@ async def run_retopology_v6_legacy(
         "retopology-plan-v6.schema.json",
         plan_payload,
     )
+    assert_structured_retopology_plan(plan_payload)
+    assert_no_forbidden_generator_scripts(workspace)
 
     merge_script = verified_script(
         settings.retopology_v6_merge_script, RETOPOLOGY_V6_MERGE_SCRIPT_SHA256
@@ -1464,7 +1475,7 @@ async def run_retopology_v6_legacy(
         advisory_gates = {
             name: {
                 "passed": False,
-                "metrics": {},
+                "metrics": {"summary": "Independent QA did not execute"},
                 "evidence": ["qa_report.json"],
                 "failure_codes": ["RETOPOLOGY_V6_QA_RUNTIME_FAILED"],
             }
@@ -1513,7 +1524,7 @@ async def run_retopology_v6_legacy(
             "status": "failed",
             "policy": {
                 "id": "li3d-retopology-v6",
-                "version": "6.0.0",
+                "version": POLICY_VERSION,
                 "sha256": options.get("policy_sha256"),
             },
             "source": {

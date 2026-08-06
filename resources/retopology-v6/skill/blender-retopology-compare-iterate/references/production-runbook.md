@@ -84,7 +84,7 @@ The manifest must be machine-verifiable and contain the expected ordered `asset_
 
 For each asset, write:
 
-- `method_decision`: `controlled_direct_reduction` or `semantic_reconstruction`, with separate evidence for structural complexity, integrated continuous construction, and any user-approved method instruction. Do not inherit the decision from another asset in the batch.
+- `method_decision`: `semantic_reconstruction` or `hybrid_per_component`, with the selected cage/patch strategy and any user-approved method instruction. Direct reduction is not a production method.
 
 - Primary silhouette volumes.
 - True openings and negative spaces.
@@ -110,9 +110,7 @@ Choose the method by construction:
 
 Create large forms first. Build openings, handle gaps, attachment roots, and rim thickness before decoration. Keep logical mechanical parts separate when that gives cleaner construction and baking.
 
-Direct reduction remains a candidate-generator workflow: clean duplicate/degenerate topology, inspect component islands and boundaries, run bounds, six-view, wire-distribution, and shading checks, and correct only the responsible region. Do not weld source shells together or close boundaries without an explicit construction reason. Keep the lower density level only when worst-view IoU changes by at most 0.005 and no controlling feature, wire-quality requirement, or shading transition is lost. A per-asset controlled reduction from the original high is valid; a uniform batch reduction or another pass over an already rejected yellow low is not.
-
-Raw Decimate collapse is a density-floor stress test when it produces slivers, high-valence fans, wrinkle-following triangles, or abrupt density changes. If the candidate preserves identity but fails wire quality, retain the direct-reduction method and replace the generator or rebuild the responsible local flow. Do not return to a clean but inaccurate proxy.
+Automatic reduction is a disposable diagnostic only. A Decimate, remesh, or QuadriFlow-derived mesh cannot be promoted, cleaned, renamed, or exported as the formal low. When a density-floor diagnostic shows that a coarse cage loses identity, retain the high-derived contour evidence and rebuild the responsible flow using RetopoFlow-assisted drawing or deliberate local cages/patches.
 
 ### 4. Fit globally before fitting locally
 

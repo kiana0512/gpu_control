@@ -1,6 +1,6 @@
 ---
 name: blender-retopology-compare-iterate
-description: Rebuild and validate production game-ready Blender low-poly meshes directly from high-poly models without requiring a low-poly reference, using learned construction rules to make the first formal candidate correct rather than relying on repeated production trials. Use for Blender automatic or assisted retopology, high-only topology design, RetopoFlow or QuadriFlow-assisted workflows, bake-oriented polygon reduction, high/low silhouette and protrusion matching, rejected-method training, live Blender batch work, or comparison-row assembly; also use for 次世代游戏低模拓扑、高模重拓扑、一次拓扑到位、减面、布线纠错、高低模多视角对比、机械分件重建和有机一体模型直接减面。
+description: Rebuild and validate production game-ready Blender low-poly meshes directly from high-poly models without requiring a low-poly reference, using learned construction rules to make the first formal candidate correct rather than relying on repeated production trials. Use for Blender automatic or assisted retopology, high-only topology design, RetopoFlow-assisted workflows, bake-oriented polygon budgeting, high/low silhouette and protrusion matching, rejected-method training, live Blender batch work, or comparison-row assembly; also use for 次世代游戏低模拓扑、高模重拓扑、一次拓扑到位、布线纠错、高低模多视角对比、机械分件重建和有机一体模型结构化重拓扑。
 ---
 
 # Blender High-only Game Retopology
@@ -11,7 +11,7 @@ Read [references/high-only-game-topology.md](references/high-only-game-topology.
 
 For batch assets, plugin-assisted work, a live Blender session, comparison-row assembly, or final delivery, also read [references/production-runbook.md](references/production-runbook.md) completely before acting.
 
-Before starting a new batch, accepting automatic topology, or choosing direct reduction for a complex integrated asset, also read [references/validated-batch-retrospective.md](references/validated-batch-retrospective.md) completely. It contains the verified H01-H15 production history, accepted per-asset calibrations, and the N06 case where excellent silhouette IoU still failed wire quality.
+Before starting a new batch or accepting automatic topology, also read [references/validated-batch-retrospective.md](references/validated-batch-retrospective.md) completely. It contains the verified H01-H15 production history and the N06 case proving that excellent silhouette IoU cannot make direct reduction or poor wire quality production-ready.
 
 Before training on rejected candidates or starting a formal batch after training, also read [references/n01-n08-training-lessons.md](references/n01-n08-training-lessons.md) completely. It separates training trials from formal production and defines the N01-N08 first-candidate method, fixed-view comparison, feature controls, and freeze/recovery safeguards.
 
@@ -20,7 +20,7 @@ Before training on rejected candidates or starting a formal batch after training
 - Treat repeated training trials as method calibration only. Never convert their count into a formal multi-pass requirement.
 - Before formal geometry, finish the asset classification, method decision, high-derived measurements, feature-control table, component plan, profile events, radial/axial counts, topology-flow plan, face band, and geometry-versus-bake split.
 - Create one authoritative formal low per high. Do not use the user's formal file as a seed/ratio experiment and do not manufacture several colored alternatives.
-- Apply the learned per-class method from the first modeling operation: fresh-high controlled reduction only for qualified integrated complex objects; semantic multipart reconstruction for mechanical and hard-surface assets.
+- Apply structured reconstruction from the first modeling operation for every asset class. Use semantic multipart reconstruction for mechanical assets and deliberate cage/patch or RetopoFlow-assisted reconstruction for integrated organic assets. Direct reduction is never a formal production method.
 - Validate the one authoritative result in aligned fixed orthographic views, canonical perspective, and close wire review. Validation proves that the first-pass plan worked; it is not a strategy of producing many candidates until one happens to pass.
 - If an unexpected miss remains, correct the same unfinished authoritative object and add the cause to the training knowledge. Do not call the miss a completed pass or resume blind variant generation.
 - Treat automated green flags as invalid when their evidence does not cover the claimed gate. Object existence, successful rendering, AABB equality, topology integrity, low face count, and wire-audit success cannot independently prove silhouette or construction.
@@ -80,19 +80,18 @@ Before modeling, inspect front, side, top, and perspective views at matched scal
 
 Never regenerate a `user_approved` omission in a later automatic pass. Keep an unmasked comparison so the omission stays visible in the audit record.
 
-## Choose direct reduction or reconstruction before modeling
+## Choose the structured reconstruction strategy before modeling
 
 Make and record this method decision before creating a candidate:
 
-- Use **controlled direct reduction from a fresh duplicate of the high** only when the asset is both structurally complex and genuinely integrated as one continuous object, the high already has the correct macro surface, silhouette, proportions, openings, and construction, and rebuilding a proxy would lose identity. An integrated complex boot is the reference case. Material or style alone does not qualify an asset: being organic, leather, cloth, scanned, or generated is not sufficient evidence.
-- Use **semantic reconstruction** for mechanical or hard-surface multipart assets, broad planar forms, repeated construction, organic or soft-looking assets that are actually assembled from distinct parts, or any high whose direct reduction fuses gaps, damages openings, destroys component logic, or leaves unusable density distribution.
-- Direct reduction is not the same as forbidden batch simplification. Always start from the original high, use an asset-specific target, preserve a separate high fingerprint, clean only the duplicate, and compare at least two density candidates in six matched views. Include one genuinely aggressive very-low candidate to expose the asset's real minimum; generate every density level independently from the fresh high rather than decimating a conservative low again. Never continue from a rejected yellow low, earlier Decimate result, or uniform batch ratio.
-- Treat a direct-reduction result as a candidate until duplicate/degenerate cleanup, component review, bounds checks, six-view silhouette review, and shading inspection pass. Keep the lower-density candidate only when the worst-view IoU drops by no more than 0.005 and no cuff, rim, opening, strap, finger, heel, or other controlling feature is damaged.
-- Inventory source connected components, boundaries, openings, and thin layers before cleanup. Product-level continuity does not authorize welding source shells together, closing boundaries, or turning a multi-shell/open high into one closed low without an explicit construction reason and matched-view proof.
-- Treat raw Decimate collapse as a density-floor stress test when it produces slivers, high-valence fans, wrinkle-following triangles, or abrupt density changes. Preserve the high-derived fidelity method, reject the generator output, and switch to regularized remeshing, RetopoFlow-assisted drawing, or local cage reconstruction.
-- If the first perspective or primary-view comparison clearly reads as a different object, reject it immediately and switch method. Do not polish or locally patch a clean but wrong proxy.
+- Use **semantic reconstruction** for mechanical and hard-surface multipart assets, broad planar forms, repeated construction, and assets assembled from distinct parts.
+- Use **structured organic reconstruction** for integrated soft or organic assets: establish primary silhouette rings and structural flow, then use RetopoFlow-assisted drawing, deliberate local cages/patches, and bounded Shrinkwrap fitting.
+- A duplicate of the high followed by Decimate, voxel remesh, QuadriFlow, automatic remesh, or equivalent density collapse is never a formal low, even if it matches the silhouette or passes a face budget.
+- Automatic reduction may be used only as a disposable diagnostic to estimate a density floor. It must not be exported, renamed, cleaned up into, or substituted for the authoritative low.
+- Inventory source connected components, boundaries, openings, thin layers, construction breaks, and deformation/highlight flow before reconstruction. Preserve those relationships in the deliberate low.
+- If the first perspective or primary-view comparison clearly reads as a different object, reject it immediately and rebuild the relevant cage or patch. Do not polish a clean but wrong proxy.
 
-Record `method_decision` as `controlled_direct_reduction` or `semantic_reconstruction`, with explicit evidence for both `structurally_complex` and `integrated_continuous_object` when choosing direct reduction, plus any `authority: user_approved` instruction. Never propagate one asset's method choice to the rest of a batch by category alone.
+Record `method_decision` as `semantic_reconstruction` or `hybrid_per_component`; every component that contributes geometry must be deliberately reconstructed or be an already production-clean reusable component. Never select direct reduction by category.
 
 ## Build deliberately
 
@@ -100,7 +99,7 @@ Record `method_decision` as `controlled_direct_reduction` or `semantic_reconstru
 - State truthfully whether RetopoFlow was used. Never describe scripted primitives, copied meshes, or automatic output as RetopoFlow hand drawing.
 - Use manual cages, PolyStrips, Contours, patches, or deliberate primitive reconstruction as appropriate.
 - Use temporary Shrinkwrap only as a fitting aid; inspect every region for collapse onto the wrong body part.
-- Treat QuadriFlow, AutoRemesher, voxel remesh, and Decimate as candidate generators only. Do not deliver their raw output without structural review and correction.
+- Treat QuadriFlow, AutoRemesher, voxel remesh, and Decimate as disposable diagnostics only. Never use their generated mesh, or a cleaned derivative of it, as the formal low.
 - Run `scripts/audit_topology_flow.py` on every review-ready automatic or mixed-triangle candidate. A manifold mesh with high silhouette IoU still fails when explicit triangle flow, poles, or density distribution are unusable.
 - Record a plugin as used only when its operator actually generated or modified the accepted candidate. Installed, enabled, or background-skipped initialization is not plugin use.
 - Do not add blanket Bevel modifiers.

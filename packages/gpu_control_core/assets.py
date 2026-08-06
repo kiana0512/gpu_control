@@ -224,7 +224,7 @@ class RetopologyV6ProcessMetadata(BaseModel):
 
 
 RETOPOLOGY_V6_POLICY_SHA256 = (
-    "e6781d6158a93e571c944f5913a600838fe28fc2edc38a3b1909f649f66f3d3d"
+    "e7b24c93c11d550ac9fedd167ff23f9ddd70cba4db014caaf2e157cddeafb266"
 )
 RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256 = (
     "5f8e66324f3bf9a804699b8976b2938ffc88cf7b7f68ef7bc4bfe4d9e38242ef"

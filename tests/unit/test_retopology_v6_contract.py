@@ -12,6 +12,9 @@ from packages.gpu_control_core.assets import (
 )
 from packages.gpu_control_core.retopology_v6 import (
     POLICY_SHA256,
+    RetopologyV6ResourceError,
+    assert_no_forbidden_generator_scripts,
+    assert_structured_retopology_plan,
     verify_runtime_resources,
 )
 
@@ -52,6 +55,38 @@ def test_v6_runtime_resources_match_frozen_manifest() -> None:
 
     assert verified["config/retopology-policy-v6.json"] == POLICY_SHA256
     assert "skill/blender-retopology-compare-iterate/scripts/audit_topology_flow.py" in verified
+
+
+def test_v6_rejects_direct_reduction_plan_and_agent_script(tmp_path: Path) -> None:
+    direct_plan = {
+        "method": "controlled_direct_reduction",
+        "component_decisions": [
+            {"component_id": "body", "method": "controlled_direct_reduction"}
+        ],
+    }
+    with pytest.raises(RetopologyV6ResourceError, match="DIRECT_REDUCTION_FORBIDDEN"):
+        assert_structured_retopology_plan(direct_plan)
+
+    (tmp_path / "build_low.py").write_text(
+        "modifier = obj.modifiers.new('reduce', 'DECIMATE')\n", "utf-8"
+    )
+    with pytest.raises(RetopologyV6ResourceError, match="DIRECT_REDUCTION_FORBIDDEN"):
+        assert_no_forbidden_generator_scripts(tmp_path)
+
+
+def test_v6_accepts_structured_reconstruction_plan_and_script(tmp_path: Path) -> None:
+    assert_structured_retopology_plan(
+        {
+            "method": "semantic_reconstruction",
+            "component_decisions": [
+                {"component_id": "body", "method": "semantic_reconstruction"}
+            ],
+        }
+    )
+    (tmp_path / "build_low.py").write_text(
+        "# deliberate cage and patch reconstruction\n", "utf-8"
+    )
+    assert_no_forbidden_generator_scripts(tmp_path)
 
 
 def test_v6_delivery_merge_script_is_pinned_and_preserves_disconnected_islands() -> None:
@@ -142,5 +177,5 @@ def test_v6_idempotency_binds_policy_and_canonical_options() -> None:
 
     assert len(digest) == 64
     assert RETOPOLOGY_V6_POLICY_SHA256 == (
-        "e6781d6158a93e571c944f5913a600838fe28fc2edc38a3b1909f649f66f3d3d"
+        "e7b24c93c11d550ac9fedd167ff23f9ddd70cba4db014caaf2e157cddeafb266"
     )

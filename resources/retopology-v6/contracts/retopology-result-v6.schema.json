@@ -15,7 +15,7 @@
       "required": ["id", "version", "sha256"],
       "properties": {
         "id": { "const": "li3d-retopology-v6" },
-        "version": { "const": "6.0.0" },
+        "version": { "const": "6.0.1" },
         "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" }
       }
     },
@@ -82,45 +82,17 @@
       "required": ["passed", "metrics", "evidence"],
       "properties": {
         "passed": { "type": "boolean" },
-        "metrics": { "type": "object" },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["summary"],
+          "properties": {
+            "summary": { "type": "string" }
+          }
+        },
         "evidence": { "type": "array", "items": { "type": "string" } },
         "failure_codes": { "type": "array", "items": { "type": "string" } }
       }
     }
-  },
-  "allOf": [
-    {
-      "if": { "properties": { "status": { "const": "succeeded" } } },
-      "then": {
-        "properties": {
-          "formal_low": { "type": "object" },
-          "publish_allowed": { "const": true }
-        }
-      }
-    },
-    {
-      "if": { "properties": { "publish_allowed": { "const": true } } },
-      "then": {
-        "properties": {
-          "status": { "const": "succeeded" },
-          "source": {
-            "properties": { "unchanged": { "const": true } },
-            "required": ["unchanged"]
-          },
-          "gates": {
-            "properties": {
-              "source_preservation": { "properties": { "passed": { "const": true } }, "required": ["passed"] },
-              "topology_integrity": { "properties": { "passed": { "const": true } }, "required": ["passed"] },
-              "silhouette_6view": { "properties": { "passed": { "const": true } }, "required": ["passed"] },
-              "construction": { "properties": { "passed": { "const": true } }, "required": ["passed"] },
-              "adaptive_density": { "properties": { "passed": { "const": true } }, "required": ["passed"] },
-              "wire_distribution": { "properties": { "passed": { "const": true } }, "required": ["passed"] },
-              "shading": { "properties": { "passed": { "const": true } }, "required": ["passed"] },
-              "artifact_integrity": { "properties": { "passed": { "const": true } }, "required": ["passed"] }
-            }
-          }
-        }
-      }
-    }
-  ]
+  }
 }

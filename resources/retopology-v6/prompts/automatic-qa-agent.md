@@ -41,7 +41,7 @@
 对八个门禁分别输出：
 
 - `passed`；
-- 定量 `metrics`；
+- 定量指标完整写入 `qa_report.json`；result schema 中每个门禁的 `metrics` 只填写必需的 `summary` 字符串摘要；
 - 可定位到文件/视图/组件的 `evidence`；
 - 稳定的 `failure_codes`。
 

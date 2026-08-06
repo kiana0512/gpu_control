@@ -34,21 +34,21 @@ APPROVED_SKILL_FILE_SHA256: Mapping[str, Mapping[str, str]] = {
         ),
     },
     "blender-retopology-compare-iterate": {
-        "SKILL.md": "1b6519d3b725e89ca3beccaf5bc1de8dc5d3a1163b4dc2ce59cb5d0a277a61cf",
+        "SKILL.md": "de51c6697d531bcc39fe30207cbf0e39f6fd21f6b88da0a9ea06cee3406faad6",
         "agents/openai.yaml": (
             "1fe705f8bb73c94457a6df5cc409e07b923f00b000d1dca530161405729b0d79"
         ),
         "references/high-only-game-topology.md": (
-            "924744edf10c463a2e6a92525a27da12090955336147e8471c93db5c94fb32c4"
+            "018960377d5758e8ead5c55fcc84732522f2a43ff568e46f5804f3618218100b"
         ),
         "references/n01-n08-training-lessons.md": (
-            "80fee199e60725742d62093b1434076178b45efb07adba3ef13085e8fe660db8"
+            "e55d453aba1b8af1beab5757748b7e8d82785c45b711e5a91276b6cddc163f90"
         ),
         "references/production-runbook.md": (
-            "727971150db58da23dcb5f6e76b370a3c959245f2db6b5e0170559ccc375db7e"
+            "de8c617cb49fef68d956791eb152dd6be6a873c0694f124593cc96dfd541b13e"
         ),
         "references/validated-batch-retrospective.md": (
-            "799c38ce365816ee57d1ef1e25c2310f71162dd36e4dbc304320fcf93595f5bd"
+            "e88157eb16e412c103602e8e715f42f16320737c7afbf1e69afcf2d64f1ed416"
         ),
         "scripts/audit_batch_layout.py": (
             "c400add092827aff84b66915200b406d2501a3db6583d458dff6541fc60d4092"

@@ -1,6 +1,6 @@
 {
   "policy_id": "li3d-retopology-v6",
-  "policy_version": "6.0.0",
+  "policy_version": "6.0.1",
   "budget_mode": "automatic",
   "user_target_faces_allowed": false,
   "source_authority": "high_poly_only",
@@ -8,7 +8,6 @@
   "internal_correction_rounds_max": 2,
   "methods": [
     "semantic_reconstruction",
-    "controlled_direct_reduction",
     "hybrid_per_component"
   ],
   "automatic_budget": {
@@ -25,16 +24,10 @@
     "notes": "This is an internal adaptive range, not a requested target. Quality gates override budget estimates."
   },
   "method_selection": {
-    "controlled_direct_reduction_allowed_for": [
-      "complex_integrated_organic_or_soft_body",
-      "single_fused_shape_with_non_semantic_surface_detail"
-    ],
-    "controlled_direct_reduction_forbidden_for": [
-      "mechanical_assembly",
-      "hard_surface_multi_part",
-      "asset_with_critical_negative_spaces",
-      "asset_where_decimation_removes_required_small_silhouette_parts"
-    ],
+    "controlled_direct_reduction_allowed_for": [],
+    "controlled_direct_reduction_forbidden_for": ["all_production_assets"],
+    "automatic_decimate_or_remesh_output_publish_allowed": false,
+    "organic_integrated_default": "semantic_reconstruction",
     "mechanical_default": "semantic_reconstruction",
     "mixed_asset_default": "hybrid_per_component"
   },

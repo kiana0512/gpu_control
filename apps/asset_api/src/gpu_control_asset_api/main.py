@@ -137,7 +137,7 @@ SUBSTANCE_BAKE_COMMAND_COUNTS = {
 CODEX_REQUIRED_JOB_TYPES = frozenset(
     {"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"}
 )
-RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-retopology-v6.0.0"
+RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-retopology-v6.0.1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1997,7 +1997,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             options.update(
                 {
                     "engine_contract": "retopology-v6",
-                    "policy_version": "6.0.0",
+                    "policy_version": "6.0.1",
                     "policy_sha256": RETOPOLOGY_V6_POLICY_SHA256,
                     "deprecated_fields_ignored": compatibility_warnings,
                     "project_filename": project_filename,

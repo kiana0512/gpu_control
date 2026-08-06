@@ -4,15 +4,33 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 import jsonschema
 
 POLICY_ID = "li3d-retopology-v6"
-POLICY_VERSION = "6.0.0"
-POLICY_SHA256 = "e6781d6158a93e571c944f5913a600838fe28fc2edc38a3b1909f649f66f3d3d"
+POLICY_VERSION = "6.0.1"
+# Updated together with resources/retopology-v6/RUNTIME_FILES.sha256.
+POLICY_SHA256 = "e7b24c93c11d550ac9fedd167ff23f9ddd70cba4db014caaf2e157cddeafb266"
 RUNTIME_MANIFEST = "RUNTIME_FILES.sha256"
+
+ALLOWED_PRODUCTION_METHODS = frozenset(
+    {"semantic_reconstruction", "hybrid_per_component"}
+)
+ALLOWED_COMPONENT_METHODS = frozenset(
+    {
+        "semantic_reconstruction",
+        "reuse_clean_source_component",
+        "normal_map_only",
+        "omit_noncritical_micro_detail",
+    }
+)
+FORBIDDEN_GENERATOR_PATTERN = re.compile(
+    r"(?i)(?:[\"'](?:DECIMATE|REMESH)[\"']|"
+    r"decimate_collapse|quadriflow_remesh|voxel_remesh|remesh_voxel_size)"
+)
 
 
 class RetopologyV6ResourceError(RuntimeError):
@@ -99,3 +117,37 @@ def load_contract(root: Path, filename: str) -> dict[str, Any]:
 def validate_contract_payload(root: Path, filename: str, payload: dict[str, Any]) -> None:
     jsonschema.Draft202012Validator(load_contract(root, filename)).validate(payload)
 
+
+def assert_structured_retopology_plan(payload: dict[str, Any]) -> None:
+    """Reject any production plan that selects direct reduction or an unapproved method."""
+
+    method = payload.get("method")
+    if method not in ALLOWED_PRODUCTION_METHODS:
+        raise RetopologyV6ResourceError(
+            f"RETOPOLOGY_V6_DIRECT_REDUCTION_FORBIDDEN: plan method {method!r}"
+        )
+    component_decisions = payload.get("component_decisions")
+    if not isinstance(component_decisions, list):
+        raise RetopologyV6ResourceError("Retopology V6 component plan is missing")
+    for index, component in enumerate(component_decisions):
+        component_method = component.get("method") if isinstance(component, dict) else None
+        if component_method not in ALLOWED_COMPONENT_METHODS:
+            raise RetopologyV6ResourceError(
+                "RETOPOLOGY_V6_DIRECT_REDUCTION_FORBIDDEN: "
+                f"component {index} method {component_method!r}"
+            )
+
+
+def assert_no_forbidden_generator_scripts(workspace: Path) -> None:
+    """Fail closed when Agent-authored Blender scripts use reduction/remesh generators."""
+
+    for script_path in sorted(workspace.glob("*.py")):
+        if not script_path.is_file() or script_path.is_symlink():
+            continue
+        source = script_path.read_text("utf-8", errors="replace")
+        match = FORBIDDEN_GENERATOR_PATTERN.search(source)
+        if match is not None:
+            raise RetopologyV6ResourceError(
+                "RETOPOLOGY_V6_DIRECT_REDUCTION_FORBIDDEN: "
+                f"{script_path.name} contains {match.group(0)!r}"
+            )

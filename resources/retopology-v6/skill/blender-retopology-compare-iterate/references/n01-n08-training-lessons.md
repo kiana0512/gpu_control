@@ -63,7 +63,7 @@ The result is a next-generation product/game low, not merely a smaller mesh:
 - Send wrinkles, shallow carvings, seams, dents, micro-connectors, surface grain, and other non-silhouette details to normal baking.
 - Use triangles and quads deliberately. Do not force all quads, random triangulation, slivers, crowded rings, fragmented faces, or uniform density.
 - Retain loops only for real turns, arcs, openings, load-bearing structure, profile changes, attachment roots, shading transitions, and outer contours.
-- Reconstruct mechanical and hard-surface assemblies by their detachable construction. Do not deliver whole-object voxel remesh or pure Decimate output.
+- Reconstruct every asset by deliberate structure. Do not deliver whole-object voxel remesh, QuadriFlow output, pure Decimate output, or a cleaned derivative.
 - Compare each low with its own high before moving to the next asset.
 - Keep high wire disabled and low wire clearly visible.
 - Prove the method on one representative high-risk asset and obtain confirmation before formal batch production.
@@ -103,7 +103,7 @@ Keep this chronology as negative and positive training evidence. Do not relabel 
 
 **Root cause:** The workflow selected a batch simplification technique before classifying each asset. It also treated a clean or low-count mesh as a product solution.
 
-**Correction learned:** Discard rejected yellow lows as modeling inputs. Return to each untouched high, classify construction, and choose controlled direct reduction or semantic reconstruction per asset. Complete one representative asset and obtain confirmation before formal batch work.
+**Correction learned:** Discard rejected yellow lows as modeling inputs. Return to each untouched high, classify construction, and choose semantic reconstruction or a component-wise cage/patch strategy. Complete one representative asset and obtain confirmation before formal batch work.
 
 ### Trial stage 1: first boot semantic proxy
 
@@ -111,7 +111,7 @@ Keep this chronology as negative and positive training evidence. Do not relabel 
 
 **Root cause:** A generic clean cage replaced the high's integrated identity. Topology neatness was reviewed before macro likeness.
 
-**Correction learned:** Reject at the first primary-view mismatch. For a structurally complex integrated boot, derive the formal cage from a fresh high duplicate. Do not spend time polishing a clean but wrong proxy.
+**Correction learned:** Reject at the first primary-view mismatch. For a structurally complex integrated boot, derive deliberate contour rings and local patches from the untouched high. Do not copy or reduce the high, and do not spend time polishing a clean but wrong proxy.
 
 ### Trial stage 2: raw very-low boot reduction
 
@@ -119,7 +119,7 @@ Keep this chronology as negative and positive training evidence. Do not relabel 
 
 **Root cause:** Raw Decimate output was mistaken for finished topology because it was very low and close to the high.
 
-**Correction learned:** Use raw collapse only to find the density floor. Regularize the high-derived result or rebuild local flow. Require the explicit topology-flow gate and close wire inspection independently from silhouette.
+**Correction learned:** Use raw collapse only as a disposable density-floor measurement. Rebuild local flow from the untouched high; never regularize or promote the collapsed mesh. Require the explicit topology-flow gate and close wire inspection independently from silhouette.
 
 ### Trial stage 3: first orange/blue/green training rows
 
@@ -193,22 +193,9 @@ The formal goal is not to reproduce these trials more efficiently. It is to prev
 
 ## Method boundary learned
 
-### Controlled direct reduction
+### Integrated complex assets
 
-Use controlled direct reduction only when the asset is structurally complex and genuinely integrated, and when the untouched high already contains the correct macro form. The integrated boot is the positive training case.
-
-For this method:
-
-- Start every candidate from a fresh duplicate of the untouched high, never from a rejected low.
-- Inventory components, boundaries, openings, and thin layers before cleanup.
-- Preserve cuff opening, rim, shaft lean, toe volume, heel, outsole layers, straps, loops, and every silhouette-visible tab.
-- Reduce broad shaft and vamp interiors before controlling outlines.
-- Bake wrinkles, stitching, grain, dents, and shallow seams.
-- Use an aggressive density-floor trial during training, but do not automatically accept it.
-- Reject raw Decimate output with slivers, random fans, high-valence poles, wrinkle-following triangles, or abrupt density changes.
-- When high-derived fidelity is correct but flow is poor, keep the fidelity method and regularize the cage or rebuild local patches. Do not return to a clean but inaccurate primitive proxy.
-
-Do not generalize the boot permission to every shoe, organic-looking asset, cloth object, scan, or generated mesh. Confirm integrated construction per asset.
+Integrated boots and similar assets require deliberate RetopoFlow-assisted drawing, contour rings, local cages, or patches from the untouched high. Preserve cuff opening, rim, shaft lean, toe volume, heel, outsole layers, straps, loops, and every silhouette-visible tab while sending wrinkles, stitching, grain, dents, and shallow seams to baking. Direct reduction is a rejected historical method and cannot be used for production output.
 
 ### Semantic reconstruction
 
