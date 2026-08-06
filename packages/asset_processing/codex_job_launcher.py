@@ -27,13 +27,14 @@ def sha256(path: Path) -> str:
 
 
 def normalize_generation_report(job_dir: Path) -> bool:
-    """Normalize the one known v2.3 report alias without touching geometry.
+    """Normalize known v2.3 report aliases without touching geometry.
 
     The approved upstream verifier requires ``assets`` records, while an
     otherwise successful agent may emit the same facts under ``objects`` with
-    explicit high/low prefixes. Preserve that raw evidence and translate only
-    when every required value is present. Any incomplete or unrelated report
-    remains unchanged so the upstream verifier still fails closed.
+    explicit high/low prefixes. Preserve that raw evidence and keep fail-closed
+    checks on the fields that identify the delivered object and construction
+    method. Optional diagnostic counters stay explicit ``null`` when an agent
+    omits them; they must not discard an otherwise identified Blend delivery.
     """
 
     report_path = job_dir / "generation_report.json"
@@ -48,20 +49,42 @@ def normalize_generation_report(job_dir: Path) -> bool:
     if not isinstance(objects, list) or not objects:
         return False
 
+    allowed_methods = {
+        "controlled_direct_reduction",
+        "semantic_reconstruction",
+        "per_component_hybrid",
+    }
     assets: list[dict[str, object]] = []
+    missing_diagnostics: list[dict[str, object]] = []
     for item in objects:
         if not isinstance(item, dict):
             return False
+        high_object = item.get("high_object", item.get("high_name"))
+        low_object = item.get("low_object", item.get("low_name"))
+        method_decision = item.get("method_decision")
+        if not isinstance(high_object, str) or not high_object:
+            return False
+        if not isinstance(low_object, str) or not low_object:
+            return False
+        if method_decision not in allowed_methods:
+            return False
         normalized = {
-            "high_object": item.get("high_object", item.get("high_name")),
-            "low_object": item.get("low_object", item.get("low_name")),
+            "high_object": high_object,
+            "low_object": low_object,
             "faces": item.get("faces", item.get("low_faces")),
             "triangles": item.get("triangles", item.get("low_triangles")),
-            "method_decision": item.get("method_decision"),
+            "method_decision": method_decision,
             "actual_plugin_use": item.get("actual_plugin_use"),
         }
-        if any(value is None for value in normalized.values()):
-            return False
+        missing = [
+            field
+            for field in ("faces", "triangles", "actual_plugin_use")
+            if normalized[field] is None
+        ]
+        if missing:
+            missing_diagnostics.append(
+                {"low_object": low_object, "fields": missing}
+            )
         assets.append(normalized)
 
     original_path = job_dir / "generation_report.original.json"
@@ -69,8 +92,9 @@ def normalize_generation_report(job_dir: Path) -> bool:
         shutil.copy2(report_path, original_path)
     report["assets"] = assets
     report["gpu_control_compatibility"] = {
-        "adapter": "generation-report-objects-to-assets-v1",
+        "adapter": "generation-report-objects-to-assets-v2",
         "original_report": original_path.name,
+        "missing_diagnostics": missing_diagnostics,
     }
     temporary = job_dir / ".generation_report.json.tmp"
     temporary.write_text(
