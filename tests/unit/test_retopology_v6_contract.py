@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -51,6 +52,33 @@ def test_v6_runtime_resources_match_frozen_manifest() -> None:
 
     assert verified["config/retopology-policy-v6.json"] == POLICY_SHA256
     assert "skill/blender-retopology-compare-iterate/scripts/audit_topology_flow.py" in verified
+
+
+def test_v6_delivery_merge_script_is_pinned_and_preserves_disconnected_islands() -> None:
+    worker_source = Path(
+        "apps/blender_worker/src/gpu_control_blender_worker/main.py"
+    ).read_text("utf-8")
+    merge_path = Path("packages/asset_processing/blender_retopology_merge.py")
+    merge_source = merge_path.read_text("utf-8")
+    merge_sha256 = hashlib.sha256(merge_path.read_bytes()).hexdigest()
+
+    assert merge_sha256 in worker_source
+    assert 'MERGE_MODE = "single_object_disconnected_islands"' in merge_source
+    assert "bpy.ops.object.join()" in merge_source
+    assert "bpy.ops.mesh.remove_doubles" not in merge_source
+    assert "bpy.ops.object.modifier_apply" not in merge_source
+    assert 'object_types={"MESH"}' in merge_source
+
+
+def test_v6_formal_build_has_bounded_iteration_and_realistic_eta() -> None:
+    worker_source = Path(
+        "apps/blender_worker/src/gpu_control_blender_worker/main.py"
+    ).read_text("utf-8")
+
+    assert "one authoritative build, one render/audit pass" in worker_source
+    assert "estimated_stage_seconds=360" in worker_source
+    assert '"RETOPOLOGY_V6_MERGE_EXPORT"' in worker_source
+    assert "estimated_stage_seconds=180" in worker_source
 
 
 def test_v5_target_and_bootstrap_selectors_are_ignored_not_translated() -> None:

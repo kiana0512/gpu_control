@@ -49,6 +49,9 @@ RETOPOLOGY_PROCESS_SCRIPT_SHA256 = (
 RETOPOLOGY_RENDER_SCRIPT_SHA256 = (
     "b1b6344ec78a7c1d333cc875c0eeee20087df27878d67c28fa413f9ab3dcdf09"
 )
+RETOPOLOGY_V6_MERGE_SCRIPT_SHA256 = (
+    "ccde46b64203c9f9d11895b6d6bb208ac8074aa0d4aeec4f216210c88006008f"
+)
 
 
 class WorkerSettings(BaseSettings):
@@ -84,6 +87,9 @@ class WorkerSettings(BaseSettings):
     )
     retopology_render_script: Path = Path(
         "/app/packages/asset_processing/blender_retopology_render.py"
+    )
+    retopology_v6_merge_script: Path = Path(
+        "/app/packages/asset_processing/blender_retopology_merge.py"
     )
     retopoflow_addon_root: Path = Path("/opt/blender-addons/RetopoFlow")
     retopoflow_probe_script: Path = Path("/app/scripts/probe_retopoflow_blender.py")
@@ -1087,6 +1093,7 @@ async def run_v6_codex_agent(
     stage: str,
     message: str,
     timeout_seconds: int,
+    estimated_stage_seconds: int,
 ) -> dict[str, Any]:
     codex = Path(settings.codex_binary)
     if not codex.is_file() or not os.access(codex, os.X_OK):
@@ -1132,7 +1139,7 @@ async def run_v6_codex_agent(
             progress_end,
             stage,
             message,
-            timeout_seconds,
+            estimated_stage_seconds,
             hard_timeout_seconds=timeout_seconds,
         )
     events_path.write_bytes(events)
@@ -1245,7 +1252,12 @@ async def run_retopology_v6_legacy(
         "geometry was generated, keep it as final_low.blend and final_low.fbx, report quality "
         "findings in failure_codes, and return status=completed so independent QA can inspect and "
         "publish the candidate with a warning. Never rename or remove the candidate because a "
-        "quality gate failed. Finish by returning only the formal receipt JSON.\n"
+        "quality gate failed. Follow the Skill's first-formal-candidate rule literally: perform "
+        "one inventory/planning pass, one authoritative build, one render/audit pass, and no "
+        "speculative rebuild loops. A correction pass is allowed only when the first build command "
+        "failed or a named required artifact is absent; record that concrete reason. Reuse already "
+        "loaded Skill/reference content and already rendered source views instead of rereading or "
+        "regenerating them. Finish by returning only the formal receipt JSON.\n"
         f"```json\n{json.dumps(formal_context, ensure_ascii=False, indent=2)}\n```\n"
     )
     reference_paths = [Path(path) for path in formal_context["reference_image_paths"]]
@@ -1265,6 +1277,7 @@ async def run_retopology_v6_legacy(
         stage="RETOPOLOGY_V6_FORMAL_BUILD",
         message="V6 Agent 正在从只读高模生成唯一权威低模",
         timeout_seconds=settings.codex_job_timeout_seconds,
+        estimated_stage_seconds=360,
     )
     if file_sha256(project_path) != source_sha_before:
         raise RuntimeError("Retopology V6 formal Agent changed the source file")
@@ -1309,6 +1322,54 @@ async def run_retopology_v6_legacy(
         settings.retopology_v6_root,
         "retopology-plan-v6.schema.json",
         plan_payload,
+    )
+
+    merge_script = verified_script(
+        settings.retopology_v6_merge_script, RETOPOLOGY_V6_MERGE_SCRIPT_SHA256
+    )
+    merged_name = f"LI3D_{job_id.replace('-', '_')}_GAME_LOW"
+    merge_report_path = output_dir / "merge_report.json"
+    merge_process = await start_blender(
+        settings,
+        "--background",
+        str(required_paths["final_low_blend"]),
+        "--python",
+        str(merge_script),
+        "--",
+        "--blend",
+        str(required_paths["final_low_blend"]),
+        "--fbx",
+        str(required_paths["final_low_exchange"]),
+        "--objects-json",
+        json.dumps(object_names, ensure_ascii=False),
+        "--merged-name",
+        merged_name,
+        "--report",
+        str(merge_report_path),
+    )
+    await wait_for_blender(
+        client,
+        job_id,
+        lease_headers,
+        merge_process,
+        70,
+        72,
+        "RETOPOLOGY_V6_MERGE_EXPORT",
+        "正在把 V6 组件合并为单一交付对象（保留独立网格岛）",
+        20,
+        hard_timeout_seconds=120,
+    )
+    merge_report = json.loads(merge_report_path.read_text("utf-8"))
+    if (
+        merge_report.get("merge_mode") != "single_object_disconnected_islands"
+        or merge_report.get("merged_object_name") != merged_name
+        or merge_report.get("topology_after", {}).get("objects") != 1
+    ):
+        raise RuntimeError("Retopology V6 merged delivery verification failed")
+    object_names = [merged_name]
+    formal_receipt["formal_low_object_names"] = object_names
+    formal_receipt_path.write_text(
+        json.dumps(formal_receipt, ensure_ascii=False, indent=2), "utf-8"
     )
 
     protected_hashes = {
@@ -1377,11 +1438,12 @@ async def run_retopology_v6_legacy(
             result_path=independent_result_path,
             events_path=qa_events_path,
             reference_images=reference_paths,
-            progress_start=70,
+            progress_start=72,
             progress_end=94,
             stage="RETOPOLOGY_V6_INDEPENDENT_QA",
             message="独立 QA 正在执行七视图、构造、密度、布线与制品门禁",
             timeout_seconds=settings.codex_job_timeout_seconds,
+            estimated_stage_seconds=180,
         )
     except Exception as exc:
         # QA is advisory. A QA runtime failure must never discard intact model
