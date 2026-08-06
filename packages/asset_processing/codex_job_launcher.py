@@ -16,6 +16,14 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
+
+
+ALLOWED_METHODS = {
+    "controlled_direct_reduction",
+    "semantic_reconstruction",
+    "per_component_hybrid",
+}
 
 
 def sha256(path: Path) -> str:
@@ -26,7 +34,79 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def normalize_generation_report(job_dir: Path) -> bool:
+def _source_high_object(job_dir: Path) -> str | None:
+    manifest_path = job_dir / "source-manifest.json"
+    if not manifest_path.is_file():
+        return None
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    value = manifest.get("prepared_high_object")
+    return value if isinstance(value, str) and value else None
+
+
+def _planned_method(job_dir: Path) -> str | None:
+    methods: set[str] = set()
+    for path in sorted((job_dir / "plans").glob("*.json")):
+        try:
+            plan = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        value = plan.get("method_decision")
+        if value in ALLOWED_METHODS:
+            methods.add(value)
+    return next(iter(methods)) if len(methods) == 1 else None
+
+
+def inspect_blend_delivery(job_dir: Path, high_object: str) -> list[dict[str, object]]:
+    """Read delivery identity and mesh counters from the generated Blend."""
+
+    report_path = job_dir / "generation_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    candidate = report.get("output_blend")
+    blend_path = Path(candidate).resolve() if isinstance(candidate, str) else Path()
+    try:
+        blend_path.relative_to(job_dir.resolve())
+    except (ValueError, OSError):
+        blend_path = Path()
+    if not blend_path.is_file():
+        blend_path = job_dir / "artifacts" / "result.blend"
+    if not blend_path.is_file() or blend_path.stat().st_size <= 0:
+        return []
+    output_path = job_dir / ".gpu-control-delivery-inspection.json"
+    helper = Path(__file__).with_name("inspect_retopology_delivery.py")
+    blender = os.environ.get("BLENDER_EXECUTABLE", "/opt/blender/blender")
+    completed = subprocess.run(
+        [
+            blender,
+            "--background",
+            str(blend_path),
+            "--disable-autoexec",
+            "--python-exit-code",
+            "1",
+            "--python",
+            str(helper),
+            "--",
+            "--output",
+            str(output_path),
+            "--high-object",
+            high_object,
+        ],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=120,
+    )
+    if completed.returncode != 0 or not output_path.is_file():
+        return []
+    inspected = json.loads(output_path.read_text(encoding="utf-8"))
+    output_path.unlink(missing_ok=True)
+    records = inspected.get("low_objects")
+    return records if isinstance(records, list) else []
+
+
+def normalize_generation_report(
+    job_dir: Path,
+    delivery_inspector: Callable[[Path, str], list[dict[str, object]]] | None = None,
+) -> bool:
     """Normalize known v2.3 report aliases without touching geometry.
 
     The approved upstream verifier requires ``assets`` records, while an
@@ -41,35 +121,36 @@ def normalize_generation_report(job_dir: Path) -> bool:
     if not report_path.is_file():
         return False
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    if isinstance(report.get("assets"), list) and report["assets"]:
-        return False
     if report.get("status") != "generated_for_user_inspection":
         return False
-    objects = report.get("objects")
-    if not isinstance(objects, list) or not objects:
+    high_authority = _source_high_object(job_dir)
+    if high_authority is None:
         return False
-
-    allowed_methods = {
-        "controlled_direct_reduction",
-        "semantic_reconstruction",
-        "per_component_hybrid",
-    }
+    objects = report.get("assets")
+    source_kind = "assets"
+    if not isinstance(objects, list) or not objects:
+        objects = report.get("objects")
+        source_kind = "objects"
+    if not isinstance(objects, list):
+        objects = []
+    planned_method = _planned_method(job_dir)
+    top_level_method = report.get("method_decision")
+    fallback_method = (
+        top_level_method if top_level_method in ALLOWED_METHODS else planned_method
+    )
     assets: list[dict[str, object]] = []
     missing_diagnostics: list[dict[str, object]] = []
     for item in objects:
         if not isinstance(item, dict):
             return False
-        high_object = item.get("high_object", item.get("high_name"))
         low_object = item.get("low_object", item.get("low_name"))
-        method_decision = item.get("method_decision")
-        if not isinstance(high_object, str) or not high_object:
-            return False
+        method_decision = item.get("method_decision", fallback_method)
         if not isinstance(low_object, str) or not low_object:
-            return False
-        if method_decision not in allowed_methods:
+            continue
+        if method_decision not in ALLOWED_METHODS:
             return False
         normalized = {
-            "high_object": high_object,
+            "high_object": high_authority,
             "low_object": low_object,
             "faces": item.get("faces", item.get("low_faces")),
             "triangles": item.get("triangles", item.get("low_triangles")),
@@ -87,13 +168,47 @@ def normalize_generation_report(job_dir: Path) -> bool:
             )
         assets.append(normalized)
 
+    inspection_used = False
+    if not assets:
+        inspector = delivery_inspector or inspect_blend_delivery
+        inspected = inspector(job_dir, high_authority)
+        for item in inspected:
+            if not isinstance(item, dict):
+                return False
+            low_object = item.get("low_object")
+            method_decision = item.get("method_decision", fallback_method)
+            if not isinstance(low_object, str) or not low_object:
+                return False
+            if method_decision not in ALLOWED_METHODS:
+                return False
+            assets.append(
+                {
+                    "high_object": high_authority,
+                    "low_object": low_object,
+                    "faces": item.get("faces"),
+                    "triangles": item.get("triangles"),
+                    "method_decision": method_decision,
+                    "actual_plugin_use": item.get(
+                        "actual_plugin_use", report.get("actual_plugin_use")
+                    ),
+                }
+            )
+        inspection_used = bool(assets)
+    if not assets:
+        return False
+    if len(assets) != 1:
+        return False
+
     original_path = job_dir / "generation_report.original.json"
     if not original_path.exists():
         shutil.copy2(report_path, original_path)
     report["assets"] = assets
     report["gpu_control_compatibility"] = {
-        "adapter": "generation-report-objects-to-assets-v2",
+        "adapter": "generation-report-delivery-evidence-v3",
         "original_report": original_path.name,
+        "source_kind": source_kind,
+        "source_high_authority": high_authority,
+        "blend_inspection_used": inspection_used,
         "missing_diagnostics": missing_diagnostics,
     }
     temporary = job_dir / ".generation_report.json.tmp"

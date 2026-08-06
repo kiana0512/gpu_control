@@ -36,3 +36,16 @@ v2.3 `objects` alias but omitted one or more optional diagnostic values
   standard v2.3 alias conversion, confirming the delivery path itself remains
   healthy.
 
+## Follow-up: evidence reconstruction v3
+
+Three post-deployment jobs (`35ac6b94-4abd-4381-a9f3-9efb59faa734`,
+`a6ca8b91-8a15-41b1-86cc-1119c7a967b7`, and
+`08b6b492-898e-432a-85ec-f41338e891a0`) showed that agents can also omit the
+whole alias list or report the pre-import high name. The v3 adapter therefore:
+
+- treats `source-manifest.json` and its `SOURCE_HIGH` identity as authoritative;
+- derives the method only from the guarded construction plan when absent;
+- opens the generated Blend read-only to recover the single low-object name and
+  mesh counters when the report has no usable records;
+- refuses zero or multiple generated low Mesh objects;
+- never saves, modifies, regenerates, or retries the Blend.
