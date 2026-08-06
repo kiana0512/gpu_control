@@ -69,3 +69,30 @@ FBX 重导出成功，合并阶段耗时约 2 秒。
 - 替换 Worker 前必须确认目标 Worker 没有 `RUNNING` 任务并先进入 draining。
 - 2026-08-06 本次检查时 3090-A 有真实 V6 任务运行，禁止在该任务结束前替换该节点。
 - 新镜像必须再次验证 V6 Skill/prompt/policy SHA 与本文一致，验证单对象脚本 SHA，并在空闲节点逐台滚动。
+
+## 生产滚动回执
+
+2026-08-06 15:25–15:33（Asia/Singapore）完成逐节点滚动：
+
+| 项目 | 实际值 |
+| --- | --- |
+| Git commit | `70866bf1c570669a659e32add2f10bff8c47d61e` |
+| GitHub | `origin/main` 已推送 |
+| Worker image | `li3d/blender-worker:1.4.0-retopology-v6-merged` |
+| Image ID | `sha256:a22694e2d9475f3d068b7684512e1b5ebd1eb3a929912fa8e8bfe9e29f5eb880` |
+| 节点顺序 | `control-4090` → `worker-3090-a` → `worker-3090-b` |
+| 业务影响 | 仅重建各节点 Linux Blender Asset Worker；API、Scheduler、Web、ComfyUI、GPU 推理与 Windows Substance 未重启 |
+
+三个节点均实测返回本文冻结的 Skill、prompt、policy、merge script 四个 SHA，运行环境同时返回
+`ASSET_WORKER_BUILD_VERSION=1.4.0-retopology-v6-merged` 和上述完整 commit。
+
+滚动后真实任务 `019b388f-6341-4ad6-8ac0-be429f96f957` 由更新后的
+`asset-worker-3090-a` 正常领取并进入 `RETOPOLOGY_V6_FORMAL_BUILD`；进度 31.25% 时服务端
+`estimated_remaining_seconds=315`，证明 ETA 已与 7200 秒硬超时解耦。该真实任务不作为自动测试任务操作，继续由用户请求自然运行。
+
+当时三台 Worker 的 Codex 状态为：
+
+- 3090-A：`AUTHENTICATED / HEALTHY`；可执行 V6 Agent。
+- 4090、3090-B：`EXPIRED / FAILED / AUTH_REFRESH_REUSED`；能维持 Blender-only 能力，但在重新认证前不领取 Codex V6 拓扑。
+
+因此当前 V6 拓扑吞吐暂时为一个 Agent 槽位。恢复另外两台认证可以提升并行用户吞吐，但不会直接缩短同一个模型的构建时间。
