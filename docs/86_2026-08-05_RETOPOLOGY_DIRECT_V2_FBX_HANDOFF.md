@@ -15,7 +15,7 @@
 - 每个高模只生成一个候选低模。
 - 生成后保存一次并立即停止，状态为 `generated_for_user_inspection`。
 - 不运行旧 V6 独立 QA、七视图评分、自动修正、自动重开或第二次建模。
-- 用户显式要求最终交付格式为 FBX；Blend 只作为 Worker 内部生成与确定性导出中间文件，不是用户正式交付。
+- 用户端最终交付格式为 BLEND + FBX；两者都必须作为正式模型产物返回。
 
 ## 2. 输入兼容
 
@@ -27,6 +27,7 @@
 
 成功任务状态为 `SUCCEEDED`，`delivery_ready=true`。正式模型文件为：
 
+- `<源文件名>_GAME_LOW.blend`，artifact kind 为 `blend`。
 - `<源文件名>_GAME_LOW.fbx`，artifact kind 为 `fbx`。
 
 同时返回审计与排障证据：
@@ -37,12 +38,12 @@
 - `agent_events.jsonl`
 - `wrapper_events.jsonl`
 
-`delivery_manifest.json` 固定记录源文件 SHA、归一化 Blend SHA、Agent 生成 Blend SHA、最终 FBX SHA/大小、低模对象名、包 SHA，以及明确的 `automatic_post_generation_review=false` 和 `automatic_retry=false`。
+`delivery_manifest.json` 固定记录源文件 SHA、归一化 Blend SHA、正式 Blend SHA/大小、最终 FBX SHA/大小、低模对象名、包 SHA，以及明确的 `automatic_post_generation_review=false` 和 `automatic_retry=false`。
 
 ## 4. 用户端显示规则
 
 - 任务名称：`Direct V2 自动拓扑`
-- 成功文案：`FBX 已交付 · 等待检查`
+- 成功文案：`BLEND + FBX 已交付 · 等待检查`
 - 不得显示“严格 QA 通过”或把用户检查前的候选宣称为 `accepted`、`validated`、`game_ready`。
 - 失败时显示真实执行阶段和错误码；不得伪造 QA 失败。
 

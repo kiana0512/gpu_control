@@ -1719,6 +1719,8 @@ async def run_retopology_v6(
         "source_sha256": source_sha_before,
         "normalized_blend_sha256": direct_source_sha,
         "agent_blend_sha256": file_sha256(result_blend),
+        "delivery_blend_sha256": file_sha256(result_blend),
+        "delivery_blend_size_bytes": result_blend.stat().st_size,
         "delivery_fbx_sha256": file_sha256(final_fbx),
         "delivery_fbx_size_bytes": final_fbx.stat().st_size,
         "low_objects": low_objects,
@@ -1732,6 +1734,7 @@ async def run_retopology_v6(
 
     shutil.rmtree(runtime_root)
     return {
+        "blend": result_blend.name,
         "fbx": final_fbx.name,
         "generation_report": "generation_report.json",
         "delivery_manifest": "delivery_manifest.json",

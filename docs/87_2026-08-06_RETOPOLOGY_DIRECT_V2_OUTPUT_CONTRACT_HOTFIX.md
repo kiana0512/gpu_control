@@ -32,3 +32,8 @@ Agent 在 29% 结束且没有写出约定的 Blend，最终返回
 新 Worker 标签为 `li3d/blender-worker:1.3.6-retopo-direct-v2-report-compat`。每个节点必须在
 `current_jobs=0` 时滚动替换；不重启 ComfyUI，不清理模型缓存，不修改 UV、PBR、
 序列帧抠图或 Scheduler。
+
+## 2026-08-06 用户端交付兼容
+
+用户端仍以“正式 BLEND + FBX”为完整交付契约。Direct V2 因此同时上传并发布
+`blend` 和 `fbx` 两个正式 artifact，两个 SHA/大小都纳入 `delivery_manifest.json` 门禁。

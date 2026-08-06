@@ -278,6 +278,7 @@ RETOPOLOGY_V6_RESULT_ARTIFACT_ROLES = frozenset(
     }
 )
 RETOPOLOGY_DIRECT_V2_ARTIFACTS = {
+    "blend": ("final_low.blend", "application/octet-stream"),
     "fbx": ("final_low.fbx", "application/octet-stream"),
     "generation_report": ("generation_report.json", "application/json"),
     "delivery_manifest": ("delivery_manifest.json", "application/json"),
@@ -3869,6 +3870,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 != snapshot.options.get("package_sha256")
                 or manifest.get("source_sha256") != snapshot.options.get("project_sha256")
                 or manifest.get("agent_blend_sha256") != result.get("output_sha256")
+                or manifest.get("delivery_blend_sha256")
+                != staged_by_kind["blend"].sha256
+                or manifest.get("delivery_blend_size_bytes")
+                != staged_by_kind["blend"].size_bytes
                 or manifest.get("delivery_fbx_sha256")
                 != staged_by_kind["fbx"].sha256
                 or manifest.get("delivery_fbx_size_bytes")
@@ -3886,13 +3891,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if cancelled is not None:
                 return cancelled
             stem = Path(snapshot.options["project_filename"]).stem
+            staged_by_kind["blend"].kind = "blend"
+            staged_by_kind["blend"].filename = f"{stem}_GAME_LOW.blend"
             staged_by_kind["fbx"].kind = "fbx"
             staged_by_kind["fbx"].filename = f"{stem}_GAME_LOW.fbx"
             db.add_all(created)
             job.status = "SUCCEEDED"
             job.progress = 100
             job.stage = "SUCCEEDED"
-            job.stage_message = "Direct V2 低模 FBX 已生成并交付；等待用户检查"
+            job.stage_message = "Direct V2 低模 BLEND 与 FBX 已生成并交付；等待用户检查"
             job.estimated_remaining_seconds = 0
             job.last_progress_at = datetime.now(UTC)
             job.finished_at = job.last_progress_at
@@ -3902,7 +3909,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 **job.options,
                 "direct_v2_result": {
                     "status": "generated_for_user_inspection",
-                    "delivery_format": "fbx",
+                    "delivery_format": "blend+fbx",
+                    "delivery_formats": ["blend", "fbx"],
                     "automatic_post_generation_review": False,
                     "automatic_retry": False,
                     "assets": generation["assets"],
@@ -3917,7 +3925,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 details={
                     "event": "asset.succeeded",
                     "engine_contract": "retopology-direct-v2",
-                    "delivery_format": "fbx",
+                    "delivery_format": "blend+fbx",
                     "automatic_post_generation_review": False,
                 },
             )
