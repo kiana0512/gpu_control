@@ -10,8 +10,10 @@ step needed before the unmodified upstream adapter invokes Codex.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -22,6 +24,60 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def normalize_generation_report(job_dir: Path) -> bool:
+    """Normalize the one known v2.3 report alias without touching geometry.
+
+    The approved upstream verifier requires ``assets`` records, while an
+    otherwise successful agent may emit the same facts under ``objects`` with
+    explicit high/low prefixes. Preserve that raw evidence and translate only
+    when every required value is present. Any incomplete or unrelated report
+    remains unchanged so the upstream verifier still fails closed.
+    """
+
+    report_path = job_dir / "generation_report.json"
+    if not report_path.is_file():
+        return False
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if isinstance(report.get("assets"), list) and report["assets"]:
+        return False
+    if report.get("status") != "generated_for_user_inspection":
+        return False
+    objects = report.get("objects")
+    if not isinstance(objects, list) or not objects:
+        return False
+
+    assets: list[dict[str, object]] = []
+    for item in objects:
+        if not isinstance(item, dict):
+            return False
+        normalized = {
+            "high_object": item.get("high_object", item.get("high_name")),
+            "low_object": item.get("low_object", item.get("low_name")),
+            "faces": item.get("faces", item.get("low_faces")),
+            "triangles": item.get("triangles", item.get("low_triangles")),
+            "method_decision": item.get("method_decision"),
+            "actual_plugin_use": item.get("actual_plugin_use"),
+        }
+        if any(value is None for value in normalized.values()):
+            return False
+        assets.append(normalized)
+
+    original_path = job_dir / "generation_report.original.json"
+    if not original_path.exists():
+        shutil.copy2(report_path, original_path)
+    report["assets"] = assets
+    report["gpu_control_compatibility"] = {
+        "adapter": "generation-report-objects-to-assets-v1",
+        "original_report": original_path.name,
+    }
+    temporary = job_dir / ".generation_report.json.tmp"
+    temporary.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    temporary.replace(report_path)
+    return True
 
 
 def main() -> None:
@@ -45,9 +101,12 @@ def main() -> None:
         raise SystemExit("Codex authentication copy failed hash verification")
 
     real_codex = os.environ.get("GPU_CONTROL_REAL_CODEX_BIN", "/usr/local/bin/codex")
-    os.execv(  # noqa: S606 - executable is the immutable Worker setting
-        real_codex, [real_codex, *sys.argv[1:]]
+    completed = subprocess.run(  # noqa: S603 - immutable Worker setting
+        [real_codex, *sys.argv[1:]], check=False
     )
+    if completed.returncode == 0:
+        normalize_generation_report(Path.cwd().resolve())
+    raise SystemExit(completed.returncode)
 
 
 if __name__ == "__main__":
