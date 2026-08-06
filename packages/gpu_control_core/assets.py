@@ -425,8 +425,8 @@ def retopology_v6_process_request_hash(
 ) -> str:
     payload = {
         "job_type": "RETOPOLOGY_PROCESS_V2",
-        "engine_contract": "retopology-direct-v2",
-        "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
+        "engine_contract": "retopology-v6",
+        "policy_sha256": RETOPOLOGY_V6_POLICY_SHA256,
         "external_asset_id": metadata.external_asset_id,
         "options": metadata.options.model_dump(mode="json"),
         "reference_views": [item.model_dump(mode="json") for item in metadata.reference_views],

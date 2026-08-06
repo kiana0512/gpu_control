@@ -2536,15 +2536,14 @@ async def process_job(
                 str(job["input_sha256"]),
             )
         elif job["job_type"] == "RETOPOLOGY_PROCESS_V2":
-            contract = await run_retopology_v6(
-                client,
-                settings,
-                job_id,
-                lease_headers,
-                input_path,
-                output_dir,
-                job["options"],
-                str(job["input_sha256"]),
+            retopology_runner = (
+                run_retopology_v6_legacy
+                if job["options"].get("engine_contract") == "retopology-v6"
+                else run_retopology_v6
+            )
+            contract = await retopology_runner(
+                client, settings, job_id, lease_headers, input_path, output_dir,
+                job["options"], str(job["input_sha256"])
             )
         else:
             raise RuntimeError(f"unsupported asset job type: {job['job_type']}")
@@ -2573,9 +2572,12 @@ async def process_job(
                     f"/internal/v1/assets/jobs/{job_id}/retopology-process-complete"
                 )
             elif job["job_type"] == "RETOPOLOGY_PROCESS_V2":
-                complete_path = (
-                    f"/internal/v1/assets/jobs/{job_id}/retopology-v6-complete"
+                completion_suffix = (
+                    "retopology-v6-formal-complete"
+                    if job["options"].get("engine_contract") == "retopology-v6"
+                    else "retopology-v6-complete"
                 )
+                complete_path = f"/internal/v1/assets/jobs/{job_id}/{completion_suffix}"
             else:
                 complete_path = (
                     f"/internal/v1/assets/jobs/{job_id}/retopology-complete"

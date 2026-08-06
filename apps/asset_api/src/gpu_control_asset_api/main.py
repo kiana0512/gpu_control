@@ -34,7 +34,6 @@ from packages.gpu_control_core.admission import (
 )
 from packages.gpu_control_core.assets import (
     AssetCreateMetadata,
-    RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
     RETOPOLOGY_V6_POLICY_SHA256,
     RetopologyAuditMetadata,
     SubstanceBakeMetadata,
@@ -138,7 +137,7 @@ SUBSTANCE_BAKE_COMMAND_COUNTS = {
 CODEX_REQUIRED_JOB_TYPES = frozenset(
     {"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"}
 )
-RETOPOLOGY_V6_SKILL_VERSION = "blender-retopology-direct-v2.0.0"
+RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-retopology-v6.0.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1943,10 +1942,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 item.filename: item.model_dump(mode="json") for item in parsed.reference_views
             }
             input_manifest = {
-                "schema_version": "retopology_input.direct-v2",
-                "engine_contract": "retopology-direct-v2",
+                "schema_version": "retopology_input.v6",
+                "engine_contract": "retopology-v6",
                 "api_version": parsed.api_version,
-                "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
+                "policy_sha256": RETOPOLOGY_V6_POLICY_SHA256,
                 "project": {
                     "filename": project_filename,
                     "sha256": project_sha,
@@ -1997,9 +1996,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             options = parsed.options.model_dump(mode="json")
             options.update(
                 {
-                    "engine_contract": "retopology-direct-v2",
-                    "package_version": "2.0.0",
-                    "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
+                    "engine_contract": "retopology-v6",
+                    "policy_version": "6.0.0",
+                    "policy_sha256": RETOPOLOGY_V6_POLICY_SHA256,
                     "deprecated_fields_ignored": compatibility_warnings,
                     "project_filename": project_filename,
                     "project_sha256": project_sha,
@@ -2029,8 +2028,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 details={
                     "event": "asset.queued",
                     "request_id": job.request_id,
-                    "engine_contract": "retopology-direct-v2",
-                    "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
+                    "engine_contract": "retopology-v6",
+                    "policy_sha256": RETOPOLOGY_V6_POLICY_SHA256,
                     "warnings": compatibility_warnings,
                 },
             )
@@ -3499,7 +3498,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not committed:
                 await cleanup_uncommitted_completion(request, staging, created)
 
-    async def worker_complete_retopology_v6_legacy(
+    @app.post("/internal/v1/assets/jobs/{job_id}/retopology-v6-formal-complete")
+    async def worker_complete_retopology_v6_formal(
         job_id: str,
         request: Request,
         db: Annotated[AsyncSession, Depends(session)],
