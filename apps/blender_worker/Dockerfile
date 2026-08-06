@@ -10,6 +10,10 @@ RUN apt-get update -qq \
         xvfb \
         xauth \
     && rm -rf /var/lib/apt/lists/*
+
+# Codex is mounted at runtime as one multi-call binary.  Workspace-write
+# sandbox execution invokes the same binary through this companion argv[0].
+RUN ln -s /usr/local/bin/codex /usr/local/bin/codex-linux-sandbox
 COPY pyproject.toml README.md ./
 COPY packages ./packages
 COPY apps/blender_worker/src ./apps/blender_worker/src

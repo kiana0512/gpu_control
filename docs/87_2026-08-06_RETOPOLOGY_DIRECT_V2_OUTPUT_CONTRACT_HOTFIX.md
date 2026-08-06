@@ -20,6 +20,10 @@ Agent 在 29% 结束且没有写出约定的 Blend，最终返回
 
 ## 发布约束
 
-新 Worker 标签为 `li3d/blender-worker:1.3.4-retopo-direct-v2-output-contract`。每个节点必须在
+结构化 Agent 事件进一步确认输出缺失的底层原因为 Worker 只挂载 Codex 主程序，
+但没有提供同一 multi-call 二进制的 `codex-linux-sandbox` 入口，导致 workspace-write
+沙箱在读取 Skill 前就失败。最终 Worker 镜像固定提供该伴生入口。
+
+新 Worker 标签为 `li3d/blender-worker:1.3.5-retopo-direct-v2-sandbox`。每个节点必须在
 `current_jobs=0` 时滚动替换；不重启 ComfyUI，不清理模型缓存，不修改 UV、PBR、
 序列帧抠图或 Scheduler。
