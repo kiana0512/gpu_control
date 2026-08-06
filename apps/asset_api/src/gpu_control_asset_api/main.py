@@ -825,9 +825,30 @@ class WorkerClaim(BaseModel):
 class WorkerProgress(BaseModel):
     model_config = ConfigDict(extra="forbid")
     progress: float = Field(ge=0, le=99.9)
-    stage: str = Field(pattern=r"^[A-Z][A-Z0-9_]{2,31}$")
+    # Workers may temporarily report a newer descriptive stage name before
+    # every node has rolled to the shortened DB-safe spelling. Known aliases
+    # are canonicalized below; unknown values still fail closed.
+    stage: str = Field(pattern=r"^[A-Z][A-Z0-9_]{2,63}$", max_length=64)
     message: str = Field(min_length=1, max_length=500)
     estimated_remaining_seconds: int | None = Field(default=None, ge=0, le=604800)
+
+
+WORKER_PROGRESS_STAGE_ALIASES = {
+    "RETOPOLOGY_DIRECT_V2_INPUT_NORMALIZATION": "RETOPOLOGY_V2_INPUT_IMPORT",
+}
+
+
+def canonical_worker_progress_stage(stage: str) -> str:
+    canonical = WORKER_PROGRESS_STAGE_ALIASES.get(stage, stage)
+    if len(canonical) > 32:
+        raise HTTPException(
+            422,
+            detail={
+                "code": "ASSET_PROGRESS_STAGE_UNSUPPORTED",
+                "stage": stage,
+            },
+        )
+    return canonical
 
 
 class WorkerFailure(BaseModel):
@@ -2988,9 +3009,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job = await leased_job(job_id, lease, db)
         if job.cancel_requested:
             return {"cancel_requested": True}
+        stage = canonical_worker_progress_stage(body.stage)
         job.status = "RUNNING"
         job.progress = max(job.progress, body.progress)
-        job.stage = body.stage
+        job.stage = stage
         job.stage_message = body.message
         job.estimated_remaining_seconds = body.estimated_remaining_seconds
         job.last_progress_at = datetime.now(UTC)

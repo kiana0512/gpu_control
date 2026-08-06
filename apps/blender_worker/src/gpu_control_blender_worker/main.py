@@ -1571,7 +1571,7 @@ async def run_retopology_v6(
             import_process,
             4,
             8,
-            "RETOPOLOGY_DIRECT_V2_INPUT_NORMALIZATION",
+            "RETOPOLOGY_V2_INPUT_IMPORT",
             "正在把上传模型无损归一化为 Direct V2 Blender 输入",
             60,
             hard_timeout_seconds=300,

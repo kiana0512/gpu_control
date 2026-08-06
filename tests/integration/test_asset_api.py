@@ -40,6 +40,19 @@ from packages.gpu_control_core.security import hash_api_secret, sign_agent_reque
 from packages.gpu_control_core.settings import Settings
 
 
+def test_direct_v2_long_progress_stage_is_canonicalized_for_rolling_workers() -> None:
+    progress = asset_api_main.WorkerProgress(
+        progress=4,
+        stage="RETOPOLOGY_DIRECT_V2_INPUT_NORMALIZATION",
+        message="normalizing input",
+        estimated_remaining_seconds=60,
+    )
+
+    assert asset_api_main.canonical_worker_progress_stage(progress.stage) == (
+        "RETOPOLOGY_V2_INPUT_IMPORT"
+    )
+
+
 async def test_asset_api_version_exposes_aligned_immutable_provenance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

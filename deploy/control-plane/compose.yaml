@@ -61,7 +61,7 @@ services:
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
       sbom: true
       provenance: mode=max
-    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}unified-scheduler-asset-api:${ASSET_API_IMAGE_TAG:-1.6.3-retopo-direct-v2}
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}unified-scheduler-asset-api:${ASSET_API_IMAGE_TAG:-1.6.4-retopo-direct-v2-hotfix}
     environment:
       TMPDIR: /srv/gpu-control/assets
       ASSET_ROOT: ${ASSET_ROOT:-/srv/gpu-control/assets}
