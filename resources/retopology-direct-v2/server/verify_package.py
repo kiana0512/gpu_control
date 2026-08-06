@@ -45,6 +45,7 @@ def main() -> int:
 
     scripts = [
         ROOT / "server" / "one_click_retopology.py",
+        ROOT / "server" / "mesh_inventory.py",
         ROOT / "server" / "verify_package.py",
         SKILL / "scripts" / "guard_shape_authority_plan.py",
     ]

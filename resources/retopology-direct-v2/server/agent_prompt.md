@@ -28,6 +28,8 @@
 7. 在同一次 Blender 构建脚本结束前写入 `{{JOB_DIR}}/generation_report.json`，至少包含：
    每个高模及对应低模名称、faces、triangles、method_decision、actual_plugin_use，以及
    `status: generated_for_user_inspection`。
+   `assets` 必须是非空数组，每条必须使用精确键名 `high_object`、`low_object`、
+   `faces`、`triangles`、`method_decision`、`actual_plugin_use`；不得使用别名或空数组。
 8. 保存成功后立即停止。不要宣称 accepted、final_pass、validated 或 game_ready。
 
 服务器没有交互式 Blender 窗口时，可用给定 Blender 可执行文件执行 headless Python。

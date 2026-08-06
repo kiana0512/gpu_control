@@ -88,33 +88,101 @@ def recent_agent_events(path: Path, limit: int = 6) -> list[dict]:
     return parsed[-limit:]
 
 
-def validate_generation_report(path: Path, requested_highs: list[str]) -> dict:
+def mesh_inventory(blender: str, blend: Path, output: Path, package_root: Path) -> list[dict]:
+    completed = subprocess.run(
+        [
+            blender,
+            "--background",
+            str(blend),
+            "-P",
+            str(package_root / "server" / "mesh_inventory.py"),
+            "--",
+            "--output",
+            str(output),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    if completed.returncode != 0 or not output.is_file():
+        raise RuntimeError(f"mesh inventory failed: {completed.stderr[-1000:]}")
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    meshes = payload.get("meshes")
+    if not isinstance(meshes, list):
+        raise RuntimeError("mesh inventory has the wrong schema")
+    return meshes
+
+
+def validate_generation_report(
+    path: Path,
+    requested_highs: list[str],
+    source_meshes: list[dict],
+    output_meshes: list[dict],
+) -> dict:
     if not path.is_file():
         raise RuntimeError("generation_report.json was not created")
     report = json.loads(path.read_text(encoding="utf-8"))
     if report.get("status") != "generated_for_user_inspection":
         raise RuntimeError("generation report has the wrong status")
+    source_names = {str(item.get("name")) for item in source_meshes}
+    output_by_name = {str(item.get("name")): item for item in output_meshes}
+    missing_source = sorted(source_names - set(output_by_name))
+    if missing_source:
+        raise RuntimeError(f"output Blend removed source mesh objects: {missing_source}")
+    generated = [item for item in output_meshes if str(item.get("name")) not in source_names]
+    generated = [item for item in generated if int(item.get("faces") or 0) > 0]
+    if not generated:
+        raise RuntimeError("output Blend contains no new non-empty low mesh objects")
+
     assets = report.get("assets")
+    warnings = report.get("contract_warnings")
+    warnings = list(warnings) if isinstance(warnings, list) else []
     if not isinstance(assets, list) or not assets:
-        raise RuntimeError("generation report has no asset records")
+        assets = []
+        for index, low in enumerate(generated):
+            high = source_meshes[index]["name"] if len(source_meshes) == len(generated) else "AUTO_DISCOVERED_HIGH_MESHES"
+            assets.append(
+                {
+                    "high_object": high,
+                    "low_object": low["name"],
+                    "faces": low["faces"],
+                    "triangles": low["triangles"],
+                    "method_decision": "not_reported_by_agent",
+                    "actual_plugin_use": "not_reported_by_agent",
+                }
+            )
+        warnings.append("AGENT_ASSET_RECORDS_RECONSTRUCTED_FROM_BLEND_INVENTORY")
     if requested_highs:
         delivered = {item.get("high_object") for item in assets if isinstance(item, dict)}
         missing = sorted(set(requested_highs) - delivered)
         if missing:
             raise RuntimeError(f"generation report misses requested highs: {missing}")
+    normalized_assets = []
     for index, item in enumerate(assets):
         if not isinstance(item, dict):
             raise RuntimeError(f"generation report asset {index} is invalid")
-        for field in (
-            "high_object",
-            "low_object",
-            "faces",
-            "triangles",
-            "method_decision",
-            "actual_plugin_use",
-        ):
-            if field not in item:
-                raise RuntimeError(f"generation report asset {index} misses {field}")
+        normalized = dict(item)
+        low_name = normalized.get("low_object") or normalized.get("low_name") or normalized.get("object")
+        if not isinstance(low_name, str) or low_name not in output_by_name or low_name in source_names:
+            if index >= len(generated):
+                raise RuntimeError(f"generation report asset {index} has no matching generated low")
+            low_name = generated[index]["name"]
+            warnings.append(f"AGENT_LOW_OBJECT_REPAIRED:{index}")
+        low = output_by_name[low_name]
+        normalized["low_object"] = low_name
+        normalized["high_object"] = normalized.get("high_object") or normalized.get("high_name") or (
+            source_meshes[index]["name"] if len(source_meshes) == len(assets) else "AUTO_DISCOVERED_HIGH_MESHES"
+        )
+        normalized["faces"] = int(normalized.get("faces") or normalized.get("face_count") or low["faces"])
+        normalized["triangles"] = int(normalized.get("triangles") or normalized.get("triangle_count") or low["triangles"])
+        normalized["method_decision"] = normalized.get("method_decision") or normalized.get("method") or "not_reported_by_agent"
+        normalized["actual_plugin_use"] = normalized.get("actual_plugin_use") or normalized.get("plugin_use") or "not_reported_by_agent"
+        normalized_assets.append(normalized)
+    report["assets"] = normalized_assets
+    report["contract_warnings"] = sorted(set(warnings))
+    atomic_write(path, json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     return report
 
 
@@ -189,6 +257,10 @@ def main() -> int:
     )
     prompt_path = job_dir / "agent_prompt.md"
     atomic_write(prompt_path, prompt)
+    source_inventory_path = job_dir / "source_mesh_inventory.json"
+    source_meshes = mesh_inventory(blender, input_copy, source_inventory_path, package_root)
+    if not source_meshes:
+        raise SystemExit("input Blend contains no mesh objects")
 
     environment = os.environ.copy()
     environment.update(
@@ -258,7 +330,14 @@ def main() -> int:
         return 3
 
     report_path = job_dir / "generation_report.json"
-    report = validate_generation_report(report_path, args.high)
+    output_inventory_path = job_dir / "output_mesh_inventory.json"
+    output_meshes = mesh_inventory(blender, job_output, output_inventory_path, package_root)
+    report = validate_generation_report(
+        report_path,
+        args.high,
+        source_meshes,
+        output_meshes,
+    )
     if sha256(source) != sha256(input_copy):
         raise SystemExit("source copy hash mismatch")
     destination.parent.mkdir(parents=True, exist_ok=True)

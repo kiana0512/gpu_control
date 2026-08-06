@@ -24,6 +24,11 @@ Agent 在 29% 结束且没有写出约定的 Blend，最终返回
 但没有提供同一 multi-call 二进制的 `codex-linux-sandbox` 入口，导致 workspace-write
 沙箱在读取 Skill 前就失败。最终 Worker 镜像固定提供该伴生入口。
 
-新 Worker 标签为 `li3d/blender-worker:1.3.5-retopo-direct-v2-sandbox`。每个节点必须在
+后续真实任务已成功执行 Blender 并到达 92%，但 Agent 生成的报告曾出现
+`assets=[]` 或缺少 `high_object` 的格式偏差。这不再阻断完好低模交付：Worker 仅对输入和
+输出 Blend 做非变更的 Mesh 对象清单读取，确认原 Mesh 仍在且存在新的非空低模，再用实际
+对象名和面数规范化报告。该步骤不评分、不做几何 QA、不修改 Blend。
+
+新 Worker 标签为 `li3d/blender-worker:1.3.6-retopo-direct-v2-report-compat`。每个节点必须在
 `current_jobs=0` 时滚动替换；不重启 ComfyUI，不清理模型缓存，不修改 UV、PBR、
 序列帧抠图或 Scheduler。
