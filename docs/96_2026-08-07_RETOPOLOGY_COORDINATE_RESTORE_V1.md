@@ -82,6 +82,31 @@ PBR 烘焙恢复原有 `SUBSTANCE_BAKE_V1` Windows-only 流程。独立拖入高
 
 ## 生产发布
 
-待候选镜像构建后，必须逐台把 Worker 置为 `DRAINING`，确认 `current_jobs=0` 后替换，再恢复
-`ACTIVE`。不得重启 ComfyUI 或 Windows Substance Baker。Asset API 在所有 Worker 均兼容 V3 后
-切换，Web 回退到不含预烘焙坐标状态的版本。最终镜像摘要和三节点验证结果在发布完成后补录。
+已在零任务窗口完成发布。由于旧 API 只接受 V2、而新 API 只接受带坐标证据的 V3，为避免兼容窗口
+交付未校准文件，先将三台节点全部置为 `DRAINING` 并确认 GPU/Asset 活动作业均为 0，再依次替换三台
+Worker；所有 Worker 保持 DRAINING 时切换 Asset API 和 Web，验证后统一恢复 `ACTIVE`。
+
+| 组件 | 生产镜像 | 镜像 ID |
+| --- | --- | --- |
+| Blender Worker（三台一致） | `li3d/blender-worker:1.4.5-retopology-coordinate-restore-v1` | `sha256:6cf827a6ec6b0c1626082359117abebc3c411683b180f6010b28b349c8b1f3c4` |
+| Asset API | `unified-scheduler-asset-api:1.6.10-retopology-coordinate-restore-v1` | `sha256:1d80c5228001d8685eb691e20c52b7375af6dbfaf66e410c193cfd4d65a79d7c` |
+| Web（撤销坐标准备 UI） | `gpu-control-web:1.5.10-retopo-direct-v2` | `sha256:c674c41679dcbd42b422cddb5fdb7f5f64dabba4d4ec424ef8aa2925e4699cd8` |
+
+Worker 与 Asset API 的 OCI revision 为
+`1d85f5d467d1433bc3bd3cb5bda4dd30eeafe9be`。三台 Worker 中脚本 SHA-256 均为
+`a1dadcd72318b1475377cc02f3e70876d8cc3ad350ebe86b17d7ed72b10568c5`。
+
+发布后验证：
+
+- `control-4090`、`worker-3090-a`、`worker-3090-b` 均为
+  `ACTIVE / ONLINE / current_jobs=0`；
+- 三个 Linux Asset Worker 均为
+  `ONLINE / AUTHENTICATED / HEALTHY / asset-skills-retopology-v2.3.0`；
+- Asset API 与 Web healthcheck 均为 `healthy`；
+- OpenAPI 不再包含 `bake-alignment-complete` 或 `alignment_manifest`；Web 静态产物不再包含
+  `BAKE_ALIGNMENT`、`坐标准备` 或 `bake-alignment`；
+- 三台 ComfyUI 容器 ID 仍分别为 `d306e1facb7b`、`1547af00e12f`、`95acf7b332f2`，没有重启、
+  重建或清理缓存；Windows Substance Baker 未重启；
+- 六次节点模式变更均由 `codex-operator` 通过受审计 Admin API 写入
+  `node.mode.change / SUCCESS`；
+- 三台环境文件备份为 `.env.pre-retopology-coordinate-restore-1d85f5d`，可按精确旧镜像回滚。
