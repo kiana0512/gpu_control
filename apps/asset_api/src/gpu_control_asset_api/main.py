@@ -835,6 +835,7 @@ class WorkerProgress(BaseModel):
 
 WORKER_PROGRESS_STAGE_ALIASES = {
     "RETOPOLOGY_DIRECT_V2_INPUT_NORMALIZATION": "RETOPOLOGY_V2_INPUT_IMPORT",
+    "RETOPOLOGY_DIRECT_V2_COORDINATE_RESTORE": "RETOPOLOGY_V2_COORD_RESTORE",
 }
 
 
@@ -3889,6 +3890,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if isinstance(coordinate_restoration, dict)
                 else None
             )
+            blend_translation_changed = (
+                coordinate_restoration.get("blend_translation_changed")
+                if isinstance(coordinate_restoration, dict)
+                else None
+            )
+            coordinate_actions = [
+                item.get("coordinate_action")
+                for item in coordinate_pairs or []
+                if isinstance(item, dict)
+            ]
             if (
                 manifest.get("schema_version") != "retopology_direct_delivery.v3"
                 or manifest.get("job_id") != snapshot.id
@@ -3921,6 +3932,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or not isinstance(coordinate_pairs, list)
                 or not coordinate_pairs
                 or actual_pairs != expected_pairs
+                or not isinstance(blend_translation_changed, bool)
+                or len(coordinate_actions) != len(coordinate_pairs)
+                or not all(
+                    action in {"unchanged", "translation_restored"}
+                    for action in coordinate_actions
+                )
+                or blend_translation_changed
+                != ("translation_restored" in coordinate_actions)
+                or (
+                    blend_translation_changed is False
+                    and manifest.get("agent_blend_sha256")
+                    != manifest.get("delivery_blend_sha256")
+                )
                 or not all(
                     isinstance(item, dict)
                     and item.get("high_preserved") is True
@@ -3951,7 +3975,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.status = "SUCCEEDED"
             job.progress = 100
             job.stage = "SUCCEEDED"
-            job.stage_message = "Direct V2 低模已回到高模坐标，BLEND 与 FBX 已交付"
+            coordinate_result = (
+                "坐标已恢复" if blend_translation_changed else "坐标未变化、原样保留"
+            )
+            job.stage_message = f"Direct V2 {coordinate_result}，BLEND 与 FBX 已交付"
             job.estimated_remaining_seconds = 0
             job.last_progress_at = datetime.now(UTC)
             job.finished_at = job.last_progress_at
@@ -3968,6 +3995,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "coordinate_restoration": {
                         "mode": "translation_only_world_aabb_center",
                         "passed": True,
+                        "blend_translation_changed": blend_translation_changed,
                         "fbx_readback_passed": True,
                     },
                     "assets": generation["assets"],

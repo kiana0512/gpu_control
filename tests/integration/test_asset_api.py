@@ -53,6 +53,16 @@ def test_direct_v2_long_progress_stage_is_canonicalized_for_rolling_workers() ->
         "RETOPOLOGY_V2_INPUT_IMPORT"
     )
 
+    restore_progress = asset_api_main.WorkerProgress(
+        progress=92,
+        stage="RETOPOLOGY_DIRECT_V2_COORDINATE_RESTORE",
+        message="restoring delivery coordinates",
+        estimated_remaining_seconds=120,
+    )
+    assert asset_api_main.canonical_worker_progress_stage(restore_progress.stage) == (
+        "RETOPOLOGY_V2_COORD_RESTORE"
+    )
+
 
 async def test_asset_api_version_exposes_aligned_immutable_provenance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -551,8 +561,14 @@ async def test_retopology_process_creates_v230_direct_contract(tmp_path: Path) -
         assert manifest["package_sha256"] == payload["options"]["package_sha256"]
 
 
-async def test_direct_v2_completion_requires_restored_coordinates_and_fbx_readback(
+@pytest.mark.parametrize(
+    ("coordinate_action", "blend_translation_changed"),
+    (("translation_restored", True), ("unchanged", False)),
+)
+async def test_direct_v2_completion_requires_coordinate_decision_and_fbx_readback(
     tmp_path: Path,
+    coordinate_action: str,
+    blend_translation_changed: bool,
 ) -> None:
     async for settings, client in prepared_asset_app(tmp_path):
         created = await post_retopology_process(
@@ -571,7 +587,11 @@ async def test_direct_v2_completion_requires_restored_coordinates_and_fbx_readba
         assert leased["job_id"] == created_payload["job_id"]
 
         agent_blend = b"agent-presentation-blend"
-        delivery_blend = b"translation-restored-blend"
+        delivery_blend = (
+            b"translation-restored-blend"
+            if blend_translation_changed
+            else agent_blend
+        )
         delivery_fbx = b"translation-restored-fbx"
         agent_sha = hashlib.sha256(agent_blend).hexdigest()
         blend_sha = hashlib.sha256(delivery_blend).hexdigest()
@@ -602,10 +622,12 @@ async def test_direct_v2_completion_requires_restored_coordinates_and_fbx_readba
             "input_blend_sha256": agent_sha,
             "output_blend_sha256": blend_sha,
             "source_high_preserved": True,
+            "blend_translation_changed": blend_translation_changed,
             "pairs": [
                 {
                     "high_object": "SOURCE_HIGH",
                     "low_object": "SOURCE_LOW",
+                    "coordinate_action": coordinate_action,
                     "high_preserved": True,
                     "low_mesh_preserved": True,
                     "low_rotation_scale_preserved": True,
@@ -660,6 +682,7 @@ async def test_direct_v2_completion_requires_restored_coordinates_and_fbx_readba
         assert payload["options"]["direct_v2_result"]["coordinate_restoration"] == {
             "mode": "translation_only_world_aabb_center",
             "passed": True,
+            "blend_translation_changed": blend_translation_changed,
             "fbx_readback_passed": True,
         }
 

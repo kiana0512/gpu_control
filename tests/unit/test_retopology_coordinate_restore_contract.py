@@ -3,7 +3,7 @@ from pathlib import Path
 
 ROOT = Path("packages/asset_processing")
 SCRIPT = ROOT / "blender_retopology_restore_coordinates.py"
-EXPECTED_SHA256 = "a1dadcd72318b1475377cc02f3e70876d8cc3ad350ebe86b17d7ed72b10568c5"
+EXPECTED_SHA256 = "f4ffe4aef0628a151224553d78b67ebf31ff470d8970922269ce0e7dbbdf38e2"
 
 
 def test_coordinate_restore_is_translation_only_and_fbx_readback_gated() -> None:
@@ -12,6 +12,9 @@ def test_coordinate_restore_is_translation_only_and_fbx_readback_gated() -> None
 
     assert hashlib.sha256(SCRIPT.read_bytes()).hexdigest() == EXPECTED_SHA256
     assert "matrix_world.translation = matrix_world.translation + delta" in source
+    assert "if translation_required:" in source
+    assert '"translation_restored" if translation_required else "unchanged"' in source
+    assert "if blend_translation_changed:" in source
     assert '"low_rotation_scale_preserved": True' in source
     assert 'bpy.ops.export_scene.fbx(' in source
     assert 'bpy.ops.import_scene.fbx(filepath=str(output_fbx))' in source

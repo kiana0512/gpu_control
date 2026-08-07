@@ -45,7 +45,7 @@ UV_UNWRAP_SCRIPT_SHA256 = "ebfa3546d61c548a11c0e7561c75f93b6ef93308d8da9f27788bf
 UV_QA_SCRIPT_SHA256 = "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
 UV_QA_ADAPTER_SHA256 = "8e6bc5dc20a49fac5be2e92accd518d9da9fa629e878f51dc151baa80ad3359a"
 RETOPOLOGY_COORDINATE_RESTORE_SCRIPT_SHA256 = (
-    "a1dadcd72318b1475377cc02f3e70876d8cc3ad350ebe86b17d7ed72b10568c5"
+    "f4ffe4aef0628a151224553d78b67ebf31ff470d8970922269ce0e7dbbdf38e2"
 )
 RETOPOLOGY_AUDIT_SCRIPT_SHA256 = (
     "a6575902cfacd7b8106f9c887069d717a880d870fc48a6295431cdcf717a9dc4"
@@ -1824,7 +1824,7 @@ async def run_retopology_v6(
         restore_process,
         92,
         94,
-        "RETOPOLOGY_DIRECT_V2_COORDINATE_RESTORE",
+        "RETOPOLOGY_V2_COORD_RESTORE",
         "低模已生成，正在只平移回高模坐标并回读验证正式 FBX",
         120,
         hard_timeout_seconds=300,
@@ -1847,6 +1847,12 @@ async def run_retopology_v6(
         if isinstance(item, dict)
     }
     fbx_readback = coordinate_report.get("fbx_readback")
+    blend_translation_changed = coordinate_report.get("blend_translation_changed")
+    coordinate_actions = [
+        item.get("coordinate_action")
+        for item in reported_pairs or []
+        if isinstance(item, dict)
+    ]
     if (
         coordinate_report.get("schema_version")
         != "retopology_coordinate_restoration.v1"
@@ -1858,6 +1864,18 @@ async def run_retopology_v6(
         or not isinstance(reported_pairs, list)
         or not reported_pairs
         or actual_pairs != expected_pairs
+        or not isinstance(blend_translation_changed, bool)
+        or len(coordinate_actions) != len(reported_pairs)
+        or not all(
+            action in {"unchanged", "translation_restored"}
+            for action in coordinate_actions
+        )
+        or blend_translation_changed
+        != ("translation_restored" in coordinate_actions)
+        or (
+            blend_translation_changed is False
+            and agent_blend_sha256 != restored_blend_sha256
+        )
         or not all(
             isinstance(item, dict)
             and item.get("high_preserved") is True

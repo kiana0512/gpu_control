@@ -239,11 +239,16 @@ def main() -> None:
         high_bounds = bounds_payload([high])
         low_bounds_before = bounds_payload([low])
         delta = Vector(high_bounds["center"]) - Vector(low_bounds_before["center"])
-
-        matrix_world = low.matrix_world.copy()
-        matrix_world.translation = matrix_world.translation + delta
-        low.matrix_world = matrix_world
-        bpy.context.view_layer.update()
+        transform_tolerance = max(
+            1e-6,
+            max(abs(value) for value in high_bounds["dimensions"]) * 1e-6,
+        )
+        translation_required = max(abs(value) for value in delta) > transform_tolerance
+        if translation_required:
+            matrix_world = low.matrix_world.copy()
+            matrix_world.translation = matrix_world.translation + delta
+            low.matrix_world = matrix_world
+            bpy.context.view_layer.update()
 
         low_bounds_after = bounds_payload([low])
         high_after = object_signature(high, include_translation=True)
@@ -253,10 +258,6 @@ def main() -> None:
         )
         dimension_delta = max_vector_delta(
             low_bounds_before["dimensions"], low_bounds_after["dimensions"]
-        )
-        transform_tolerance = max(
-            1e-6,
-            max(abs(value) for value in high_bounds["dimensions"]) * 1e-6,
         )
         if high_after != high_signature:
             raise RuntimeError(f"coordinate restoration changed the high mesh: {high_name}")
@@ -275,7 +276,12 @@ def main() -> None:
             {
                 "high_object": high_name,
                 "low_object": low_name,
-                "translation_applied": vector_values(delta),
+                "coordinate_action": (
+                    "translation_restored" if translation_required else "unchanged"
+                ),
+                "translation_applied": (
+                    vector_values(delta) if translation_required else [0.0, 0.0, 0.0]
+                ),
                 "high_bounds": high_bounds,
                 "low_bounds_before": low_bounds_before,
                 "low_bounds_after": low_bounds_after,
@@ -289,9 +295,13 @@ def main() -> None:
         )
         low_objects.append(low)
 
+    blend_translation_changed = any(
+        record["coordinate_action"] == "translation_restored" for record in records
+    )
     aligned_union_bounds = bounds_payload(low_objects)
-    args.output_blend.parent.mkdir(parents=True, exist_ok=True)
-    bpy.ops.wm.save_as_mainfile(filepath=str(args.output_blend), check_existing=False)
+    if blend_translation_changed:
+        args.output_blend.parent.mkdir(parents=True, exist_ok=True)
+        bpy.ops.wm.save_as_mainfile(filepath=str(args.output_blend), check_existing=False)
     output_blend_sha256 = file_sha256(args.output_blend)
     fbx = export_and_read_back(args.output_fbx, low_objects, aligned_union_bounds)
     report = {
@@ -302,6 +312,7 @@ def main() -> None:
         "input_blend_sha256": input_blend_sha256,
         "output_blend_sha256": output_blend_sha256,
         "source_high_preserved": True,
+        "blend_translation_changed": blend_translation_changed,
         "pairs": records,
         "fbx_readback": fbx,
     }
