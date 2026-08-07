@@ -80,8 +80,6 @@ const filteredJobs = computed(() => {
     const typeMatches =
       jobType.value === "ALL" ||
       job.job_type === jobType.value ||
-      (jobType.value === "SUBSTANCE_BAKE_V1" &&
-        job.job_type === "BAKE_ALIGNMENT_V1") ||
       (jobType.value === "UV_PROCESS_V2" && job.job_type === "UV_UNWRAP") ||
       (jobType.value === "RETOPOLOGY_PROCESS_V2" &&
         job.job_type === "RETOPOLOGY_PROCESS_V1");
@@ -216,7 +214,6 @@ function retopoflowProbeLabel(worker: AssetWorkerInfo) {
 }
 
 function jobTypeLabel(value: string) {
-  if (value === "BAKE_ALIGNMENT_V1") return "PBR 烘焙 · 坐标准备";
   if (value === "UV_PROCESS_V2") return "PBR UV";
   if (value === "RETOPOLOGY_AUDIT") return "拓扑审计";
   if (["RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"].includes(value))
@@ -234,8 +231,7 @@ function jobApiPath(value: string) {
   if (value === "RETOPOLOGY_AUDIT") return "/api/v1/assets/retopology/audit";
   if (["RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"].includes(value))
     return "/api/v1/assets/retopology/process";
-  if (["BAKE_ALIGNMENT_V1", "SUBSTANCE_BAKE_V1"].includes(value))
-    return "/api/v1/assets/bake/process";
+  if (value === "SUBSTANCE_BAKE_V1") return "/api/v1/assets/bake/process";
   return "未登记 API";
 }
 
@@ -245,8 +241,6 @@ function jobTypeCount(value: typeof jobType.value) {
   return rows.filter(
     (job) =>
       job.job_type === value ||
-      (value === "SUBSTANCE_BAKE_V1" &&
-        job.job_type === "BAKE_ALIGNMENT_V1") ||
       (value === "UV_PROCESS_V2" && job.job_type === "UV_UNWRAP") ||
       (value === "RETOPOLOGY_PROCESS_V2" &&
         job.job_type === "RETOPOLOGY_PROCESS_V1"),

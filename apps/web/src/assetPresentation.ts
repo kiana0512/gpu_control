@@ -47,7 +47,6 @@ export function assetWorkerState(worker: AssetWorkerInfo): string {
 
 export function assetExecutionTarget(job: AssetJobInfo): string {
   if (job.worker_id) return job.worker_id;
-  if (job.job_type === "BAKE_ALIGNMENT_V1") return "等待 Blender 坐标准备";
   if (job.job_type !== "SUBSTANCE_BAKE_V1") return "尚未分配";
   return job.resource_wait?.reservation_active
     ? "3090-B · 下一轮已预约"

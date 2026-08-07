@@ -1,6 +1,6 @@
 ARG BLENDER_BASE_IMAGE=li3d/blender-runtime:5.1.2
 FROM ${BLENDER_BASE_IMAGE}
-ARG ASSET_WORKER_VERSION=1.4.4-bake-alignment-v1
+ARG ASSET_WORKER_VERSION=1.4.5-retopology-coordinate-restore-v1
 ARG GPU_CONTROL_REVISION=unknown
 USER root
 WORKDIR /app
@@ -20,7 +20,6 @@ COPY apps/blender_worker/src ./apps/blender_worker/src
 COPY scripts/probe_retopoflow_blender.py ./scripts/probe_retopoflow_blender.py
 COPY resources/retopology-v6 /opt/li3d/retopology-v6
 COPY resources/retopology-direct-v2 /opt/li3d/retopology-direct-v2
-COPY resources/bake-coordinate-alignment /opt/li3d/bake-coordinate-alignment
 RUN python3 /opt/li3d/retopology-direct-v2/server/verify_package.py
 RUN python3 -m pip install --no-cache-dir .
 RUN python3 -c "from pathlib import Path; from packages.gpu_control_core.retopology_v6 import verify_runtime_resources; verify_runtime_resources(Path('/opt/li3d/retopology-v6'))"

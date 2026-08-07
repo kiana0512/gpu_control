@@ -474,6 +474,60 @@ async def post_retopology_process(
     )
 
 
+def direct_v2_completion_files(
+    schema_version: str,
+    context: dict[str, Any],
+) -> dict[str, tuple[str, bytes, str]]:
+    manifest = {
+        "schema_version": schema_version,
+        "job_id": context["job_id"],
+        "engine_contract": "retopology-direct-v2",
+        "package_sha256": context["package_sha256"],
+        "source_sha256": context["project_sha256"],
+        "agent_blend_sha256": context["agent_sha"],
+        "delivery_blend_sha256": context["blend_sha"],
+        "delivery_blend_size_bytes": len(context["delivery_blend"]),
+        "delivery_fbx_sha256": context["fbx_sha"],
+        "delivery_fbx_size_bytes": len(context["delivery_fbx"]),
+        "automatic_post_generation_review": False,
+        "automatic_retry": False,
+        "coordinate_restoration": context["coordinate_restoration"],
+    }
+    return {
+        "blend": (
+            "final_low.blend",
+            context["delivery_blend"],
+            "application/octet-stream",
+        ),
+        "fbx": ("final_low.fbx", context["delivery_fbx"], "application/octet-stream"),
+        "generation_report": (
+            "generation_report.json",
+            json.dumps(context["generation"]).encode(),
+            "application/json",
+        ),
+        "delivery_manifest": (
+            "delivery_manifest.json",
+            json.dumps(manifest).encode(),
+            "application/json",
+        ),
+        "result": (
+            "result.json",
+            json.dumps(context["result"]).encode(),
+            "application/json",
+        ),
+        "agent_events": (
+            "agent_events.jsonl",
+            b'{"event":"done"}\n',
+            "application/x-ndjson",
+        ),
+        "wrapper_events": (
+            "wrapper_events.jsonl",
+            b'{"event":"done"}\n',
+            "application/x-ndjson",
+        ),
+    }
+
+
 async def test_retopology_process_creates_v230_direct_contract(tmp_path: Path) -> None:
     async for settings, client in prepared_asset_app(tmp_path):
         response = await post_retopology_process(
@@ -495,6 +549,119 @@ async def test_retopology_process_creates_v230_direct_contract(tmp_path: Path) -
         assert manifest["schema_version"] == "retopology_input.direct-v2"
         assert manifest["engine_contract"] == "retopology-direct-v2"
         assert manifest["package_sha256"] == payload["options"]["package_sha256"]
+
+
+async def test_direct_v2_completion_requires_restored_coordinates_and_fbx_readback(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        created = await post_retopology_process(
+            client,
+            "asset:retopo:coordinate-restore",
+            "asset:retopo:coordinate-restore",
+        )
+        assert created.status_code == 202, created.text
+        created_payload = created.json()
+        await register_asset_worker(
+            client,
+            settings,
+            skill_version="asset-skills-retopology-v2.3.0",
+        )
+        leased = await claim_asset_job(client, settings)
+        assert leased["job_id"] == created_payload["job_id"]
+
+        agent_blend = b"agent-presentation-blend"
+        delivery_blend = b"translation-restored-blend"
+        delivery_fbx = b"translation-restored-fbx"
+        agent_sha = hashlib.sha256(agent_blend).hexdigest()
+        blend_sha = hashlib.sha256(delivery_blend).hexdigest()
+        fbx_sha = hashlib.sha256(delivery_fbx).hexdigest()
+        generation = {
+            "status": "generated_for_user_inspection",
+            "assets": [
+                {
+                    "high_object": "SOURCE_HIGH",
+                    "low_object": "SOURCE_LOW",
+                    "faces": 100,
+                    "triangles": 200,
+                    "method_decision": "semantic_reconstruction",
+                    "actual_plugin_use": False,
+                }
+            ],
+        }
+        result = {
+            "status": "generated_for_user_inspection",
+            "output_sha256": agent_sha,
+            "automatic_post_generation_review": False,
+            "automatic_retry": False,
+        }
+        coordinate_restoration = {
+            "schema_version": "retopology_coordinate_restoration.v1",
+            "mode": "translation_only_world_aabb_center",
+            "passed": True,
+            "input_blend_sha256": agent_sha,
+            "output_blend_sha256": blend_sha,
+            "source_high_preserved": True,
+            "pairs": [
+                {
+                    "high_object": "SOURCE_HIGH",
+                    "low_object": "SOURCE_LOW",
+                    "high_preserved": True,
+                    "low_mesh_preserved": True,
+                    "low_rotation_scale_preserved": True,
+                }
+            ],
+            "fbx_readback": {"passed": True, "sha256": fbx_sha},
+        }
+
+        completion_context = {
+            "job_id": created_payload["job_id"],
+            "package_sha256": created_payload["options"]["package_sha256"],
+            "project_sha256": created_payload["options"]["project_sha256"],
+            "agent_sha": agent_sha,
+            "blend_sha": blend_sha,
+            "fbx_sha": fbx_sha,
+            "delivery_blend": delivery_blend,
+            "delivery_fbx": delivery_fbx,
+            "generation": generation,
+            "result": result,
+            "coordinate_restoration": coordinate_restoration,
+        }
+
+        endpoint = (
+            f"/internal/v1/assets/jobs/{created_payload['job_id']}"
+            "/retopology-v6-complete"
+        )
+        legacy = await client.post(
+            endpoint,
+            headers={"X-Asset-Lease": str(leased["lease_token"])},
+            files=direct_v2_completion_files(
+                "retopology_direct_delivery.v2", completion_context
+            ),
+        )
+        assert legacy.status_code == 422, legacy.text
+        assert legacy.json()["detail"]["code"] == "RETOPOLOGY_DIRECT_V2_IDENTITY_MISMATCH"
+
+        completed = await client.post(
+            endpoint,
+            headers={"X-Asset-Lease": str(leased["lease_token"])},
+            files=direct_v2_completion_files(
+                "retopology_direct_delivery.v3", completion_context
+            ),
+        )
+        assert completed.status_code == 200, completed.text
+        status = await client.get(
+            f"/api/v1/assets/jobs/{created_payload['job_id']}",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert status.status_code == 200, status.text
+        payload = status.json()
+        assert payload["status"] == "SUCCEEDED"
+        assert payload["options"]["direct_v2_result"]["coordinate_restoration"] == {
+            "mode": "translation_only_world_aabb_center",
+            "passed": True,
+            "fbx_readback_passed": True,
+        }
 
 
 async def test_expired_asset_idempotency_keys_are_reusable_on_all_create_paths(
@@ -1100,7 +1267,7 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
         assert created.status_code == 202, created.text
         job_id = created.json()["job_id"]
 
-        # High/low baking first runs the Blender-only coordinate gate.
+        # A Linux Blender worker must never claim native Windows Baker work.
         await signed_post(
             client,
             settings,
@@ -1130,42 +1297,7 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
                 "available_memory_mb": 100000,
             },
         )
-        alignment_lease = linux_claim.json()["job"]
-        assert alignment_lease["job_id"] == job_id
-        assert alignment_lease["job_type"] == "BAKE_ALIGNMENT_V1"
-        alignment_report = json.dumps(
-            {
-                "pre_bake_alignment": {
-                    "authority": "high",
-                    "pass": True,
-                    "fbx_readback": {
-                        "pass": True,
-                        "unit_scale_match": True,
-                        "axis_match": True,
-                        "handedness_match": True,
-                    },
-                    "submitted_files": {
-                        "high": "bake_high.fbx",
-                        "low": "bake_low.fbx",
-                    },
-                }
-            }
-        ).encode()
-        aligned = await client.post(
-            f"/internal/v1/assets/jobs/{job_id}/bake-alignment-complete",
-            headers={"X-Asset-Lease": alignment_lease["lease_token"]},
-            files={
-                "bake_high": ("bake_high.fbx", b"aligned-high", "application/octet-stream"),
-                "bake_low": ("bake_low.fbx", b"aligned-low", "application/octet-stream"),
-                "alignment_report": (
-                    "bake_alignment_report.json",
-                    alignment_report,
-                    "application/json",
-                ),
-            },
-        )
-        assert aligned.status_code == 200, aligned.text
-        assert aligned.json()["next_stage"] == "SUBSTANCE_BAKE_V1"
+        assert linux_claim.json()["job"] is None
 
         worker_id = "asset-worker-3090-b-windows"
         heartbeat = await register_substance_worker(client, settings, worker_id)
@@ -1272,7 +1404,7 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
         )
         assert status.json()["status"] == "SUCCEEDED"
         assert {item["kind"] for item in status.json()["artifacts"]} == (
-            output_kinds | {"result", "log", "alignment_report"}
+            output_kinds | {"result", "log"}
         )
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")
@@ -2315,6 +2447,7 @@ async def register_asset_worker(
     codex_probe_status: str = "HEALTHY",
     codex_last_checked_at: datetime | None = None,
     codex_error_code: str | None = None,
+    skill_version: str = "asset-skills-2026.07.28",
 ) -> httpx.Response:
     checked_at = codex_last_checked_at or datetime.now(UTC)
     response = await signed_post(
@@ -2327,7 +2460,7 @@ async def register_asset_worker(
             "display_name": "3090-A Asset Worker",
             "hostname": "lilithgames1",
             "blender_version": "5.1.2",
-            "skill_version": "asset-skills-2026.07.28",
+            "skill_version": skill_version,
             "cpu_count": 32,
             "max_concurrency": max_concurrency,
             "current_jobs": current_jobs,

@@ -44,8 +44,8 @@ CODEX_REQUIRED_JOB_TYPES = frozenset({"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCE
 UV_UNWRAP_SCRIPT_SHA256 = "ebfa3546d61c548a11c0e7561c75f93b6ef93308d8da9f27788bf35643303758"
 UV_QA_SCRIPT_SHA256 = "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
 UV_QA_ADAPTER_SHA256 = "8e6bc5dc20a49fac5be2e92accd518d9da9fa629e878f51dc151baa80ad3359a"
-BAKE_ALIGNMENT_SCRIPT_SHA256 = (
-    "bb4421d9189122d3015f1a1f378667f476ddd10c4270e76f46f994483933624a"
+RETOPOLOGY_COORDINATE_RESTORE_SCRIPT_SHA256 = (
+    "a1dadcd72318b1475377cc02f3e70876d8cc3ad350ebe86b17d7ed72b10568c5"
 )
 RETOPOLOGY_AUDIT_SCRIPT_SHA256 = (
     "a6575902cfacd7b8106f9c887069d717a880d870fc48a6295431cdcf717a9dc4"
@@ -89,8 +89,8 @@ class WorkerSettings(BaseSettings):
     )
     retopology_v6_root: Path = Path("/opt/li3d/retopology-v6")
     retopology_direct_v2_root: Path = Path("/opt/li3d/retopology-direct-v2")
-    bake_alignment_script: Path = Path(
-        "/opt/li3d/bake-coordinate-alignment/prepare_bake_alignment.py"
+    retopology_coordinate_restore_script: Path = Path(
+        "/app/packages/asset_processing/blender_retopology_restore_coordinates.py"
     )
     retopology_process_script: Path = Path(
         "/app/packages/asset_processing/blender_retopology_process.py"
@@ -341,8 +341,6 @@ def validate_job_skill_contract(settings: WorkerSettings, job_type: str) -> None
         validate_codex_skill_link(settings.codex_runtime_home, approved_skill)
     if job_type == "RETOPOLOGY_PROCESS_V2":
         verify_retopology_direct_v2_package(settings.retopology_direct_v2_root)
-    if job_type == "BAKE_ALIGNMENT_V1":
-        verified_script(settings.bake_alignment_script, BAKE_ALIGNMENT_SCRIPT_SHA256)
 
 
 def verify_retopology_direct_v2_package(root: Path) -> None:
@@ -1793,36 +1791,87 @@ async def run_retopology_v6(
     if result.get("automatic_retry") is not False:
         raise RuntimeError("Retopology Direct V2 unexpectedly enabled automatic retry")
 
+    agent_blend_sha256 = file_sha256(result_blend)
     final_fbx = output_dir / "final_low.fbx"
-    export_process = await start_blender(
-        settings,
-        "-b",
-        str(result_blend),
-        "-P",
-        "/app/packages/asset_processing/export_retopology_fbx.py",
-        "--",
-        "--output",
-        str(final_fbx),
-        "--objects-json",
-        json.dumps(low_objects, ensure_ascii=False),
+    coordinate_report_path = output_dir / "coordinate_restore_report.json"
+    coordinate_script = verified_script(
+        settings.retopology_coordinate_restore_script,
+        RETOPOLOGY_COORDINATE_RESTORE_SCRIPT_SHA256,
     )
-    export_log = await wait_for_blender(
+    restore_process = await start_blender(
+        settings,
+        "--background",
+        str(result_blend),
+        "--disable-autoexec",
+        "--python-exit-code",
+        "1",
+        "--python",
+        str(coordinate_script),
+        "--",
+        "--output-blend",
+        str(result_blend),
+        "--output-fbx",
+        str(final_fbx),
+        "--generation-report",
+        str(output_dir / "generation_report.json"),
+        "--report",
+        str(coordinate_report_path),
+    )
+    restore_log = await wait_for_blender(
         client,
         job_id,
         lease_headers,
-        export_process,
+        restore_process,
         92,
         94,
-        "RETOPOLOGY_DIRECT_V2_FBX_EXPORT",
-        "低模已生成，正在确定性导出正式 FBX 交付",
+        "RETOPOLOGY_DIRECT_V2_COORDINATE_RESTORE",
+        "低模已生成，正在只平移回高模坐标并回读验证正式 FBX",
         120,
         hard_timeout_seconds=300,
     )
-    (output_dir / "fbx_export.log").write_bytes(export_log)
-    if not final_fbx.is_file() or final_fbx.stat().st_size <= 0:
-        raise RuntimeError("Retopology Direct V2 FBX export is empty")
+    (output_dir / "coordinate_restore.log").write_bytes(restore_log)
+    if not coordinate_report_path.is_file():
+        raise RuntimeError("Retopology Direct V2 coordinate restoration report is missing")
+    coordinate_report = json.loads(coordinate_report_path.read_text("utf-8"))
+    restored_blend_sha256 = file_sha256(result_blend)
+    restored_fbx_sha256 = file_sha256(final_fbx)
+    reported_pairs = coordinate_report.get("pairs")
+    expected_pairs = {
+        (item.get("high_object"), item.get("low_object"))
+        for item in generation["assets"]
+        if isinstance(item, dict)
+    }
+    actual_pairs = {
+        (item.get("high_object"), item.get("low_object"))
+        for item in reported_pairs or []
+        if isinstance(item, dict)
+    }
+    fbx_readback = coordinate_report.get("fbx_readback")
+    if (
+        coordinate_report.get("schema_version")
+        != "retopology_coordinate_restoration.v1"
+        or coordinate_report.get("mode") != "translation_only_world_aabb_center"
+        or coordinate_report.get("passed") is not True
+        or coordinate_report.get("source_high_preserved") is not True
+        or coordinate_report.get("input_blend_sha256") != agent_blend_sha256
+        or coordinate_report.get("output_blend_sha256") != restored_blend_sha256
+        or not isinstance(reported_pairs, list)
+        or not reported_pairs
+        or actual_pairs != expected_pairs
+        or not all(
+            isinstance(item, dict)
+            and item.get("high_preserved") is True
+            and item.get("low_mesh_preserved") is True
+            and item.get("low_rotation_scale_preserved") is True
+            for item in reported_pairs
+        )
+        or not isinstance(fbx_readback, dict)
+        or fbx_readback.get("passed") is not True
+        or fbx_readback.get("sha256") != restored_fbx_sha256
+    ):
+        raise RuntimeError("Retopology Direct V2 coordinate restoration gate failed")
     delivery_manifest = {
-        "schema_version": "retopology_direct_delivery.v2",
+        "schema_version": "retopology_direct_delivery.v3",
         "job_id": job_id,
         "engine_contract": "retopology-direct-v2",
         "package_sha256": options.get("package_sha256"),
@@ -1831,12 +1880,13 @@ async def run_retopology_v6(
         "normalized_blend_sha256": (
             direct_source_sha if direct_source_path.suffix.lower() == ".blend" else None
         ),
-        "agent_blend_sha256": file_sha256(result_blend),
-        "delivery_blend_sha256": file_sha256(result_blend),
+        "agent_blend_sha256": agent_blend_sha256,
+        "delivery_blend_sha256": restored_blend_sha256,
         "delivery_blend_size_bytes": result_blend.stat().st_size,
-        "delivery_fbx_sha256": file_sha256(final_fbx),
+        "delivery_fbx_sha256": restored_fbx_sha256,
         "delivery_fbx_size_bytes": final_fbx.stat().st_size,
         "low_objects": low_objects,
+        "coordinate_restoration": coordinate_report,
         "status": "generated_for_user_inspection",
         "automatic_post_generation_review": False,
         "automatic_retry": False,
@@ -2146,90 +2196,6 @@ async def run_uv_skill(
         "report": output_report.name,
         "qa": "model_QA.json",
     }
-
-
-def extract_bake_alignment_bundle(bundle: Path, destination: Path) -> dict[str, Any]:
-    """Extract the server-created bundle without permitting archive traversal."""
-
-    destination.mkdir(parents=True, exist_ok=False)
-    root = destination.resolve()
-    with zipfile.ZipFile(bundle) as archive:
-        for item in archive.infolist():
-            target = (destination / item.filename).resolve()
-            if not target.is_relative_to(root):
-                raise RuntimeError(f"unsafe bake alignment bundle member: {item.filename}")
-            if item.is_dir():
-                target.mkdir(parents=True, exist_ok=True)
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(item) as source, target.open("xb") as output:
-                shutil.copyfileobj(source, output, length=1024 * 1024)
-    request = json.loads((destination / "request.json").read_text("utf-8"))
-    if request.get("schema_version") != 2 or request.get("job_type") != "BAKE_ALIGNMENT_V1":
-        raise RuntimeError("bake alignment request contract is invalid")
-    files, hashes = request.get("files"), request.get("input_sha256")
-    if not isinstance(files, dict) or not isinstance(hashes, dict):
-        raise RuntimeError("bake alignment file contract is invalid")
-    for role in ("low", "high", "cage", "alignment_manifest"):
-        filename = files.get(role)
-        if filename is None:
-            continue
-        path = destination / "input" / str(filename)
-        if not path.is_file() or file_sha256(path) != hashes.get(role):
-            raise RuntimeError(f"bake alignment input SHA-256 mismatch: {role}")
-    if not files.get("low") or not files.get("high"):
-        raise RuntimeError("bake alignment requires low and high meshes")
-    return cast(dict[str, Any], request)
-
-
-async def run_bake_alignment(
-    client: httpx.AsyncClient,
-    settings: WorkerSettings,
-    job_id: str,
-    lease_headers: dict[str, str],
-    input_path: Path,
-    output_dir: Path,
-) -> dict[str, str]:
-    script = verified_script(
-        settings.bake_alignment_script, BAKE_ALIGNMENT_SCRIPT_SHA256
-    )
-    extracted = output_dir.parent / "bake-alignment-input"
-    request = extract_bake_alignment_bundle(input_path, extracted)
-    files = cast(dict[str, str], request["files"])
-    input_root = extracted / "input"
-    output_dir.mkdir(parents=True, exist_ok=False)
-    report = output_dir / "bake_alignment_report.json"
-    arguments = [
-        "--background", "--factory-startup", "--disable-autoexec",
-        "--python-exit-code", "1", "--python", str(script), "--",
-        "--high", str(input_root / files["high"]),
-        "--low", str(input_root / files["low"]),
-        "--output-dir", str(output_dir), "--report", str(report),
-    ]
-    for role, argument in (("cage", "--cage"), ("alignment_manifest", "--manifest")):
-        if files.get(role):
-            arguments.extend((argument, str(input_root / files[role])))
-    process = await start_blender(settings, *arguments)
-    await wait_for_blender(
-        client, job_id, lease_headers, process, 5, 32,
-        "PREPARING_BAKE_COORDINATES",
-        "正在以高模为坐标基准生成并验证烘焙副本", 180,
-    )
-    payload = json.loads(report.read_text("utf-8"))
-    alignment = payload.get("pre_bake_alignment", {})
-    if not isinstance(alignment, dict) or alignment.get("pass") is not True:
-        raise RuntimeError("BAKE_ALIGNMENT_FAILED")
-    contract = {
-        "bake_high": "bake_high.fbx",
-        "bake_low": "bake_low.fbx",
-        "alignment_report": report.name,
-    }
-    if files.get("cage"):
-        contract["bake_cage"] = "bake_cage.fbx"
-    for filename in contract.values():
-        if not (output_dir / filename).is_file():
-            raise RuntimeError(f"bake alignment artifact missing: {filename}")
-    return contract
 
 
 async def run_retopology_audit(
@@ -2669,7 +2635,7 @@ async def process_job(
     with tempfile.TemporaryDirectory(prefix=f"asset-{job_id}-") as temporary:
         root = Path(temporary)
         input_path = root / str(job["source_filename"])
-        upload_progress = 35.0 if job["job_type"] == "BAKE_ALIGNMENT_V1" else 94.5
+        upload_progress = 94.5
         progress = await client.post(
             f"/internal/v1/assets/jobs/{job_id}/progress",
             headers=lease_headers,
@@ -2696,16 +2662,7 @@ async def process_job(
             raise RuntimeError("downloaded asset SHA-256 mismatch")
         output_dir = root / "output"
         contract: dict[str, str]
-        if job["job_type"] == "BAKE_ALIGNMENT_V1":
-            contract = await run_bake_alignment(
-                client,
-                settings,
-                job_id,
-                lease_headers,
-                input_path,
-                output_dir,
-            )
-        elif job["job_type"] in {"UV_UNWRAP", "UV_PROCESS_V2"}:
+        if job["job_type"] in {"UV_UNWRAP", "UV_PROCESS_V2"}:
             contract = await run_uv_skill(
                 client,
                 settings,
@@ -2770,11 +2727,7 @@ async def process_job(
         handles = []
         try:
             files: dict[str, tuple[str, Any, str]] = {}
-            if job["job_type"] == "BAKE_ALIGNMENT_V1":
-                complete_path = (
-                    f"/internal/v1/assets/jobs/{job_id}/bake-alignment-complete"
-                )
-            elif job["job_type"] == "UV_UNWRAP":
+            if job["job_type"] == "UV_UNWRAP":
                 complete_path = f"/internal/v1/assets/jobs/{job_id}/complete"
             elif job["job_type"] == "UV_PROCESS_V2":
                 complete_path = f"/internal/v1/assets/jobs/{job_id}/uv-v2-complete"
@@ -2836,11 +2789,6 @@ async def execute_job(
             )
         ):
             error_code = "SKILL_MOUNT_INVALID"
-        elif job.get("job_type") == "BAKE_ALIGNMENT_V1" and (
-            "BAKE_ALIGNMENT" in diagnostic
-            or "bake alignment" in diagnostic.lower()
-        ):
-            error_code = "BAKE_ALIGNMENT_FAILED"
         elif job.get("job_type") in {"UV_UNWRAP", "UV_PROCESS_V2"} and (
             "BLENDER_PBR_UV_QA" in diagnostic
             or "ASSET_QA_FAILED" in diagnostic

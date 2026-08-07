@@ -1286,7 +1286,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             typical_seconds = {
                 "UV_UNWRAP": 180,
                 "UV_PROCESS_V2": 240,
-                "BAKE_ALIGNMENT_V1": 180,
                 "RETOPOLOGY_AUDIT": 120,
                 "RETOPOLOGY_PROCESS_V1": 900,
                 "RETOPOLOGY_PROCESS_V2": 1800,
@@ -1666,7 +1665,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ],
         high_mesh: Annotated[UploadFile | None, File()] = None,
         cage_mesh: Annotated[UploadFile | None, File()] = None,
-        alignment_manifest: Annotated[UploadFile | None, File()] = None,
         base_color_texture: Annotated[UploadFile | None, File()] = None,
         roughness_texture: Annotated[UploadFile | None, File()] = None,
         metallic_texture: Annotated[UploadFile | None, File()] = None,
@@ -1705,14 +1703,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job_root: Path | None = None
         committed = False
         try:
-            requires_alignment = parsed.options.profile in {
-                "normal-dx-v1",
-                "pbr-core-v1",
-                "li3d-pbr-full-v2",
-            }
-            initial_job_type = (
-                "BAKE_ALIGNMENT_V1" if requires_alignment else "SUBSTANCE_BAKE_V1"
-            )
             input_sha: dict[str, str] = {}
             received = 0
             role_uploads = [
@@ -1720,15 +1710,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ("high", high_mesh, high_name),
                 ("cage", cage_mesh, cage_name),
             ]
-            if alignment_manifest is not None:
-                if Path(alignment_manifest.filename or "").suffix.lower() != ".json":
-                    raise HTTPException(
-                        422,
-                        detail={"code": "BAKE_ALIGNMENT_MANIFEST_INVALID"},
-                    )
-                role_uploads.append(
-                    ("alignment_manifest", alignment_manifest, "alignment_manifest.json")
-                )
             for role, upload in texture_uploads.items():
                 if upload is not None:
                     role_uploads.append(
@@ -1738,11 +1719,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for role, upload, original_name in role_uploads:
                 if upload is None or original_name is None:
                     continue
-                bundle_name = (
-                    "alignment_manifest.json"
-                    if role == "alignment_manifest"
-                    else f"asset_{role}{Path(original_name).suffix.lower()}"
-                )
+                bundle_name = f"asset_{role}{Path(original_name).suffix.lower()}"
                 digest, size = await persist_upload(
                     upload,
                     input_root / bundle_name,
@@ -1754,8 +1731,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             request_hash = substance_bake_request_hash(parsed, input_sha)
             request_document = {
-                "schema_version": 2 if requires_alignment else 1,
-                "job_type": initial_job_type,
+                "schema_version": 1,
+                "job_type": "SUBSTANCE_BAKE_V1",
                 "external_asset_id": parsed.external_asset_id,
                 "options": parsed.options.model_dump(mode="json"),
                 "files": bundle_files,
@@ -1768,11 +1745,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 request_document,
                 bundle_files,
             )
-            if requires_alignment:
-                (publish_root / "substance_bake_input.zip").rename(
-                    publish_root / "bake_alignment_input.zip"
-                )
-
             await lock_asset_admission(request, principal, db)
             replay = await replay_or_expire_asset_idempotency(
                 principal,
@@ -1795,11 +1767,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job_id = str(uuid.uuid4())
             job_root = cfg.asset_root / job_id
             publish_root.rename(job_root)
-            bundle_name = (
-                "bake_alignment_input.zip"
-                if requires_alignment
-                else "substance_bake_input.zip"
-            )
+            bundle_name = "substance_bake_input.zip"
             options = parsed.options.model_dump(mode="json")
             options["files"] = bundle_files
             options["input_sha256"] = input_sha
@@ -1807,7 +1775,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 id=job_id,
                 client_id=principal.id,
                 external_asset_id=parsed.external_asset_id,
-                job_type=initial_job_type,
+                job_type="SUBSTANCE_BAKE_V1",
                 status="QUEUED",
                 source_filename=bundle_name,
                 input_path=str(job_root / bundle_name),
@@ -1817,15 +1785,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 request_hash=request_hash,
                 request_id=str(request.state.request_id),
             )
+            client = await db.get(ApiClient, principal.id)
             substance_node: Node | None = None
-            if not requires_alignment:
-                client = await db.get(ApiClient, principal.id)
-                if client is None or client.client_kind != "test":
-                    substance_node = await db.scalar(
-                        select(Node)
-                        .where(Node.id == SUBSTANCE_GPU_NODE_ID)
-                        .with_for_update()
-                    )
+            if client is None or client.client_kind != "test":
+                # Lock the physical node before publishing the queued job. The
+                # Scheduler takes this same lock before a GPU assignment, so it
+                # cannot slip another ComfyUI job between queueing the
+                # production bake and installing its pending reservation.
+                substance_node = await db.scalar(
+                    select(Node).where(Node.id == SUBSTANCE_GPU_NODE_ID).with_for_update()
+                )
             db.add(job)
             await db.flush()
             if substance_node is not None:
@@ -1842,14 +1811,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "event": "asset.queued",
                     "request_id": job.request_id,
                     "profile": parsed.options.profile,
-                    "runtime": (
-                        "blender-worker-then-3090-b-windows"
-                        if requires_alignment
-                        else "worker-3090-b-windows"
-                    ),
-                    "pre_bake_alignment": (
-                        "required" if requires_alignment else "not_applicable"
-                    ),
+                    "runtime": "worker-3090-b-windows",
                 },
             )
             db.add(
@@ -2889,7 +2851,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job.estimated_remaining_seconds = {
             "UV_UNWRAP": 180,
             "UV_PROCESS_V2": 240,
-            "BAKE_ALIGNMENT_V1": 180,
             "RETOPOLOGY_AUDIT": 120,
             "RETOPOLOGY_PROCESS_V1": 900,
             "RETOPOLOGY_PROCESS_V2": 1800,
@@ -3907,8 +3868,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     422, detail={"code": "RETOPOLOGY_DIRECT_V2_RESULT_INVALID"}
                 )
             staged_by_kind = {item.kind: item for item in created}
+            coordinate_restoration = manifest.get("coordinate_restoration")
+            coordinate_pairs = (
+                coordinate_restoration.get("pairs")
+                if isinstance(coordinate_restoration, dict)
+                else None
+            )
+            expected_pairs = {
+                (item.get("high_object"), item.get("low_object"))
+                for item in generation["assets"]
+                if isinstance(item, dict)
+            }
+            actual_pairs = {
+                (item.get("high_object"), item.get("low_object"))
+                for item in coordinate_pairs or []
+                if isinstance(item, dict)
+            }
+            fbx_readback = (
+                coordinate_restoration.get("fbx_readback")
+                if isinstance(coordinate_restoration, dict)
+                else None
+            )
             if (
-                manifest.get("schema_version") != "retopology_direct_delivery.v2"
+                manifest.get("schema_version") != "retopology_direct_delivery.v3"
                 or manifest.get("job_id") != snapshot.id
                 or manifest.get("engine_contract") != "retopology-direct-v2"
                 or manifest.get("package_sha256")
@@ -3925,6 +3907,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 != staged_by_kind["fbx"].size_bytes
                 or manifest.get("automatic_post_generation_review") is not False
                 or manifest.get("automatic_retry") is not False
+                or not isinstance(coordinate_restoration, dict)
+                or coordinate_restoration.get("schema_version")
+                != "retopology_coordinate_restoration.v1"
+                or coordinate_restoration.get("mode")
+                != "translation_only_world_aabb_center"
+                or coordinate_restoration.get("passed") is not True
+                or coordinate_restoration.get("source_high_preserved") is not True
+                or coordinate_restoration.get("input_blend_sha256")
+                != manifest.get("agent_blend_sha256")
+                or coordinate_restoration.get("output_blend_sha256")
+                != manifest.get("delivery_blend_sha256")
+                or not isinstance(coordinate_pairs, list)
+                or not coordinate_pairs
+                or actual_pairs != expected_pairs
+                or not all(
+                    isinstance(item, dict)
+                    and item.get("high_preserved") is True
+                    and item.get("low_mesh_preserved") is True
+                    and item.get("low_rotation_scale_preserved") is True
+                    for item in coordinate_pairs
+                )
+                or not isinstance(fbx_readback, dict)
+                or fbx_readback.get("passed") is not True
+                or fbx_readback.get("sha256")
+                != manifest.get("delivery_fbx_sha256")
             ):
                 raise HTTPException(
                     422, detail={"code": "RETOPOLOGY_DIRECT_V2_IDENTITY_MISMATCH"}
@@ -3944,7 +3951,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.status = "SUCCEEDED"
             job.progress = 100
             job.stage = "SUCCEEDED"
-            job.stage_message = "Direct V2 低模 BLEND 与 FBX 已生成并交付；等待用户检查"
+            job.stage_message = "Direct V2 低模已回到高模坐标，BLEND 与 FBX 已交付"
             job.estimated_remaining_seconds = 0
             job.last_progress_at = datetime.now(UTC)
             job.finished_at = job.last_progress_at
@@ -3958,6 +3965,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "delivery_formats": ["blend", "fbx"],
                     "automatic_post_generation_review": False,
                     "automatic_retry": False,
+                    "coordinate_restoration": {
+                        "mode": "translation_only_world_aabb_center",
+                        "passed": True,
+                        "fbx_readback_passed": True,
+                    },
                     "assets": generation["assets"],
                 },
             }
@@ -3971,6 +3983,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "event": "asset.succeeded",
                     "engine_contract": "retopology-direct-v2",
                     "delivery_format": "blend+fbx",
+                    "coordinate_restoration": "passed",
                     "automatic_post_generation_review": False,
                 },
             )
@@ -4143,207 +4156,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             if not committed:
                 await cleanup_uncommitted_completion(request, staging, created)
-
-    @app.post("/internal/v1/assets/jobs/{job_id}/bake-alignment-complete")
-    async def worker_complete_bake_alignment(
-        job_id: str,
-        request: Request,
-        db: Annotated[AsyncSession, Depends(session)],
-        lease: Annotated[str, Header(alias="X-Asset-Lease")],
-        bake_high: Annotated[UploadFile, File()],
-        bake_low: Annotated[UploadFile, File()],
-        alignment_report: Annotated[UploadFile, File()],
-        bake_cage: Annotated[UploadFile | None, File()] = None,
-    ) -> dict[str, Any]:
-        """Gate aligned copies, then atomically requeue the same job for Baker."""
-
-        snapshot = await prepare_asset_completion(
-            job_id, lease, db, "BAKE_ALIGNMENT_V1"
-        )
-        staging = cfg.asset_root / snapshot.id / f".alignment-{uuid.uuid4().hex}"
-        input_root = staging / "workspace" / "input"
-        input_root.mkdir(parents=True, exist_ok=False)
-        published_bundle: Path | None = None
-        published_report: Path | None = None
-        try:
-            supplied = {
-                "high": (bake_high, "bake_high.fbx"),
-                "low": (bake_low, "bake_low.fbx"),
-            }
-            if bake_cage is not None:
-                supplied["cage"] = (bake_cage, "bake_cage.fbx")
-            aligned_sha: dict[str, str] = {}
-            bundle_files: dict[str, str] = {}
-            for role, (upload, filename) in supplied.items():
-                digest, size = await persist_completion_upload(
-                    upload, input_root / filename
-                )
-                if size == 0:
-                    raise HTTPException(
-                        422, detail={"code": "BAKE_ALIGNMENT_ARTIFACT_EMPTY", "role": role}
-                    )
-                aligned_sha[role] = digest
-                bundle_files[role] = filename
-
-            report_path = staging / "bake_alignment_report.json"
-            report_sha, report_size = await persist_completion_upload(
-                alignment_report, report_path
-            )
-            try:
-                report_payload = json.loads(report_path.read_text("utf-8"))
-                alignment = report_payload["pre_bake_alignment"]
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                raise HTTPException(
-                    422, detail={"code": "BAKE_ALIGNMENT_REPORT_INVALID"}
-                ) from exc
-            if not isinstance(alignment, dict) or alignment.get("pass") is not True:
-                raise HTTPException(422, detail={"code": "BAKE_ALIGNMENT_FAILED"})
-            readback = alignment.get("fbx_readback")
-            if (
-                alignment.get("authority") != "high"
-                or not isinstance(readback, dict)
-                or readback.get("pass") is not True
-                or readback.get("unit_scale_match") is not True
-                or readback.get("axis_match") is not True
-                or readback.get("handedness_match") is not True
-            ):
-                raise HTTPException(
-                    422, detail={"code": "BAKE_ALIGNMENT_READBACK_FAILED"}
-                )
-            submitted = alignment.get("submitted_files")
-            expected_submitted = {role: name for role, name in bundle_files.items()}
-            if submitted != expected_submitted:
-                raise HTTPException(
-                    422, detail={"code": "BAKE_ALIGNMENT_REPORT_MISMATCH"}
-                )
-
-            original_bundle = cfg.asset_root / snapshot.id / snapshot.source_filename
-            with zipfile.ZipFile(original_bundle) as archive:
-                original_request = json.loads(archive.read("request.json"))
-                if (
-                    original_request.get("schema_version") != 2
-                    or original_request.get("job_type") != "BAKE_ALIGNMENT_V1"
-                ):
-                    raise HTTPException(
-                        422, detail={"code": "BAKE_ALIGNMENT_REQUEST_INVALID"}
-                    )
-                original_files = original_request.get("files", {})
-                original_hashes = original_request.get("input_sha256", {})
-                if not isinstance(original_files, dict) or not isinstance(
-                    original_hashes, dict
-                ):
-                    raise HTTPException(
-                        422, detail={"code": "BAKE_ALIGNMENT_REQUEST_INVALID"}
-                    )
-                for role in ("base_color", "roughness", "metallic"):
-                    filename = original_files.get(role)
-                    if not filename:
-                        continue
-                    target = input_root / str(filename)
-                    with archive.open(f"input/{filename}") as source, target.open("xb") as output:
-                        shutil.copyfileobj(source, output, length=1024 * 1024)
-                    digest = sha256_path(target)
-                    if digest != original_hashes.get(role):
-                        raise HTTPException(
-                            422,
-                            detail={"code": "BAKE_SOURCE_HASH_MISMATCH", "role": role},
-                        )
-                    aligned_sha[role] = digest
-                    bundle_files[role] = str(filename)
-
-            options = dict(snapshot.options)
-            options.pop("files", None)
-            options.pop("input_sha256", None)
-            baker_request = {
-                "schema_version": 1,
-                "job_type": "SUBSTANCE_BAKE_V1",
-                "external_asset_id": original_request["external_asset_id"],
-                "options": options,
-                "files": bundle_files,
-                "input_sha256": aligned_sha,
-                "pre_bake_alignment": {
-                    "required": True,
-                    "report_sha256": report_sha,
-                },
-            }
-            publish_root, bundle_sha, bundle_size = await asyncio.to_thread(
-                build_substance_input_bundle,
-                staging,
-                input_root,
-                baker_request,
-                bundle_files,
-            )
-            published_bundle = cfg.asset_root / snapshot.id / "substance_bake_input.zip"
-            (publish_root / "substance_bake_input.zip").replace(published_bundle)
-
-            # Global lock -> physical Node -> Job is the established Baker order.
-            await request.app.state.db.acquire_global_admission_transaction_lock(db)
-            substance_node = await db.scalar(
-                select(Node).where(Node.id == SUBSTANCE_GPU_NODE_ID).with_for_update()
-            )
-            job = await lock_asset_completion_for_publish(snapshot, lease, db)
-            cancelled = await cancel_at_completion_safe_point(db, job)
-            if cancelled is not None:
-                published_bundle.unlink(missing_ok=True)
-                return cancelled
-            published_report = cfg.asset_root / snapshot.id / "bake_alignment_report.json"
-            report_path.replace(published_report)
-            db.add(
-                AssetArtifact(
-                    id=str(uuid.uuid4()),
-                    job_id=job.id,
-                    kind="alignment_report",
-                    filename="bake_alignment_report.json",
-                    path=str(published_report),
-                    content_type="application/json",
-                    size_bytes=report_size,
-                    sha256=report_sha,
-                )
-            )
-            await decrement_asset_worker_jobs_atomic(db, job.worker_id)
-            job.job_type = "SUBSTANCE_BAKE_V1"
-            job.status = "QUEUED"
-            job.source_filename = "substance_bake_input.zip"
-            job.input_path = str(published_bundle)
-            job.input_sha256 = bundle_sha
-            job.input_size_bytes = bundle_size
-            job.options = {**options, "files": bundle_files, "input_sha256": aligned_sha}
-            job.worker_id = None
-            job.worker_instance_id = None
-            job.lease_token_hash = None
-            job.lease_expires_at = None
-            job.attempt_count = 0
-            job.progress = 40
-            job.stage = "SUBMITTING_TO_SUBSTANCE"
-            job.stage_message = "坐标对齐已通过，正在等待 Substance Baker"
-            job.estimated_remaining_seconds = 600
-            job.last_progress_at = datetime.now(UTC)
-            await append_asset_event(
-                db,
-                job,
-                details={
-                    "event": "asset.bake_alignment_passed",
-                    "report_sha256": baker_request["pre_bake_alignment"]["report_sha256"],
-                    "submitted_files": bundle_files,
-                },
-            )
-            if substance_node is not None:
-                await reconcile_substance_gpu_reservation(
-                    db,
-                    substance_node,
-                    cfg.substance_pending_reservation_seconds,
-                    cfg.asset_worker_heartbeat_timeout_seconds,
-                )
-            await db.commit()
-            return {"accepted": True, "status": "QUEUED", "next_stage": "SUBSTANCE_BAKE_V1"}
-        except Exception:
-            # A commit may succeed while its acknowledgement is lost. Preserve
-            # published files on ambiguity; the orphan sweep can reclaim only
-            # after proving that no durable row references them.
-            raise
-        finally:
-            if staging.exists():
-                await asyncio.to_thread(shutil.rmtree, staging)
 
     @app.post("/internal/v1/assets/jobs/{job_id}/substance-complete")
     async def worker_complete_substance(
