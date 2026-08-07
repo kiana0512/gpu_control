@@ -1694,12 +1694,20 @@ async def run_retopology_v6(
         str(settings.retopology_direct_v2_root),
     ]
     environment = codex_environment(settings)
+    # ``codex_environment`` has already bootstrapped the node-private,
+    # writable runtime and makes its rotated credential authoritative.  Each
+    # Direct V2 task still receives a new CODEX_HOME, so the launcher must
+    # seed that task from this fresh credential rather than the read-only
+    # bootstrap mount, whose refresh token can legitimately be stale.
+    persistent_auth_source = Path(environment["CODEX_HOME"]) / "auth.json"
+    if not persistent_auth_source.is_file():
+        raise RuntimeError("persistent Codex authentication is unavailable")
     environment.update(
         {
             "BLENDER_EXECUTABLE": settings.blender_binary,
             "CODEX_BIN": "/app/packages/asset_processing/codex_job_launcher.py",
             "GPU_CONTROL_REAL_CODEX_BIN": settings.codex_binary,
-            "CODEX_AUTH_SOURCE": str(settings.codex_auth_source),
+            "CODEX_AUTH_SOURCE": str(persistent_auth_source),
             "CODEX_EXEC_ARGS_JSON": json.dumps(
                 [
                     "exec",

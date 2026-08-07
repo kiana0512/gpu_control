@@ -80,9 +80,9 @@ services:
       dockerfile: apps/blender_worker/Dockerfile
       args:
         BLENDER_BASE_IMAGE: ${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}
-        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.2-retopology-v2.3.0}
+        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.3-retopology-v2.3.0-auth}
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
-    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.2-retopology-v2.3.0}
+    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.3-retopology-v2.3.0-auth}
     restart: unless-stopped
     # Codex workspace-write uses bubblewrap inside the already isolated Worker
     # container. SYS_ADMIN plus unconfined seccomp/AppArmor are required for

@@ -42,6 +42,14 @@ def test_gpu_control_uses_scheduler_fanout_not_upstream_serial_batch() -> None:
     assert '"CODEX_BIN": "/app/packages/asset_processing/codex_job_launcher.py"' in worker
 
 
+def test_direct_v2_task_auth_uses_the_rotated_node_private_credential() -> None:
+    worker = Path(
+        "apps/blender_worker/src/gpu_control_blender_worker/main.py"
+    ).read_text(encoding="utf-8")
+    assert 'persistent_auth_source = Path(environment["CODEX_HOME"]) / "auth.json"' in worker
+    assert '"CODEX_AUTH_SOURCE": str(persistent_auth_source)' in worker
+
+
 def test_public_create_contract_selects_v230_without_changing_route() -> None:
     api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text(
         encoding="utf-8"
