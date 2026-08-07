@@ -1100,7 +1100,7 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
         assert created.status_code == 202, created.text
         job_id = created.json()["job_id"]
 
-        # A Linux Blender worker must never claim native Windows Baker work.
+        # High/low baking first runs the Blender-only coordinate gate.
         await signed_post(
             client,
             settings,
@@ -1130,7 +1130,42 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
                 "available_memory_mb": 100000,
             },
         )
-        assert linux_claim.json()["job"] is None
+        alignment_lease = linux_claim.json()["job"]
+        assert alignment_lease["job_id"] == job_id
+        assert alignment_lease["job_type"] == "BAKE_ALIGNMENT_V1"
+        alignment_report = json.dumps(
+            {
+                "pre_bake_alignment": {
+                    "authority": "high",
+                    "pass": True,
+                    "fbx_readback": {
+                        "pass": True,
+                        "unit_scale_match": True,
+                        "axis_match": True,
+                        "handedness_match": True,
+                    },
+                    "submitted_files": {
+                        "high": "bake_high.fbx",
+                        "low": "bake_low.fbx",
+                    },
+                }
+            }
+        ).encode()
+        aligned = await client.post(
+            f"/internal/v1/assets/jobs/{job_id}/bake-alignment-complete",
+            headers={"X-Asset-Lease": alignment_lease["lease_token"]},
+            files={
+                "bake_high": ("bake_high.fbx", b"aligned-high", "application/octet-stream"),
+                "bake_low": ("bake_low.fbx", b"aligned-low", "application/octet-stream"),
+                "alignment_report": (
+                    "bake_alignment_report.json",
+                    alignment_report,
+                    "application/json",
+                ),
+            },
+        )
+        assert aligned.status_code == 200, aligned.text
+        assert aligned.json()["next_stage"] == "SUBSTANCE_BAKE_V1"
 
         worker_id = "asset-worker-3090-b-windows"
         heartbeat = await register_substance_worker(client, settings, worker_id)
@@ -1237,7 +1272,7 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
         )
         assert status.json()["status"] == "SUCCEEDED"
         assert {item["kind"] for item in status.json()["artifacts"]} == (
-            output_kinds | {"result", "log"}
+            output_kinds | {"result", "log", "alignment_report"}
         )
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")

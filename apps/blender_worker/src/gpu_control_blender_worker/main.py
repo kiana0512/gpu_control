@@ -44,6 +44,9 @@ CODEX_REQUIRED_JOB_TYPES = frozenset({"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCE
 UV_UNWRAP_SCRIPT_SHA256 = "ebfa3546d61c548a11c0e7561c75f93b6ef93308d8da9f27788bf35643303758"
 UV_QA_SCRIPT_SHA256 = "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
 UV_QA_ADAPTER_SHA256 = "8e6bc5dc20a49fac5be2e92accd518d9da9fa629e878f51dc151baa80ad3359a"
+BAKE_ALIGNMENT_SCRIPT_SHA256 = (
+    "bb4421d9189122d3015f1a1f378667f476ddd10c4270e76f46f994483933624a"
+)
 RETOPOLOGY_AUDIT_SCRIPT_SHA256 = (
     "a6575902cfacd7b8106f9c887069d717a880d870fc48a6295431cdcf717a9dc4"
 )
@@ -86,6 +89,9 @@ class WorkerSettings(BaseSettings):
     )
     retopology_v6_root: Path = Path("/opt/li3d/retopology-v6")
     retopology_direct_v2_root: Path = Path("/opt/li3d/retopology-direct-v2")
+    bake_alignment_script: Path = Path(
+        "/opt/li3d/bake-coordinate-alignment/prepare_bake_alignment.py"
+    )
     retopology_process_script: Path = Path(
         "/app/packages/asset_processing/blender_retopology_process.py"
     )
@@ -335,6 +341,8 @@ def validate_job_skill_contract(settings: WorkerSettings, job_type: str) -> None
         validate_codex_skill_link(settings.codex_runtime_home, approved_skill)
     if job_type == "RETOPOLOGY_PROCESS_V2":
         verify_retopology_direct_v2_package(settings.retopology_direct_v2_root)
+    if job_type == "BAKE_ALIGNMENT_V1":
+        verified_script(settings.bake_alignment_script, BAKE_ALIGNMENT_SCRIPT_SHA256)
 
 
 def verify_retopology_direct_v2_package(root: Path) -> None:
@@ -2140,6 +2148,90 @@ async def run_uv_skill(
     }
 
 
+def extract_bake_alignment_bundle(bundle: Path, destination: Path) -> dict[str, Any]:
+    """Extract the server-created bundle without permitting archive traversal."""
+
+    destination.mkdir(parents=True, exist_ok=False)
+    root = destination.resolve()
+    with zipfile.ZipFile(bundle) as archive:
+        for item in archive.infolist():
+            target = (destination / item.filename).resolve()
+            if not target.is_relative_to(root):
+                raise RuntimeError(f"unsafe bake alignment bundle member: {item.filename}")
+            if item.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(item) as source, target.open("xb") as output:
+                shutil.copyfileobj(source, output, length=1024 * 1024)
+    request = json.loads((destination / "request.json").read_text("utf-8"))
+    if request.get("schema_version") != 2 or request.get("job_type") != "BAKE_ALIGNMENT_V1":
+        raise RuntimeError("bake alignment request contract is invalid")
+    files, hashes = request.get("files"), request.get("input_sha256")
+    if not isinstance(files, dict) or not isinstance(hashes, dict):
+        raise RuntimeError("bake alignment file contract is invalid")
+    for role in ("low", "high", "cage", "alignment_manifest"):
+        filename = files.get(role)
+        if filename is None:
+            continue
+        path = destination / "input" / str(filename)
+        if not path.is_file() or file_sha256(path) != hashes.get(role):
+            raise RuntimeError(f"bake alignment input SHA-256 mismatch: {role}")
+    if not files.get("low") or not files.get("high"):
+        raise RuntimeError("bake alignment requires low and high meshes")
+    return cast(dict[str, Any], request)
+
+
+async def run_bake_alignment(
+    client: httpx.AsyncClient,
+    settings: WorkerSettings,
+    job_id: str,
+    lease_headers: dict[str, str],
+    input_path: Path,
+    output_dir: Path,
+) -> dict[str, str]:
+    script = verified_script(
+        settings.bake_alignment_script, BAKE_ALIGNMENT_SCRIPT_SHA256
+    )
+    extracted = output_dir.parent / "bake-alignment-input"
+    request = extract_bake_alignment_bundle(input_path, extracted)
+    files = cast(dict[str, str], request["files"])
+    input_root = extracted / "input"
+    output_dir.mkdir(parents=True, exist_ok=False)
+    report = output_dir / "bake_alignment_report.json"
+    arguments = [
+        "--background", "--factory-startup", "--disable-autoexec",
+        "--python-exit-code", "1", "--python", str(script), "--",
+        "--high", str(input_root / files["high"]),
+        "--low", str(input_root / files["low"]),
+        "--output-dir", str(output_dir), "--report", str(report),
+    ]
+    for role, argument in (("cage", "--cage"), ("alignment_manifest", "--manifest")):
+        if files.get(role):
+            arguments.extend((argument, str(input_root / files[role])))
+    process = await start_blender(settings, *arguments)
+    await wait_for_blender(
+        client, job_id, lease_headers, process, 5, 32,
+        "PREPARING_BAKE_COORDINATES",
+        "正在以高模为坐标基准生成并验证烘焙副本", 180,
+    )
+    payload = json.loads(report.read_text("utf-8"))
+    alignment = payload.get("pre_bake_alignment", {})
+    if not isinstance(alignment, dict) or alignment.get("pass") is not True:
+        raise RuntimeError("BAKE_ALIGNMENT_FAILED")
+    contract = {
+        "bake_high": "bake_high.fbx",
+        "bake_low": "bake_low.fbx",
+        "alignment_report": report.name,
+    }
+    if files.get("cage"):
+        contract["bake_cage"] = "bake_cage.fbx"
+    for filename in contract.values():
+        if not (output_dir / filename).is_file():
+            raise RuntimeError(f"bake alignment artifact missing: {filename}")
+    return contract
+
+
 async def run_retopology_audit(
     client: httpx.AsyncClient,
     settings: WorkerSettings,
@@ -2577,6 +2669,7 @@ async def process_job(
     with tempfile.TemporaryDirectory(prefix=f"asset-{job_id}-") as temporary:
         root = Path(temporary)
         input_path = root / str(job["source_filename"])
+        upload_progress = 35.0 if job["job_type"] == "BAKE_ALIGNMENT_V1" else 94.5
         progress = await client.post(
             f"/internal/v1/assets/jobs/{job_id}/progress",
             headers=lease_headers,
@@ -2603,7 +2696,16 @@ async def process_job(
             raise RuntimeError("downloaded asset SHA-256 mismatch")
         output_dir = root / "output"
         contract: dict[str, str]
-        if job["job_type"] in {"UV_UNWRAP", "UV_PROCESS_V2"}:
+        if job["job_type"] == "BAKE_ALIGNMENT_V1":
+            contract = await run_bake_alignment(
+                client,
+                settings,
+                job_id,
+                lease_headers,
+                input_path,
+                output_dir,
+            )
+        elif job["job_type"] in {"UV_UNWRAP", "UV_PROCESS_V2"}:
             contract = await run_uv_skill(
                 client,
                 settings,
@@ -2656,7 +2758,7 @@ async def process_job(
             f"/internal/v1/assets/jobs/{job_id}/progress",
             headers=lease_headers,
             json={
-                "progress": 94.5,
+                "progress": upload_progress,
                 "stage": "UPLOADING_ARTIFACTS",
                 "message": "正在上传最终制品、哈希、审计报告与预览图",
                 "estimated_remaining_seconds": 60,
@@ -2668,7 +2770,11 @@ async def process_job(
         handles = []
         try:
             files: dict[str, tuple[str, Any, str]] = {}
-            if job["job_type"] == "UV_UNWRAP":
+            if job["job_type"] == "BAKE_ALIGNMENT_V1":
+                complete_path = (
+                    f"/internal/v1/assets/jobs/{job_id}/bake-alignment-complete"
+                )
+            elif job["job_type"] == "UV_UNWRAP":
                 complete_path = f"/internal/v1/assets/jobs/{job_id}/complete"
             elif job["job_type"] == "UV_PROCESS_V2":
                 complete_path = f"/internal/v1/assets/jobs/{job_id}/uv-v2-complete"
@@ -2730,6 +2836,11 @@ async def execute_job(
             )
         ):
             error_code = "SKILL_MOUNT_INVALID"
+        elif job.get("job_type") == "BAKE_ALIGNMENT_V1" and (
+            "BAKE_ALIGNMENT" in diagnostic
+            or "bake alignment" in diagnostic.lower()
+        ):
+            error_code = "BAKE_ALIGNMENT_FAILED"
         elif job.get("job_type") in {"UV_UNWRAP", "UV_PROCESS_V2"} and (
             "BLENDER_PBR_UV_QA" in diagnostic
             or "ASSET_QA_FAILED" in diagnostic

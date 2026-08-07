@@ -61,7 +61,7 @@ services:
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
       sbom: true
       provenance: mode=max
-    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}unified-scheduler-asset-api:${ASSET_API_IMAGE_TAG:-1.6.8-retopology-v2.3.0}
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}unified-scheduler-asset-api:${ASSET_API_IMAGE_TAG:-1.6.9-bake-alignment-v1}
     environment:
       TMPDIR: /srv/gpu-control/assets
       ASSET_ROOT: ${ASSET_ROOT:-/srv/gpu-control/assets}
@@ -80,9 +80,9 @@ services:
       dockerfile: apps/blender_worker/Dockerfile
       args:
         BLENDER_BASE_IMAGE: ${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}
-        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.3-retopology-v2.3.0-auth}
+        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.4-bake-alignment-v1}
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
-    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.3-retopology-v2.3.0-auth}
+    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.4-bake-alignment-v1}
     restart: unless-stopped
     # Codex workspace-write uses bubblewrap inside the already isolated Worker
     # container. SYS_ADMIN plus unconfined seccomp/AppArmor are required for
@@ -142,7 +142,7 @@ services:
     healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9108/metrics',timeout=2)"], interval: 15s, timeout: 3s, retries: 5}
 
   web:
-    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-web:${WEB_IMAGE_TAG:-1.5.10-retopo-direct-v2}
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-web:${WEB_IMAGE_TAG:-1.5.10-bake-alignment-v1}
     build:
       context: ../../apps/web
       args:
