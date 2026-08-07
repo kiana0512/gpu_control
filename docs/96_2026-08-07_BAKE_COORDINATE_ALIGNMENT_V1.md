@@ -49,5 +49,39 @@
 - 带默认灯光的合成 FBX 触发 Blender 5.1 自带 FBX 灯光导入缺陷；业务合同为
   mesh-only FBX，因此未放宽输入或坐标门禁。
 
-本文首次提交时状态为 `CANDIDATE_NOT_DEPLOYED`。生产滚动部署后补充镜像 ID、
-节点排空与线上验收结果。
+## 生产滚动与线上验收
+
+代码提交：`a81c3931`。本地候选镜像：
+
+| 组件 | 镜像 | Image ID |
+| --- | --- | --- |
+| Asset API | `unified-scheduler-asset-api:1.6.9-bake-alignment-v1` | `sha256:42f9fe60133041fdc267c0152b60d2d651d413f19ca383db1c3b8fd257e1741f` |
+| Blender Worker | `li3d/blender-worker:1.4.4-bake-alignment-v1` | `sha256:03a42084767fc9abd368c72b602b0ef10d194a23aa32da0a1e49597f384c46fd` |
+| Web | `gpu-control-web:1.5.10-bake-alignment-v1` | `sha256:08d7c481ecc6012780b2c62206247a434e5cfad968af5a2d6e90b3cd3f12be06` |
+
+三个节点均按 `DRAINING → 确认 GPU/Asset 作业为 0 → 只替换 Blender Worker →
+镜像/脚本哈希/Codex 心跳验证 → ACTIVE` 顺序滚动。六次 mode 变更均以
+`codex-operator` 写入 `node.mode.change` 审计日志。最终三节点均为
+`ACTIVE / ONLINE / 0 jobs`，三台 Linux Worker 均为
+`ONLINE / AUTHENTICATED / HEALTHY`。
+
+4090、3090-A、3090-B 的持久化 release pin 已更新为 Worker `1.4.4`；
+3090-A 与 3090-B 更新前的环境文件分别备份为
+`/opt/gpu-control/.env.pre-bake-alignment-a81c3931`。三台 ComfyUI 容器保持原实例：
+`d306e1facb7b`、`1547af00e12f`、`95acf7b332f2`，未重启、未清模型缓存。
+
+线上 mesh-only FBX canary：
+
+- 任务：`7a2fb047-0750-4cff-93b0-d19b6806ba65`；
+- 初始类型：`BAKE_ALIGNMENT_V1`；
+- 同一任务 ID 原子转换为 `SUBSTANCE_BAKE_V1`；
+- Windows `asset-worker-3090-b-windows-02` 完成真实 256px DirectX Normal 烘焙；
+- 最终状态：`SUCCEEDED / 100%`；
+- Baker 输入 ZIP 仅含 `input/bake_high.fbx`、`input/bake_low.fbx` 与
+  `request.json`，`pre_bake_alignment.required=true`；
+- 持久制品包括 `bake_alignment_report.json`、`asset_normal_dx.png`、
+  `baker_result.json` 与 `baker.log`；
+- 临时 canary 客户端已停用，容器内临时 API key 与测试 FBX 已删除。
+
+当前状态为 `DEPLOYED_LOCAL_PENDING_GIT_PUBLISH`：生产运行与 canary 均已通过，
+但提交尚未存在于 `origin/main`，因此不宣称远端正式发布或 registry 发布。
