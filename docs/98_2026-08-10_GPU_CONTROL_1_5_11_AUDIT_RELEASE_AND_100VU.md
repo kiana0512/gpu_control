@@ -1,7 +1,7 @@
 # GPU Control 1.5.11 全服务审计、发布与第三次 100 VU 压测
 
 - 日期：2026-08-10
-- 当前阶段：`DEPLOYED_NOT_ACCEPTED / 100VU_PENDING`
+- 当前阶段：`DEPLOYED_NOT_ACCEPTED / 100VU_CANCELLED_BY_USER`
 - 控制面候选：`1.5.11`
 - Asset API 候选镜像：`1.6.12-retopology-coordinate-restore-v2`
 - Linux Blender Worker 候选：`1.4.7-retopology-coordinate-restore-v2`
@@ -240,6 +240,11 @@ ComfyUI 的 container ID、StartedAt 与 RestartCount 保持不变。
 使用持久身份，而不是放松生产保护。更新后的 live receipt SHA-256 为
 `8687ad9c8cf9aa7696d11830eeced0604739e9245a8c6d7448d4ed3e6f9846bf`。
 
+正式 r7 session `0a4ffc80-8c6c-4842-97a6-8e8f2e29efc3` 已生成 plan，但在 execute 前的最后门禁
+发现真实客户新提交两批各 97 帧 ImageClip 和单帧任务，因此保持 0 压测请求、0 压测任务，未与生产
+混压。用户随后明确取消本轮正式压测；空闲监视器已停止，未使用的 r7 临时凭据已删除，未创建结果
+目录。该状态是 `CANCELLED_BY_USER_BEFORE_EXECUTE`，不能记为压力测试通过或失败。
+
 ## 6. 安全发布顺序
 
 1. 等待受保护的 118 帧真实序列完成并校验下载产物；再次确认 GPU/Batch/Asset/lease 为 0，生成并
@@ -268,4 +273,4 @@ ComfyUI 的 container ID、StartedAt 与 RestartCount 保持不变。
 | Asset API / 三 Worker / API / Web / Scheduler 滚动 | `PASS`；目标容器 RestartCount 均为 0 |
 | 三节点、四 Baker、Codex、Prometheus 发布后验证 | `PASS`；三节点 ACTIVE/ONLINE，14 条规则已加载 |
 | 六 API canary | Direct V2 生产 canary `eaef9725-a24f-4538-9b67-6d6560f09d1a` 成功；7/7 产物与坐标恢复回读通过 |
-| 100 VU 原始结果、阈值、清场与分析 | `PENDING` |
+| 100 VU 原始结果、阈值、清场与分析 | `CANCELLED_BY_USER_BEFORE_EXECUTE`；r7 0 请求、0 压测任务 |
