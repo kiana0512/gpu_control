@@ -11,7 +11,6 @@ import argparse
 import hashlib
 import json
 import math
-import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -146,15 +145,6 @@ def _mesh_record(bmesh: Any, obj: Any, *, require_uv: bool) -> dict[str, Any]:
     }
 
 
-def _write_copy_no_overwrite(source: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with source.open("rb") as input_file, destination.open("xb") as output_file:
-            shutil.copyfileobj(input_file, output_file, length=1024 * 1024)
-    except FileExistsError as exc:
-        raise RuntimeError(f"refusing to overwrite Blender fixture: {destination}") from exc
-
-
 def _export_fbx(bpy: Any, obj: Any, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
@@ -201,6 +191,16 @@ def _validate_fbx(bpy: Any, bmesh: Any, path: Path) -> dict[str, Any]:
     return {"path": path.name, "object": _mesh_record(bmesh, meshes[0], require_uv=True)}
 
 
+def _save_uncompressed_blend(bpy: Any, path: Path) -> None:
+    """Write the raw BLENDER signature required by the Direct V2 package contract."""
+
+    bpy.ops.wm.save_as_mainfile(
+        filepath=str(path),
+        check_existing=False,
+        compress=False,
+    )
+
+
 def generate(root: Path) -> dict[str, Any]:
     import bmesh
     import bpy
@@ -216,7 +216,7 @@ def generate(root: Path) -> dict[str, Any]:
     bpy.ops.wm.read_factory_settings(use_empty=True)
     uv_source = _create_uv_cube(bpy, bmesh, "synthetic_uv_source", cuts=3)
     _mesh_record(bmesh, uv_source, require_uv=True)
-    bpy.ops.wm.save_as_mainfile(filepath=str(uv_path), check_existing=False)
+    _save_uncompressed_blend(bpy, uv_path)
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
     high = _create_uv_cube(bpy, bmesh, "synthetic_high", cuts=7)
@@ -224,10 +224,18 @@ def generate(root: Path) -> dict[str, Any]:
     low = _create_uv_cube(bpy, bmesh, "synthetic_low", cuts=3)
     for obj in (high, reference, low):
         _mesh_record(bmesh, obj, require_uv=True)
-    bpy.ops.wm.save_as_mainfile(filepath=str(audit_path), check_existing=False)
-    _write_copy_no_overwrite(audit_path, process_path)
+    _save_uncompressed_blend(bpy, audit_path)
     _export_fbx(bpy, low, low_fbx)
     _export_fbx(bpy, high, high_fbx)
+
+    # Direct V2 accepts one high-poly source project and generates a new low
+    # mesh from it.  The audit fixture deliberately contains the three roles,
+    # but copying that scene into the processing fixture would make the
+    # pre-existing low/reference meshes look like additional high sources.
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    process_high = _create_uv_cube(bpy, bmesh, "synthetic_high", cuts=7)
+    _mesh_record(bmesh, process_high, require_uv=True)
+    _save_uncompressed_blend(bpy, process_path)
 
     validation = {
         "schema_version": "synthetic_blender_fixtures.v1",
@@ -247,7 +255,7 @@ def generate(root: Path) -> dict[str, Any]:
                 bpy,
                 bmesh,
                 process_path,
-                ("synthetic_high", "synthetic_reference", "synthetic_low"),
+                ("synthetic_high",),
             ),
             "bake_low": _validate_fbx(bpy, bmesh, low_fbx),
             "bake_high": _validate_fbx(bpy, bmesh, high_fbx),

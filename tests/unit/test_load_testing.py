@@ -2,6 +2,7 @@ import ast
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -56,9 +57,11 @@ from packages.gpu_control_core.load_testing import (
     write_result_manifest,
 )
 from scripts.run_six_api_load import (
+    SAFE_LOCUST_INTERRUPT_GRACE_SECONDS,
     SAFE_LOCUST_STOP_TIMEOUT_SECONDS,
     locust_child_environment,
     locust_command,
+    run_locust_process,
 )
 
 
@@ -1452,6 +1455,37 @@ def test_wrapper_forces_safe_locust_stop_timeout(tmp_path: Path) -> None:
     assert command.count("--stop-timeout") == 1
     stop_timeout_index = command.index("--stop-timeout")
     assert command[stop_timeout_index + 1] == str(SAFE_LOCUST_STOP_TIMEOUT_SECONDS)
+
+
+def test_wrapper_forwards_interrupt_and_waits_for_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Process:
+        def __init__(self) -> None:
+            self.wait_calls: list[int | None] = []
+            self.signals: list[int] = []
+
+        def wait(self, timeout: int | None = None) -> int:
+            self.wait_calls.append(timeout)
+            if len(self.wait_calls) == 1:
+                raise KeyboardInterrupt
+            return 2
+
+        def poll(self) -> None:
+            return None
+
+        def send_signal(self, value: int) -> None:
+            self.signals.append(value)
+
+    process = Process()
+    monkeypatch.setattr(
+        "scripts.run_six_api_load.subprocess.Popen",
+        lambda *args, **kwargs: process,
+    )
+
+    assert run_locust_process(["/fixed/locust"], {"SAFE": "yes"}) == 2
+    assert process.signals == [signal.SIGINT]
+    assert process.wait_calls == [None, SAFE_LOCUST_INTERRUPT_GRACE_SECONDS]
 
 
 def test_scheduler_capacity_v1_normalizes_new_and_legacy_aliases() -> None:

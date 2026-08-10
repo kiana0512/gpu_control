@@ -51,6 +51,10 @@
 | 3090-B 无 DCGM，通用 `GPUHot` 不覆盖 WSL2 | B 的高温/功耗异常无法自动告警 | 签名 GPU 查询导出利用率、显存、温度、功耗/上限；新增 `WSLGPUHot` |
 | 六 API 压测仍按退役 V1 的 22/23 件拓扑产物验收 | Direct V2 成功也会被测试工具误判失败 | 精确对齐 Direct V2 的 7 件正式产物 |
 | 生产 test 历史超过 500 条后，旧 session 防重扫描饱和 | 正式压测在 0 请求阶段 fail closed，无法继续升压 | 新增规范 UUIDv4 精确碰撞查询，分别计数 GPU job、ImageClip batch、Asset job，不删除历史 |
+| Blender 5.1 默认压缩合成 `.blend` | Direct V2 在执行前拒绝 Zstd 文件头 | 生成时显式 `compress=False`，生成器再次校验原始 `BLENDER` 签名 |
+| Direct V2 压测件沿用审计用三角色场景 | 旧低模和参考模被误当成额外高模 | Direct V2 测试件只含唯一高模；三角色场景继续仅用于审计 API |
+| Direct `.blend` 没有 FBX 专用 `source-manifest.json` | Codex 已生成有效 Blend，但报告别名无法补齐，任务在 92% 失败 | 拓扑结束后只读确认唯一源高模与最终低模，补齐报告后再执行现有坐标恢复 |
+| 操作员同时中断外层脚本与 Locust | 无效压测虽然停止，但外层提前退出、未写完整 teardown/summary | 外层只向 Locust 转发 SIGINT并等待最多 360 秒完成范围清场 |
 | Python/前端依赖存在已知安全公告 | 镜像/锁文件扫描失败 | 升级至修复版本；候选环境 `pip-audit` 与 `npm audit` 均为 0 |
 
 旧 Windows `asset-worker-3090-b-windows` 数据库行保留兼容历史，但管理 API 按心跳超时投影为
@@ -60,7 +64,7 @@
 
 | 门禁 | 结果 |
 |---|---|
-| Python 全量测试 | `510 passed, 12 skipped, 0 failed` |
+| Python 全量测试 | `516 passed, 11 skipped, 0 failed` |
 | Ruff | 通过 |
 | mypy strict | 43 个源码文件通过 |
 | Web Vitest | 18/18 通过 |
@@ -159,6 +163,24 @@ Scheduler 的单服务顺序替换。滚动窗口中出现 1 个新的排队 GPU
 RestartCount 全程不变。滚动后新精确碰撞接口实机返回 HTTP 200、空 session 计数 0；最终任务、
 租约再次归零。
 
+第二次正式启动 session `4878d60c-56ab-4d4a-a56f-39b2ab608b67` 通过生产、备份、身份和碰撞
+preflight；到 10 VU 时 7 个 Direct V2 提交均在执行前拒绝。测试件由 Blender 5.1.2 以 Zstd
+压缩保存，文件头为 `28 b5 2f fd`，而已批准 Direct V2 合同只接受原始 `BLENDER` 签名。该轮随即
+停止，没有继续制造无效流量。原外层脚本因同时收到 SIGINT 退出 130，随后按该轮原始 preflight
+时间边界执行范围恢复：尝试 9、收敛 9、最终作用域验证通过，GPU/Asset 活动作业和租约全部为 0；
+证据保存在该结果目录的 `manual-recovery.json`。
+
+修正签名后，两次真实单任务 canary 分别为
+`ecaa6740-e703-43ca-8899-b1f26b5860d4` 和
+`37aa5735-62c9-488e-b1bc-6a6fe64e163c`，均已通过输入签名并执行到 92%，随后稳定暴露报告兼容缺口。
+进一步使用只含唯一高模的合规测试件复现任务
+`4b5c3c38-da31-47b8-8d87-b6238ec2888f`，仍得到
+`generation report has no asset records`，证明问题不是拓扑、多模型歧义或节点偶发异常。根因是直接
+`.blend` 不生成 FBX 路径使用的 `source-manifest.json`，旧兼容器因此没有调用已有的 Blend 只读
+交付检查。补丁只在 Codex 成功并保存结果后读取源/结果 Blend，唯一确认高低模名称并规范化报告；
+之后仍由坐标恢复 v2 决定“未移动则原样交付、移动则只平移恢复”。针对性回归
+`96 passed`、Ruff 与 strict mypy 通过。重新构建、三节点滚动及成功 canary 的证据将在正式压测前回填。
+
 ## 6. 安全发布顺序
 
 1. 等待受保护的 118 帧真实序列完成并校验下载产物；再次确认 GPU/Batch/Asset/lease 为 0，生成并
@@ -186,5 +208,5 @@ RestartCount 全程不变。滚动后新精确碰撞接口实机返回 HTTP 200�
 | 0013 生产迁移 | `PASS`；当前 revision `20260810_0013` |
 | Asset API / 三 Worker / API / Web / Scheduler 滚动 | `PASS`；目标容器 RestartCount 均为 0 |
 | 三节点、四 Baker、Codex、Prometheus 发布后验证 | `PASS`；三节点 ACTIVE/ONLINE，14 条规则已加载 |
-| 六 API canary | `PENDING` |
+| 六 API canary | 三次诊断任务已定位并修复 Direct Blend 报告兼容缺口；新镜像部署后成功 canary `PENDING` |
 | 100 VU 原始结果、阈值、清场与分析 | `PENDING` |

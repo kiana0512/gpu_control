@@ -39,6 +39,7 @@ REQUIRED_BLENDER_FILES = (
     "bake/asset_low.fbx",
     "bake/asset_high.fbx",
 )
+RAW_BLEND_SIGNATURE = b"BLENDER"
 
 
 class FixtureGenerationError(RuntimeError):
@@ -518,6 +519,10 @@ def validate_blender_receipt(root: Path) -> None:
         path = root / relative_path
         if not path.is_file() or path.stat().st_size < 1:
             raise FixtureGenerationError(f"Blender fixture is missing: {relative_path}")
+        if path.suffix == ".blend" and not path.read_bytes().startswith(RAW_BLEND_SIGNATURE):
+            raise FixtureGenerationError(
+                f"Blender fixture must be saved without compression: {relative_path}"
+            )
         if artifacts[relative_path] != sha256_path(path):
             raise FixtureGenerationError(f"Blender fixture SHA mismatch: {relative_path}")
 

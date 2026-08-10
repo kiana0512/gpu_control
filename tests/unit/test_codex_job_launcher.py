@@ -174,3 +174,49 @@ def test_reconstructs_assets_from_read_only_blend_inspection(tmp_path: Path) -> 
         }
     ]
     assert normalized["gpu_control_compatibility"]["blend_inspection_used"] is True
+
+
+def test_direct_blend_reconstructs_assets_from_read_only_source_and_delivery(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "generation_report.json"
+    path.write_text(
+        json.dumps({"status": "generated_for_user_inspection"}), encoding="utf-8"
+    )
+    (tmp_path / "plans").mkdir()
+    (tmp_path / "plans" / "plan.json").write_text(
+        json.dumps({"method_decision": "semantic_reconstruction"}), encoding="utf-8"
+    )
+
+    def inspect_source(job_dir: Path) -> str:
+        assert job_dir == tmp_path
+        return "synthetic_high"
+
+    def inspect_delivery(job_dir: Path, high_object: str) -> list[dict[str, object]]:
+        assert job_dir == tmp_path
+        assert high_object == "synthetic_high"
+        return [
+            {
+                "low_object": "synthetic_high_LOW",
+                "faces": 6,
+                "triangles": 12,
+            }
+        ]
+
+    assert normalize_generation_report(
+        tmp_path,
+        delivery_inspector=inspect_delivery,
+        source_inspector=inspect_source,
+    ) is True
+    normalized = json.loads(path.read_text(encoding="utf-8"))
+    assert normalized["assets"] == [
+        {
+            "high_object": "synthetic_high",
+            "low_object": "synthetic_high_LOW",
+            "faces": 6,
+            "triangles": 12,
+            "method_decision": "semantic_reconstruction",
+            "actual_plugin_use": None,
+        }
+    ]
+    assert normalized["gpu_control_compatibility"]["blend_inspection_used"] is True

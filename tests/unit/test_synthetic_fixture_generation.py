@@ -1,6 +1,7 @@
 import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -67,7 +68,15 @@ def _fake_blender_generation(
     artifacts: dict[str, str] = {}
     for index, relative in enumerate(generator.REQUIRED_BLENDER_FILES):
         path = root / relative
-        generator.write_bytes_no_overwrite(path, f"synthetic-3d-{index}".encode())
+        prefix = (
+            generator.RAW_BLEND_SIGNATURE
+            if path.suffix == ".blend"
+            else b"Kaydara FBX"
+        )
+        generator.write_bytes_no_overwrite(
+            path,
+            prefix + f"-synthetic-3d-{index}".encode(),
+        )
         artifacts[relative] = generator.sha256_path(path)
     generator.write_json_no_overwrite(
         root / "blender_validation.json",
@@ -79,6 +88,25 @@ def _fake_blender_generation(
             "artifacts": artifacts,
         },
     )
+
+
+def test_blender_helper_disables_blend_compression(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def save_as_mainfile(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    bpy = SimpleNamespace(
+        ops=SimpleNamespace(wm=SimpleNamespace(save_as_mainfile=save_as_mainfile))
+    )
+    target = tmp_path / "fixture.blend"
+    blender_generator._save_uncompressed_blend(bpy, target)
+
+    assert captured == {
+        "filepath": str(target),
+        "check_existing": False,
+        "compress": False,
+    }
 
 
 def test_complete_synthetic_fixture_contract_without_network_or_source_assets(

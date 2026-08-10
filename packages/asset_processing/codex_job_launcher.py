@@ -33,13 +33,64 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _source_high_object(job_dir: Path) -> str | None:
-    manifest_path = job_dir / "source-manifest.json"
-    if not manifest_path.is_file():
+def inspect_direct_blend_source(job_dir: Path) -> str | None:
+    """Return the only source Mesh name from a direct Blend without saving it."""
+
+    source_path = job_dir / "input" / "source.blend"
+    if not source_path.is_file() or source_path.stat().st_size <= 0:
         return None
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    value = manifest.get("prepared_high_object")
-    return value if isinstance(value, str) and value else None
+    output_path = job_dir / ".gpu-control-source-inspection.json"
+    helper = Path(__file__).with_name("inspect_retopology_source.py")
+    blender = os.environ.get("BLENDER_EXECUTABLE", "/opt/blender/blender")
+    try:
+        completed = subprocess.run(  # noqa: S603 - trusted Worker executable and fixed argv
+            [
+                blender,
+                "--background",
+                str(source_path),
+                "--disable-autoexec",
+                "--python-exit-code",
+                "1",
+                "--python",
+                str(helper),
+                "--",
+                "--output",
+                str(output_path),
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+        )
+        if completed.returncode != 0 or not output_path.is_file():
+            return None
+        inspected = json.loads(output_path.read_text(encoding="utf-8"))
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return None
+    finally:
+        output_path.unlink(missing_ok=True)
+    records = inspected.get("high_objects")
+    if (
+        not isinstance(records, list)
+        or len(records) != 1
+        or not isinstance(records[0], str)
+        or not records[0]
+    ):
+        return None
+    return records[0]
+
+
+def _source_high_object(
+    job_dir: Path,
+    source_inspector: Callable[[Path], str | None] | None = None,
+) -> str | None:
+    manifest_path = job_dir / "source-manifest.json"
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        value = manifest.get("prepared_high_object")
+        return value if isinstance(value, str) and value else None
+    inspector = source_inspector or inspect_direct_blend_source
+    return inspector(job_dir)
 
 
 def _planned_method(job_dir: Path) -> str | None:
@@ -105,6 +156,7 @@ def inspect_blend_delivery(job_dir: Path, high_object: str) -> list[dict[str, ob
 def normalize_generation_report(
     job_dir: Path,
     delivery_inspector: Callable[[Path, str], list[dict[str, object]]] | None = None,
+    source_inspector: Callable[[Path], str | None] | None = None,
 ) -> bool:
     """Normalize known v2.3 report aliases without touching geometry.
 
@@ -122,7 +174,7 @@ def normalize_generation_report(
     report = json.loads(report_path.read_text(encoding="utf-8"))
     if report.get("status") != "generated_for_user_inspection":
         return False
-    high_authority = _source_high_object(job_dir)
+    high_authority = _source_high_object(job_dir, source_inspector)
     if high_authority is None:
         return False
     objects = report.get("assets")

@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -38,6 +39,7 @@ from packages.gpu_control_core.load_testing import (  # noqa: E402
 DEFAULT_SCENARIO = REPOSITORY_ROOT / "tests/load/scenarios/six_api_120.example.yaml"
 DEFAULT_FIXTURES = REPOSITORY_ROOT / "tests/load/fixtures/six_api.example.yaml"
 SAFE_LOCUST_STOP_TIMEOUT_SECONDS = 30
+SAFE_LOCUST_INTERRUPT_GRACE_SECONDS = 360
 
 
 def arguments() -> argparse.Namespace:
@@ -109,6 +111,31 @@ def locust_command(locust_bin: Path, target: str, result_dir: Path) -> list[str]
         "--json-file",
         str(result_dir / "locust.json"),
     ]
+
+
+def run_locust_process(command: list[str], environment: Mapping[str, str]) -> int:
+    """Run Locust while preserving its session teardown on operator Ctrl+C."""
+
+    process = subprocess.Popen(  # noqa: S603 - fixed executable and argv, no shell
+        command,
+        cwd=REPOSITORY_ROOT,
+        env=dict(environment),
+    )
+    try:
+        return int(process.wait())
+    except KeyboardInterrupt:
+        if process.poll() is None:
+            process.send_signal(signal.SIGINT)
+        try:
+            return int(process.wait(timeout=SAFE_LOCUST_INTERRUPT_GRACE_SECONDS))
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=SAFE_LOCUST_STOP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            return 130
 
 
 def main() -> int:
@@ -186,13 +213,7 @@ def main() -> int:
     command = locust_command(args.locust_bin, runtime.target, result_dir)
     exit_code = 2
     try:
-        completed = subprocess.run(  # noqa: S603 - fixed executable and argv, no shell
-            command,
-            cwd=REPOSITORY_ROOT,
-            env=child_environment,
-            check=False,
-        )
-        exit_code = int(completed.returncode)
+        exit_code = run_locust_process(command, child_environment)
     except OSError as exc:
         print(f"Locust could not start: {exc}", file=sys.stderr)
     postrun_deployment: dict[str, object] = {

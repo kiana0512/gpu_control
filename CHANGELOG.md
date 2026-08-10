@@ -27,6 +27,13 @@
 - 生产压测 session 防重由“最近 500 条 test 历史”改为控制面按规范 UUIDv4 对 GPU job、ImageClip
   batch 和 Asset job 三个命名空间做精确全局计数；历史超过 500 条后仍能 fail closed 地证明新 session
   无碰撞，不删除或改写历史审计记录。
+- 六 API 合成 `.blend` 测试件显式关闭 Blender 压缩并校验原始 `BLENDER` 文件签名；Direct V2
+  测试场景只携带一个高模，三角色高/参考/低模型仍只用于拓扑审计，避免测试输入制造伪失败。
+- Direct V2 对直接 `.blend` 输入不生成 FBX 专用的 `source-manifest.json` 时，GPU Control 在 Codex
+  完成后只读确认唯一源高模和最终低模，再补齐同一交付报告后进入既有坐标恢复；不修改拓扑、网格、
+  旋转、缩放或外部 Direct V2 包。
+- 压测启动器收到 Ctrl+C 时先把中断转交 Locust，并给 session 范围清场最多 360 秒；只有清场超时
+  才逐级 terminate/kill，避免操作员停止无效测试时跳过 teardown。
 - 重拓扑的坐标原样交付/安全恢复 v2 保持不变；本次更新不修改拓扑算法、几何结果或烘焙合同。
 
 ## 1.5.10（部分成功与失败帧修复）— 2026-08-05
