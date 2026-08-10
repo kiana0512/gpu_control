@@ -190,6 +190,14 @@ Asset API、3090-B Worker、3090-A Worker、control-4090 Worker、API、Web、Sc
 ACTIVE。三 Worker 均为 `ONLINE / AUTHENTICATED / Codex HEALTHY / RetopoFlow HEALTHY / 0 jobs`；
 所有新容器 RestartCount=0，三台 ComfyUI 的容器 ID、启动时间与 RestartCount 保持不变。
 
+滚动后的真实 Direct V2 canary 使用严格单高模 Blend（session
+`fb916c00-85b2-4b23-bca4-ecf5c35ac0a0`，job
+`eaef9725-a24f-4538-9b67-6d6560f09d1a`），在 `asset-control-4090` 达到 `SUCCEEDED / 100%`。
+7/7 最终产物的种类、字节数、下载响应头 SHA-256 与下载文件 SHA-256 全部一致。交付清单记录坐标恢复
+`passed=true`：低模中心从 `[3, 0, 0]` 恢复到高模中心 `[0, 0, 0]`，仅施加
+`[-3, 0, 0]` 世界平移；高模、低模网格及低模旋转/缩放均保持，最终 FBX 回读中心和尺寸误差均为 0。
+这证明修复后的生产路径会在拓扑结束后对齐交付坐标，且不修改拓扑结果。
+
 ## 6. 安全发布顺序
 
 1. 等待受保护的 118 帧真实序列完成并校验下载产物；再次确认 GPU/Batch/Asset/lease 为 0，生成并
