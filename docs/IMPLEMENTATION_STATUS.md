@@ -2,8 +2,9 @@
 
 最后更新：2026-08-10
 版本：生产控制面 1.5.11 / Asset API 1.6.12 / Worker 1.4.7 / DB 20260810_0013；
-源码审计、五镜像安全滚动和 Direct V2 真实 canary 已完成。压测 runner 与 Roughness 幂等身份修复
-已通过整库门禁，正在从同一已推送 SHA 重建并滚动；第三次正式 100 VU 尚未完成。当前事实与回填入口见
+源码审计、r4 五镜像安全滚动、Direct V2 真实任务和 Roughness 幂等身份实机回归已完成。压测 runner
+与 r4 归档/LFS 均已推送，生产与三台 ComfyUI 保持稳定。第三次正式 100 VU 尚未完成。当前事实与
+回填入口见
 `98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`。
 
 ## 2026-07-30 GPU Control 1.5.5 速度稳定性候选

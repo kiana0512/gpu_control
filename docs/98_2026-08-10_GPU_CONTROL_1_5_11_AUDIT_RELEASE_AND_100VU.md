@@ -219,6 +219,27 @@ request ID，因而把本 session 的 `319e2b8f…` 也列入歧义项。数据�
 `518 passed, 11 skipped`、Ruff、mypy strict、Web 18/18、生产构建与 Compose 全通过；它必须先从同一
 已推送 SHA 重建并滚动控制面镜像，之后才允许启动下一轮正式 100 VU。
 
+幂等身份修复源码提交 `07414f496c1b58cd6e258fc8f2de61cd16f51aa9` 已推送并与
+`origin/main` 一致。r4 从该 SHA 重建全部五镜像；组合归档大小 `836367741` bytes，SHA-256
+`b7d16b1288d7bcfb0e481fb25975c2b3b116112bed3ce72a89e33a671696fe69`。7 个分片、组合 gzip、Docker
+archive/OCI config 身份、五镜像 OCI revision 和离线 provenance 全部通过；Git LFS 候选提交为
+`5acaa971cca626dc36d4a8554464c1866f6e6a59`。SBOM generator 与 registry digest 仍保持明确
+`PENDING`，没有把本地 image ID 冒充 registry digest。
+
+r4 滚动前，两笔真实 Direct V2 分别在 3090-A/B 执行；均等待至 `SUCCEEDED` 后才进入维护窗口。
+三节点 DRAINING 后，活动 GPU job、batch、Asset job、lease、Worker busy 和三台 ComfyUI 队列均为
+0。按 3090-B Worker、3090-A Worker、4090 Worker、Asset API、API、Web、Scheduler 逐项替换并逐项
+验证。滚动期间新来的真实任务 `c680df9a-2eb8-41a5-b928-58248504a3a3` 只在队列等待；恢复 ACTIVE 后
+由新 4090 Worker 正常执行到 `SUCCEEDED / 100%`。三节点和三 Worker 最终均
+`ACTIVE / ONLINE / 0 jobs`，Codex 为 `AUTHENTICATED / HEALTHY`；所有新容器 RestartCount=0，三台
+ComfyUI 的 container ID、StartedAt 与 RestartCount 保持不变。
+
+新 API 已用 r6 历史 Roughness 任务实机回归：即使 server request ID 为
+`59c28957bf966e4b59608560ea56ee13`，管理员任务视图仍精确返回本 session 幂等键
+`load:e19ab52a-3776-4395-9254-8831f9863b4f:mvr:00000005`。这证明下一轮 watchdog 与范围清场可以
+使用持久身份，而不是放松生产保护。更新后的 live receipt SHA-256 为
+`8687ad9c8cf9aa7696d11830eeced0604739e9245a8c6d7448d4ed3e6f9846bf`。
+
 ## 6. 安全发布顺序
 
 1. 等待受保护的 118 帧真实序列完成并校验下载产物；再次确认 GPU/Batch/Asset/lease 为 0，生成并
@@ -237,11 +258,11 @@ request ID，因而把本 session 的 `319e2b8f…` 也列入歧义项。数据�
 
 | 项目 | 状态 |
 |---|---|
-| 镜像源码 Git SHA | `3583023db112a684a757fa2f1a10fec5fcd47463`；已推送 |
-| 候选归档 Git/LFS | `0be5ac28cb59f86256e5782f5f122c86850e9cdc`；`1.5.11-r3` 7/7 LFS 已推送，`git lfs fsck` 通过 |
-| 五镜像构建与本地不可变 ID | `VERIFIED / DEPLOYED`；API `cc377158`、Scheduler `8f7d2490`、Asset API `e35fa7d2`、Web `e647fc83`、三 Worker `072b4175`；组合归档 SHA-256 `e51c810aed37a274b6dd349c10cfa874be5ce9e473dfe42f55594ea80afde705` |
+| 镜像源码 Git SHA | `07414f496c1b58cd6e258fc8f2de61cd16f51aa9`；已推送 |
+| 候选归档 Git/LFS | `5acaa971cca626dc36d4a8554464c1866f6e6a59`；`1.5.11-r4` 7/7 分片和 `git lfs fsck` 通过 |
+| 五镜像构建与本地不可变 ID | `VERIFIED / DEPLOYED`；API `66887292`、Scheduler `21903421`、Asset API `c320bb70`、Web `0cd1bcef`、三 Worker `c295610f`；组合归档 SHA-256 `b7d16b1288d7bcfb0e481fb25975c2b3b116112bed3ce72a89e33a671696fe69` |
 | Registry digest / SBOM | `PENDING_REGISTRY_PUSH / PENDING_PINNED_SBOM_GENERATOR`；不得宣称 strict release accepted |
-| live deployment receipt | `artifacts/control-plane/1.5.11/deployment/live-deployment-receipt.json`；blob SHA-256 `61c75c6cdb98a97e4e4a8d1f232ef1843d9c1bf3350b1264ddcdf841e5b02b36`；状态 `DEPLOYED_NOT_ACCEPTED` |
+| live deployment receipt | `artifacts/control-plane/1.5.11/deployment/live-deployment-receipt.json`；blob SHA-256 `8687ad9c8cf9aa7696d11830eeced0604739e9245a8c6d7448d4ed3e6f9846bf`；状态 `DEPLOYED_NOT_ACCEPTED` |
 | full backup 与离线完整性校验 | `PASS`；`/srv/gpu-control/backups/20260810T033212Z-full` |
 | 0013 生产迁移 | `PASS`；当前 revision `20260810_0013` |
 | Asset API / 三 Worker / API / Web / Scheduler 滚动 | `PASS`；目标容器 RestartCount 均为 0 |
