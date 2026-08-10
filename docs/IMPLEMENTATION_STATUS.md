@@ -1,11 +1,12 @@
 # 实施状态
 
 最后更新：2026-08-10
-版本：生产控制面 1.5.11 / Asset API 1.6.12 / Worker 1.4.7 / DB 20260810_0013；
-源码审计、r4 五镜像安全滚动、Direct V2 真实任务和 Roughness 幂等身份实机回归已完成。压测 runner
-与 r4 归档/LFS 均已推送，生产与三台 ComfyUI 保持稳定。第三次正式 100 VU 在 execute 前由用户取消，
-r7 为 0 请求、0 压测任务。当前事实与回填入口见
-`98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`。
+版本：生产控制面 1.5.11 / Asset API 1.6.13-retopology-alignment-v3 / Worker
+1.4.8-retopology-alignment-v3 / DB 20260810_0013；源码审计、r4 五镜像安全滚动、Direct V2
+高低模坐标恢复和 Roughness 幂等身份实机回归已完成。三节点均为 `ACTIVE / ONLINE`，真实抠图继续
+三卡并行，发布未重启三台 ComfyUI。第三次正式 100 VU 在 execute 前由用户取消，r7 为 0 请求、
+0 压测任务。综合发布见 `98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`，
+高低模对齐热修复和真实 GLB 回归见 `99_2026-08-10_RETOPOLOGY_ALIGNMENT_V3_HOTFIX.md`。
 
 ## 2026-07-30 GPU Control 1.5.5 速度稳定性候选
 

@@ -51,6 +51,47 @@ ImageClip/ModelViewCreator 流水线均未修改。
 
 ## 发布状态
 
-代码和候选镜像完成后，必须等待三台节点无运行中 Asset 任务，将节点置为 `DRAINING`，再滚动替换
-三台 Worker 和 Asset API。发布期间不重启 ComfyUI，不清模型缓存，不修改外部业务流水线。上线后
-使用同一真实 GLB 重新提交自动拓扑，并以最终低模与原高模通过烘焙对齐检查作为闭环证据。
+2026-08-10 已完成生产滚动发布：
+
+- Git 提交 `d80babc37c38e6ea03dbcae9b34924601cffcb78` 已推送 `origin/main`；
+- Asset API `1.6.13-retopology-alignment-v3`，镜像 ID
+  `sha256:5b350ff76074c48ad1278415f7e82d8fed77c9d0be45d5de5e644546b9426452`；
+- 三台 Linux Blender Worker 均为 `1.4.8-retopology-alignment-v3`，镜像 ID
+  `sha256:22dd8be7dfa1e18ca90846fb2c998ebadc77d4445a2709d6728c80822a6a2584`；
+- 4090、3090-A 空闲后先更新并恢复 `ACTIVE`；3090-B 保持 `DRAINING` 完成真实任务
+  `a6cde972-20ae-46f0-9b7d-47b7506716a9`，确认 `SUCCEEDED / current_jobs=0` 后才更新；
+- 发布期间三台 ComfyUI 未重启、未换镜像、未清缓存，ImageClip/ModelViewCreator 工作流和模型未修改；
+- 发布完成后三节点均为 `ACTIVE / ONLINE`，真实 ImageClip 队列重新在三张 GPU 上并行运行。
+
+离线增量包位于 `/srv/gpu-control/images/retopology-alignment-v3-d80babc/`：
+
+- `asset-api-1.6.13-retopology-alignment-v3.tar.zst`：89 MB，SHA-256
+  `9d36585ce393b56b60a14d1d6dae97496015633e3e1ebef984973d6d7a85fdb7`；
+- `blender-worker-1.4.8-retopology-alignment-v3.tar.zst`：661 MB，SHA-256
+  `fe4e9e251459ea6e90dd56a8c9d9cdf961fd6dcbefd0a73d77ea1f535dbafa9`；
+- 两个 Zstd 包均通过完整性测试，目录内 `SHA256SUMS` 可用于离线复核。
+
+## 生产端到端回归
+
+使用此前失败任务的同一份 7.7 MB GLB（项目 SHA-256
+`82ec99fb0ed6ecd8ed15b03671d378a8f04910157c2b3f636eab0e24c323aa10`）通过正式
+`POST /api/v1/assets/retopology/process` 重新提交。任务
+`8974dcfd-1359-4dae-9127-2cb7c9bfcb7b` 在 254 秒内由原先的 8% 秒失败变为
+`SUCCEEDED / delivery_ready=true / review_required=false`，交付 BLEND、FBX 和五份审计证据。
+
+坐标恢复证据：
+
+- 合同为 `retopology_direct_delivery.v4` / `retopology_coordinate_restoration.v2`；
+- Agent 把生成低模沿 X 轴摆开约 `1.580024`，服务检测后执行
+  `coordinate_action=translation_restored`；
+- 恢复后高低模包围盒中心最大残差 `2.980232e-8`；
+- 高模指纹不变、低模 mesh 不变、旋转缩放矩阵不变；只修改低模对象平移；
+- 三轴尺寸相对误差为约 `1.98% / 4.89% / 0.45%`，最大 `4.8909%`，通过 5% 硬门禁；
+- FBX 清空场景重新导入通过，中心最大误差 `2.980232e-8`，尺寸最大误差
+  `1.192093e-7`；
+- 最终 BLEND SHA-256
+  `8f87e4244936413745e3e55601281839d6528b41f05d8feb86c89168bb3a1ee2`，FBX SHA-256
+  `ec11429ea4e3b7d3f27f4da51b8e2b33df4d4c2fd57932b79c520fb08c6b6295`。
+
+该回归证明服务端高低模世界坐标恢复和 FBX 交付门禁正常。它没有附带材质贴图，因此没有冒充
+Substance 最终纹理烘焙验收；局部轮廓质量仍应由业务端四视图和实际 cage/贴图烘焙复核。
