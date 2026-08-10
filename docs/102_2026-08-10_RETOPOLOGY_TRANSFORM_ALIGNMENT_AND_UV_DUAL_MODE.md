@@ -134,5 +134,44 @@ BLEND QA 和 FBX QA 均记录实际 `algorithm`，Asset API 完成门禁要求�
 当前发布前自动验证：全量测试 `523 passed, 12 skipped`；Asset API 集成专项 `92 passed`；
 Worker/bootstrap/对齐专项 `55 passed`。Skill SHA 校验、Python 编译、Ruff、Compose 渲染和
 `git diff --check` 通过。后处理脚本冻结 SHA-256 为
-`d555d30824f7b822699543efe443de1395c8107428ff1e785770610f0f2f3b01`。镜像 ID、Git revision、
-生产节点版本和 canary Job ID 只在实际完成后补录，不能预填。
+`d555d30824f7b822699543efe443de1395c8107428ff1e785770610f0f2f3b01`。
+
+### 7.2 生产发布与真实 canary 证据
+
+2026-08-10 已完成三节点安全滚动和真实任务验收：
+
+| 项目 | 生产结果 |
+|---|---|
+| 源码 | 功能提交 `9802d9b9887ff03159ac86549c0fb19235ea07e0`；视觉 QA Schema 热修复提交 `39be5a3a7d9065e99f37b302c1dbee401171e269`，均已推送 |
+| Asset API | `1.6.15-retopology-bake-align-v1`；image ID `sha256:04ac076cc205949e1f0af05d7d9e907e4b68c7e834d41e6084de7e12b7ed7f24`；healthy，0 restart |
+| 三台 Asset Worker | `1.4.13-retopology-bake-align-v1`；三台 image ID 均为 `sha256:13524ea3f55068d5ff97291c43dd9726c922a93a6b84b94824e40d798b64f1e7`；ONLINE，Codex AUTHENTICATED/HEALTHY，0 restart |
+| 节点状态 | `control-4090`、`worker-3090-a`、`worker-3090-b` 均为 `ACTIVE / ONLINE` |
+| 真实 canary | Job `2fd36e99-77c8-40b9-addd-519134663421`，由 `asset-worker-3090-a` 执行，最终 `SUCCEEDED / 100%` |
+| canary 面数与 UV | 高模 `100,000 faces`；原低模 `232 faces`；UV 独立阶段后的交付低模 `388 faces`；有效 `UVChannel_1`；低模面数小于高模 |
+| canary 纯变换 | 正确旋转约 `(-0.00778°, -0.01614°, -0.00868°)`；统一缩放 `0.9905239440`；无镜像、无 XYZ 独立缩放、无直接物体变换复制 |
+| canary 匹配 | 归一化表面误差 `0.024302`；中心误差约 `3.98e-17`；最大尺寸误差比例 `0.009463`；拓扑和 UV 指纹在对齐前后完全一致 |
+| canary 几何门禁 | 0 退化面、0 非流形边、0 松散边/点、0 重复点/面、0 朝向不一致边 |
+| canary FBX 回读 | 全新 Blender 场景重新导入通过；米制合同通过；低模中心/尺寸回读最大误差不超过 `5.03e-7 m` |
+| canary 视觉门禁 | 前、后、左、右、顶、底、透视全部检查并通过；方向、非对称部件、轮廓与部件位置匹配；无错误镜像、长刺、可见穿插、折叠或坍塌 |
+| 正式制品 | `_BAKE_ALIGNMENT.blend`、`_BAKE_HIGH.fbx`、`_GAME_LOW.fbx`、对齐/回读报告、两张总图、七方向 ZIP、视觉 QA 与生成事件均已原子发布 |
+
+首次线上 canary 在 98% 暴露 Codex Structured Outputs 不接受数组 `uniqueItems` 的兼容性问题；该字段
+已删除并增加合同测试，形成 Worker `1.4.13`。热修复专项回归 `46 passed`，随后上述真实 canary
+在最终镜像上成功，证明不是仅靠离线测试判定发布完成。
+
+滚动期间还发现仅检查 GPU `nodes.current_jobs` 不足以代表 Asset CPU 队列空闲：一个已经被 Asset
+Worker 领取的拓扑任务会被遗漏。该任务的租约机制已安全重新排队并在最终镜像上成功；后续维护门禁
+必须同时确认节点 `DRAINING`、GPU Job 为 0、该节点 Asset Worker `current_jobs=0`，以及数据库不存在
+该 Worker 的 `RUNNING` Asset Job 后才允许替换容器。
+
+### 7.3 离线镜像归档
+
+归档目录：`/srv/gpu-control/images/retopology-bake-align-v1-39be5a3/`。
+
+| 归档 | 字节 | SHA-256 |
+|---|---:|---|
+| `li3d-blender-worker-1.4.13-retopology-bake-align-v1.tar.zst` | 688273392 | `a05c2af336d3f43573e22b04d928ce9607f1f09f2be56e341122828e19e89820` |
+| `unified-scheduler-asset-api-1.6.15-retopology-bake-align-v1.tar.zst` | 92259136 | `2a286d98bf98a61495ddbfcb8eb2195e7d1e60a61306d13f2c3a0694c1d43355` |
+
+本次没有重启或修改三台 ComfyUI、ImageClip、ModelViewCreator 及其工作流；真实抠图任务继续运行。
+用户已取消压力测试，本发布执行了 0 条压力测试请求，不能把 canary 或回归测试描述为压测。

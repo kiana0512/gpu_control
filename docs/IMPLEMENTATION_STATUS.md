@@ -1,15 +1,29 @@
 # 实施状态
 
 最后更新：2026-08-10
-版本：生产控制面 1.5.11 / Asset API 1.6.14-retopology-fbx-meter-v1 / Worker
-1.4.11-retopology-envelope-v2 / DB 20260810_0013；源码审计、r4 五镜像安全滚动、Direct V2
-高低模坐标/尺寸/方向恢复、浏览器 FBX 米制交付和 Roughness 幂等身份实机回归已完成。三节点均为
-`ACTIVE / ONLINE`，真实抠图继续三卡并行，发布未重启三台 ComfyUI。第三次正式 100 VU 在
+版本：生产控制面 1.5.11 / Asset API 1.6.15-retopology-bake-align-v1 / Worker
+1.4.13-retopology-bake-align-v1 / DB 20260810_0013；源码审计、Direct V2 拓扑后纯变换高低模对齐、
+独立 UV、七方向视觉门禁和米制 FBX 重导验证已完成真实生产 canary。三节点均为 `ACTIVE / ONLINE`，
+真实抠图继续三卡并行，发布未重启三台 ComfyUI。第三次正式 100 VU 在
 execute 前由用户取消，r7 为 0 请求、0 压测任务。综合发布见
 `98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`，高低模对齐热修复见
 `99_2026-08-10_RETOPOLOGY_ALIGNMENT_V3_HOTFIX.md`，FBX 浏览器米制热修复见
 `100_2026-08-10_RETOPOLOGY_FBX_BROWSER_METER_HOTFIX.md`，最终包围盒恢复 V2 与真实失败任务重试见
-`101_2026-08-10_RETOPOLOGY_ENVELOPE_V2_HOTFIX.md`。
+`101_2026-08-10_RETOPOLOGY_ENVELOPE_V2_HOTFIX.md`，最终纯变换交付和生产证据见
+`102_2026-08-10_RETOPOLOGY_TRANSFORM_ALIGNMENT_AND_UV_DUAL_MODE.md`。
+
+## 2026-08-10 拓扑后纯变换对齐生产发布
+
+- 功能提交 `9802d9b9887ff03159ac86549c0fb19235ea07e0`、最终热修复提交
+  `39be5a3a7d9065e99f37b302c1dbee401171e269` 均已推送；三台 Worker 使用完全相同的最终镜像
+  `sha256:13524ea3f55068d5ff97291c43dd9726c922a93a6b84b94824e40d798b64f1e7`。
+- 真实 canary `2fd36e99-77c8-40b9-addd-519134663421` 已 `SUCCEEDED / 100%`：高模 100,000 面，
+  交付低模 388 面并有 UV；纯旋转/平移/统一缩放、七方向视觉 QA、米制高低模 FBX 全新场景回读
+  全部通过，完整 v6 制品已发布。
+- 全量回归 `523 passed, 12 skipped`，最终 Schema 热修复专项 `46 passed`；首次线上 QA Schema 失败
+  已修复并由最终真实 canary 覆盖。
+- Asset API、三台 Asset Worker、三台调度节点均在线；Codex 探针健康。三台 ComfyUI 未重启，
+  ImageClip/ModelViewCreator 及工作流未修改。用户取消压力测试，本轮没有发出压测请求。
 
 ## 2026-07-30 GPU Control 1.5.5 速度稳定性候选
 
