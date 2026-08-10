@@ -1,9 +1,157 @@
+from __future__ import annotations
+
 import hashlib
+import importlib.util
+import math
+import sys
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
+
+import pytest
+
+try:
+    import numpy as np
+except ModuleNotFoundError:
+    np = None
 
 ROOT = Path("packages/asset_processing")
 SCRIPT = ROOT / "blender_retopology_bake_postprocess.py"
-EXPECTED_SHA256 = "d555d30824f7b822699543efe443de1395c8107428ff1e785770610f0f2f3b01"
+EXPECTED_SHA256 = "b41a347d48e0307b2c6fed06a008529cc9a27f8ae38bcbe65448a324c2f40f97"
+
+
+def load_postprocess_math(monkeypatch):
+    fake_bpy = ModuleType("bpy")
+    fake_bpy.types = SimpleNamespace()
+    fake_mathutils = ModuleType("mathutils")
+    fake_mathutils.Matrix = object
+    fake_mathutils.Vector = object
+    fake_bvhtree = ModuleType("mathutils.bvhtree")
+    fake_bvhtree.BVHTree = object
+    monkeypatch.setitem(sys.modules, "bmesh", ModuleType("bmesh"))
+    monkeypatch.setitem(sys.modules, "bpy", fake_bpy)
+    monkeypatch.setitem(sys.modules, "mathutils", fake_mathutils)
+    monkeypatch.setitem(sys.modules, "mathutils.bvhtree", fake_bvhtree)
+    specification = importlib.util.spec_from_file_location("retopology_postprocess", SCRIPT)
+    assert specification is not None and specification.loader is not None
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
+
+
+class FakeAlignmentModule:
+    def __init__(self, low_size: np.ndarray) -> None:
+        self.low_size = np.asarray(low_size, dtype=np.float64)
+
+    def transformed_bounds(self, _objects, matrix):
+        scale = float(np.cbrt(np.linalg.det(matrix[:3, :3])))
+        return {
+            "size": self.low_size * scale,
+            "center": np.asarray(matrix[:3, 3], dtype=np.float64),
+        }
+
+    def evaluate_candidate(
+        self,
+        matrix,
+        high,
+        _low_objects,
+        _high_score_points,
+        _low_score_points,
+        _high_tree,
+        _trim_fraction,
+    ):
+        bounds = self.transformed_bounds([], matrix)
+        scale = float(np.cbrt(np.linalg.det(matrix[:3, :3])))
+        dimension_error = float(
+            np.max(np.abs(bounds["size"] - high["size"])) / np.max(high["size"])
+        )
+        center_error = float(
+            np.linalg.norm(bounds["center"] - high["center"]) / high["diagonal"]
+        )
+        surface_error = 0.0596 + abs(scale - 1.0) * 0.05
+        return {
+            "matrix": matrix,
+            "score": surface_error + 0.1 * dimension_error,
+            "surface_error_ratio": surface_error,
+            "center_error_ratio": center_error,
+            "dimension_error_ratio": dimension_error,
+            "uniform_scale": scale,
+            "reflected": False,
+        }
+
+
+def test_uniform_scale_refinement_resolves_dimension_only_failure(monkeypatch) -> None:
+    if np is None:
+        pytest.skip("Blender-bundled NumPy is not installed in the control-plane test runtime")
+    postprocess = load_postprocess_math(monkeypatch)
+    alignment = FakeAlignmentModule(np.array([8.632, 8.0, 6.0]))
+    high = {
+        "size": np.array([10.0, 8.0, 6.0]),
+        "center": np.array([42.0, -2.0, 1.5]),
+        "diagonal": math.sqrt(200.0),
+    }
+
+    selected, evidence = postprocess.refine_uniform_scale_for_dimension_gate(
+        np.eye(4, dtype=np.float64),
+        high,
+        object(),
+        alignment,
+        np.zeros((16, 3), dtype=np.float64),
+        np.zeros((16, 3), dtype=np.float64),
+        object(),
+        0.82,
+    )
+
+    assert selected is not None
+    assert evidence["attempted"] is True
+    assert evidence["gate_passing_candidate_count"] > 0
+    assert selected["dimension_error_ratio"] <= 0.100
+    assert selected["surface_error_ratio"] <= 0.070
+    assert selected["center_error_ratio"] <= 0.020
+    assert selected["reflected"] is False
+    assert np.allclose(selected["matrix"][:3, 3], high["center"])
+    diagonal = np.diag(selected["matrix"][:3, :3])
+    assert np.allclose(diagonal, diagonal[0])
+
+
+def test_uniform_scale_refinement_rejects_incompatible_dimensions(monkeypatch) -> None:
+    if np is None:
+        pytest.skip("Blender-bundled NumPy is not installed in the control-plane test runtime")
+    postprocess = load_postprocess_math(monkeypatch)
+    alignment = FakeAlignmentModule(np.array([5.0, 20.0, 6.0]))
+    high = {
+        "size": np.array([10.0, 8.0, 6.0]),
+        "center": np.zeros(3),
+        "diagonal": math.sqrt(200.0),
+    }
+
+    selected, evidence = postprocess.refine_uniform_scale_for_dimension_gate(
+        np.eye(4, dtype=np.float64),
+        high,
+        object(),
+        alignment,
+        np.zeros((16, 3), dtype=np.float64),
+        np.zeros((16, 3), dtype=np.float64),
+        object(),
+        0.82,
+    )
+
+    assert selected is None
+    assert evidence == {
+        "attempted": True,
+        "method": "analytic_dimension_interval_plus_bounded_uniform_scale_search",
+        "rotation_frozen": True,
+        "center_recomputed_for_each_candidate": True,
+        "uniform_scale_only": True,
+        "axis_scale_used": False,
+        "reflection_allowed": False,
+        "dimension_error_limit": 0.100,
+        "surface_error_limit": 0.070,
+        "feasible_interval": [1.8, 0.45],
+        "feasible": False,
+        "reason": "no_uniform_scale_can_satisfy_dimension_gate",
+        "candidate_count": 0,
+        "gate_passing_candidate_count": 0,
+    }
 
 
 def test_post_topology_bake_alignment_is_fail_closed() -> None:

@@ -43,6 +43,9 @@ VIEW_NAMES = ("front", "back", "left", "right", "top", "bottom", "perspective")
 ORTHOGRAPHIC_VIEWS = VIEW_NAMES[:-1]
 MINIMUM_SILHOUETTE_IOU = 0.97
 FBX_UNIT_SCALE_FACTOR_CENTIMETERS = 100.0
+ALIGNMENT_SURFACE_ERROR_LIMIT = 0.070
+ALIGNMENT_CENTER_ERROR_LIMIT = 0.020
+ALIGNMENT_DIMENSION_ERROR_LIMIT = 0.100
 
 
 def arguments() -> argparse.Namespace:
@@ -346,6 +349,145 @@ def import_uv_module(path: Path) -> ModuleType:
     return module
 
 
+def refine_uniform_scale_for_dimension_gate(
+    matrix: np.ndarray,
+    high_data: dict[str, Any],
+    low: bpy.types.Object,
+    module: ModuleType,
+    high_evaluation: np.ndarray,
+    low_evaluation: np.ndarray,
+    high_tree: Any,
+    trim_fraction: float,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Search only the uniform scale interval that can satisfy the AABB gate.
+
+    Direct V2 can return a geometrically correct sparse low whose ICP optimum is
+    slightly too small or large for the independent dimension gate.  Re-running
+    unconstrained ICP is not deterministic enough to resolve that conflict.  This
+    refinement therefore freezes the selected proper rotation, changes one scalar
+    only, and recenters the result on the high model before every evaluation.
+
+    The interval is derived analytically from the existing dimension gate.  Every
+    candidate is still evaluated against the unchanged surface and center gates;
+    no axis scale, reflection, topology edit, UV edit, or threshold relaxation is
+    possible here.
+    """
+
+    current_bounds = module.transformed_bounds([low], matrix)
+    current_size = np.asarray(current_bounds["size"], dtype=np.float64)
+    high_size = np.asarray(high_data["size"], dtype=np.float64)
+    maximum_high_dimension = max(float(np.max(high_size)), 1e-12)
+    absolute_tolerance = ALIGNMENT_DIMENSION_ERROR_LIMIT * maximum_high_dimension
+    evidence: dict[str, Any] = {
+        "attempted": True,
+        "method": "analytic_dimension_interval_plus_bounded_uniform_scale_search",
+        "rotation_frozen": True,
+        "center_recomputed_for_each_candidate": True,
+        "uniform_scale_only": True,
+        "axis_scale_used": False,
+        "reflection_allowed": False,
+        "dimension_error_limit": ALIGNMENT_DIMENSION_ERROR_LIMIT,
+        "surface_error_limit": ALIGNMENT_SURFACE_ERROR_LIMIT,
+    }
+    if np.any(current_size <= 1e-12):
+        evidence.update(
+            {
+                "feasible": False,
+                "reason": "low_bounds_have_zero_dimension",
+                "candidate_count": 0,
+                "gate_passing_candidate_count": 0,
+            }
+        )
+        return None, evidence
+
+    lower_by_axis = np.maximum((high_size - absolute_tolerance) / current_size, 1e-9)
+    upper_by_axis = (high_size + absolute_tolerance) / current_size
+    feasible_lower = float(np.max(lower_by_axis))
+    feasible_upper = float(np.min(upper_by_axis))
+    evidence["feasible_interval"] = [feasible_lower, feasible_upper]
+    if not math.isfinite(feasible_lower) or not math.isfinite(feasible_upper):
+        evidence.update(
+            {
+                "feasible": False,
+                "reason": "non_finite_dimension_interval",
+                "candidate_count": 0,
+                "gate_passing_candidate_count": 0,
+            }
+        )
+        return None, evidence
+    if feasible_lower > feasible_upper + 1e-12 or feasible_upper <= 0.0:
+        evidence.update(
+            {
+                "feasible": False,
+                "reason": "no_uniform_scale_can_satisfy_dimension_gate",
+                "candidate_count": 0,
+                "gate_passing_candidate_count": 0,
+            }
+        )
+        return None, evidence
+
+    feasible_lower = max(feasible_lower, 1e-9)
+    least_squares = float(np.dot(current_size, high_size) / np.dot(current_size, current_size))
+    ratios = high_size / current_size
+    raw_factors = [
+        feasible_lower,
+        feasible_upper,
+        0.5 * (feasible_lower + feasible_upper),
+        float(np.clip(1.0, feasible_lower, feasible_upper)),
+        float(np.clip(least_squares, feasible_lower, feasible_upper)),
+        *[float(np.clip(value, feasible_lower, feasible_upper)) for value in ratios],
+        *[float(value) for value in np.linspace(feasible_lower, feasible_upper, 25)],
+    ]
+    factors = sorted({round(value, 12) for value in raw_factors if value > 0.0})
+    evaluations: list[tuple[float, dict[str, Any]]] = []
+    for factor in factors:
+        correction = np.eye(4, dtype=np.float64)
+        correction[:3, :3] *= factor
+        correction[:3, 3] = (
+            np.asarray(high_data["center"], dtype=np.float64)
+            - factor * np.asarray(current_bounds["center"], dtype=np.float64)
+        )
+        candidate = module.evaluate_candidate(
+            correction @ matrix,
+            high_data,
+            [low],
+            high_evaluation,
+            low_evaluation,
+            high_tree,
+            trim_fraction,
+        )
+        if (
+            candidate["surface_error_ratio"] <= ALIGNMENT_SURFACE_ERROR_LIMIT
+            and candidate["center_error_ratio"] <= ALIGNMENT_CENTER_ERROR_LIMIT
+            and candidate["dimension_error_ratio"] <= ALIGNMENT_DIMENSION_ERROR_LIMIT
+            and candidate["reflected"] is False
+        ):
+            evaluations.append((factor, candidate))
+
+    evidence.update(
+        {
+            "feasible": True,
+            "candidate_count": len(factors),
+            "gate_passing_candidate_count": len(evaluations),
+        }
+    )
+    if not evaluations:
+        evidence["reason"] = "uniform_scale_candidates_failed_unchanged_surface_or_center_gate"
+        return None, evidence
+
+    selected_factor, selected = min(evaluations, key=lambda item: item[1]["score"])
+    evidence.update(
+        {
+            "selected_multiplier": selected_factor,
+            "selected_uniform_scale": selected["uniform_scale"],
+            "selected_surface_error_ratio": selected["surface_error_ratio"],
+            "selected_center_error_ratio": selected["center_error_ratio"],
+            "selected_dimension_error_ratio": selected["dimension_error_ratio"],
+        }
+    )
+    return selected, evidence
+
+
 def transform_only_alignment(
     high: bpy.types.Object,
     low: bpy.types.Object,
@@ -403,6 +545,32 @@ def transform_only_alignment(
         module.build_tree(high_evaluation),
         solver_args.trim_fraction,
     )
+    before_uniform_scale_refinement = module.serializable_candidate(best)
+    uniform_scale_refinement: dict[str, Any] = {
+        "attempted": False,
+        "reason": "baseline_candidate_did_not_require_safe_dimension_refinement",
+        "uniform_scale_only": True,
+        "axis_scale_used": False,
+        "reflection_allowed": False,
+    }
+    if (
+        best["surface_error_ratio"] <= ALIGNMENT_SURFACE_ERROR_LIMIT
+        and best["center_error_ratio"] <= ALIGNMENT_CENTER_ERROR_LIMIT
+        and best["dimension_error_ratio"] > ALIGNMENT_DIMENSION_ERROR_LIMIT
+        and best["reflected"] is False
+    ):
+        refined, uniform_scale_refinement = refine_uniform_scale_for_dimension_gate(
+            best["matrix"],
+            high_data,
+            low,
+            module,
+            high_evaluation,
+            low_evaluation,
+            module.build_tree(high_evaluation),
+            solver_args.trim_fraction,
+        )
+        if refined is not None:
+            best = refined
     competitor = next(
         (
             candidate
@@ -430,9 +598,9 @@ def transform_only_alignment(
         # review remains authoritative above this bounded geometric candidate
         # gate.  The approved skill's default is 0.055; production evidence for
         # the 424-face machine low is 0.0609, so this profile uses 0.070.
-        "surface": best["surface_error_ratio"] <= 0.070,
-        "center": best["center_error_ratio"] <= 0.020,
-        "dimensions": best["dimension_error_ratio"] <= 0.100,
+        "surface": best["surface_error_ratio"] <= ALIGNMENT_SURFACE_ERROR_LIMIT,
+        "center": best["center_error_ratio"] <= ALIGNMENT_CENTER_ERROR_LIMIT,
+        "dimensions": best["dimension_error_ratio"] <= ALIGNMENT_DIMENSION_ERROR_LIMIT,
         "orientation_unambiguous_or_source_axes_preferred": (
             not ambiguous or source_axis_preference["enabled"]
         ),
@@ -445,6 +613,8 @@ def transform_only_alignment(
             + json.dumps(
                 {
                     "selected": module.serializable_candidate(best),
+                    "before_uniform_scale_refinement": before_uniform_scale_refinement,
+                    "uniform_scale_refinement": uniform_scale_refinement,
                     "gates": gates,
                     "orientation_competitor": (
                         module.serializable_candidate(competitor)
@@ -473,6 +643,8 @@ def transform_only_alignment(
         "mirror_allowed": False,
         "axis_scale_used": False,
         "uniform_scale_only": True,
+        "before_uniform_scale_refinement": before_uniform_scale_refinement,
+        "uniform_scale_refinement": uniform_scale_refinement,
         "source_axis_preference": True,
         "source_local_axis_preference": source_axis_preference,
         "orientation_ambiguous_before_source_axis_preference": ambiguous,
