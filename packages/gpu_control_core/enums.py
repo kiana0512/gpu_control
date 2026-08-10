@@ -49,6 +49,9 @@ class Priority(StrEnum):
     BATCH = "batch"
 
 
+INTERACTIVE_WORKFLOW_KEYS = frozenset({"modelview-inpaint"})
+
+
 class BatchStatus(StrEnum):
     VALIDATING = "VALIDATING"
     QUEUED = "QUEUED"

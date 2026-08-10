@@ -145,6 +145,106 @@ async def test_transactional_claim_enforces_single_node_slot(tmp_path: Path) -> 
     await database.close()
 
 
+async def test_pinned_interactive_inpaint_can_use_fleet_capacity_above_tenant_default(
+    tmp_path: Path,
+) -> None:
+    database = await make_database(tmp_path / "interactive-inpaint-capacity.db")
+    await seed(database)
+    async with database.session() as session:
+        node_a = await session.get(Node, "3090-a")
+        assert node_a is not None
+        node_a.current_jobs = 1
+        session.add(
+            Node(
+                id="3090-b",
+                display_name="3090-B",
+                base_url="http://fake-b",
+                pool="PRIMARY",
+                mode="ACTIVE",
+                health="ONLINE",
+                max_concurrency=1,
+                current_jobs=0,
+                free_vram_mb=24000,
+                total_vram_mb=24576,
+                last_heartbeat_at=datetime.now(UTC),
+            )
+        )
+        session.add(
+            Workflow(
+                key="modelview-inpaint",
+                display_name="ModelView Inpaint",
+                description="interactive test",
+            )
+        )
+        version = WorkflowVersion(
+            workflow_key="modelview-inpaint",
+            version="1",
+            template={"9": {"class_type": "SaveImage", "inputs": {}}},
+            parameter_schema={"type": "object"},
+            bindings={},
+            allowed_class_types=["SaveImage"],
+            required_models=[],
+            required_custom_nodes=[],
+            min_vram_mb=0,
+            timeout_seconds=60,
+            node_labels={},
+            output_nodes=["9"],
+            enabled=True,
+            template_sha256="interactive",
+        )
+        session.add(version)
+        await session.flush()
+        session.add(
+            WorkflowNodeCompatibility(
+                workflow_version_id=version.id,
+                node_id="3090-b",
+                compatible=True,
+                reasons=[],
+            )
+        )
+        session.add_all(
+            [
+                Job(
+                    id="already-running-for-tenant",
+                    tenant_id="tenant-a",
+                    workflow_key="fake",
+                    workflow_version="1",
+                    status=JobStatus.RUNNING.value,
+                    priority="normal",
+                    parameters={},
+                    request_hash="already-running",
+                    request_id="already-running",
+                    trace_id="already-running",
+                    job_dir=str(tmp_path / "already-running"),
+                    node_id="3090-a",
+                ),
+                Job(
+                    id="interactive-inpaint",
+                    tenant_id="tenant-a",
+                    workflow_key="modelview-inpaint",
+                    workflow_version="1",
+                    status=JobStatus.QUEUED.value,
+                    priority="critical",
+                    pinned=True,
+                    parameters={},
+                    request_hash="interactive-inpaint",
+                    request_id="interactive-inpaint",
+                    trace_id="interactive-inpaint",
+                    job_dir=str(tmp_path / "interactive-inpaint"),
+                ),
+            ]
+        )
+        await session.commit()
+
+    async with database.session() as session:
+        async with session.begin():
+            claimed = await claim_next_job(session, "3090-b", 300, batch_max_running=3)
+
+    assert claimed is not None
+    assert claimed[0].id == "interactive-inpaint"
+    await database.close()
+
+
 async def test_gpu_claim_atomically_cleans_expired_substance_reservation(
     tmp_path: Path,
 ) -> None:

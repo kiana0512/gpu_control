@@ -47,6 +47,7 @@ from packages.gpu_control_core.batches import (
 )
 from packages.gpu_control_core.database import Database
 from packages.gpu_control_core.enums import (
+    INTERACTIVE_WORKFLOW_KEYS,
     TERMINAL_BATCH_STATUSES,
     TERMINAL_JOB_STATUSES,
     BatchItemStatus,
@@ -166,7 +167,7 @@ DURATION = Histogram(
 def service_queue_policy(workflow_key: str) -> tuple[Priority, bool]:
     """Return the server-owned scheduling class for a synchronous service."""
 
-    if workflow_key == "modelview-inpaint":
+    if workflow_key in INTERACTIVE_WORKFLOW_KEYS:
         return Priority.CRITICAL, True
     return Priority.NORMAL, False
 

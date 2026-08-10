@@ -8,7 +8,13 @@ from sqlalchemy import and_, case, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .database import ADMISSION_LOCK_ID
-from .enums import TERMINAL_JOB_STATUSES, JobStatus, NodeMode, Priority
+from .enums import (
+    INTERACTIVE_WORKFLOW_KEYS,
+    TERMINAL_JOB_STATUSES,
+    JobStatus,
+    NodeMode,
+    Priority,
+)
 from .models import (
     ApiClient,
     Job,
@@ -395,9 +401,12 @@ async def claim_next_job(
                 Job.tenant_id == client.id, Job.status.in_(ACTIVE_STATUSES)
             )
         )
+        expands_interactive_capacity = (
+            chosen.pinned and chosen.workflow_key in INTERACTIVE_WORKFLOW_KEYS
+        )
         running_limit = (
             max(client.max_running, batch_max_running)
-            if chosen.batch_id is not None
+            if chosen.batch_id is not None or expands_interactive_capacity
             else client.max_running
         )
         if int(running or 0) < running_limit:
