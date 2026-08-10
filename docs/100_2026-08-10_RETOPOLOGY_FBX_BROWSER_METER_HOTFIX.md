@@ -62,3 +62,11 @@ revision，三节点恢复为 `ACTIVE / ONLINE`。发布没有重启任何 Comfy
 
 旧任务已经下载的旧 FBX 不会被静默覆盖；它仍携带旧单位合同。必须使用本版本部署后新生成或
 重新交付的 FBX 才能得到浏览器米制结果。
+
+为避免用户对部署前最后一个任务再次运行 Codex，已从任务
+`1f11fccf-d51f-4d33-8d07-2fddc48f81f5` 的既有 BLEND 只做米制 FBX 重导出；服务器原 artifact
+未被覆盖。修复文件写入
+`/home/lilithgames/下载/li3d-retopology-1f11_GAME_LOW_meter_fixed.fbx`，SHA-256 为
+`50042fbceb044dd2dee09cc16cc103299bd64cfd4d53c22650e1ee39c9f173a3`。Three.js 读回尺寸为
+`[1.220000, 1.238000, 1.860000]`，中心为
+`[-0.000324368, 0.000157154, 0.000352834]`；高低模最大轴向相对误差约 `3.35%`。
