@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpu-control"
-version = "1.5.11"
+version = "1.5.12"
 description = "Three-node ComfyUI GPU scheduling and operations platform"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"

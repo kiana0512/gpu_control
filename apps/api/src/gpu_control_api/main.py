@@ -163,6 +163,14 @@ DURATION = Histogram(
 )
 
 
+def service_queue_policy(workflow_key: str) -> tuple[Priority, bool]:
+    """Return the server-owned scheduling class for a synchronous service."""
+
+    if workflow_key == "modelview-inpaint":
+        return Priority.CRITICAL, True
+    return Priority.NORMAL, False
+
+
 def runtime_version_metadata() -> dict[str, Any]:
     try:
         installed = package_version("gpu-control")
@@ -1044,6 +1052,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         input_image: UploadFile | None,
         mask: UploadFile | None,
         callback_url: str | None,
+        *,
+        pinned: bool = False,
     ) -> JSONResponse:
         if len(parameters_raw.encode("utf-8")) > 65_536:
             raise HTTPException(
@@ -1066,7 +1076,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         # UUID.  It is an execution detail, not caller input, so it must never
         # participate in the idempotency fingerprint.
         request_parameters = dict(parameters)
-        if priority == Priority.CRITICAL:
+        if priority == Priority.CRITICAL and not pinned:
             raise HTTPException(
                 403,
                 detail={"code": "PRIORITY_FORBIDDEN", "message": "业务 API 不能直接提交 CRITICAL"},
@@ -1292,6 +1302,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             workflow_version=workflow_version,
             status=JobStatus.RECEIVED.value,
             priority=priority.value,
+            pinned=pinned,
             parameters=parameters,
             request_hash=request_hash,
             request_id=request_id,
@@ -1450,19 +1461,27 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 detail={"code": "WORKFLOW_NOT_FOUND", "message": "服务工作流未启用"},
             )
         tenant_lock = request.app.state.tenant_locks.setdefault(principal.id, asyncio.Lock())
+        # Local repaint is an interactive operation.  It must take the first
+        # compatible GPU slot released by an already-running job instead of
+        # aging behind the much older animation-matting batch backlog.  The
+        # durable queue is still used for safety and observability; pinning is
+        # deliberately non-preemptive, so an in-flight production frame is
+        # allowed to finish before the repaint is claimed.
+        service_priority, pinned = service_queue_policy(workflow_key)
         async with tenant_lock:
             queued = await _create_job(
                 request,
                 workflow.workflow_key,
                 workflow.version,
                 parameters,
-                Priority.NORMAL,
+                service_priority,
                 idempotency_key,
                 principal,
                 db,
                 image,
                 None,
                 None,
+                pinned=pinned,
             )
         job_id = str(json.loads(bytes(queued.body))["job_id"])
         deadline = asyncio.get_running_loop().time() + workflow.timeout_seconds + 60

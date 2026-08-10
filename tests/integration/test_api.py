@@ -13,11 +13,11 @@ from typing import Any
 import httpx
 import pytest
 from fastapi import FastAPI
-from gpu_control_api.main import _merge_service_parameter, create_app
+from gpu_control_api.main import _merge_service_parameter, create_app, service_queue_policy
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from packages.gpu_control_core.enums import BatchStatus
+from packages.gpu_control_core.enums import BatchStatus, Priority
 from packages.gpu_control_core.models import (
     Alert,
     ApiClient,
@@ -59,6 +59,12 @@ def test_modelview_prompt_form_field_merges_without_ambiguity() -> None:
         assert "不能冲突" in str(exc)
     else:
         raise AssertionError("conflicting prompt sources must fail closed")
+
+
+def test_modelview_inpaint_uses_non_preemptive_interactive_queue_policy() -> None:
+    assert service_queue_policy("modelview-inpaint") == (Priority.CRITICAL, True)
+    assert service_queue_policy("imageclip-rgba") == (Priority.NORMAL, False)
+    assert service_queue_policy("modelview-roughness") == (Priority.NORMAL, False)
 
 
 async def test_api_version_exposes_immutable_build_provenance(
