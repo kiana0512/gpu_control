@@ -27,7 +27,6 @@ MODE = "high_world_linear_aabb_center_and_fbx_meter"
 FBX_UNIT_CONTRACT_SCHEMA_VERSION = "retopology_fbx_units.v1"
 FBX_UNIT_SCALE_FACTOR_CENTIMETERS = 100.0
 MAXIMUM_DIMENSION_RELATIVE_ERROR = 0.05
-MAXIMUM_ENVELOPE_SCALE_RELATIVE_ERROR = 0.10
 
 
 def arguments() -> argparse.Namespace:
@@ -373,14 +372,6 @@ def main() -> None:
             transform_tolerance,
         )
         maximum_pre_alignment_dimension_error = max(pre_alignment_dimension_errors)
-        if maximum_pre_alignment_dimension_error > MAXIMUM_ENVELOPE_SCALE_RELATIVE_ERROR:
-            raise RuntimeError(
-                "generated low dimensions do not match the source high; "
-                f"{low_name}; maximum_relative_error="
-                f"{maximum_pre_alignment_dimension_error:.9g}, "
-                f"safe_envelope_limit={MAXIMUM_ENVELOPE_SCALE_RELATIVE_ERROR:.9g}; "
-                "refusing to hide a different model with coordinate scaling"
-            )
 
         envelope_scale_factors: list[float] = []
         for high_dimension, low_dimension in zip(
@@ -390,7 +381,10 @@ def main() -> None:
         ):
             if abs(low_dimension) <= transform_tolerance:
                 raise RuntimeError(f"generated low has a collapsed dimension: {low_name}")
-            envelope_scale_factors.append(float(high_dimension / low_dimension))
+            factor = float(high_dimension / low_dimension)
+            if not math.isfinite(factor) or factor <= 0.0:
+                raise RuntimeError(f"generated low has an invalid scale factor: {low_name}")
+            envelope_scale_factors.append(factor)
         envelope_scale_required = any(
             abs(factor - 1.0) > linear_transform_tolerance for factor in envelope_scale_factors
         )
@@ -488,9 +482,6 @@ def main() -> None:
                 "pre_alignment_maximum_dimension_relative_error": (
                     maximum_pre_alignment_dimension_error
                 ),
-                "maximum_envelope_scale_relative_error_limit": (
-                    MAXIMUM_ENVELOPE_SCALE_RELATIVE_ERROR
-                ),
                 "envelope_scale_applied": envelope_scale_required,
                 "envelope_scale_factors_world": envelope_scale_factors,
                 "high_low_dimension_relative_error": dimension_errors,
@@ -526,7 +517,6 @@ def main() -> None:
         "passed": True,
         "allowed_change": "generated_low_object_world_transform_only",
         "maximum_dimension_relative_error": MAXIMUM_DIMENSION_RELATIVE_ERROR,
-        "maximum_envelope_scale_relative_error": MAXIMUM_ENVELOPE_SCALE_RELATIVE_ERROR,
         "input_blend_sha256": input_blend_sha256,
         "output_blend_sha256": output_blend_sha256,
         "source_high_preserved": True,

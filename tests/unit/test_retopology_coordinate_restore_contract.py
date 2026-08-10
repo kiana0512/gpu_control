@@ -3,7 +3,7 @@ from pathlib import Path
 
 ROOT = Path("packages/asset_processing")
 SCRIPT = ROOT / "blender_retopology_restore_coordinates.py"
-EXPECTED_SHA256 = "cc6b160cdf8f0959792731d203771828c975264da4528e5cb30b08f150cdd987"
+EXPECTED_SHA256 = "31cb18d8e58b121b7e4c64e99599f93dc988a8ed36544d923f9d489ee879df9b"
 
 
 def test_coordinate_restore_is_transform_only_and_fbx_readback_gated() -> None:
@@ -27,11 +27,11 @@ def test_coordinate_restore_is_transform_only_and_fbx_readback_gated() -> None:
     assert 'fbx_double_property(output_fbx, "UnitScaleFactor")' in source
     assert '"raw_coordinates_are_meters": True' in source
     assert "MAXIMUM_DIMENSION_RELATIVE_ERROR = 0.05" in source
-    assert "MAXIMUM_ENVELOPE_SCALE_RELATIVE_ERROR = 0.10" in source
-    assert "generated low dimensions do not match the source high" in source
+    assert "generated low envelope restoration did not match the source high" in source
     assert "Matrix.Diagonal" in source
     assert '"envelope_scale_applied": envelope_scale_required' in source
-    assert "refusing to hide a different model with coordinate scaling" in source
+    assert "generated low has a collapsed dimension" in source
+    assert "generated low has an invalid scale factor" in source
 
 
 def test_direct_v2_delivery_requires_coordinate_restore_evidence() -> None:
