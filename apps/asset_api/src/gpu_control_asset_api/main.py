@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -41,8 +41,9 @@ from packages.gpu_control_core.assets import (
     asset_request_hash,
     lease_token_hash,
     retopology_audit_request_hash,
-    retopology_coordinate_dimension_evidence_valid,
-    retopology_fbx_meter_evidence_valid,
+    retopology_bake_alignment_evidence_valid,
+    retopology_bake_pair_validation_evidence_valid,
+    retopology_bake_visual_qa_evidence_valid,
     retopology_v6_process_request_hash,
     substance_bake_request_hash,
     uv_process_request_hash,
@@ -277,8 +278,16 @@ RETOPOLOGY_V6_RESULT_ARTIFACT_ROLES = frozenset(
     }
 )
 RETOPOLOGY_DIRECT_V2_ARTIFACTS = {
-    "blend": ("final_low.blend", "application/octet-stream"),
-    "fbx": ("final_low.fbx", "application/octet-stream"),
+    "blend": ("bake_alignment.blend", "application/octet-stream"),
+    "fbx": ("bake_low.fbx", "application/octet-stream"),
+    "high_fbx": ("bake_high.fbx", "application/octet-stream"),
+    "alignment_report": ("bake_alignment_report.json", "application/json"),
+    "pair_validation": ("bake_pair_validation.json", "application/json"),
+    "alignment_views_zip": ("alignment_views.zip", "application/zip"),
+    "initial_contact_sheet": ("alignment_initial_contact_sheet.png", "image/png"),
+    "final_contact_sheet": ("alignment_final_contact_sheet.png", "image/png"),
+    "visual_qa": ("bake_visual_qa.json", "application/json"),
+    "visual_qa_events": ("bake_visual_qa_events.jsonl", "application/x-ndjson"),
     "generation_report": ("generation_report.json", "application/json"),
     "delivery_manifest": ("delivery_manifest.json", "application/json"),
     "result": ("result.json", "application/json"),
@@ -824,6 +833,9 @@ class WorkerClaim(BaseModel):
     # execution slot. Rolling Workers omit this field and retain the previous
     # behavior of accepting either class of work.
     accepts_codex_jobs: bool = True
+    uv_algorithms: list[Literal["legacy_pbr", "mof_low_seam"]] = Field(
+        default_factory=lambda: ["legacy_pbr"], min_length=1, max_length=2
+    )
 
 
 class WorkerProgress(BaseModel):
@@ -1893,6 +1905,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(
                 422, detail={"code": "ASSET_INPUT_INVALID", "message": str(exc)}
             ) from exc
+        if parsed.options.uv_algorithm == "mof_low_seam":
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "UV_MOF_RUNTIME_UNAVAILABLE",
+                    "message": (
+                        "mof_low_seam requires a licensed, preflight-approved Windows Worker; "
+                        "no eligible Worker is currently registered"
+                    ),
+                },
+            )
 
         staging = cfg.asset_root / f".staging-{uuid.uuid4().hex}"
         bundle_root = staging / "bundle"
@@ -2064,12 +2087,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ],
     ) -> JSONResponse:
         try:
+            raw_metadata = json.loads(metadata)
+        except ValueError:
+            raw_metadata = None
+        raw_algorithm = (
+            raw_metadata.get("options", {}).get("algorithm", "legacy_pbr")
+            if isinstance(raw_metadata, dict)
+            and isinstance(raw_metadata.get("options", {}), dict)
+            else "legacy_pbr"
+        )
+        if raw_algorithm not in {"legacy_pbr", "mof_low_seam"}:
+            raise HTTPException(
+                422,
+                detail={
+                    "code": "UV_ALGORITHM_INVALID",
+                    "message": "options.algorithm must be legacy_pbr or mof_low_seam",
+                },
+            )
+        try:
             parsed = AssetCreateMetadata.model_validate_json(metadata)
             filename = validate_asset_filename(asset.filename or "")
         except ValueError as exc:
             raise HTTPException(
                 422, detail={"code": "ASSET_INPUT_INVALID", "message": str(exc)}
             ) from exc
+        if parsed.options.algorithm == "mof_low_seam":
+            # No licensed, preflight-approved Windows MOF Worker is currently
+            # registered.  Fail before persisting the upload instead of
+            # queueing an unclaimable job or silently changing algorithms.
+            raise HTTPException(
+                503,
+                detail={
+                    "code": "UV_MOF_CAPACITY_UNAVAILABLE",
+                    "message": (
+                        "mof_low_seam requires an online licensed Windows Worker "
+                        "that passed the MOF runtime preflight"
+                    ),
+                },
+            )
         return await create_uploaded_job(
             request=request,
             principal=principal,
@@ -2740,6 +2795,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 claim_query = claim_query.where(AssetJob.id.in_(pending_substance_job_ids))
         else:
             claim_query = claim_query.where(AssetJob.job_type != "SUBSTANCE_BAKE_V1")
+            claim_query = claim_query.where(
+                or_(
+                    AssetJob.job_type != "UV_PROCESS_V2",
+                    func.coalesce(
+                        AssetJob.options["algorithm"].as_string(), "legacy_pbr"
+                    ).in_(body.uv_algorithms),
+                )
+            )
             if worker.skill_version == RETOPOLOGY_V6_SKILL_VERSION:
                 # A Direct V2 worker consumes only the new high-only contract. V5
                 # audit/process work stays on the rollback pool because the
@@ -3758,7 +3821,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Annotated[AsyncSession, Depends(session)],
         lease: Annotated[str, Header(alias="X-Asset-Lease")],
     ) -> dict[str, Any]:
-        """Publish the Direct V2 generated FBX without running the retired V6 QA."""
+        """Publish only a post-topology bake pair that passed geometry, UV, visual and FBX QA."""
 
         snapshot = await prepare_asset_completion(job_id, lease, db, "RETOPOLOGY_PROCESS_V2")
         form = await request.form()
@@ -3808,6 +3871,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 generation = json.loads((staging / "generation_report.json").read_text("utf-8"))
                 result = json.loads((staging / "result.json").read_text("utf-8"))
                 manifest = json.loads((staging / "delivery_manifest.json").read_text("utf-8"))
+                alignment_report = json.loads(
+                    (staging / "bake_alignment_report.json").read_text("utf-8")
+                )
+                pair_validation = json.loads(
+                    (staging / "bake_pair_validation.json").read_text("utf-8")
+                )
+                visual_qa = json.loads((staging / "bake_visual_qa.json").read_text("utf-8"))
             except (OSError, ValueError) as exc:
                 raise HTTPException(
                     422, detail={"code": "RETOPOLOGY_DIRECT_V2_JSON_INVALID"}
@@ -3823,49 +3893,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ):
                 raise HTTPException(422, detail={"code": "RETOPOLOGY_DIRECT_V2_RESULT_INVALID"})
             staged_by_kind = {item.kind: item for item in created}
-            coordinate_restoration = manifest.get("coordinate_restoration")
-            coordinate_pairs = (
-                coordinate_restoration.get("pairs")
-                if isinstance(coordinate_restoration, dict)
-                else None
-            )
+            alignment_pairs = alignment_report.get("pairs")
             expected_pairs = {
                 (item.get("high_object"), item.get("low_object"))
                 for item in generation["assets"]
                 if isinstance(item, dict)
             }
             actual_pairs = {
-                (item.get("high_object"), item.get("low_object"))
-                for item in coordinate_pairs or []
+                (
+                    item.get("role_identification", {}).get("reported_high"),
+                    item.get("role_identification", {}).get("reported_low"),
+                )
+                for item in alignment_pairs or []
                 if isinstance(item, dict)
             }
-            fbx_readback = (
-                coordinate_restoration.get("fbx_readback")
-                if isinstance(coordinate_restoration, dict)
-                else None
-            )
-            blend_translation_changed = (
-                coordinate_restoration.get("blend_translation_changed")
-                if isinstance(coordinate_restoration, dict)
-                else None
-            )
-            blend_linear_transform_changed = (
-                coordinate_restoration.get("blend_linear_transform_changed")
-                if isinstance(coordinate_restoration, dict)
-                else None
-            )
-            blend_transform_changed = (
-                coordinate_restoration.get("blend_transform_changed")
-                if isinstance(coordinate_restoration, dict)
-                else None
-            )
-            coordinate_actions = [
-                item.get("coordinate_action")
-                for item in coordinate_pairs or []
-                if isinstance(item, dict)
-            ]
             if (
-                manifest.get("schema_version") != "retopology_direct_delivery.v5"
+                manifest.get("schema_version") != "retopology_direct_delivery.v6"
                 or manifest.get("job_id") != snapshot.id
                 or manifest.get("engine_contract") != "retopology-direct-v2"
                 or manifest.get("package_sha256") != snapshot.options.get("package_sha256")
@@ -3873,77 +3916,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or manifest.get("agent_blend_sha256") != result.get("output_sha256")
                 or manifest.get("delivery_blend_sha256") != staged_by_kind["blend"].sha256
                 or manifest.get("delivery_blend_size_bytes") != staged_by_kind["blend"].size_bytes
+                or manifest.get("bake_high_fbx_sha256") != staged_by_kind["high_fbx"].sha256
+                or manifest.get("bake_high_fbx_size_bytes")
+                != staged_by_kind["high_fbx"].size_bytes
                 or manifest.get("delivery_fbx_sha256") != staged_by_kind["fbx"].sha256
                 or manifest.get("delivery_fbx_size_bytes") != staged_by_kind["fbx"].size_bytes
-                or manifest.get("automatic_post_generation_review") is not False
+                or manifest.get("alignment_views_zip_sha256")
+                != staged_by_kind["alignment_views_zip"].sha256
+                or manifest.get("alignment_views_zip_size_bytes")
+                != staged_by_kind["alignment_views_zip"].size_bytes
+                or manifest.get("initial_contact_sheet_sha256")
+                != staged_by_kind["initial_contact_sheet"].sha256
+                or manifest.get("final_contact_sheet_sha256")
+                != staged_by_kind["final_contact_sheet"].sha256
+                or manifest.get("status") != "bake_ready_validated"
+                or manifest.get("automatic_post_generation_review") is not True
                 or manifest.get("automatic_retry") is not False
-                or not isinstance(coordinate_restoration, dict)
-                or coordinate_restoration.get("schema_version")
-                != "retopology_coordinate_restoration.v3"
-                or coordinate_restoration.get("mode")
-                != "high_world_linear_aabb_center_and_fbx_meter"
-                or coordinate_restoration.get("passed") is not True
-                or coordinate_restoration.get("source_high_preserved") is not True
-                or not retopology_coordinate_dimension_evidence_valid(coordinate_restoration)
-                or not retopology_fbx_meter_evidence_valid(coordinate_restoration)
-                or coordinate_restoration.get("input_blend_sha256")
+                or manifest.get("bake_alignment") != alignment_report
+                or manifest.get("bake_pair_validation") != pair_validation
+                or manifest.get("visual_qa") != visual_qa
+                or not retopology_bake_alignment_evidence_valid(alignment_report)
+                or not retopology_bake_pair_validation_evidence_valid(pair_validation)
+                or not retopology_bake_visual_qa_evidence_valid(visual_qa)
+                or alignment_report.get("input_blend_sha256")
                 != manifest.get("agent_blend_sha256")
-                or coordinate_restoration.get("output_blend_sha256")
+                or alignment_report.get("output_blend_sha256")
                 != manifest.get("delivery_blend_sha256")
-                or not isinstance(coordinate_pairs, list)
-                or not coordinate_pairs
+                or alignment_report.get("bake_high_fbx", {}).get("sha256")
+                != manifest.get("bake_high_fbx_sha256")
+                or alignment_report.get("bake_low_fbx", {}).get("sha256")
+                != manifest.get("delivery_fbx_sha256")
+                or pair_validation.get("high", {}).get("sha256")
+                != manifest.get("bake_high_fbx_sha256")
+                or pair_validation.get("low", {}).get("sha256")
+                != manifest.get("delivery_fbx_sha256")
+                or not isinstance(alignment_pairs, list)
+                or not alignment_pairs
                 or actual_pairs != expected_pairs
-                or not isinstance(blend_translation_changed, bool)
-                or not isinstance(blend_linear_transform_changed, bool)
-                or not isinstance(blend_transform_changed, bool)
-                or len(coordinate_actions) != len(coordinate_pairs)
-                or not all(
-                    action
-                    in {
-                        "unchanged",
-                        "translation_restored",
-                        "linear_transform_restored",
-                        "full_transform_restored",
-                    }
-                    for action in coordinate_actions
-                )
-                or blend_translation_changed
-                != any(
-                    action in {"translation_restored", "full_transform_restored"}
-                    for action in coordinate_actions
-                )
-                or blend_linear_transform_changed
-                != any(
-                    action in {"linear_transform_restored", "full_transform_restored"}
-                    for action in coordinate_actions
-                )
-                or blend_transform_changed
-                != (blend_translation_changed or blend_linear_transform_changed)
-                or (
-                    blend_transform_changed is False
-                    and manifest.get("agent_blend_sha256") != manifest.get("delivery_blend_sha256")
-                )
-                or not all(
-                    isinstance(item, dict)
-                    and item.get("high_preserved") is True
-                    and item.get("low_mesh_preserved") is True
-                    and isinstance(item.get("low_rotation_scale_preserved"), bool)
-                    and isinstance(item.get("low_rotation_scale_restored"), bool)
-                    and item.get("low_rotation_scale_preserved")
-                    == (item.get("coordinate_action") in {"unchanged", "translation_restored"})
-                    and item.get("low_rotation_scale_restored")
-                    == (
-                        item.get("coordinate_action")
-                        in {
-                            "linear_transform_restored",
-                            "full_transform_restored",
-                        }
-                    )
-                    for item in coordinate_pairs
-                )
-                or not isinstance(fbx_readback, dict)
-                or fbx_readback.get("passed") is not True
-                or fbx_readback.get("sha256") != manifest.get("delivery_fbx_sha256")
             ):
                 raise HTTPException(422, detail={"code": "RETOPOLOGY_DIRECT_V2_IDENTITY_MISMATCH"})
 
@@ -3954,15 +3963,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return cancelled
             stem = Path(snapshot.options["project_filename"]).stem
             staged_by_kind["blend"].kind = "blend"
-            staged_by_kind["blend"].filename = f"{stem}_GAME_LOW.blend"
+            staged_by_kind["blend"].filename = f"{stem}_BAKE_ALIGNMENT.blend"
             staged_by_kind["fbx"].kind = "fbx"
             staged_by_kind["fbx"].filename = f"{stem}_GAME_LOW.fbx"
+            staged_by_kind["high_fbx"].filename = f"{stem}_BAKE_HIGH.fbx"
             db.add_all(created)
             job.status = "SUCCEEDED"
             job.progress = 100
             job.stage = "SUCCEEDED"
-            coordinate_result = "变换已恢复" if blend_transform_changed else "坐标未变化、原样保留"
-            job.stage_message = f"Direct V2 {coordinate_result}，BLEND 与米制 FBX 已交付"
+            job.stage_message = "Direct V2 拓扑后高低模已对齐，UV、七方向视觉与 FBX 回读均通过"
             job.estimated_remaining_seconds = 0
             job.last_progress_at = datetime.now(UTC)
             job.finished_at = job.last_progress_at
@@ -3971,19 +3980,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.options = {
                 **job.options,
                 "direct_v2_result": {
-                    "status": "generated_for_user_inspection",
-                    "delivery_format": "blend+fbx",
-                    "delivery_formats": ["blend", "fbx"],
-                    "automatic_post_generation_review": False,
+                    "status": "bake_ready_validated",
+                    "delivery_format": "bake_alignment+high_fbx+low_fbx+evidence",
+                    "delivery_formats": [
+                        "blend",
+                        "high_fbx",
+                        "low_fbx",
+                        "alignment_views_zip",
+                    ],
+                    "automatic_post_generation_review": True,
                     "automatic_retry": False,
-                    "coordinate_restoration": {
-                        "mode": "high_world_linear_aabb_center_and_fbx_meter",
+                    "bake_alignment": {
+                        "mode": "transform_only_alignment_then_separate_uv",
                         "passed": True,
-                        "blend_translation_changed": blend_translation_changed,
-                        "blend_linear_transform_changed": (blend_linear_transform_changed),
-                        "blend_transform_changed": blend_transform_changed,
-                        "fbx_readback_passed": True,
-                        "fbx_unit_contract": fbx_readback["unit_contract"],
+                        "visual_qa_passed": True,
+                        "fbx_reimport_passed": True,
+                        "low_faces_less_than_high": True,
+                        "low_has_uv": True,
                     },
                     "assets": generation["assets"],
                 },
@@ -3997,10 +4010,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 details={
                     "event": "asset.succeeded",
                     "engine_contract": "retopology-direct-v2",
-                    "delivery_format": "blend+fbx",
-                    "coordinate_restoration": "passed",
+                    "delivery_format": "bake_alignment+high_fbx+low_fbx+evidence",
+                    "bake_alignment": "passed",
+                    "visual_qa": "passed",
+                    "fbx_reimport": "passed",
                     "fbx_coordinate_unit": "meter",
-                    "automatic_post_generation_review": False,
+                    "automatic_post_generation_review": True,
                 },
             )
             await db.commit()
@@ -4008,8 +4023,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {
                 "accepted": True,
                 "status": job.status,
-                "delivery_format": "fbx",
-                "generated_for_user_inspection": True,
+                "delivery_format": "bake_alignment+high_fbx+low_fbx+evidence",
+                "bake_ready_validated": True,
             }
         finally:
             if not committed:
@@ -4077,6 +4092,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 for payload in (report_payload, blend_qa_payload, fbx_qa_payload)
             ):
                 raise HTTPException(422, detail={"code": "ASSET_QA_INVALID"})
+            expected_algorithm = str(snapshot.options.get("algorithm") or "legacy_pbr")
+            if any(
+                payload.get("algorithm") != expected_algorithm
+                for payload in (report_payload, blend_qa_payload, fbx_qa_payload)
+            ):
+                raise HTTPException(
+                    422,
+                    detail={"code": "UV_ALGORITHM_REPORT_MISMATCH"},
+                )
             if (
                 report_payload.get("input") not in {None, snapshot.source_filename}
                 and Path(str(report_payload.get("input"))).name != snapshot.source_filename
@@ -4158,6 +4182,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "quality_gate_passed": quality_passed,
                     "quality_failures": quality_failures,
                     "failed_qa": failed_qa,
+                    "algorithm": expected_algorithm,
                 },
             )
             await db.commit()

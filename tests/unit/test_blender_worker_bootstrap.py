@@ -18,22 +18,31 @@ def use_portable_test_skill_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
         name: {
             "SKILL.md": hashlib.sha256(f"# {name}\n".encode()).hexdigest(),
         }
-        for name in ("blender-pbr-uv", "blender-retopology-compare-iterate")
+        for name in (
+            "blender-align-bake-models",
+            "blender-pbr-uv",
+            "blender-retopology-compare-iterate",
+        )
     }
     monkeypatch.setattr(bootstrap_module, "APPROVED_SKILL_FILE_SHA256", manifest)
 
 
 def make_skill_root(tmp_path: Path) -> Path:
     root = tmp_path / "release-skills"
-    for name in ("blender-pbr-uv", "blender-retopology-compare-iterate"):
+    for name in (
+        "blender-align-bake-models",
+        "blender-pbr-uv",
+        "blender-retopology-compare-iterate",
+    ):
         skill = root / name
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
     return root
 
 
-def approved_skills(root: Path) -> tuple[Path, Path]:
+def approved_skills(root: Path) -> tuple[Path, Path, Path]:
     return (
+        root / "blender-align-bake-models",
         root / "blender-pbr-uv",
         root / "blender-retopology-compare-iterate",
     )
@@ -169,7 +178,7 @@ def test_approved_manifest_member_cannot_escape_skill_root(
         validate_approved_skill_contents(skill)
 
 
-def test_environment_contract_requires_both_immutable_skills(tmp_path: Path) -> None:
+def test_environment_contract_requires_all_immutable_skills(tmp_path: Path) -> None:
     root = make_skill_root(tmp_path)
     (root / "blender-retopology-compare-iterate" / "SKILL.md").unlink()
     environment = {
@@ -177,6 +186,7 @@ def test_environment_contract_requires_both_immutable_skills(tmp_path: Path) -> 
         "CODEX_SKILLS_ROOT": str(root),
         "UV_SKILL_ROOT": str(root / "blender-pbr-uv"),
         "RETOPOLOGY_SKILL_ROOT": str(root / "blender-retopology-compare-iterate"),
+        "ALIGNMENT_SKILL_ROOT": str(root / "blender-align-bake-models"),
     }
 
     with pytest.raises(BootstrapError, match="missing or escapes its root"):
@@ -193,6 +203,7 @@ def test_environment_contract_installs_exact_business_links(tmp_path: Path) -> N
         "CODEX_SKILLS_ROOT": str(root),
         "UV_SKILL_ROOT": str(root / "blender-pbr-uv"),
         "RETOPOLOGY_SKILL_ROOT": str(root / "blender-retopology-compare-iterate"),
+        "ALIGNMENT_SKILL_ROOT": str(root / "blender-align-bake-models"),
     }
 
     bootstrap_from_environment(environment)

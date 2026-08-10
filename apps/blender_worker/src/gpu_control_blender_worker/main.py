@@ -24,8 +24,9 @@ from gpu_control_blender_worker.bootstrap import (
     validate_codex_skill_link,
 )
 from packages.gpu_control_core.assets import (
-    retopology_coordinate_dimension_evidence_valid,
-    retopology_fbx_meter_evidence_valid,
+    retopology_bake_alignment_evidence_valid,
+    retopology_bake_pair_validation_evidence_valid,
+    retopology_bake_visual_qa_evidence_valid,
 )
 from packages.gpu_control_core.retopology_v6 import (
     POLICY_SHA256,
@@ -47,9 +48,12 @@ CODEX_REQUIRED_JOB_TYPES = frozenset({"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCE
 
 UV_UNWRAP_SCRIPT_SHA256 = "ebfa3546d61c548a11c0e7561c75f93b6ef93308d8da9f27788bf35643303758"
 UV_QA_SCRIPT_SHA256 = "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
+ALIGN_BAKE_MODELS_SCRIPT_SHA256 = (
+    "ea0588e81fa50772080bc19ff096ee29cb5b6dbc67cdb303b9d32cdbf6a99a78"
+)
 UV_QA_ADAPTER_SHA256 = "8e6bc5dc20a49fac5be2e92accd518d9da9fa629e878f51dc151baa80ad3359a"
-RETOPOLOGY_COORDINATE_RESTORE_SCRIPT_SHA256 = (
-    "31cb18d8e58b121b7e4c64e99599f93dc988a8ed36544d923f9d489ee879df9b"
+RETOPOLOGY_BAKE_POSTPROCESS_SCRIPT_SHA256 = (
+    "d555d30824f7b822699543efe443de1395c8107428ff1e785770610f0f2f3b01"
 )
 RETOPOLOGY_AUDIT_SCRIPT_SHA256 = "a6575902cfacd7b8106f9c887069d717a880d870fc48a6295431cdcf717a9dc4"
 RETOPOLOGY_PROCESS_SCRIPT_SHA256 = (
@@ -81,12 +85,13 @@ class WorkerSettings(BaseSettings):
     blender_version: str = "5.1.2"
     blender_skill_version: str = "asset-skills-2026.07.28"
     uv_skill_root: Path = Path("/opt/codex/skills/blender-pbr-uv")
+    alignment_skill_root: Path = Path("/opt/codex/skills/blender-align-bake-models")
     uv_qa_adapter_script: Path = Path("/app/packages/asset_processing/blender_uv_qa_adapter.py")
     retopology_skill_root: Path = Path("/opt/codex/skills/blender-retopology-compare-iterate")
     retopology_v6_root: Path = Path("/opt/li3d/retopology-v6")
     retopology_direct_v2_root: Path = Path("/opt/li3d/retopology-direct-v2")
-    retopology_coordinate_restore_script: Path = Path(
-        "/app/packages/asset_processing/blender_retopology_restore_coordinates.py"
+    retopology_bake_postprocess_script: Path = Path(
+        "/app/packages/asset_processing/blender_retopology_bake_postprocess.py"
     )
     retopology_process_script: Path = Path(
         "/app/packages/asset_processing/blender_retopology_process.py"
@@ -307,10 +312,11 @@ def codex_environment(settings: WorkerSettings) -> dict[str, str]:
 def validate_codex_business_skill_links(
     settings: WorkerSettings, codex_home: Path | None = None
 ) -> None:
-    """Require exact, managed child links for both business Skills."""
+    """Require exact, managed child links for every business Skill."""
     home = codex_home or settings.codex_runtime_home
     validate_codex_skill_link(home, settings.uv_skill_root)
     validate_codex_skill_link(home, settings.retopology_skill_root)
+    validate_codex_skill_link(home, settings.alignment_skill_root)
 
 
 def validate_job_skill_contract(settings: WorkerSettings, job_type: str) -> None:
@@ -328,6 +334,10 @@ def validate_job_skill_contract(settings: WorkerSettings, job_type: str) -> None
     if approved_skill is not None:
         validate_codex_skill_link(settings.codex_runtime_home, approved_skill)
     if job_type == "RETOPOLOGY_PROCESS_V2":
+        validate_codex_skill_link(
+            settings.codex_runtime_home,
+            settings.alignment_skill_root,
+        )
         verify_retopology_direct_v2_package(settings.retopology_direct_v2_root)
 
 
@@ -1581,6 +1591,131 @@ async def run_retopology_v6_legacy(
     }
 
 
+async def run_retopology_bake_visual_qa(
+    client: httpx.AsyncClient,
+    settings: WorkerSettings,
+    job_id: str,
+    lease_headers: dict[str, str],
+    *,
+    workspace: Path,
+    output_dir: Path,
+    alignment_report_path: Path,
+    validation_report_path: Path,
+    initial_contact_sheet: Path,
+    final_contact_sheet: Path,
+) -> tuple[dict[str, Any], Path, Path]:
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "schema_version",
+            "passed",
+            "visual_match",
+            "correct_orientation",
+            "no_wrong_mirror",
+            "no_long_spikes",
+            "no_visible_intersections",
+            "views_checked",
+            "failure_codes",
+            "summary",
+        ],
+        "properties": {
+            "schema_version": {
+                "type": "string",
+                "enum": ["retopology_bake_visual_qa.v1"],
+            },
+            "passed": {"type": "boolean"},
+            "visual_match": {"type": "boolean"},
+            "correct_orientation": {"type": "boolean"},
+            "no_wrong_mirror": {"type": "boolean"},
+            "no_long_spikes": {"type": "boolean"},
+            "no_visible_intersections": {"type": "boolean"},
+            "views_checked": {
+                "type": "array",
+                "uniqueItems": True,
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "front",
+                        "back",
+                        "left",
+                        "right",
+                        "top",
+                        "bottom",
+                        "perspective",
+                    ],
+                },
+            },
+            "failure_codes": {"type": "array", "items": {"type": "string"}},
+            "summary": {"type": "string"},
+        },
+    }
+    schema_path = output_dir / "bake_visual_qa.schema.json"
+    result_path = output_dir / "bake_visual_qa.json"
+    events_path = output_dir / "bake_visual_qa_events.jsonl"
+    schema_path.write_text(json.dumps(schema, ensure_ascii=False, indent=2), "utf-8")
+    protected = {
+        path.name: file_sha256(path)
+        for path in (
+            alignment_report_path,
+            validation_report_path,
+            initial_contact_sheet,
+            final_contact_sheet,
+        )
+    }
+    prompt = f"""Use $blender-retopology-compare-iterate only as an independent visual QA reviewer.
+Do not modify any input, model, report, or image. Return only JSON matching the supplied schema.
+
+The high-poly is blue. The final low-poly is an opaque bright-orange solid with dark wire;
+it is never transparent or X-Ray. Inspect front, back, left, right, top, bottom and perspective.
+Fail closed if scale, center, axis, rotation, asymmetric-feature direction, silhouette, openings,
+protrusions or component placement visibly differ. Fail on a wrong mirror, long spike, visible
+intersection, fold or collapse. Numeric evidence can support a pass but can never override a
+visual mismatch or uncertainty. `passed` may be true only when every boolean check is true,
+all seven view names are present, and failure_codes is empty.
+
+Initial before-alignment contact sheet: {initial_contact_sheet}
+Final bake-pair contact sheet: {final_contact_sheet}
+Measured alignment report: {alignment_report_path}
+Fresh-scene FBX reimport report: {validation_report_path}
+"""
+    payload = await run_v6_codex_agent(
+        client,
+        settings,
+        job_id,
+        lease_headers,
+        workspace=workspace,
+        prompt=prompt,
+        schema_path=schema_path,
+        result_path=result_path,
+        events_path=events_path,
+        reference_images=[initial_contact_sheet, final_contact_sheet],
+        progress_start=98,
+        progress_end=99,
+        stage="RETOPOLOGY_BAKE_VISUAL_QA",
+        message="独立视觉 QA 正在逐项检查七方向、镜像、长刺与穿插",
+        timeout_seconds=min(settings.codex_job_timeout_seconds, 900),
+        estimated_stage_seconds=90,
+    )
+    current = {
+        path.name: file_sha256(path)
+        for path in (
+            alignment_report_path,
+            validation_report_path,
+            initial_contact_sheet,
+            final_contact_sheet,
+        )
+    }
+    if current != protected:
+        raise RuntimeError("Retopology bake visual QA modified protected evidence")
+    if not retopology_bake_visual_qa_evidence_valid(payload):
+        raise RuntimeError(
+            "Retopology bake visual QA rejected the aligned pair: "
+            f"{payload.get('failure_codes') if isinstance(payload, dict) else payload}"
+        )
+    return payload, result_path, events_path
+
+
 async def run_retopology_v6(
     client: httpx.AsyncClient,
     settings: WorkerSettings,
@@ -1764,127 +1899,170 @@ async def run_retopology_v6(
         raise RuntimeError("Retopology Direct V2 unexpectedly enabled automatic retry")
 
     agent_blend_sha256 = file_sha256(result_blend)
-    final_fbx = output_dir / "final_low.fbx"
-    coordinate_report_path = output_dir / "coordinate_restore_report.json"
-    coordinate_script = verified_script(
-        settings.retopology_coordinate_restore_script,
-        RETOPOLOGY_COORDINATE_RESTORE_SCRIPT_SHA256,
+    delivery_blend = output_dir / "bake_alignment.blend"
+    shutil.copy2(result_blend, delivery_blend)
+    bake_high_fbx = output_dir / "bake_high.fbx"
+    bake_low_fbx = output_dir / "bake_low.fbx"
+    alignment_report_path = output_dir / "bake_alignment_report.json"
+    validation_report_path = output_dir / "bake_pair_validation.json"
+    views_dir = output_dir / "alignment_views"
+    postprocess_script = verified_script(
+        settings.retopology_bake_postprocess_script,
+        RETOPOLOGY_BAKE_POSTPROCESS_SCRIPT_SHA256,
     )
-    restore_process = await start_blender(
+    uv_script = verified_script(
+        settings.uv_skill_root / "scripts" / "unwrap_fbx.py",
+        UV_UNWRAP_SCRIPT_SHA256,
+    )
+    align_script = verified_script(
+        settings.alignment_skill_root / "scripts" / "align_bake_models.py",
+        ALIGN_BAKE_MODELS_SCRIPT_SHA256,
+    )
+    postprocess = await start_blender(
         settings,
         "--background",
-        str(result_blend),
+        str(delivery_blend),
         "--disable-autoexec",
         "--python-exit-code",
         "1",
         "--python",
-        str(coordinate_script),
+        str(postprocess_script),
         "--",
         "--output-blend",
-        str(result_blend),
-        "--output-fbx",
-        str(final_fbx),
+        str(delivery_blend),
+        "--output-high-fbx",
+        str(bake_high_fbx),
+        "--output-low-fbx",
+        str(bake_low_fbx),
         "--generation-report",
         str(output_dir / "generation_report.json"),
-        "--report",
-        str(coordinate_report_path),
+        "--alignment-report",
+        str(alignment_report_path),
+        "--validation-report",
+        str(validation_report_path),
+        "--views-dir",
+        str(views_dir),
+        "--uv-script",
+        str(uv_script),
+        "--align-script",
+        str(align_script),
+        "--uv-algorithm",
+        str(options.get("uv_algorithm") or "legacy_pbr"),
+        "--resolution",
+        "256",
     )
-    restore_log = await wait_for_blender(
+    postprocess_log = await wait_for_blender(
         client,
         job_id,
         lease_headers,
-        restore_process,
+        postprocess,
         92,
-        94,
-        "RETOPOLOGY_V2_COORD_RESTORE",
-        "低模已生成，正在恢复高模世界变换并回读验证正式 FBX",
-        120,
-        hard_timeout_seconds=300,
+        98,
+        "RETOPOLOGY_BAKE_POSTPROCESS",
+        "拓扑已完成，正在对齐高低模、生成 UV、执行七方向与 FBX 回读门禁",
+        480,
+        hard_timeout_seconds=1800,
     )
-    (output_dir / "coordinate_restore.log").write_bytes(restore_log)
-    if not coordinate_report_path.is_file():
-        raise RuntimeError("Retopology Direct V2 coordinate restoration report is missing")
-    coordinate_report = json.loads(coordinate_report_path.read_text("utf-8"))
-    restored_blend_sha256 = file_sha256(result_blend)
-    restored_fbx_sha256 = file_sha256(final_fbx)
-    reported_pairs = coordinate_report.get("pairs")
+    (output_dir / "bake_postprocess.log").write_bytes(postprocess_log)
+    for path in (
+        delivery_blend,
+        bake_high_fbx,
+        bake_low_fbx,
+        alignment_report_path,
+        validation_report_path,
+    ):
+        if not path.is_file() or path.stat().st_size <= 0:
+            raise RuntimeError(f"Retopology bake postprocess omitted {path.name}")
+    alignment_report = json.loads(alignment_report_path.read_text("utf-8"))
+    validation_report = json.loads(validation_report_path.read_text("utf-8"))
+    delivery_blend_sha256 = file_sha256(delivery_blend)
+    bake_high_fbx_sha256 = file_sha256(bake_high_fbx)
+    bake_low_fbx_sha256 = file_sha256(bake_low_fbx)
+    reported_pairs = alignment_report.get("pairs")
     expected_pairs = {
         (item.get("high_object"), item.get("low_object"))
         for item in generation["assets"]
         if isinstance(item, dict)
     }
     actual_pairs = {
-        (item.get("high_object"), item.get("low_object"))
+        (
+            item.get("role_identification", {}).get("reported_high"),
+            item.get("role_identification", {}).get("reported_low"),
+        )
         for item in reported_pairs or []
         if isinstance(item, dict)
     }
-    fbx_readback = coordinate_report.get("fbx_readback")
-    blend_translation_changed = coordinate_report.get("blend_translation_changed")
-    blend_linear_transform_changed = coordinate_report.get("blend_linear_transform_changed")
-    blend_transform_changed = coordinate_report.get("blend_transform_changed")
-    coordinate_actions = [
-        item.get("coordinate_action") for item in reported_pairs or [] if isinstance(item, dict)
-    ]
     if (
-        coordinate_report.get("schema_version") != "retopology_coordinate_restoration.v3"
-        or coordinate_report.get("mode") != "high_world_linear_aabb_center_and_fbx_meter"
-        or coordinate_report.get("passed") is not True
-        or coordinate_report.get("source_high_preserved") is not True
-        or not retopology_coordinate_dimension_evidence_valid(coordinate_report)
-        or not retopology_fbx_meter_evidence_valid(coordinate_report)
-        or coordinate_report.get("input_blend_sha256") != agent_blend_sha256
-        or coordinate_report.get("output_blend_sha256") != restored_blend_sha256
+        not retopology_bake_alignment_evidence_valid(alignment_report)
+        or not retopology_bake_pair_validation_evidence_valid(validation_report)
+        or alignment_report.get("input_blend_sha256") != agent_blend_sha256
+        or alignment_report.get("output_blend_sha256") != delivery_blend_sha256
+        or alignment_report.get("bake_high_fbx", {}).get("sha256")
+        != bake_high_fbx_sha256
+        or alignment_report.get("bake_low_fbx", {}).get("sha256")
+        != bake_low_fbx_sha256
+        or validation_report.get("high", {}).get("sha256") != bake_high_fbx_sha256
+        or validation_report.get("low", {}).get("sha256") != bake_low_fbx_sha256
         or not isinstance(reported_pairs, list)
         or not reported_pairs
         or actual_pairs != expected_pairs
-        or not isinstance(blend_translation_changed, bool)
-        or not isinstance(blend_linear_transform_changed, bool)
-        or not isinstance(blend_transform_changed, bool)
-        or len(coordinate_actions) != len(reported_pairs)
-        or not all(
-            action
-            in {
-                "unchanged",
-                "translation_restored",
-                "linear_transform_restored",
-                "full_transform_restored",
-            }
-            for action in coordinate_actions
-        )
-        or blend_translation_changed
-        != any(
-            action in {"translation_restored", "full_transform_restored"}
-            for action in coordinate_actions
-        )
-        or blend_linear_transform_changed
-        != any(
-            action in {"linear_transform_restored", "full_transform_restored"}
-            for action in coordinate_actions
-        )
-        or blend_transform_changed != (blend_translation_changed or blend_linear_transform_changed)
-        or (blend_transform_changed is False and agent_blend_sha256 != restored_blend_sha256)
-        or not all(
-            isinstance(item, dict)
-            and item.get("high_preserved") is True
-            and item.get("low_mesh_preserved") is True
-            and isinstance(item.get("low_rotation_scale_preserved"), bool)
-            and isinstance(item.get("low_rotation_scale_restored"), bool)
-            and item.get("low_rotation_scale_preserved")
-            == (item.get("coordinate_action") in {"unchanged", "translation_restored"})
-            and item.get("low_rotation_scale_restored")
-            == (
-                item.get("coordinate_action")
-                in {"linear_transform_restored", "full_transform_restored"}
-            )
-            for item in reported_pairs
-        )
-        or not isinstance(fbx_readback, dict)
-        or fbx_readback.get("passed") is not True
-        or fbx_readback.get("sha256") != restored_fbx_sha256
     ):
-        raise RuntimeError("Retopology Direct V2 coordinate restoration gate failed")
+        raise RuntimeError("Retopology Direct V2 bake-alignment evidence gate failed")
+
+    pair_count = len(reported_pairs)
+    initial_sources = [
+        (
+            f"pair {pair_index} / {view} / {role}",
+            views_dir / f"pair_{pair_index:03d}" / "initial" / f"{view}_{role}.png",
+        )
+        for pair_index in range(1, pair_count + 1)
+        for view in ("front", "back", "left", "right", "top", "bottom", "perspective")
+        for role in ("high", "low")
+    ]
+    final_sources = [
+        (
+            f"pair {pair_index} / {view} / {role}",
+            views_dir / f"pair_{pair_index:03d}" / "final" / f"{view}_{role}.png",
+        )
+        for pair_index in range(1, pair_count + 1)
+        for view in ("front", "back", "left", "right", "top", "bottom", "perspective")
+        for role in ("high", "low")
+    ]
+    if not all(path.is_file() and path.stat().st_size > 0 for _, path in initial_sources):
+        raise RuntimeError("Retopology bake postprocess omitted an initial seven-view image")
+    if not all(path.is_file() and path.stat().st_size > 0 for _, path in final_sources):
+        raise RuntimeError("Retopology bake postprocess omitted a final seven-view image")
+    initial_contact_sheet = output_dir / "alignment_initial_contact_sheet.png"
+    final_contact_sheet = output_dir / "alignment_final_contact_sheet.png"
+    contact_sheet(initial_sources, initial_contact_sheet, columns=2, cell_size=256)
+    contact_sheet(final_sources, final_contact_sheet, columns=2, cell_size=256)
+    views_zip = output_dir / "alignment_views.zip"
+    with zipfile.ZipFile(
+        views_zip,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=6,
+    ) as archive:
+        for path in sorted(views_dir.rglob("*")):
+            if path.is_file():
+                archive.write(path, path.relative_to(views_dir).as_posix())
+
+    visual_qa, visual_qa_path, visual_qa_events_path = (
+        await run_retopology_bake_visual_qa(
+            client,
+            settings,
+            job_id,
+            lease_headers,
+            workspace=workspace,
+            output_dir=output_dir,
+            alignment_report_path=alignment_report_path,
+            validation_report_path=validation_report_path,
+            initial_contact_sheet=initial_contact_sheet,
+            final_contact_sheet=final_contact_sheet,
+        )
+    )
     delivery_manifest = {
-        "schema_version": "retopology_direct_delivery.v5",
+        "schema_version": "retopology_direct_delivery.v6",
         "job_id": job_id,
         "engine_contract": "retopology-direct-v2",
         "package_sha256": options.get("package_sha256"),
@@ -1894,14 +2072,22 @@ async def run_retopology_v6(
             direct_source_sha if direct_source_path.suffix.lower() == ".blend" else None
         ),
         "agent_blend_sha256": agent_blend_sha256,
-        "delivery_blend_sha256": restored_blend_sha256,
-        "delivery_blend_size_bytes": result_blend.stat().st_size,
-        "delivery_fbx_sha256": restored_fbx_sha256,
-        "delivery_fbx_size_bytes": final_fbx.stat().st_size,
+        "delivery_blend_sha256": delivery_blend_sha256,
+        "delivery_blend_size_bytes": delivery_blend.stat().st_size,
+        "bake_high_fbx_sha256": bake_high_fbx_sha256,
+        "bake_high_fbx_size_bytes": bake_high_fbx.stat().st_size,
+        "delivery_fbx_sha256": bake_low_fbx_sha256,
+        "delivery_fbx_size_bytes": bake_low_fbx.stat().st_size,
+        "alignment_views_zip_sha256": file_sha256(views_zip),
+        "alignment_views_zip_size_bytes": views_zip.stat().st_size,
+        "initial_contact_sheet_sha256": file_sha256(initial_contact_sheet),
+        "final_contact_sheet_sha256": file_sha256(final_contact_sheet),
         "low_objects": low_objects,
-        "coordinate_restoration": coordinate_report,
-        "status": "generated_for_user_inspection",
-        "automatic_post_generation_review": False,
+        "bake_alignment": alignment_report,
+        "bake_pair_validation": validation_report,
+        "visual_qa": visual_qa,
+        "status": "bake_ready_validated",
+        "automatic_post_generation_review": True,
         "automatic_retry": False,
     }
     (output_dir / "delivery_manifest.json").write_text(
@@ -1910,8 +2096,16 @@ async def run_retopology_v6(
 
     shutil.rmtree(runtime_root)
     return {
-        "blend": result_blend.name,
-        "fbx": final_fbx.name,
+        "blend": delivery_blend.name,
+        "fbx": bake_low_fbx.name,
+        "high_fbx": bake_high_fbx.name,
+        "alignment_report": alignment_report_path.name,
+        "pair_validation": validation_report_path.name,
+        "alignment_views_zip": views_zip.name,
+        "initial_contact_sheet": initial_contact_sheet.name,
+        "final_contact_sheet": final_contact_sheet.name,
+        "visual_qa": visual_qa_path.name,
+        "visual_qa_events": visual_qa_events_path.name,
         "generation_report": "generation_report.json",
         "delivery_manifest": "delivery_manifest.json",
         "result": "result.json",
@@ -2084,6 +2278,11 @@ async def run_uv_skill(
     options: dict[str, Any],
     job_type: str,
 ) -> dict[str, str]:
+    algorithm = str(options.get("algorithm") or "legacy_pbr")
+    if algorithm != "legacy_pbr":
+        raise RuntimeError(
+            "UV_MOF_RUNTIME_UNAVAILABLE: this Linux Worker advertises only legacy_pbr"
+        )
     unwrap_script = verified_script(
         settings.uv_skill_root / "scripts" / "unwrap_fbx.py", UV_UNWRAP_SCRIPT_SHA256
     )
@@ -2144,6 +2343,13 @@ async def run_uv_skill(
         "Blender 正在执行切缝、展开、打直与排版",
         180,
     )
+    unwrap_report = json.loads(output_report.read_text("utf-8"))
+    if not isinstance(unwrap_report, dict):
+        raise RuntimeError("UV unwrap report is not a JSON object")
+    unwrap_report["algorithm"] = algorithm
+    output_report.write_text(
+        json.dumps(unwrap_report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     qa_payloads: dict[str, Any] = {}
     for label, source, qa_path, start, end in (
@@ -2165,7 +2371,14 @@ async def run_uv_skill(
             "正在检查 Blender 工程 UV" if label == "blend" else "正在回读 FBX 并验证 UV 可交付性",
             45,
         )
-        qa_payloads[label] = json.loads(qa_path.read_text("utf-8"))
+        qa_payload = json.loads(qa_path.read_text("utf-8"))
+        if not isinstance(qa_payload, dict):
+            raise RuntimeError(f"UV {label} QA report is not a JSON object")
+        qa_payload["algorithm"] = algorithm
+        qa_path.write_text(
+            json.dumps(qa_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        qa_payloads[label] = qa_payload
     if job_type == "UV_PROCESS_V2":
         return {
             "blend": output_blend.name,
@@ -2802,6 +3015,19 @@ async def execute_job(
             or "degenerate_uv_faces" in diagnostic
         ):
             error_code = "UV_QA_FAILED"
+        elif job.get("job_type") == "RETOPOLOGY_PROCESS_V2" and any(
+            marker in diagnostic
+            for marker in (
+                "bake-alignment evidence gate failed",
+                "bake visual QA rejected",
+                "geometry gate failed",
+                "TRANSFORM_ONLY_ALIGNMENT_REJECTED",
+                "FBX clean-scene readback",
+                "final bake low has no valid UV",
+                "UV_MOF_RUNTIME_UNAVAILABLE",
+            )
+        ):
+            error_code = "RETOPOLOGY_QA_FAILED"
         else:
             error_code = "BLENDER_EXECUTION_FAILED"
         try:
@@ -2870,6 +3096,7 @@ async def worker_loop(settings: WorkerSettings) -> None:
                                 "load_1m": os.getloadavg()[0],
                                 "available_memory_mb": available_memory_mb(),
                                 "accepts_codex_jobs": worker_accepts_codex_jobs(running),
+                                "uv_algorithms": ["legacy_pbr"],
                             },
                         )
                         response.raise_for_status()

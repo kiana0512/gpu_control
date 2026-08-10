@@ -73,7 +73,11 @@ def use_portable_test_skill_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
         name: {
             "SKILL.md": hashlib.sha256(f"# {name}\n".encode()).hexdigest(),
         }
-        for name in ("blender-pbr-uv", "blender-retopology-compare-iterate")
+        for name in (
+            "blender-align-bake-models",
+            "blender-pbr-uv",
+            "blender-retopology-compare-iterate",
+        )
     }
     monkeypatch.setattr(bootstrap_module, "APPROVED_SKILL_FILE_SHA256", manifest)
 
@@ -90,21 +94,26 @@ def codex_settings(tmp_path: Path) -> WorkerSettings:
     auth_source.write_text(json.dumps({"credential": "seed"}), encoding="utf-8")
     skills_root = tmp_path / "approved-skills"
     uv_skill = skills_root / "blender-pbr-uv"
+    alignment_skill = skills_root / "blender-align-bake-models"
     retopology_skill = skills_root / "blender-retopology-compare-iterate"
-    for skill in (uv_skill, retopology_skill):
+    for skill in (uv_skill, retopology_skill, alignment_skill):
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text(f"# {skill.name}\n", encoding="utf-8")
     runtime_home = tmp_path / "runtime-home"
     system_skills = runtime_home / "skills" / ".system"
     system_skills.mkdir(parents=True)
     (system_skills / "marker").write_text("preserved", encoding="utf-8")
-    ensure_codex_skill_links(runtime_home, (uv_skill, retopology_skill))
+    ensure_codex_skill_links(
+        runtime_home,
+        (uv_skill, retopology_skill, alignment_skill),
+    )
     return WorkerSettings(
         asset_worker_hmac_secret="worker-secret-that-is-at-least-32-bytes",
         codex_binary=str(fake_codex(tmp_path)),
         codex_auth_source=auth_source,
         codex_runtime_home=runtime_home,
         uv_skill_root=uv_skill,
+        alignment_skill_root=alignment_skill,
         retopology_skill_root=retopology_skill,
     )
 
@@ -277,7 +286,11 @@ async def test_idle_heartbeat_reprobes_immediately_after_skill_mount_recovery(
     skill_link.unlink()
     ensure_codex_skill_links(
         settings.codex_runtime_home,
-        (settings.uv_skill_root, settings.retopology_skill_root),
+        (
+            settings.uv_skill_root,
+            settings.retopology_skill_root,
+            settings.alignment_skill_root,
+        ),
     )
     captured: dict[str, object] = {}
 

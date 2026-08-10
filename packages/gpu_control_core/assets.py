@@ -19,6 +19,7 @@ ASSET_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 class UVUnwrapOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    algorithm: Literal["legacy_pbr", "mof_low_seam"] = "legacy_pbr"
     resolution: Literal[1024, 2048, 4096, 8192] = 2048
     padding_px: int = Field(default=10, ge=2, le=128)
     hard_edge_angle_degrees: float = Field(default=75.0, ge=1.0, le=179.0)
@@ -186,6 +187,7 @@ class RetopologyV6ProcessOptions(BaseModel):
     preserve_source: Literal[True] = True
     preserve_sharp_edges: bool = True
     preserve_boundaries: bool = True
+    uv_algorithm: Literal["legacy_pbr", "mof_low_seam"] = "legacy_pbr"
     delivery_profile: Literal[
         "next_gen_game_prop",
         "realtime_background_prop",
@@ -322,6 +324,176 @@ def retopology_fbx_meter_evidence_valid(payload: object) -> bool:
             rel_tol=0.0,
             abs_tol=1e-9,
         )
+    )
+
+
+def _retopology_fbx_meter_contract_valid(contract: object) -> bool:
+    if not isinstance(contract, dict):
+        return False
+    unit_scale = contract.get("unit_scale_factor_centimeters")
+    original_unit_scale = contract.get("original_unit_scale_factor_centimeters")
+    return (
+        contract.get("schema_version") == "retopology_fbx_units.v1"
+        and contract.get("passed") is True
+        and contract.get("coordinate_unit") == "meter"
+        and contract.get("raw_coordinates_are_meters") is True
+        and contract.get("global_scale") == 1.0
+        and contract.get("apply_unit_scale") is True
+        and contract.get("apply_scale_options") == "FBX_SCALE_UNITS"
+        and contract.get("axis_forward") == "-Z"
+        and contract.get("axis_up") == "Y"
+        and isinstance(unit_scale, int | float)
+        and not isinstance(unit_scale, bool)
+        and math.isclose(float(unit_scale), 100.0, rel_tol=0.0, abs_tol=1e-9)
+        and isinstance(original_unit_scale, int | float)
+        and not isinstance(original_unit_scale, bool)
+        and math.isclose(float(original_unit_scale), 100.0, rel_tol=0.0, abs_tol=1e-9)
+    )
+
+
+def _retopology_clean_topology_valid(topology: object) -> bool:
+    if not isinstance(topology, dict):
+        return False
+    required_zero = (
+        "degenerate_faces",
+        "nonmanifold_edges",
+        "loose_edges",
+        "loose_vertices",
+        "duplicate_vertices",
+        "duplicate_faces",
+        "inconsistent_orientation_edges",
+    )
+    intersections = topology.get("self_intersections")
+    return (
+        isinstance(topology.get("faces"), int)
+        and topology["faces"] > 0
+        and topology.get("finite_coordinates") is True
+        and all(topology.get(key) == 0 for key in required_zero)
+        and isinstance(intersections, dict)
+        and intersections.get("intersecting_triangle_pairs") == 0
+    )
+
+
+def retopology_bake_alignment_evidence_valid(payload: object) -> bool:
+    """Validate the strict post-topology bake-alignment report."""
+
+    if not isinstance(payload, dict):
+        return False
+    if (
+        payload.get("schema_version") != "retopology_bake_alignment.v2"
+        or payload.get("mode") != "transform_only_alignment_then_separate_uv"
+        or payload.get("passed") is not True
+        or payload.get("source_high_is_sole_coordinate_authority") is not True
+        or payload.get("direct_object_transform_copy_used") is not False
+        or payload.get("uniform_scale_only") is not True
+        or payload.get("mirror_candidates_allowed") is not False
+        or payload.get("topology_rebuild_allowed") is not False
+        or payload.get("alignment_changes_topology_or_uv") is not False
+        or payload.get("uv_is_a_separate_pre_alignment_stage") is not True
+        or payload.get("alignment_skill") != "blender-align-bake-models"
+        or payload.get("automatic_visual_review_required") is not True
+        or payload.get("uv_algorithm") not in {"legacy_pbr", "mof_low_seam"}
+    ):
+        return False
+    pairs = payload.get("pairs")
+    if not isinstance(pairs, list) or not pairs:
+        return False
+    for pair in pairs:
+        if not isinstance(pair, dict):
+            return False
+        role = pair.get("role_identification")
+        transform = pair.get("transform_application")
+        registration = pair.get("registration")
+        views = pair.get("final_views")
+        high_topology = pair.get("final_high_topology")
+        low_topology = pair.get("final_low_topology")
+        if (
+            not isinstance(role, dict)
+            or role.get("method") != "higher_face_count_is_high"
+            or not isinstance(role.get("high_faces"), int)
+            or not isinstance(role.get("original_low_faces"), int)
+            or role["high_faces"] <= role["original_low_faces"]
+            or not isinstance(transform, dict)
+            or transform.get("copied_high_object_transform") is not False
+            or transform.get("geometry_registration_used") is not True
+            or transform.get("applied_exactly_once_to_duplicate_mesh") is not True
+            or transform.get("mirror_introduced") is not False
+            or pair.get("alignment_scope") != "transform_only"
+            or pair.get("rebuild_allowed") is not False
+            or pair.get("fallback") is not None
+            or not isinstance(registration, dict)
+            or registration.get("skill") != "blender-align-bake-models"
+            or registration.get("transform_only") is not True
+            or registration.get("axis_scale_used") is not False
+            or registration.get("mirror_allowed") is not False
+            or registration.get("topology_uv_preserved_during_alignment") is not True
+            or pair.get("original_high_preserved") is not True
+            or pair.get("original_low_preserved") is not True
+            or pair.get("originals_hidden") is not True
+            or not isinstance(high_topology, dict)
+            or not isinstance(low_topology, dict)
+            or not isinstance(high_topology.get("faces"), int)
+            or not isinstance(low_topology.get("faces"), int)
+            or low_topology["faces"] >= high_topology["faces"]
+            or low_topology.get("finite_coordinates") is not True
+            or low_topology.get("degenerate_faces") != 0
+            or not isinstance(pair.get("uv"), dict)
+            or not isinstance(views, dict)
+            or views.get("views")
+            != ["front", "back", "left", "right", "top", "bottom", "perspective"]
+            or views.get("low_display") != "opaque_bright_orange_solid_with_dark_wire"
+            or views.get("low_transparency") is not False
+            or views.get("xray") is not False
+        ):
+            return False
+    return all(
+        isinstance(payload.get(name), dict)
+        and _retopology_fbx_meter_contract_valid(payload[name].get("unit_contract"))
+        for name in ("bake_high_fbx", "bake_low_fbx")
+    )
+
+
+def retopology_bake_pair_validation_evidence_valid(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    high = payload.get("high")
+    low = payload.get("low")
+    return (
+        payload.get("schema_version") == "retopology_bake_pair_validation.v2"
+        and payload.get("passed") is True
+        and payload.get("fresh_blender_scene_reimport") is True
+        and payload.get("low_faces_less_than_high") is True
+        and payload.get("low_has_uv") is True
+        and payload.get("low_structure_match") is True
+        and isinstance(high, dict)
+        and isinstance(low, dict)
+        and high.get("passed") is True
+        and low.get("passed") is True
+        and low.get("uv_passed") is True
+        and isinstance(high.get("faces"), int)
+        and isinstance(low.get("faces"), int)
+        and low["faces"] < high["faces"]
+        and _retopology_fbx_meter_contract_valid(high.get("unit_contract"))
+        and _retopology_fbx_meter_contract_valid(low.get("unit_contract"))
+    )
+
+
+def retopology_bake_visual_qa_evidence_valid(payload: object) -> bool:
+    required_views = {"front", "back", "left", "right", "top", "bottom", "perspective"}
+    if not isinstance(payload, dict):
+        return False
+    checked = payload.get("views_checked")
+    return (
+        payload.get("schema_version") == "retopology_bake_visual_qa.v1"
+        and payload.get("passed") is True
+        and payload.get("visual_match") is True
+        and payload.get("correct_orientation") is True
+        and payload.get("no_wrong_mirror") is True
+        and payload.get("no_long_spikes") is True
+        and payload.get("no_visible_intersections") is True
+        and isinstance(checked, list)
+        and set(checked) == required_views
+        and payload.get("failure_codes") == []
     )
 
 

@@ -45,6 +45,7 @@ def test_v6_contract_has_no_user_face_budget() -> None:
         "preserve_source": True,
         "preserve_sharp_edges": True,
         "preserve_boundaries": True,
+        "uv_algorithm": "legacy_pbr",
         "delivery_profile": "next_gen_game_prop",
     }
 

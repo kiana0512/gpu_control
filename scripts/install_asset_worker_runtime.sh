@@ -37,7 +37,7 @@ codex_path="${CODEX_BINARY_SOURCE:-$(command -v codex || true)}"
 runtime_root="${ASSET_RUNTIME_ROOT:-/opt/gpu-control/runtime}"
 
 [[ -x "$codex_path" ]] || { echo "Codex CLI binary not found" >&2; exit 1; }
-for skill in blender-pbr-uv blender-retopology-compare-iterate; do
+for skill in blender-pbr-uv blender-retopology-compare-iterate blender-align-bake-models; do
   [[ -f "$skill_root/$skill/SKILL.md" ]] || {
     echo "Missing Skill: $skill_root/$skill" >&2
     exit 1
@@ -51,7 +51,7 @@ $dry_run && rsync_flags+=(--dry-run --itemize-changes)
 if [[ -z "$target_host" ]]; then
   $dry_run || mkdir -p "$runtime_root/codex" "$runtime_root/asset-skills"
   rsync "${rsync_flags[@]}" "$codex_path" "$runtime_root/codex/codex"
-  for skill in blender-pbr-uv blender-retopology-compare-iterate; do
+  for skill in blender-pbr-uv blender-retopology-compare-iterate blender-align-bake-models; do
     rsync "${rsync_flags[@]}" "$skill_root/$skill/" \
       "$runtime_root/asset-skills/$skill/"
   done
@@ -73,10 +73,11 @@ fi
 if ! $dry_run; then
   ssh "${ssh_options[@]}" "$remote" mkdir -p \
     "$runtime_root/codex" "$runtime_root/asset-skills/blender-pbr-uv" \
-    "$runtime_root/asset-skills/blender-retopology-compare-iterate"
+    "$runtime_root/asset-skills/blender-retopology-compare-iterate" \
+    "$runtime_root/asset-skills/blender-align-bake-models"
 fi
 rsync "${rsync_flags[@]}" -e "${rsync_ssh[*]}" "$codex_path" "$remote:$runtime_root/codex/codex"
-for skill in blender-pbr-uv blender-retopology-compare-iterate; do
+for skill in blender-pbr-uv blender-retopology-compare-iterate blender-align-bake-models; do
   rsync "${rsync_flags[@]}" -e "${rsync_ssh[*]}" "$skill_root/$skill/" \
     "$remote:$runtime_root/asset-skills/$skill/"
 done

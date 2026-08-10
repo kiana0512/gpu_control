@@ -12,25 +12,52 @@ from typing import NoReturn
 DEFAULT_CODEX_HOME = Path("/home/assetworker/.codex")
 DEFAULT_CODEX_SKILLS_ROOT = Path("/opt/codex/skills")
 
-# This manifest is the in-image trust root for the two externally owned Skills.
+# This manifest is the in-image trust root for the three externally owned Skills.
 # It deliberately mirrors scripts/verify_asset_skills.sh so a host-side in-place
 # edit cannot be hidden behind an otherwise correct bind mount or child link.
 # Updating any entry is a release decision and must travel with a new Worker
 # image/version; runtime environment variables cannot override these digests.
 APPROVED_SKILL_FILE_SHA256: Mapping[str, Mapping[str, str]] = {
+    "blender-align-bake-models": {
+        "SKILL.md": "5a32c7759ae998504056e41bc14e556675bbbe6b828b72c9c44a8f2918106aba",
+        "agents/openai.yaml": (
+            "a8e61cb47f50eef2fb97b6f29c5d3f3d900e63154e2c2f6257293c1c2e62962a"
+        ),
+        "scripts/align_bake_models.py": (
+            "ea0588e81fa50772080bc19ff096ee29cb5b6dbc67cdb303b9d32cdbf6a99a78"
+        ),
+        "scripts/create_synthetic_pair.py": (
+            "e214969e47c929f80e4f7b84e474d2872bb512a8de0169e777e634521541e8dc"
+        ),
+        "scripts/render_alignment_views.py": (
+            "cf4cf07003b030f6bb6c3c9023f03cfda38da837973f57dfa2f8eb4a71baba0b"
+        ),
+        "scripts/validate_bake_pair.py": (
+            "d8ee19f1fa0e3c93fbf6aa3f846afe1df7162f9569baabbdfaa9fea9f07ed358"
+        ),
+    },
     "blender-pbr-uv": {
-        "SKILL.md": "37de0b496030e7b20151c7d5cbcf340ed4cd2ea36c132e50fc57743f5b4d427e",
+        "SKILL.md": "255bbeb16b99bb15c37ab085e57dbc26ce3f8c9f58083753423fe0bbe13d20a8",
         "agents/openai.yaml": (
             "8c2940dcf2a9d0058ff5b8bec03e99185f3758a0f0b3ea60e7ce9345f243d5ac"
         ),
         "references/pbr-uv-standard.md": (
             "06872924e99f2e856c36e3e5e0aefce23c06554e6809125a4fa7ec41970c75cb"
         ),
+        "references/mof-wrapper-notes.md": (
+            "fc22d8de0ac3a217b4c63e975037691382395e4e9c9d588ee418640913a86aec"
+        ),
         "scripts/unwrap_fbx.py": (
             "ebfa3546d61c548a11c0e7561c75f93b6ef93308d8da9f27788bf35643303758"
         ),
         "scripts/qa_uv.py": (
             "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
+        ),
+        "scripts/mof_unwrap.py": (
+            "a45a10ebcae868ba82c1c14bddb6d82beb907961114dad6a4462e40ace7e409d"
+        ),
+        "scripts/preflight_mof.py": (
+            "d4639ebd34128b02496599eef55c21ed1eab295c6117fc234c819003e491db40"
         ),
     },
     "blender-retopology-compare-iterate": {
@@ -262,7 +289,12 @@ def bootstrap_from_environment(environment: Mapping[str, str]) -> None:
         variable="RETOPOLOGY_SKILL_ROOT",
         skills_root=resolved_skills_root,
     )
-    ensure_codex_skill_links(codex_home, (uv_skill, retopology_skill))
+    alignment_skill = _validate_required_skill(
+        environment.get("ALIGNMENT_SKILL_ROOT"),
+        variable="ALIGNMENT_SKILL_ROOT",
+        skills_root=resolved_skills_root,
+    )
+    ensure_codex_skill_links(codex_home, (uv_skill, retopology_skill, alignment_skill))
 
 
 def _exec(command: Sequence[str]) -> NoReturn:
