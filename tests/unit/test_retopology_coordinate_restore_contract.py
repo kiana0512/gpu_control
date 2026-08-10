@@ -3,7 +3,7 @@ from pathlib import Path
 
 ROOT = Path("packages/asset_processing")
 SCRIPT = ROOT / "blender_retopology_restore_coordinates.py"
-EXPECTED_SHA256 = "e4e01e98386484af9c61a3f96d46034820d5a48f7cca1d80d947435f2b12f8b7"
+EXPECTED_SHA256 = "cc6b160cdf8f0959792731d203771828c975264da4528e5cb30b08f150cdd987"
 
 
 def test_coordinate_restore_is_transform_only_and_fbx_readback_gated() -> None:
@@ -17,7 +17,7 @@ def test_coordinate_restore_is_transform_only_and_fbx_readback_gated() -> None:
     assert "if translation_required:" in source
     assert 'coordinate_action = "full_transform_restored"' in source
     assert "if blend_transform_changed:" in source
-    assert '"low_rotation_scale_restored": linear_transform_required' in source
+    assert '"low_rotation_scale_restored": linear_transform_changed' in source
     assert "bpy.ops.export_scene.fbx(" in source
     assert "bpy.ops.import_scene.fbx(filepath=str(output_fbx))" in source
     assert "FBX readback changed aligned bounds" in source
@@ -27,8 +27,11 @@ def test_coordinate_restore_is_transform_only_and_fbx_readback_gated() -> None:
     assert 'fbx_double_property(output_fbx, "UnitScaleFactor")' in source
     assert '"raw_coordinates_are_meters": True' in source
     assert "MAXIMUM_DIMENSION_RELATIVE_ERROR = 0.05" in source
+    assert "MAXIMUM_ENVELOPE_SCALE_RELATIVE_ERROR = 0.10" in source
     assert "generated low dimensions do not match the source high" in source
-    assert "refusing to scale or distort generated topology" in source
+    assert "Matrix.Diagonal" in source
+    assert '"envelope_scale_applied": envelope_scale_required' in source
+    assert "refusing to hide a different model with coordinate scaling" in source
 
 
 def test_direct_v2_delivery_requires_coordinate_restore_evidence() -> None:

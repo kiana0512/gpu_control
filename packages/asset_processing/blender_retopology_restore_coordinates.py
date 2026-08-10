@@ -20,13 +20,14 @@ from pathlib import Path
 from typing import Any
 
 import bpy
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 SCHEMA_VERSION = "retopology_coordinate_restoration.v3"
 MODE = "high_world_linear_aabb_center_and_fbx_meter"
 FBX_UNIT_CONTRACT_SCHEMA_VERSION = "retopology_fbx_units.v1"
 FBX_UNIT_SCALE_FACTOR_CENTIMETERS = 100.0
 MAXIMUM_DIMENSION_RELATIVE_ERROR = 0.05
+MAXIMUM_ENVELOPE_SCALE_RELATIVE_ERROR = 0.10
 
 
 def arguments() -> argparse.Namespace:
@@ -366,20 +367,60 @@ def main() -> None:
             bpy.context.view_layer.update()
 
         low_bounds_after_linear_restore = bounds_payload([low])
-        dimension_errors = dimension_relative_errors(
+        pre_alignment_dimension_errors = dimension_relative_errors(
             high_bounds["dimensions"],
             low_bounds_after_linear_restore["dimensions"],
+            transform_tolerance,
+        )
+        maximum_pre_alignment_dimension_error = max(pre_alignment_dimension_errors)
+        if maximum_pre_alignment_dimension_error > MAXIMUM_ENVELOPE_SCALE_RELATIVE_ERROR:
+            raise RuntimeError(
+                "generated low dimensions do not match the source high; "
+                f"{low_name}; maximum_relative_error="
+                f"{maximum_pre_alignment_dimension_error:.9g}, "
+                f"safe_envelope_limit={MAXIMUM_ENVELOPE_SCALE_RELATIVE_ERROR:.9g}; "
+                "refusing to hide a different model with coordinate scaling"
+            )
+
+        envelope_scale_factors: list[float] = []
+        for high_dimension, low_dimension in zip(
+            high_bounds["dimensions"],
+            low_bounds_after_linear_restore["dimensions"],
+            strict=True,
+        ):
+            if abs(low_dimension) <= transform_tolerance:
+                raise RuntimeError(f"generated low has a collapsed dimension: {low_name}")
+            envelope_scale_factors.append(float(high_dimension / low_dimension))
+        envelope_scale_required = any(
+            abs(factor - 1.0) > linear_transform_tolerance for factor in envelope_scale_factors
+        )
+        if envelope_scale_required:
+            high_center = Vector(high_bounds["center"])
+            low_center = Vector(low_bounds_after_linear_restore["center"])
+            envelope_scale = Matrix.Diagonal(Vector((*envelope_scale_factors, 1.0)))
+            low.matrix_world = (
+                Matrix.Translation(high_center)
+                @ envelope_scale
+                @ Matrix.Translation(-low_center)
+                @ low.matrix_world
+            )
+            bpy.context.view_layer.update()
+
+        low_bounds_after_envelope_restore = bounds_payload([low])
+        expected_low_world_linear = matrix_values(low, 3)
+        dimension_errors = dimension_relative_errors(
+            high_bounds["dimensions"],
+            low_bounds_after_envelope_restore["dimensions"],
             transform_tolerance,
         )
         maximum_dimension_error = max(dimension_errors)
         if maximum_dimension_error > MAXIMUM_DIMENSION_RELATIVE_ERROR:
             raise RuntimeError(
-                "generated low dimensions do not match the source high; "
+                "generated low envelope restoration did not match the source high; "
                 f"{low_name}; maximum_relative_error={maximum_dimension_error:.9g}, "
-                f"limit={MAXIMUM_DIMENSION_RELATIVE_ERROR:.9g}; "
-                "refusing to scale or distort generated topology"
+                f"limit={MAXIMUM_DIMENSION_RELATIVE_ERROR:.9g}"
             )
-        delta = Vector(high_bounds["center"]) - Vector(low_bounds_after_linear_restore["center"])
+        delta = Vector(high_bounds["center"]) - Vector(low_bounds_after_envelope_restore["center"])
         translation_required = max(abs(value) for value in delta) > transform_tolerance
         if translation_required:
             matrix_world = low.matrix_world.copy()
@@ -394,7 +435,10 @@ def main() -> None:
         dimensions_change = max_vector_delta(
             low_bounds_before["dimensions"], low_bounds_after["dimensions"]
         )
-        linear_transform_residual = max_matrix_delta(high_world_linear, low_world_linear_after)
+        linear_transform_changed = linear_transform_required or envelope_scale_required
+        linear_transform_residual = max_matrix_delta(
+            expected_low_world_linear, low_world_linear_after
+        )
         if high_after != high_signature:
             raise RuntimeError(f"coordinate restoration changed the high mesh: {high_name}")
         if mesh_sha256(low) != low_mesh_sha256:
@@ -411,9 +455,9 @@ def main() -> None:
                 f"linear_transform_residual={linear_transform_residual:.9g}, "
                 f"tolerance={transform_tolerance:.9g}"
             )
-        if linear_transform_required and translation_required:
+        if linear_transform_changed and translation_required:
             coordinate_action = "full_transform_restored"
-        elif linear_transform_required:
+        elif linear_transform_changed:
             coordinate_action = "linear_transform_restored"
         elif translation_required:
             coordinate_action = "translation_restored"
@@ -436,17 +480,27 @@ def main() -> None:
                 "high_bounds": high_bounds,
                 "low_bounds_before": low_bounds_before,
                 "low_bounds_after_linear_restore": low_bounds_after_linear_restore,
+                "low_bounds_after_envelope_restore": low_bounds_after_envelope_restore,
                 "low_bounds_after": low_bounds_after,
                 "center_residual": center_residual,
                 "dimensions_max_abs_change": dimensions_change,
+                "pre_alignment_dimension_relative_error": pre_alignment_dimension_errors,
+                "pre_alignment_maximum_dimension_relative_error": (
+                    maximum_pre_alignment_dimension_error
+                ),
+                "maximum_envelope_scale_relative_error_limit": (
+                    MAXIMUM_ENVELOPE_SCALE_RELATIVE_ERROR
+                ),
+                "envelope_scale_applied": envelope_scale_required,
+                "envelope_scale_factors_world": envelope_scale_factors,
                 "high_low_dimension_relative_error": dimension_errors,
                 "high_low_maximum_dimension_relative_error": maximum_dimension_error,
                 "maximum_dimension_relative_error_limit": (MAXIMUM_DIMENSION_RELATIVE_ERROR),
                 "transform_tolerance": transform_tolerance,
                 "high_preserved": True,
                 "low_mesh_preserved": True,
-                "low_rotation_scale_preserved": not linear_transform_required,
-                "low_rotation_scale_restored": linear_transform_required,
+                "low_rotation_scale_preserved": not linear_transform_changed,
+                "low_rotation_scale_restored": linear_transform_changed,
             }
         )
         low_objects.append(low)
@@ -472,6 +526,7 @@ def main() -> None:
         "passed": True,
         "allowed_change": "generated_low_object_world_transform_only",
         "maximum_dimension_relative_error": MAXIMUM_DIMENSION_RELATIVE_ERROR,
+        "maximum_envelope_scale_relative_error": MAXIMUM_ENVELOPE_SCALE_RELATIVE_ERROR,
         "input_blend_sha256": input_blend_sha256,
         "output_blend_sha256": output_blend_sha256,
         "source_high_preserved": True,
