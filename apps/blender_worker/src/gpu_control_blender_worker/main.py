@@ -1632,7 +1632,6 @@ async def run_retopology_bake_visual_qa(
             "no_visible_intersections": {"type": "boolean"},
             "views_checked": {
                 "type": "array",
-                "uniqueItems": True,
                 "items": {
                     "type": "string",
                     "enum": [

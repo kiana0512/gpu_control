@@ -60,6 +60,7 @@ def test_direct_v2_delivery_requires_bake_alignment_evidence() -> None:
     assert '"bake_alignment": alignment_report' in worker
     assert '"bake_pair_validation": validation_report' in worker
     assert '"visual_qa": visual_qa' in worker
+    assert '"uniqueItems"' not in worker
     assert 'manifest.get("schema_version") != "retopology_direct_delivery.v6"' in api
     assert "retopology_bake_alignment_evidence_valid" in worker
     assert "retopology_bake_alignment_evidence_valid" in api
