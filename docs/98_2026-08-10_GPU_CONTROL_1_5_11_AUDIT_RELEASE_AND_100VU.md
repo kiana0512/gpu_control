@@ -1,12 +1,12 @@
 # GPU Control 1.5.11 全服务审计、发布与第三次 100 VU 压测
 
 - 日期：2026-08-10
-- 当前阶段：`SOURCE_AUDITED / CANDIDATE_BUILD_PENDING`
+- 当前阶段：`DEPLOYED_NOT_ACCEPTED / 100VU_PENDING`
 - 控制面候选：`1.5.11`
 - Asset API 候选镜像：`1.6.12-retopology-coordinate-restore-v2`
 - Linux Blender Worker 候选：`1.4.7-retopology-coordinate-restore-v2`
 - 数据库候选迁移：`20260810_0013`
-- 最终状态：镜像、部署、真实六 API 压测和观察证据回填前保持 `NOT_ACCEPTED`
+- 最终状态：五个镜像已构建并部署，真实六 API 压测和观察证据回填前保持 `NOT_ACCEPTED`
 
 本文是本轮综合升级的唯一事实记录。任何未回填的项目都不能提前写成通过。
 
@@ -97,8 +97,19 @@ GPU 89%、82°C、354.8/370W，低于持续高温阈值但已接近 WSL 功耗�
 PNG 与 1 个 manifest。这证明离线测试和文档工作没有干扰三节点真实调度。
 
 候选发布前实机状态：三 GPU 节点、三 Linux Worker、四 Windows Baker 在线，任务、批次、Asset 作业、
-活动租约均为 0；三台 ComfyUI 健康且 RestartCount=0。Scheduler 的 RestartCount=2 是历史值，当前
-健康、无 OOM；发布后必须确认没有新增重启。
+活动租约均为 0；三台 ComfyUI 健康且 RestartCount=0。滚动后 API、Scheduler、Asset API、Web 和三台
+Blender Worker 均运行候选镜像且 RestartCount=0；三台 ComfyUI 未因本轮发布重启。三 GPU 节点已恢复
+`ACTIVE / ONLINE`，发布后任务与租约再次归零。
+
+生产数据库已由 `20260803_0012` 升级到 `20260810_0013`。三台 Blender Worker 的源码、包和镜像身份
+一致；三台外部 ImageClip pipeline hash 均保持
+`00e7104762f0a1fdf3a4c20e043bec2b9f088132452d5a5ce4302ba268edac0b`，没有修改外部仓库内容。
+Prometheus 已热加载 14 条规则；3090-B 的 system probe、GPU 温度/功耗和性能探针均有实时指标，规则
+加载过程没有重启 Prometheus。
+
+发布前完整备份位于 `/srv/gpu-control/backups/20260810T033212Z-full`，格式、SHA 清单、数据库 dump、
+Git bundle、敏感配置和前后两次 zero-work gate 均通过离线校验。该目录含敏感配置，保持 root-only；
+后续仍需制作加密异地副本。
 
 ## 5. 第三次真实 100 用户压力模型
 
@@ -141,15 +152,18 @@ PNG 与 1 个 manifest。这证明离线测试和文档工作没有干扰三节�
 9. 写入并推送 candidate/live deployment receipt，保持 `DEPLOYED_NOT_ACCEPTED`。
 10. 执行六 API canary 与正式 100 VU；清场、观察、结果 SHA 和分析全部通过后再决定验收状态。
 
-## 7. 待回填证据
+## 7. 已部署证据与待回填项
 
 | 项目 | 状态 |
 |---|---|
-| 源码 Git SHA / origin main | `PENDING` |
-| 五镜像 ID / registry digest / SBOM | `PENDING` |
-| full backup 与 verify-only | `PENDING` |
-| 0013 生产迁移与表压缩 | `PENDING` |
-| Asset API / 三 Worker / API / Web / Scheduler 滚动 | `PENDING` |
-| 三节点、四 Baker、Codex、Prometheus 发布后验证 | `PENDING` |
+| 镜像源码 Git SHA | `04e281cd5a4a4c865e738255af7edd31e78a6c06`；已推送 |
+| 候选归档 Git/LFS | `1df1bcfecfd8ea690dc07e884b8e5dddbd5a5ab1`；7/7 LFS 已推送 |
+| 五镜像构建与本地不可变 ID | `VERIFIED / DEPLOYED`；组合归档 SHA-256 `964b16389f8726903065aa3b2e39ab475207294d8cb2fccec0e74bdd08a7f998` |
+| Registry digest / SBOM | `PENDING_REGISTRY_PUSH / PENDING_PINNED_SBOM_GENERATOR`；不得宣称 strict release accepted |
+| live deployment receipt | `artifacts/control-plane/1.5.11/deployment/live-deployment-receipt.json`；状态 `DEPLOYED_NOT_ACCEPTED` |
+| full backup 与离线完整性校验 | `PASS`；`/srv/gpu-control/backups/20260810T033212Z-full` |
+| 0013 生产迁移 | `PASS`；当前 revision `20260810_0013` |
+| Asset API / 三 Worker / API / Web / Scheduler 滚动 | `PASS`；目标容器 RestartCount 均为 0 |
+| 三节点、四 Baker、Codex、Prometheus 发布后验证 | `PASS`；三节点 ACTIVE/ONLINE，14 条规则已加载 |
 | 六 API canary | `PENDING` |
 | 100 VU 原始结果、阈值、清场与分析 | `PENDING` |
