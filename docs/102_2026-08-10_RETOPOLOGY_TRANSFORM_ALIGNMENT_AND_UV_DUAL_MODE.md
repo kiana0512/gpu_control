@@ -175,3 +175,27 @@ Worker 领取的拓扑任务会被遗漏。该任务的租约机制已安全重�
 
 本次没有重启或修改三台 ComfyUI、ImageClip、ModelViewCreator 及其工作流；真实抠图任务继续运行。
 用户已取消压力测试，本发布执行了 0 条压力测试请求，不能把 canary 或回归测试描述为压测。
+
+### 7.4 Li3D V6 正式 BLEND 文件名兼容热修复
+
+Li3D 用户端按冻结的 V6 合同，以 `kind=blend` 且文件名后缀 `_GAME_LOW.blend` 识别正式 BLEND。
+首次 bake-alignment 发布把相同 `kind=blend` 命名为 `_BAKE_ALIGNMENT.blend`，导致任务实际成功且
+BLEND/FBX 都存在时，客户端仍只识别 FBX，并显示“交付不完整”。该问题只影响客户端分类和下载
+展示，不影响已生成模型、SHA-256、UV、对齐或 QA。
+
+- 修复提交：`fb7a07b94ac208a8bfde02c9e20b23db6948b26d`，已推送；
+- Asset API：`1.6.16-retopology-v6-client-filename-v1`；image ID
+  `sha256:4a5e4e7e25c6f1e12244ddbd891a0b23ff27dbffebaa1af95190e4b4c740559f`；healthy，0 restart；
+- 新任务正式模型固定发布为同 stem 的 `_GAME_LOW.blend` 与 `_GAME_LOW.fbx`；BLEND 内容仍保留源对象、
+  高低模 bake pair 与完整检查工程；
+- 已成功任务 `2fd36e99-77c8-40b9-addd-519134663421` 的 `kind=blend` 展示名已在事务中兼容修正，
+  文件路径、字节数 `18952129` 和 SHA-256
+  `b628efd50a75eee56be46226a3ccbbb6c8180880357fb1ad09b5260a6e41b4b1` 均未改变；
+- Ruff、Python 编译与针对性合同/集成测试 `23 passed`；
+- 离线镜像：`/srv/gpu-control/images/retopology-v6-client-filename-v1-fb7a07b/`
+  `unified-scheduler-asset-api-1.6.16-retopology-v6-client-filename-v1.tar.zst`，`92517334` bytes，
+  SHA-256 `0f441ae61876904877a45f0acb85c631c0ec1222fdec3e1fc0f56a057a17b006`。
+
+本次只滚动 Asset API；三台 Asset Worker 与三台 ComfyUI 均未重启。浏览器插件在当前会话不可用，
+且 Li3D 用户端源码/URL 不在本仓库，因此没有虚报客户端页面自动化；服务端运行镜像合同、数据库两项
+正式模型记录和 API 集成响应均已验证。
