@@ -13,7 +13,7 @@ from apps.scheduler.src.gpu_control_scheduler.main import (
     persist_prompt_id,
     prepare_prompt_submission,
 )
-from packages.comfy_client import ComfyClient, ComfyOutput
+from packages.comfy_client import ComfyClient, ComfyError, ComfyOutput
 from packages.gpu_control_core.batches import transition_batch
 from packages.gpu_control_core.database import Database
 from packages.gpu_control_core.enums import BatchStatus, JobStatus
@@ -283,6 +283,80 @@ async def test_health_probe_merges_concurrent_substance_interlocks(
                 heartbeat = heartbeat.replace(tzinfo=UTC)
             assert heartbeat == probe_completed_at
             assert heartbeat < recovery_observed_at
+    finally:
+        await scheduler.redis.aclose()
+        await scheduler.db.close()
+        await database.close()
+
+
+async def test_optional_inventory_timeout_does_not_fence_healthy_node(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "optional-inventory-timeout.db"
+    database = await make_database(path)
+    await seed(database)
+    async with database.session() as session:
+        node = await session.get(Node, "3090-a")
+        assert node is not None
+        node.labels = {
+            "comfy_class_types": ["SaveImage"],
+            "comfy_class_inventory_checked_at": datetime.now(UTC).isoformat(),
+        }
+        await session.commit()
+
+    scheduler = Scheduler(
+        Settings(
+            database_url=f"sqlite+aiosqlite:///{path.as_posix()}",
+            job_root=tmp_path / "jobs",
+        )
+    )
+    scheduler.object_info_checked_at["3090-a"] = -60.0
+
+    class BusyInventoryClient:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def system_stats(self) -> dict[str, object]:
+            scheduler.stop_event.set()
+            return {
+                "devices": [
+                    {
+                        "vram_free": 12 * 1024 * 1024 * 1024,
+                        "vram_total": 24 * 1024 * 1024 * 1024,
+                    }
+                ]
+            }
+
+        async def queue(self) -> dict[str, list[object]]:
+            return {"queue_running": [], "queue_pending": []}
+
+        async def object_info(self) -> dict[str, object]:
+            raise ComfyError("COMFY_TIMEOUT", "busy optional inventory")
+
+    async def no_identity(_: Node) -> None:
+        return None
+
+    async def no_agent_metrics(_: Node) -> None:
+        return None
+
+    monkeypatch.setattr(scheduler_main, "ComfyClient", BusyInventoryClient)
+    scheduler.node_agent_identity = no_identity  # type: ignore[method-assign]
+    scheduler.node_agent_gpu_metrics = no_agent_metrics  # type: ignore[method-assign]
+    try:
+        await scheduler.update_node_health()
+        async with database.session() as session:
+            node = await session.get(Node, "3090-a")
+            assert node is not None
+            assert node.health == "ONLINE"
+            assert node.labels["comfy_class_types"] == ["SaveImage"]
+            assert node.last_heartbeat_at is not None
+        assert scheduler.object_info_checked_at["3090-a"] >= 0
     finally:
         await scheduler.redis.aclose()
         await scheduler.db.close()

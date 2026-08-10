@@ -909,22 +909,28 @@ class Scheduler:
                         async with ComfyClient(
                             node.base_url, connect_timeout=2, read_timeout=5
                         ) as client:
+                            stats, queue, _, gpu_metrics = await asyncio.gather(
+                                client.system_stats(),
+                                client.queue(),
+                                self.node_agent_identity(node),
+                                self.node_agent_gpu_metrics(node),
+                            )
+                            inventory = None
                             if refresh_inventory:
-                                stats, queue, _, gpu_metrics, inventory = await asyncio.gather(
-                                    client.system_stats(),
-                                    client.queue(),
-                                    self.node_agent_identity(node),
-                                    self.node_agent_gpu_metrics(node),
-                                    client.object_info(),
-                                )
-                            else:
-                                stats, queue, _, gpu_metrics = await asyncio.gather(
-                                    client.system_stats(),
-                                    client.queue(),
-                                    self.node_agent_identity(node),
-                                    self.node_agent_gpu_metrics(node),
-                                )
-                                inventory = None
+                                try:
+                                    inventory = await client.object_info()
+                                except ComfyError as exc:
+                                    # /object_info is a large, optional inventory response.
+                                    # A busy ComfyUI process (especially through WSL) can
+                                    # time it out even though /system_stats and /queue are
+                                    # healthy. Retain the last compatible inventory and
+                                    # back off instead of repeatedly fencing a live node.
+                                    self.object_info_checked_at[node.id] = now_monotonic
+                                    logger().warning(
+                                        "node.inventory_probe_failed",
+                                        node_id=node.id,
+                                        error_code=exc.code,
+                                    )
                         # Timestamp the evidence when the network probe
                         # actually completed, before any wait on the Node row.
                         # A stale probe must never appear newer merely because
@@ -1053,6 +1059,9 @@ class Scheduler:
                             node_id=node.id,
                             error_code="COMFY_HEALTH_FAILED",
                             error_type=type(exc).__name__,
+                            comfy_error_code=(
+                                exc.code if isinstance(exc, ComfyError) else None
+                            ),
                         )
             self.wakeup.set()
             try:

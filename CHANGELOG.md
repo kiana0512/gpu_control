@@ -8,6 +8,8 @@
   老 Worker 与新 Worker 都能安全接单，升级过程中不会产生租约等待或重复执行。
 - WSL 节点默认不再向 Prometheus 宣告不存在的 DCGM `:9400` 目标；Node Exporter 与 Node Agent 的
   主机/GPU 指标继续保留，也可通过显式标签重新启用 DCGM 抓取，消除 3090-B 的持续误告警。
+- Scheduler 将 ComfyUI 核心存活/队列探测与大体积 `/object_info` 能力清单分离；清单在满载 WSL
+  节点超时时保留上次兼容结果并退避 60 秒，不再把在线的 3090-B 反复判为离线、造成接单偏少。
 - 修复 3090-A Nunchaku 节点元数据探测依赖的空 `models/checkpoints` 目录；未增加、删除或修改任何
   外部工作流、模型、自定义节点、prompt、推理参数、图拓扑或输出语义。
 - Python Web/API 安全依赖和前端构建依赖升级到已修复版本；补齐全量静态检查、类型检查、测试、

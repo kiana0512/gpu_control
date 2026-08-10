@@ -45,6 +45,7 @@
 | 3090-A 缺少 Nunchaku 元数据探测所需空 checkpoints 目录 | `/object_info` 报 FileNotFoundError | 只补空目录；未改模型、工作流或 custom node |
 | Asset Worker 心跳表 8 行、约 419 万次更新、约 78 MB | 频繁 vacuum 与持续膨胀 | 0013 移除无收益心跳索引、启用 HOT/fillfactor 与合理阈值 |
 | Codex 槽占用时整台 Worker 停止 claim | UV/审计浪费剩余 CPU 槽 | Codex 与普通 CPU admission 分离，仍严格一机一个拓扑 |
+| 3090-B 满载时 `/object_info` 偶发超时被当成整机离线 | 节点反复上下线，真实序列分配明显少于另两台 | 核心健康与可选能力清单分离；清单失败保留缓存并退避 60 秒 |
 | 六 API 压测仍按退役 V1 的 22/23 件拓扑产物验收 | Direct V2 成功也会被测试工具误判失败 | 精确对齐 Direct V2 的 7 件正式产物 |
 | Python/前端依赖存在已知安全公告 | 镜像/锁文件扫描失败 | 升级至修复版本；候选环境 `pip-audit` 与 `npm audit` 均为 0 |
 
@@ -67,6 +68,11 @@
 | 三节点连通 | ComfyUI、Node Agent、Node Exporter、3090-A DCGM、PostgreSQL、Redis 全通过 |
 | 三 Worker 拓扑包身份 | 镜像 ID 与三份校验清单 SHA 完全一致 |
 | 三个 `/object_info` | HTTP 200 |
+
+本轮发布准备期间，真实 118 帧 ImageClip 序列成为生产保护门禁。旧 Scheduler 的现场日志显示
+3090-B 在 GPU 满载时持续出现 `COMFY_HEALTH_FAILED`，但该节点仍能完成帧且批次没有失败项；分配量
+明显低于另外两台，证明这是健康探测误判而不是 GPU 算力故障。新增回归测试要求 `/system_stats` 与
+`/queue` 正常、仅 `/object_info` 超时时节点保持 `ONLINE`、旧能力清单不丢失且立即进入退避。
 
 候选发布前实机状态：三 GPU 节点、三 Linux Worker、四 Windows Baker 在线，任务、批次、Asset 作业、
 活动租约均为 0；三台 ComfyUI 健康且 RestartCount=0。Scheduler 的 RestartCount=2 是历史值，当前
@@ -101,7 +107,8 @@
 
 ## 6. 安全发布顺序
 
-1. 再次确认 GPU/Batch/Asset/lease 为 0，生成并验证本窗口 full backup。
+1. 等待受保护的 118 帧真实序列完成并校验下载产物；再次确认 GPU/Batch/Asset/lease 为 0，生成并
+   验证本窗口 full backup。
 2. 提交并推送源码，五个镜像必须绑定同一完整 Git SHA。
 3. 构建、扫描、打包并推送 API、Scheduler、Asset API、Web、Blender Worker。
 4. 执行 0013；在 Worker 心跳暂停的受控窗口压缩 `asset_workers`，验证 8 行完整保留。
@@ -124,4 +131,3 @@
 | 三节点、四 Baker、Codex、Prometheus 发布后验证 | `PENDING` |
 | 六 API canary | `PENDING` |
 | 100 VU 原始结果、阈值、清场与分析 | `PENDING` |
-
