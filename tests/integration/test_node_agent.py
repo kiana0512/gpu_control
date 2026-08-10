@@ -11,6 +11,8 @@ from gpu_node_agent.main import (
     _current_ip,
     _imageclip_pipeline_state,
     _mac_address,
+    _parse_pressure_avg10,
+    _system_metrics,
     _validated_gpu_model,
     create_app,
 )
@@ -70,7 +72,7 @@ async def test_gpu_metrics_include_temperature_and_power(
         returncode = 0
 
         async def communicate(self) -> tuple[bytes, bytes]:
-            return b"73, 12000, 24576, 64, 287.4\n", b""
+            return b"73, 12000, 24576, 64, 287.4, 370.0\n", b""
 
     async def fake_subprocess(*args: str, **_: object) -> Process:
         nonlocal called
@@ -86,13 +88,71 @@ async def test_gpu_metrics_include_temperature_and_power(
         "total_vram_mb": 24576,
         "gpu_temperature_c": 64.0,
         "gpu_power_w": 287.4,
+        "gpu_power_limit_w": 370.0,
     }
     assert called[:3] == (
         "/usr/bin/nvidia-smi",
-        "--query-gpu=utilization.gpu,memory.free,memory.total,temperature.gpu,power.draw",
+        "--query-gpu=utilization.gpu,memory.free,memory.total,temperature.gpu,power.draw,power.limit",
         "--format=csv,noheader,nounits",
     )
     assert node_agent._optional_gpu_metric("[N/A]", minimum=0, maximum=150) is None
+
+
+def test_system_metrics_identify_wsl_and_report_pressure(tmp_path: Path) -> None:
+    proc_root = tmp_path / "proc"
+    (proc_root / "sys" / "kernel" / "random").mkdir(parents=True)
+    (proc_root / "pressure").mkdir()
+    (proc_root / "sys" / "kernel" / "osrelease").write_text(
+        "6.6.87.2-microsoft-standard-WSL2\n", encoding="utf-8"
+    )
+    (proc_root / "sys" / "kernel" / "random" / "boot_id").write_text(
+        "12345678-1234-4abc-8def-1234567890ab\n", encoding="utf-8"
+    )
+    (proc_root / "uptime").write_text("125.50 400.00\n", encoding="utf-8")
+    (proc_root / "loadavg").write_text("4.00 2.00 1.00 1/100 42\n", encoding="utf-8")
+    (proc_root / "meminfo").write_text(
+        "MemTotal:       16777216 kB\n"
+        "MemAvailable:    4194304 kB\n"
+        "SwapTotal:       8388608 kB\n"
+        "SwapFree:        6291456 kB\n",
+        encoding="utf-8",
+    )
+    (proc_root / "pressure" / "cpu").write_text(
+        "some avg10=2.50 avg60=1.00 avg300=0.50 total=1\n", encoding="utf-8"
+    )
+    (proc_root / "pressure" / "memory").write_text(
+        "some avg10=3.00 avg60=2.00 avg300=1.00 total=2\n"
+        "full avg10=1.25 avg60=1.00 avg300=0.50 total=1\n",
+        encoding="utf-8",
+    )
+    (proc_root / "pressure" / "io").write_text(
+        "some avg10=4.00 avg60=2.00 avg300=1.00 total=2\n"
+        "full avg10=0.75 avg60=0.50 avg300=0.25 total=1\n",
+        encoding="utf-8",
+    )
+
+    snapshot = _system_metrics(proc_root, cpu_count=8)
+    assert snapshot == {
+        "platform": "wsl2",
+        "boot_id": "12345678-1234-4abc-8def-1234567890ab",
+        "uptime_seconds": 125.5,
+        "cpu_count": 8,
+        "load_1m_per_cpu": 0.5,
+        "load_5m_per_cpu": 0.25,
+        "load_15m_per_cpu": 0.125,
+        "memory_total_mb": 16384,
+        "memory_available_mb": 4096,
+        "memory_available_ratio": 0.25,
+        "swap_total_mb": 8192,
+        "swap_used_mb": 2048,
+        "swap_used_ratio": 0.25,
+        "cpu_pressure_some_avg10": 2.5,
+        "memory_pressure_some_avg10": 3.0,
+        "memory_pressure_full_avg10": 1.25,
+        "io_pressure_some_avg10": 4.0,
+        "io_pressure_full_avg10": 0.75,
+    }
+    assert _parse_pressure_avg10("some avg10=nan total=0", "some") is None
 
 
 async def test_heartbeat_payload_includes_cached_gpu_model(
@@ -280,6 +340,7 @@ async def test_gpu_metrics_are_signed_and_return_live_values(monkeypatch) -> Non
             "total_vram_mb": 24576,
             "gpu_temperature_c": 64.0,
             "gpu_power_w": 287.4,
+            "gpu_power_limit_w": 370.0,
         }
 
     monkeypatch.setattr(node_agent, "_gpu_metrics", fake_gpu_metrics)
@@ -306,4 +367,44 @@ async def test_gpu_metrics_are_signed_and_return_live_values(monkeypatch) -> Non
                 "total_vram_mb": 24576,
                 "gpu_temperature_c": 64.0,
                 "gpu_power_w": 287.4,
+                "gpu_power_limit_w": 370.0,
             }
+
+
+async def test_system_metrics_are_signed_and_bounded(monkeypatch) -> None:
+    secret = "node-agent-test-secret"
+
+    def fake_system_metrics() -> dict[str, str | int | float | None]:
+        return {
+            "platform": "wsl2",
+            "boot_id": "12345678-1234-4abc-8def-1234567890ab",
+            "uptime_seconds": 125.5,
+            "cpu_count": 8,
+            "load_1m_per_cpu": 0.5,
+            "memory_available_ratio": 0.25,
+            "swap_used_ratio": 0.1,
+            "memory_pressure_full_avg10": 0.0,
+        }
+
+    monkeypatch.setattr(node_agent, "_system_metrics", fake_system_metrics)
+    app = create_app(Settings(environment="test", node_agent_hmac_secret=secret))
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://agent") as client:
+            assert (await client.get("/v1/system-metrics")).status_code == 401
+            timestamp = str(int(time.time()))
+            nonce = "system-metrics-nonce"
+            signature = sign_agent_request(
+                "GET", "/v1/system-metrics", b"", timestamp, nonce, secret
+            )
+            response = await client.get(
+                "/v1/system-metrics",
+                headers={
+                    "x-gpu-timestamp": timestamp,
+                    "x-gpu-nonce": nonce,
+                    "x-gpu-signature": signature,
+                },
+            )
+            assert response.status_code == 200
+            assert response.json()["platform"] == "wsl2"
+            assert response.json()["memory_available_ratio"] == 0.25

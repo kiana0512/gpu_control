@@ -173,7 +173,7 @@ def _optional_gpu_metric(value: str, *, minimum: float, maximum: float) -> float
 async def _gpu_metrics() -> dict[str, int | float | None]:
     process = await asyncio.create_subprocess_exec(
         _nvidia_smi_path(),
-        "--query-gpu=utilization.gpu,memory.free,memory.total,temperature.gpu,power.draw",
+        "--query-gpu=utilization.gpu,memory.free,memory.total,temperature.gpu,power.draw,power.limit",
         "--format=csv,noheader,nounits",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -183,12 +183,10 @@ async def _gpu_metrics() -> dict[str, int | float | None]:
         raise RuntimeError(stderr.decode(errors="replace").strip() or "nvidia-smi failed")
     lines = stdout.decode().splitlines()
     fields = [field.strip() for field in lines[0].split(",")] if lines else []
-    if len(fields) != 5:
+    if len(fields) != 6:
         raise RuntimeError("invalid nvidia-smi metrics response")
     try:
-        utilization, free_vram_mb, total_vram_mb = (
-            int(float(field)) for field in fields[:3]
-        )
+        utilization, free_vram_mb, total_vram_mb = (int(float(field)) for field in fields[:3])
     except ValueError as exc:
         raise RuntimeError("invalid nvidia-smi metrics value") from exc
     return {
@@ -197,6 +195,124 @@ async def _gpu_metrics() -> dict[str, int | float | None]:
         "total_vram_mb": max(0, total_vram_mb),
         "gpu_temperature_c": _optional_gpu_metric(fields[3], minimum=0, maximum=150),
         "gpu_power_w": _optional_gpu_metric(fields[4], minimum=0, maximum=2000),
+        "gpu_power_limit_w": _optional_gpu_metric(fields[5], minimum=0, maximum=2000),
+    }
+
+
+def _parse_meminfo(text: str) -> dict[str, int]:
+    """Parse the small, kernel-owned /proc/meminfo surface into KiB values."""
+
+    values: dict[str, int] = {}
+    for line in text.splitlines():
+        key, separator, raw_value = line.partition(":")
+        if not separator:
+            continue
+        fields = raw_value.split()
+        if not fields:
+            continue
+        try:
+            value = int(fields[0])
+        except ValueError:
+            continue
+        if value >= 0:
+            values[key] = value
+    return values
+
+
+def _parse_pressure_avg10(text: str, level: str) -> float | None:
+    """Return one Linux PSI avg10 value without exposing raw proc contents."""
+
+    for line in text.splitlines():
+        fields = line.split()
+        if not fields or fields[0] != level:
+            continue
+        for field in fields[1:]:
+            key, separator, raw_value = field.partition("=")
+            if key != "avg10" or not separator:
+                continue
+            try:
+                value = float(raw_value)
+            except ValueError:
+                return None
+            if math.isfinite(value) and 0 <= value <= 100:
+                return round(value, 2)
+            return None
+    return None
+
+
+def _read_pressure(proc_root: Path, resource: str, level: str) -> float | None:
+    try:
+        text = (proc_root / "pressure" / resource).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return _parse_pressure_avg10(text, level)
+
+
+def _system_metrics(
+    proc_root: Path = Path("/proc"), *, cpu_count: int | None = None
+) -> dict[str, str | int | float | None]:
+    """Read a bounded WSL/Linux runtime snapshot from trusted procfs files."""
+
+    os_release = (proc_root / "sys" / "kernel" / "osrelease").read_text(encoding="utf-8").strip()
+    boot_id = (
+        (proc_root / "sys" / "kernel" / "random" / "boot_id")
+        .read_text(encoding="utf-8")
+        .strip()
+        .lower()
+    )
+    if not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", boot_id):
+        raise RuntimeError("invalid kernel boot id")
+
+    uptime_fields = (proc_root / "uptime").read_text(encoding="utf-8").split()
+    load_fields = (proc_root / "loadavg").read_text(encoding="utf-8").split()
+    if not uptime_fields or len(load_fields) < 3:
+        raise RuntimeError("invalid procfs runtime metrics")
+    try:
+        uptime_seconds = float(uptime_fields[0])
+        loads = [float(value) for value in load_fields[:3]]
+    except ValueError as exc:
+        raise RuntimeError("invalid procfs numeric metrics") from exc
+    if (
+        not math.isfinite(uptime_seconds)
+        or uptime_seconds < 0
+        or any(not math.isfinite(value) or value < 0 for value in loads)
+    ):
+        raise RuntimeError("invalid procfs metric range")
+
+    processors = max(1, cpu_count if cpu_count is not None else (os.cpu_count() or 1))
+    meminfo = _parse_meminfo((proc_root / "meminfo").read_text(encoding="utf-8"))
+    try:
+        memory_total_kib = meminfo["MemTotal"]
+        memory_available_kib = meminfo["MemAvailable"]
+    except KeyError as exc:
+        raise RuntimeError("required memory metrics are unavailable") from exc
+    if memory_total_kib <= 0 or memory_available_kib > memory_total_kib:
+        raise RuntimeError("invalid memory metric range")
+    swap_total_kib = meminfo.get("SwapTotal", 0)
+    swap_free_kib = meminfo.get("SwapFree", 0)
+    if swap_free_kib > swap_total_kib:
+        raise RuntimeError("invalid swap metric range")
+    swap_used_kib = swap_total_kib - swap_free_kib
+
+    return {
+        "platform": "wsl2" if "microsoft" in os_release.lower() else "linux",
+        "boot_id": boot_id,
+        "uptime_seconds": round(uptime_seconds, 2),
+        "cpu_count": processors,
+        "load_1m_per_cpu": round(loads[0] / processors, 4),
+        "load_5m_per_cpu": round(loads[1] / processors, 4),
+        "load_15m_per_cpu": round(loads[2] / processors, 4),
+        "memory_total_mb": memory_total_kib // 1024,
+        "memory_available_mb": memory_available_kib // 1024,
+        "memory_available_ratio": round(memory_available_kib / memory_total_kib, 6),
+        "swap_total_mb": swap_total_kib // 1024,
+        "swap_used_mb": swap_used_kib // 1024,
+        "swap_used_ratio": (round(swap_used_kib / swap_total_kib, 6) if swap_total_kib else None),
+        "cpu_pressure_some_avg10": _read_pressure(proc_root, "cpu", "some"),
+        "memory_pressure_some_avg10": _read_pressure(proc_root, "memory", "some"),
+        "memory_pressure_full_avg10": _read_pressure(proc_root, "memory", "full"),
+        "io_pressure_some_avg10": _read_pressure(proc_root, "io", "some"),
+        "io_pressure_full_avg10": _read_pressure(proc_root, "io", "full"),
     }
 
 
@@ -471,6 +587,11 @@ def create_app(settings: Settings | NodeAgentSettings | None = None) -> FastAPI:
     @app.get("/v1/gpu-metrics")
     async def gpu_metrics() -> dict[str, int | float | None]:
         return await _gpu_metrics()
+
+    @app.get("/v1/system-metrics")
+    async def system_metrics() -> dict[str, str | int | float | None]:
+        # procfs reads are tiny but synchronous; keep them off the ASGI event loop.
+        return await asyncio.to_thread(_system_metrics)
 
     @app.post("/v1/operations")
     async def operation(body: Operation) -> dict[str, Any]:

@@ -52,6 +52,7 @@ async def test_gpu_metrics_probe_preserves_optional_temperature_and_power(monkey
                 "total_vram_mb": 24576,
                 "gpu_temperature_c": 71.0,
                 "gpu_power_w": 322.6,
+                "gpu_power_limit_w": 370.0,
             }
 
     class Client:
@@ -79,4 +80,5 @@ async def test_gpu_metrics_probe_preserves_optional_temperature_and_power(monkey
         "total_vram_mb": 24576,
         "gpu_temperature_c": 71.0,
         "gpu_power_w": 322.6,
+        "gpu_power_limit_w": 370.0,
     }

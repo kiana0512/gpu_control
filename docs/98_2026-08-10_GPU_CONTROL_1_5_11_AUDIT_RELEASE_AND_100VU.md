@@ -46,6 +46,9 @@
 | Asset Worker 心跳表 8 行、约 419 万次更新、约 78 MB | 频繁 vacuum 与持续膨胀 | 0013 移除无收益心跳索引、启用 HOT/fillfactor 与合理阈值 |
 | Codex 槽占用时整台 Worker 停止 claim | UV/审计浪费剩余 CPU 槽 | Codex 与普通 CPU admission 分离，仍严格一机一个拓扑 |
 | 3090-B 满载时 `/object_info` 偶发超时被当成整机离线 | 节点反复上下线，真实序列分配明显少于另两台 | 核心健康与可选能力清单分离；清单失败保留缓存并退避 60 秒 |
+| 3090-B 没有相对同型号原生节点的持续性能判断 | WSL/宿主异常时单帧慢 3～4 倍只能靠人工发现 | 最近 5 帧同分辨率中位数对比 3090-A；2 倍、持续 2 分钟告警，并监测掉线抖动 |
+| 3090-B 只能看到“在线/离线”和任务耗时，缺少 WSL 内核直接证据 | 宿主异常要等任务变慢后才能确认 | 新增签名 `/v1/system-metrics`，采集 boot ID/uptime、load/CPU、内存/swap、CPU/内存/IO PSI；异常只告警、不影响调度资格 |
+| 3090-B 无 DCGM，通用 `GPUHot` 不覆盖 WSL2 | B 的高温/功耗异常无法自动告警 | 签名 GPU 查询导出利用率、显存、温度、功耗/上限；新增 `WSLGPUHot` |
 | 六 API 压测仍按退役 V1 的 22/23 件拓扑产物验收 | Direct V2 成功也会被测试工具误判失败 | 精确对齐 Direct V2 的 7 件正式产物 |
 | Python/前端依赖存在已知安全公告 | 镜像/锁文件扫描失败 | 升级至修复版本；候选环境 `pip-audit` 与 `npm audit` 均为 0 |
 
@@ -56,9 +59,9 @@
 
 | 门禁 | 结果 |
 |---|---|
-| Python 全量测试 | `500 passed, 12 skipped, 0 failed` |
+| Python 全量测试 | `510 passed, 12 skipped, 0 failed` |
 | Ruff | 通过 |
-| mypy strict | 60 个源码文件通过 |
+| mypy strict | 43 个源码文件通过 |
 | Web Vitest | 18/18 通过 |
 | Web ESLint / Prettier / vue-tsc / production build | 通过 |
 | npm audit（完整依赖） | 0 vulnerabilities |
@@ -68,11 +71,30 @@
 | 三节点连通 | ComfyUI、Node Agent、Node Exporter、3090-A DCGM、PostgreSQL、Redis 全通过 |
 | 三 Worker 拓扑包身份 | 镜像 ID 与三份校验清单 SHA 完全一致 |
 | 三个 `/object_info` | HTTP 200 |
+| WSL 性能/系统状态探针针对性回归 | 21 passed；mypy strict、Ruff、Prometheus 14 rules 通过 |
 
 本轮发布准备期间，真实 118 帧 ImageClip 序列成为生产保护门禁。旧 Scheduler 的现场日志显示
-3090-B 在 GPU 满载时持续出现 `COMFY_HEALTH_FAILED`，但该节点仍能完成帧且批次没有失败项；分配量
-明显低于另外两台，证明这是健康探测误判而不是 GPU 算力故障。新增回归测试要求 `/system_stats` 与
-`/queue` 正常、仅 `/object_info` 超时时节点保持 `ONLINE`、旧能力清单不丢失且立即进入退避。
+3090-B 在 GPU 满载时持续出现 `COMFY_HEALTH_FAILED`，分配量明显低于另外两台；随后 Windows/WSL
+界面也无法正常显示，确认当时同时存在健康误判放大与真实宿主异常。用户重启 B 时中断的 1 帧由
+调度器自动跨节点重试成功，最终批次 `118/118 SUCCEEDED`、失败 0。结果 ZIP 为 269,787,187 bytes，
+SHA-256 `447376625bd420b477450eec7bae62194adfad61fdf2b07cd626fadfd9669e58`，ZIP 完整性通过，包含
+118 个 PNG 与 1 个 manifest。
+
+同一批 1080×1440 输入的稳定性能证据：4090 P50 `19.06s`、原生 3090-A P50 `30.59s`、WSL2
+3090-B 重启并预热后 P50 `33.15s`，B 比 A 慢约 8.4%，可接受；B 重启前 P50 `128.62s`，属于
+不可接受的异常状态。真实数据只读运行新探针得到最近 5 帧 A=`30.636983s`、B=`33.084579s`、
+比值 `1.079890`、`anomaly=0`。新增回归同时要求 `/system_stats` 与 `/queue` 正常、仅
+`/object_info` 超时时节点保持 `ONLINE`、旧能力清单不丢失且立即进入退避。
+
+重启后在 B 上只读实测深度状态：内核 `6.18.33.2-microsoft-standard-WSL2`，boot ID
+`a7faf7c8-b7d8-40ac-bf86-cf153fb53473`，64 个可见 CPU，MemAvailable 约 60.4/65.8 GB，swap 使用
+0，CPU/内存/IO PSI avg10 均为 0；Node Agent、Node Exporter、8188 和 9201 正常。真实任务满载采样
+GPU 89%、82°C、354.8/370W，低于持续高温阈值但已接近 WSL 功耗上限。
+
+随后第二批真实 118 帧 `e99ec54a-8765-4b95-9dc3-ee3ad7495c6d` 也在候选代码测试期间完成：
+`118/118 SUCCEEDED`、失败 0、活动租约最终归零。结果 ZIP 为 270,059,647 bytes，SHA-256
+`264c5ee529e40f5e72affba27e30f2e419cbb39bb6dac530a84f3432fb6aec8a`；ZIP 完整性通过，包含 118 个
+PNG 与 1 个 manifest。这证明离线测试和文档工作没有干扰三节点真实调度。
 
 候选发布前实机状态：三 GPU 节点、三 Linux Worker、四 Windows Baker 在线，任务、批次、Asset 作业、
 活动租约均为 0；三台 ComfyUI 健康且 RestartCount=0。Scheduler 的 RestartCount=2 是历史值，当前

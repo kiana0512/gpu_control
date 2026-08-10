@@ -1,16 +1,19 @@
 import asyncio
 import ipaddress
 import json
+import math
 import os
 import re
 import shutil
 import signal
 import socket
 import uuid
+from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from pathlib import Path
+from statistics import median
 from threading import Event
 from typing import Any, cast
 from urllib.parse import urlparse
@@ -93,6 +96,21 @@ RUNNING = Gauge("gpu_control_jobs_running", "Running jobs")
 OLDEST = Gauge("gpu_control_oldest_queued_job_seconds", "Oldest queued job age")
 NODE_HEALTH = Gauge("gpu_control_node_health", "Node health", ["node_id"])
 NODE_JOBS = Gauge("gpu_control_node_current_jobs", "Current node jobs", ["node_id"])
+NODE_GPU_UTILIZATION = Gauge(
+    "gpu_control_node_gpu_utilization_percent", "Node Agent GPU utilization", ["node_id"]
+)
+NODE_GPU_FREE_VRAM = Gauge(
+    "gpu_control_node_gpu_free_vram_mb", "Node Agent free GPU memory", ["node_id"]
+)
+NODE_GPU_TEMPERATURE = Gauge(
+    "gpu_control_node_gpu_temperature_c", "Node Agent GPU temperature", ["node_id"]
+)
+NODE_GPU_POWER = Gauge(
+    "gpu_control_node_gpu_power_w", "Node Agent GPU board power draw", ["node_id"]
+)
+NODE_GPU_POWER_LIMIT = Gauge(
+    "gpu_control_node_gpu_power_limit_w", "Node Agent GPU board power limit", ["node_id"]
+)
 COMPLETED = Counter("gpu_control_jobs_completed_total", "Completed jobs", ["workflow_key"])
 FAILED = Counter("gpu_control_jobs_failed_total", "Failed jobs", ["error_code"])
 OVERFLOW = Counter("gpu_control_4090_overflow_assignments_total", "4090 overflow assignments")
@@ -109,6 +127,56 @@ BUILD_INFO = Info(
 BUILD_ALIGNED = Gauge(
     "gpu_control_scheduler_build_aligned",
     "1 when the installed package version matches the immutable build version",
+)
+WSL_IMAGECLIP_SLOWDOWN = Gauge(
+    "gpu_control_wsl_imageclip_slowdown_ratio",
+    "Recent median ImageClip GPU duration on the WSL node divided by the native 3090",
+    ["node_id", "reference_node_id"],
+)
+WSL_IMAGECLIP_ANOMALY = Gauge(
+    "gpu_control_wsl_imageclip_performance_anomaly",
+    "1 when recent WSL ImageClip GPU duration is at least twice the native 3090 baseline",
+    ["node_id", "reference_node_id"],
+)
+WSL_IMAGECLIP_SAMPLES = Gauge(
+    "gpu_control_wsl_imageclip_performance_samples",
+    "Successful recent ImageClip samples used by the WSL performance probe",
+    ["node_id", "role"],
+)
+WSL_SYSTEM_PROBE_UP = Gauge(
+    "gpu_control_wsl_system_probe_up",
+    "1 when the signed WSL system-state endpoint returned a valid snapshot",
+    ["node_id"],
+)
+WSL_BOOT_UPTIME = Gauge(
+    "gpu_control_wsl_boot_uptime_seconds",
+    "Kernel uptime reported by the WSL node agent",
+    ["node_id"],
+)
+WSL_MEMORY_AVAILABLE = Gauge(
+    "gpu_control_wsl_memory_available_ratio",
+    "Available WSL memory divided by total memory",
+    ["node_id"],
+)
+WSL_SWAP_USED = Gauge(
+    "gpu_control_wsl_swap_used_ratio",
+    "Used WSL swap divided by total swap, or NaN when swap is disabled",
+    ["node_id"],
+)
+WSL_LOAD_PER_CPU = Gauge(
+    "gpu_control_wsl_load1_per_cpu",
+    "One-minute WSL load average divided by visible CPU count",
+    ["node_id"],
+)
+WSL_PRESSURE = Gauge(
+    "gpu_control_wsl_pressure_avg10",
+    "Linux PSI avg10 reported by WSL",
+    ["node_id", "resource", "level"],
+)
+WSL_BOOT_CHANGES = Counter(
+    "gpu_control_wsl_boot_changes_total",
+    "Observed WSL kernel boot identity changes after scheduler baseline",
+    ["node_id"],
 )
 
 FAIL_CLOSED_SUBMISSION_ERRORS = frozenset(
@@ -127,6 +195,133 @@ ARCHIVE_BUILD_CANCEL_GRACE_SECONDS = 2.5
 CALLBACK_DELIVERY_LEASE_SECONDS = 30
 CALLBACK_DNS_TIMEOUT_SECONDS = 5
 PROMPT_SUBMISSION_SETTLE_SECONDS = 35.0
+WSL_PERFORMANCE_TARGET_NODE_ID = "worker-3090-b"
+WSL_PERFORMANCE_REFERENCE_NODE_ID = "worker-3090-a"
+WSL_PERFORMANCE_WORKFLOW_KEY = "imageclip-rgba"
+WSL_PERFORMANCE_LOOKBACK_SECONDS = 30 * 60
+WSL_PERFORMANCE_PROBE_INTERVAL_SECONDS = 30.0
+WSL_PERFORMANCE_MIN_SAMPLES = 3
+WSL_PERFORMANCE_RECENT_SAMPLES = 5
+WSL_PERFORMANCE_SLOWDOWN_THRESHOLD = 2.0
+
+WslPerformanceRow = tuple[str, int, int, datetime, float]
+
+
+def wsl_system_state_snapshot(
+    payload: object,
+) -> dict[str, str | int | float | None]:
+    """Validate the bounded node-agent state contract before publishing it."""
+
+    if not isinstance(payload, dict):
+        raise ValueError("invalid WSL system metrics response")
+    platform = payload.get("platform")
+    boot_id = payload.get("boot_id")
+    if (
+        platform not in {"wsl2", "linux"}
+        or not isinstance(boot_id, str)
+        or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", boot_id)
+    ):
+        raise ValueError("invalid WSL runtime identity")
+
+    def required_number(key: str, minimum: float, maximum: float) -> float:
+        raw_value = payload.get(key)
+        if isinstance(raw_value, bool) or not isinstance(raw_value, int | float):
+            raise ValueError(f"invalid WSL metric: {key}")
+        value = float(raw_value)
+        if not math.isfinite(value) or not minimum <= value <= maximum:
+            raise ValueError(f"invalid WSL metric range: {key}")
+        return value
+
+    def optional_number(key: str, minimum: float, maximum: float) -> float | None:
+        if payload.get(key) is None:
+            return None
+        return required_number(key, minimum, maximum)
+
+    cpu_count_value = required_number("cpu_count", 1, 4096)
+    if not cpu_count_value.is_integer():
+        raise ValueError("invalid WSL CPU count")
+    return {
+        "platform": platform,
+        "boot_id": boot_id,
+        "uptime_seconds": required_number("uptime_seconds", 0, 10**9),
+        "cpu_count": int(cpu_count_value),
+        "load_1m_per_cpu": required_number("load_1m_per_cpu", 0, 10**5),
+        "memory_available_ratio": required_number("memory_available_ratio", 0, 1),
+        "swap_used_ratio": optional_number("swap_used_ratio", 0, 1),
+        "cpu_pressure_some_avg10": optional_number(
+            "cpu_pressure_some_avg10", 0, 100
+        ),
+        "memory_pressure_some_avg10": optional_number(
+            "memory_pressure_some_avg10", 0, 100
+        ),
+        "memory_pressure_full_avg10": optional_number(
+            "memory_pressure_full_avg10", 0, 100
+        ),
+        "io_pressure_some_avg10": optional_number("io_pressure_some_avg10", 0, 100),
+        "io_pressure_full_avg10": optional_number("io_pressure_full_avg10", 0, 100),
+    }
+
+
+def wsl_imageclip_performance_snapshot(
+    rows: list[WslPerformanceRow],
+) -> dict[str, int | float] | None:
+    """Compare recent same-resolution WSL and native-3090 ImageClip GPU time."""
+
+    grouped: dict[tuple[int, int], dict[str, list[tuple[datetime, float]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for node_id, width, height, finished_at, gpu_seconds in rows:
+        if node_id not in {
+            WSL_PERFORMANCE_TARGET_NODE_ID,
+            WSL_PERFORMANCE_REFERENCE_NODE_ID,
+        }:
+            continue
+        if width < 1 or height < 1 or not math.isfinite(gpu_seconds) or gpu_seconds <= 0:
+            continue
+        grouped[(width, height)][node_id].append((finished_at, gpu_seconds))
+
+    candidates: list[tuple[datetime, int, int, list[float], list[float]]] = []
+    for (width, height), by_node in grouped.items():
+        target = sorted(
+            by_node.get(WSL_PERFORMANCE_TARGET_NODE_ID, []), reverse=True
+        )[:WSL_PERFORMANCE_RECENT_SAMPLES]
+        reference = sorted(
+            by_node.get(WSL_PERFORMANCE_REFERENCE_NODE_ID, []), reverse=True
+        )[:WSL_PERFORMANCE_RECENT_SAMPLES]
+        if (
+            len(target) < WSL_PERFORMANCE_MIN_SAMPLES
+            or len(reference) < WSL_PERFORMANCE_MIN_SAMPLES
+        ):
+            continue
+        latest = max(target[0][0], reference[0][0])
+        candidates.append(
+            (
+                latest,
+                width,
+                height,
+                [sample[1] for sample in target],
+                [sample[1] for sample in reference],
+            )
+        )
+    if not candidates:
+        return None
+
+    _, width, height, target_seconds, reference_seconds = max(
+        candidates, key=lambda candidate: candidate[0]
+    )
+    target_median = float(median(target_seconds))
+    reference_median = float(median(reference_seconds))
+    ratio = target_median / reference_median
+    return {
+        "width": width,
+        "height": height,
+        "target_samples": len(target_seconds),
+        "reference_samples": len(reference_seconds),
+        "target_median_seconds": target_median,
+        "reference_median_seconds": reference_median,
+        "slowdown_ratio": ratio,
+        "anomaly": int(ratio >= WSL_PERFORMANCE_SLOWDOWN_THRESHOLD),
+    }
 
 
 def runtime_version_metadata() -> dict[str, Any]:
@@ -485,6 +680,98 @@ class Scheduler:
         # five-second health pass: ComfyUI's system_stats remains the fallback
         # source for VRAM while this bounded retry window is active.
         self.gpu_metrics_retry_at: dict[str, float] = {}
+        self.wsl_system_metrics_retry_at = 0.0
+        self.wsl_system_metrics_checked_at = 0.0
+        self.wsl_system_metrics_cache: dict[str, str | int | float | None] | None = None
+        self.wsl_boot_id: str | None = None
+        self.wsl_performance_checked_at = 0.0
+
+    async def update_wsl_performance_probe(self) -> None:
+        now_monotonic = asyncio.get_running_loop().time()
+        if (
+            now_monotonic - self.wsl_performance_checked_at
+            < WSL_PERFORMANCE_PROBE_INTERVAL_SECONDS
+        ):
+            return
+        self.wsl_performance_checked_at = now_monotonic
+        cutoff = datetime.now(UTC) - timedelta(seconds=WSL_PERFORMANCE_LOOKBACK_SECONDS)
+        async with self.db.session() as session:
+            result = await session.execute(
+                select(
+                    JobAttempt.node_id,
+                    JobBatchItem.width,
+                    JobBatchItem.height,
+                    JobAttempt.gpu_finished_at,
+                    JobAttempt.gpu_started_at,
+                )
+                .join(Job, Job.id == JobAttempt.job_id)
+                .join(JobBatchItem, JobBatchItem.job_id == JobAttempt.job_id)
+                .where(
+                    Job.workflow_key == WSL_PERFORMANCE_WORKFLOW_KEY,
+                    JobAttempt.node_id.in_(
+                        (
+                            WSL_PERFORMANCE_TARGET_NODE_ID,
+                            WSL_PERFORMANCE_REFERENCE_NODE_ID,
+                        )
+                    ),
+                    JobAttempt.status == JobStatus.SUCCEEDED.value,
+                    JobAttempt.gpu_started_at.is_not(None),
+                    JobAttempt.gpu_finished_at.is_not(None),
+                    JobAttempt.gpu_finished_at >= cutoff,
+                )
+            )
+            raw_rows = result.all()
+
+        rows: list[WslPerformanceRow] = []
+        for node_id, width, height, gpu_finished_at, gpu_started_at in raw_rows:
+            if (
+                not isinstance(node_id, str)
+                or not isinstance(width, int)
+                or not isinstance(height, int)
+                or not isinstance(gpu_finished_at, datetime)
+                or not isinstance(gpu_started_at, datetime)
+            ):
+                continue
+            rows.append(
+                (
+                    node_id,
+                    width,
+                    height,
+                    gpu_finished_at,
+                    (gpu_finished_at - gpu_started_at).total_seconds(),
+                )
+            )
+
+        labels = {
+            "node_id": WSL_PERFORMANCE_TARGET_NODE_ID,
+            "reference_node_id": WSL_PERFORMANCE_REFERENCE_NODE_ID,
+        }
+        snapshot = wsl_imageclip_performance_snapshot(rows)
+        if snapshot is None:
+            WSL_IMAGECLIP_SLOWDOWN.labels(**labels).set(float("nan"))
+            WSL_IMAGECLIP_ANOMALY.labels(**labels).set(0)
+            WSL_IMAGECLIP_SAMPLES.labels(
+                WSL_PERFORMANCE_TARGET_NODE_ID, "target"
+            ).set(0)
+            WSL_IMAGECLIP_SAMPLES.labels(
+                WSL_PERFORMANCE_TARGET_NODE_ID, "reference"
+            ).set(0)
+            return
+
+        WSL_IMAGECLIP_SLOWDOWN.labels(**labels).set(float(snapshot["slowdown_ratio"]))
+        WSL_IMAGECLIP_ANOMALY.labels(**labels).set(int(snapshot["anomaly"]))
+        WSL_IMAGECLIP_SAMPLES.labels(WSL_PERFORMANCE_TARGET_NODE_ID, "target").set(
+            int(snapshot["target_samples"])
+        )
+        WSL_IMAGECLIP_SAMPLES.labels(
+            WSL_PERFORMANCE_TARGET_NODE_ID, "reference"
+        ).set(int(snapshot["reference_samples"]))
+        logger().info(
+            "node.wsl_performance_probe",
+            node_id=WSL_PERFORMANCE_TARGET_NODE_ID,
+            reference_node_id=WSL_PERFORMANCE_REFERENCE_NODE_ID,
+            **snapshot,
+        )
 
     async def guard(self, session: AsyncSession) -> OverflowGuard:
         keys = {
@@ -862,6 +1149,11 @@ class Scheduler:
                     if payload.get("gpu_power_w") is not None
                     else None
                 ),
+                "gpu_power_limit_w": (
+                    float(payload["gpu_power_limit_w"])
+                    if payload.get("gpu_power_limit_w") is not None
+                    else None
+                ),
             }
         except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
             self.gpu_metrics_retry_at[node.id] = (
@@ -873,6 +1165,101 @@ class Scheduler:
                 error_type=type(exc).__name__,
             )
             return None
+
+    async def node_agent_system_metrics(
+        self, node: Node
+    ) -> dict[str, str | int | float | None] | None:
+        """Collect advisory WSL state without affecting node eligibility."""
+
+        if node.id != WSL_PERFORMANCE_TARGET_NODE_ID or not node.agent_url:
+            return None
+        now_monotonic = asyncio.get_running_loop().time()
+        if (
+            self.wsl_system_metrics_cache is not None
+            and now_monotonic - self.wsl_system_metrics_checked_at < 10.0
+        ):
+            return self.wsl_system_metrics_cache
+        if now_monotonic < self.wsl_system_metrics_retry_at:
+            return None
+
+        path = "/v1/system-metrics"
+        timestamp = str(int(datetime.now(UTC).timestamp()))
+        nonce = uuid.uuid4().hex
+        signature = sign_agent_request(
+            "GET",
+            path,
+            b"",
+            timestamp,
+            nonce,
+            self.settings.node_agent_secret(node.id),
+        )
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(3, connect=2)) as client:
+                response = await client.get(
+                    f"{node.agent_url.rstrip('/')}{path}",
+                    headers={
+                        "X-GPU-Timestamp": timestamp,
+                        "X-GPU-Nonce": nonce,
+                        "X-GPU-Signature": signature,
+                    },
+                )
+                response.raise_for_status()
+            snapshot = wsl_system_state_snapshot(response.json())
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            self.wsl_system_metrics_retry_at = now_monotonic + 30.0
+            WSL_SYSTEM_PROBE_UP.labels(node.id).set(0)
+            logger().warning(
+                "node.wsl_system_probe_failed",
+                node_id=node.id,
+                error_type=type(exc).__name__,
+            )
+            return None
+
+        self.wsl_system_metrics_retry_at = 0.0
+        self.wsl_system_metrics_checked_at = now_monotonic
+        self.wsl_system_metrics_cache = snapshot
+        WSL_SYSTEM_PROBE_UP.labels(node.id).set(1)
+        WSL_BOOT_UPTIME.labels(node.id).set(cast(float, snapshot["uptime_seconds"]))
+        WSL_MEMORY_AVAILABLE.labels(node.id).set(
+            cast(float, snapshot["memory_available_ratio"])
+        )
+        swap_used = snapshot["swap_used_ratio"]
+        WSL_SWAP_USED.labels(node.id).set(
+            float(swap_used) if swap_used is not None else float("nan")
+        )
+        WSL_LOAD_PER_CPU.labels(node.id).set(
+            cast(float, snapshot["load_1m_per_cpu"])
+        )
+        pressure_metrics = {
+            ("cpu", "some"): snapshot["cpu_pressure_some_avg10"],
+            ("memory", "some"): snapshot["memory_pressure_some_avg10"],
+            ("memory", "full"): snapshot["memory_pressure_full_avg10"],
+            ("io", "some"): snapshot["io_pressure_some_avg10"],
+            ("io", "full"): snapshot["io_pressure_full_avg10"],
+        }
+        for (resource, level), value in pressure_metrics.items():
+            WSL_PRESSURE.labels(node.id, resource, level).set(
+                float(value) if value is not None else float("nan")
+            )
+
+        boot_id = cast(str, snapshot["boot_id"])
+        if self.wsl_boot_id is not None and boot_id != self.wsl_boot_id:
+            WSL_BOOT_CHANGES.labels(node.id).inc()
+            logger().warning(
+                "node.wsl_boot_changed",
+                node_id=node.id,
+                previous_boot_id=self.wsl_boot_id,
+                boot_id=boot_id,
+                uptime_seconds=snapshot["uptime_seconds"],
+            )
+        self.wsl_boot_id = boot_id
+        if snapshot["platform"] != "wsl2":
+            logger().warning(
+                "node.wsl_platform_unexpected",
+                node_id=node.id,
+                platform=snapshot["platform"],
+            )
+        return snapshot
 
     async def update_node_health(self) -> None:
         while not self.stop_event.is_set():
@@ -909,11 +1296,12 @@ class Scheduler:
                         async with ComfyClient(
                             node.base_url, connect_timeout=2, read_timeout=5
                         ) as client:
-                            stats, queue, _, gpu_metrics = await asyncio.gather(
+                            stats, queue, _, gpu_metrics, _ = await asyncio.gather(
                                 client.system_stats(),
                                 client.queue(),
                                 self.node_agent_identity(node),
                                 self.node_agent_gpu_metrics(node),
+                                self.node_agent_system_metrics(node),
                             )
                             inventory = None
                             if refresh_inventory:
@@ -975,7 +1363,11 @@ class Scheduler:
                                     ]
                                     current.free_vram_mb = gpu_metrics["free_vram_mb"]
                                     current.total_vram_mb = gpu_metrics["total_vram_mb"]
-                                    for label_key in ("gpu_temperature_c", "gpu_power_w"):
+                                    for label_key in (
+                                        "gpu_temperature_c",
+                                        "gpu_power_w",
+                                        "gpu_power_limit_w",
+                                    ):
                                         value = gpu_metrics.get(label_key)
                                         if value is None:
                                             labels.pop(label_key, None)
@@ -987,6 +1379,7 @@ class Scheduler:
                                 else:
                                     labels.pop("gpu_temperature_c", None)
                                     labels.pop("gpu_power_w", None)
+                                    labels.pop("gpu_power_limit_w", None)
                                     labels.pop("gpu_metrics_observed_at", None)
                                     if devices:
                                         device = devices[0]
@@ -1041,6 +1434,22 @@ class Scheduler:
                             1 if metric_health == NodeHealth.ONLINE.value else 0
                         )
                         NODE_JOBS.labels(node.id).set(metric_jobs)
+                        if gpu_metrics is not None:
+                            NODE_GPU_UTILIZATION.labels(node.id).set(
+                                gpu_metrics["gpu_util_percent"]
+                            )
+                            NODE_GPU_FREE_VRAM.labels(node.id).set(
+                                gpu_metrics["free_vram_mb"]
+                            )
+                            for metric, metric_key in (
+                                (NODE_GPU_TEMPERATURE, "gpu_temperature_c"),
+                                (NODE_GPU_POWER, "gpu_power_w"),
+                                (NODE_GPU_POWER_LIMIT, "gpu_power_limit_w"),
+                            ):
+                                value = gpu_metrics.get(metric_key)
+                                metric.labels(node.id).set(
+                                    float(value) if value is not None else float("nan")
+                                )
                     except Exception as exc:
                         # Failure writes use the same short locked transaction
                         # and deliberately touch health only, never labels or
@@ -1063,6 +1472,14 @@ class Scheduler:
                                 exc.code if isinstance(exc, ComfyError) else None
                             ),
                         )
+            try:
+                await self.update_wsl_performance_probe()
+            except Exception as exc:
+                logger().warning(
+                    "node.wsl_performance_probe_failed",
+                    node_id=WSL_PERFORMANCE_TARGET_NODE_ID,
+                    error_type=type(exc).__name__,
+                )
             self.wakeup.set()
             try:
                 await asyncio.wait_for(self.stop_event.wait(), timeout=5)
