@@ -14,10 +14,8 @@ from typing import Any
 
 REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
-DEFAULT_ASSET_WORKER_VERSION = "1.4.8-retopology-alignment-v3"
-REQUIRED_IMAGE_COMPONENTS = frozenset(
-    {"api", "scheduler", "asset-api", "web", "blender-worker"}
-)
+DEFAULT_ASSET_WORKER_VERSION = "1.4.9-retopology-fbx-meter-v1"
+REQUIRED_IMAGE_COMPONENTS = frozenset({"api", "scheduler", "asset-api", "web", "blender-worker"})
 OCI_TITLES = {
     "api": "GPU Control API",
     "scheduler": "GPU Control Scheduler",
@@ -147,9 +145,7 @@ def source_worker_versions(repository: Path) -> dict[str, str]:
         "deploy/gpu-node/compose.yaml",
     )
     values = tuple((repository / path).read_text(encoding="utf-8") for path in paths)
-    return _worker_versions_from_text(
-        values[0], values[1], values[2], values[3], values[4]
-    )
+    return _worker_versions_from_text(values[0], values[1], values[2], values[3], values[4])
 
 
 def committed_source_worker_versions(repository: Path, revision: str) -> dict[str, str]:
@@ -164,9 +160,7 @@ def committed_source_worker_versions(repository: Path, revision: str) -> dict[st
         _run([GIT_EXECUTABLE, "-C", str(repository), "show", f"{revision}:{path}"])
         for path in paths
     )
-    return _worker_versions_from_text(
-        values[0], values[1], values[2], values[3], values[4]
-    )
+    return _worker_versions_from_text(values[0], values[1], values[2], values[3], values[4])
 
 
 def inspect_image(reference: str) -> dict[str, Any]:
@@ -272,9 +266,7 @@ def verify(
             f"source version mismatch: working={versions!r}, committed={committed_versions!r}"
         )
     worker_versions = source_worker_versions(repository)
-    committed_worker_versions = committed_source_worker_versions(
-        repository, expected_revision
-    )
+    committed_worker_versions = committed_source_worker_versions(repository, expected_revision)
     if (
         set(worker_versions.values()) != {expected_worker_version}
         or committed_worker_versions != worker_versions
@@ -335,13 +327,9 @@ def verify(
                 else "GPU_CONTROL_BUILD_VERSION"
             )
             if environment.get(runtime_version_name) != component_version:
-                raise ValueError(
-                    f"{reference} runtime build version is not aligned"
-                )
+                raise ValueError(f"{reference} runtime build version is not aligned")
             if environment.get("GPU_CONTROL_BUILD_REVISION") != expected_revision:
-                raise ValueError(
-                    f"{reference} runtime build revision is not aligned"
-                )
+                raise ValueError(f"{reference} runtime build revision is not aligned")
         image_id = str(inspected.get("Id") or "")
         repo_digests = [str(value) for value in (inspected.get("RepoDigests") or [])]
         if not image_id.startswith("sha256:"):
@@ -350,15 +338,11 @@ def verify(
             raise ValueError(f"{reference} is missing an immutable registry manifest digest")
         reference_repository = _reference_repository(reference)
         matching_repo_digests = [
-            value
-            for value in repo_digests
-            if value.split("@", 1)[0] == reference_repository
+            value for value in repo_digests if value.split("@", 1)[0] == reference_repository
         ]
         if not matching_repo_digests:
             raise ValueError(f"{reference} has no manifest digest for its requested repository")
-        manifest_digests = {
-            value.split("@", 1)[1] for value in matching_repo_digests
-        }
+        manifest_digests = {value.split("@", 1)[1] for value in matching_repo_digests}
         sbom_path = sboms[component]
         if not sbom_path.is_file() or sbom_path.stat().st_size < 1:
             raise ValueError(f"{component} SBOM is missing or empty: {sbom_path}")
@@ -401,9 +385,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--expected-version", required=True)
-    parser.add_argument(
-        "--expected-worker-version", default=DEFAULT_ASSET_WORKER_VERSION
-    )
+    parser.add_argument("--expected-worker-version", default=DEFAULT_ASSET_WORKER_VERSION)
     parser.add_argument("--expected-revision", required=True)
     parser.add_argument("--remote-ref", default="origin/main")
     parser.add_argument("--image", action="append", default=[], metavar="COMPONENT=REFERENCE")

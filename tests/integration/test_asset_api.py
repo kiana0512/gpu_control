@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import hashlib
 import io
 import json
@@ -619,8 +620,8 @@ async def test_direct_v2_completion_requires_coordinate_decision_and_fbx_readbac
             "automatic_retry": False,
         }
         coordinate_restoration = {
-            "schema_version": "retopology_coordinate_restoration.v2",
-            "mode": "high_world_linear_and_aabb_center",
+            "schema_version": "retopology_coordinate_restoration.v3",
+            "mode": "high_world_linear_aabb_center_and_fbx_meter",
             "passed": True,
             "input_blend_sha256": agent_sha,
             "output_blend_sha256": blend_sha,
@@ -643,7 +644,23 @@ async def test_direct_v2_completion_requires_coordinate_decision_and_fbx_readbac
                     "maximum_dimension_relative_error_limit": 0.05,
                 }
             ],
-            "fbx_readback": {"passed": True, "sha256": fbx_sha},
+            "fbx_readback": {
+                "passed": True,
+                "sha256": fbx_sha,
+                "unit_contract": {
+                    "schema_version": "retopology_fbx_units.v1",
+                    "passed": True,
+                    "coordinate_unit": "meter",
+                    "unit_scale_factor_centimeters": 100.0,
+                    "original_unit_scale_factor_centimeters": 100.0,
+                    "raw_coordinates_are_meters": True,
+                    "global_scale": 1.0,
+                    "apply_unit_scale": True,
+                    "apply_scale_options": "FBX_SCALE_UNITS",
+                    "axis_forward": "-Z",
+                    "axis_up": "Y",
+                },
+            },
         }
 
         completion_context = {
@@ -664,15 +681,36 @@ async def test_direct_v2_completion_requires_coordinate_decision_and_fbx_readbac
         legacy = await client.post(
             endpoint,
             headers={"X-Asset-Lease": str(leased["lease_token"])},
-            files=direct_v2_completion_files("retopology_direct_delivery.v3", completion_context),
+            files=direct_v2_completion_files("retopology_direct_delivery.v4", completion_context),
         )
         assert legacy.status_code == 422, legacy.text
         assert legacy.json()["detail"]["code"] == "RETOPOLOGY_DIRECT_V2_IDENTITY_MISMATCH"
 
+        wrong_units = copy.deepcopy(completion_context)
+        wrong_units["coordinate_restoration"]["fbx_readback"]["unit_contract"][
+            "unit_scale_factor_centimeters"
+        ] = 1.0
+        wrong_units["coordinate_restoration"]["fbx_readback"]["unit_contract"][
+            "original_unit_scale_factor_centimeters"
+        ] = 1.0
+        wrong_units["coordinate_restoration"]["fbx_readback"]["unit_contract"][
+            "apply_scale_options"
+        ] = "FBX_SCALE_NONE"
+        wrong_units_response = await client.post(
+            endpoint,
+            headers={"X-Asset-Lease": str(leased["lease_token"])},
+            files=direct_v2_completion_files("retopology_direct_delivery.v5", wrong_units),
+        )
+        assert wrong_units_response.status_code == 422, wrong_units_response.text
+        assert (
+            wrong_units_response.json()["detail"]["code"]
+            == "RETOPOLOGY_DIRECT_V2_IDENTITY_MISMATCH"
+        )
+
         completed = await client.post(
             endpoint,
             headers={"X-Asset-Lease": str(leased["lease_token"])},
-            files=direct_v2_completion_files("retopology_direct_delivery.v4", completion_context),
+            files=direct_v2_completion_files("retopology_direct_delivery.v5", completion_context),
         )
         assert completed.status_code == 200, completed.text
         status = await client.get(
@@ -683,12 +721,13 @@ async def test_direct_v2_completion_requires_coordinate_decision_and_fbx_readbac
         payload = status.json()
         assert payload["status"] == "SUCCEEDED"
         assert payload["options"]["direct_v2_result"]["coordinate_restoration"] == {
-            "mode": "high_world_linear_and_aabb_center",
+            "mode": "high_world_linear_aabb_center_and_fbx_meter",
             "passed": True,
             "blend_translation_changed": blend_translation_changed,
             "blend_linear_transform_changed": blend_linear_transform_changed,
             "blend_transform_changed": blend_transform_changed,
             "fbx_readback_passed": True,
+            "fbx_unit_contract": coordinate_restoration["fbx_readback"]["unit_contract"],
         }
 
 

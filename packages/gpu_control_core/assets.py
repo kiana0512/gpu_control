@@ -225,6 +225,7 @@ RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256 = (
     "d86f218d2194bd6260a491da66f89b8954a72ef8e5309c0ff1062c639d8f6ec4"
 )
 RETOPOLOGY_DIRECT_V2_MAX_DIMENSION_RELATIVE_ERROR = 0.05
+RETOPOLOGY_FBX_UNIT_SCALE_FACTOR_CENTIMETERS = 100.0
 
 
 def retopology_coordinate_dimension_evidence_valid(payload: object) -> bool:
@@ -278,6 +279,50 @@ def retopology_coordinate_dimension_evidence_valid(payload: object) -> bool:
         ):
             return False
     return True
+
+
+def retopology_fbx_meter_evidence_valid(payload: object) -> bool:
+    """Require an actual meter-unit FBX suitable for raw browser loaders."""
+
+    if not isinstance(payload, dict):
+        return False
+    readback = payload.get("fbx_readback")
+    if not isinstance(readback, dict) or readback.get("passed") is not True:
+        return False
+    contract = readback.get("unit_contract")
+    if not isinstance(contract, dict):
+        return False
+    unit_scale = contract.get("unit_scale_factor_centimeters")
+    original_unit_scale = contract.get("original_unit_scale_factor_centimeters")
+    return (
+        contract.get("schema_version") == "retopology_fbx_units.v1"
+        and contract.get("passed") is True
+        and contract.get("coordinate_unit") == "meter"
+        and contract.get("raw_coordinates_are_meters") is True
+        and contract.get("global_scale") == 1.0
+        and contract.get("apply_unit_scale") is True
+        and contract.get("apply_scale_options") == "FBX_SCALE_UNITS"
+        and contract.get("axis_forward") == "-Z"
+        and contract.get("axis_up") == "Y"
+        and isinstance(unit_scale, int | float)
+        and not isinstance(unit_scale, bool)
+        and math.isfinite(float(unit_scale))
+        and math.isclose(
+            float(unit_scale),
+            RETOPOLOGY_FBX_UNIT_SCALE_FACTOR_CENTIMETERS,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        )
+        and isinstance(original_unit_scale, int | float)
+        and not isinstance(original_unit_scale, bool)
+        and math.isfinite(float(original_unit_scale))
+        and math.isclose(
+            float(original_unit_scale),
+            RETOPOLOGY_FBX_UNIT_SCALE_FACTOR_CENTIMETERS,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        )
+    )
 
 
 _RETOPOLOGY_V5_IGNORED_OPTIONS = frozenset(

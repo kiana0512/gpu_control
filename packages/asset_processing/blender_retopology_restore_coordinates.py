@@ -22,8 +22,10 @@ from typing import Any
 import bpy
 from mathutils import Vector
 
-SCHEMA_VERSION = "retopology_coordinate_restoration.v2"
-MODE = "high_world_linear_and_aabb_center"
+SCHEMA_VERSION = "retopology_coordinate_restoration.v3"
+MODE = "high_world_linear_aabb_center_and_fbx_meter"
+FBX_UNIT_CONTRACT_SCHEMA_VERSION = "retopology_fbx_units.v1"
+FBX_UNIT_SCALE_FACTOR_CENTIMETERS = 100.0
 MAXIMUM_DIMENSION_RELATIVE_ERROR = 0.05
 
 
@@ -160,6 +162,50 @@ def nearly_equal(left: Any, right: Any, tolerance: float = 1e-9) -> bool:
     return left == right
 
 
+def fbx_double_property(path: Path, name: str) -> float:
+    """Read one Blender binary-FBX ``Properties70/P`` double property.
+
+    This deliberately validates the bytes written to the exchange file instead
+    of trusting the scene setting used before export.  The exact string-property
+    encoding avoids confusing ``UnitScaleFactor`` with
+    ``OriginalUnitScaleFactor``.
+    """
+
+    encoded_name = name.encode("ascii")
+    pattern = (
+        b"S"
+        + struct.pack("<I", len(encoded_name))
+        + encoded_name
+        + b"S"
+        + struct.pack("<I", len(b"double"))
+        + b"double"
+        + b"S"
+        + struct.pack("<I", len(b"Number"))
+        + b"Number"
+        + b"S"
+        + struct.pack("<I", 0)
+        + b"D"
+    )
+    payload = path.read_bytes()
+    positions: list[int] = []
+    offset = 0
+    while True:
+        found = payload.find(pattern, offset)
+        if found < 0:
+            break
+        positions.append(found)
+        offset = found + 1
+    if len(positions) != 1:
+        raise RuntimeError(f"FBX property {name} is missing or ambiguous")
+    value_offset = positions[0] + len(pattern)
+    if value_offset + 8 > len(payload):
+        raise RuntimeError(f"FBX property {name} is truncated")
+    value = float(struct.unpack_from("<d", payload, value_offset)[0])
+    if not math.isfinite(value):
+        raise RuntimeError(f"FBX property {name} is not finite")
+    return value
+
+
 def load_pairs(path: Path) -> list[tuple[str, str]]:
     payload = json.loads(path.read_text("utf-8"))
     assets = payload.get("assets") if isinstance(payload, dict) else None
@@ -194,6 +240,16 @@ def export_and_read_back(
         obj.select_set(True)
     bpy.context.view_layer.objects.active = low_objects[0]
     output_fbx.parent.mkdir(parents=True, exist_ok=True)
+    # GLB/glTF and browser rendering use metres.  Blender's default
+    # FBX_SCALE_NONE bakes a 100x centimetre conversion into raw coordinates,
+    # while common browser FBX loaders consume those coordinates without unit
+    # compensation.  FBX_SCALE_UNITS keeps raw coordinates in metres and writes
+    # UnitScaleFactor=100 (one FBX unit is one metre), which both Blender and
+    # browser consumers interpret at the same physical size.
+    scene = bpy.context.scene
+    scene.unit_settings.system = "METRIC"
+    scene.unit_settings.scale_length = 1.0
+    scene.unit_settings.length_unit = "METERS"
     bpy.ops.export_scene.fbx(
         filepath=str(output_fbx),
         use_selection=True,
@@ -201,10 +257,35 @@ def export_and_read_back(
         use_mesh_modifiers=True,
         add_leaf_bones=False,
         bake_anim=False,
+        global_scale=1.0,
+        apply_unit_scale=True,
+        apply_scale_options="FBX_SCALE_UNITS",
+        use_space_transform=True,
+        bake_space_transform=False,
+        axis_forward="-Z",
+        axis_up="Y",
         path_mode="AUTO",
     )
     if not output_fbx.is_file() or output_fbx.stat().st_size <= 0:
         raise RuntimeError("FBX export did not create a non-empty file")
+    unit_scale_factor = fbx_double_property(output_fbx, "UnitScaleFactor")
+    original_unit_scale_factor = fbx_double_property(output_fbx, "OriginalUnitScaleFactor")
+    if not math.isclose(
+        unit_scale_factor,
+        FBX_UNIT_SCALE_FACTOR_CENTIMETERS,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ) or not math.isclose(
+        original_unit_scale_factor,
+        FBX_UNIT_SCALE_FACTOR_CENTIMETERS,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ):
+        raise RuntimeError(
+            "FBX browser unit contract failed: "
+            f"UnitScaleFactor={unit_scale_factor:.9g}, "
+            f"OriginalUnitScaleFactor={original_unit_scale_factor:.9g}"
+        )
 
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
@@ -235,6 +316,19 @@ def export_and_read_back(
         "center_max_abs_delta": center_delta,
         "dimensions_max_abs_delta": dimensions_delta,
         "tolerance": tolerance,
+        "unit_contract": {
+            "schema_version": FBX_UNIT_CONTRACT_SCHEMA_VERSION,
+            "passed": True,
+            "coordinate_unit": "meter",
+            "unit_scale_factor_centimeters": unit_scale_factor,
+            "original_unit_scale_factor_centimeters": original_unit_scale_factor,
+            "raw_coordinates_are_meters": True,
+            "global_scale": 1.0,
+            "apply_unit_scale": True,
+            "apply_scale_options": "FBX_SCALE_UNITS",
+            "axis_forward": "-Z",
+            "axis_up": "Y",
+        },
     }
 
 

@@ -42,6 +42,7 @@ from packages.gpu_control_core.assets import (
     lease_token_hash,
     retopology_audit_request_hash,
     retopology_coordinate_dimension_evidence_valid,
+    retopology_fbx_meter_evidence_valid,
     retopology_v6_process_request_hash,
     substance_bake_request_hash,
     uv_process_request_hash,
@@ -3864,7 +3865,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if isinstance(item, dict)
             ]
             if (
-                manifest.get("schema_version") != "retopology_direct_delivery.v4"
+                manifest.get("schema_version") != "retopology_direct_delivery.v5"
                 or manifest.get("job_id") != snapshot.id
                 or manifest.get("engine_contract") != "retopology-direct-v2"
                 or manifest.get("package_sha256") != snapshot.options.get("package_sha256")
@@ -3878,11 +3879,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or manifest.get("automatic_retry") is not False
                 or not isinstance(coordinate_restoration, dict)
                 or coordinate_restoration.get("schema_version")
-                != "retopology_coordinate_restoration.v2"
-                or coordinate_restoration.get("mode") != "high_world_linear_and_aabb_center"
+                != "retopology_coordinate_restoration.v3"
+                or coordinate_restoration.get("mode")
+                != "high_world_linear_aabb_center_and_fbx_meter"
                 or coordinate_restoration.get("passed") is not True
                 or coordinate_restoration.get("source_high_preserved") is not True
                 or not retopology_coordinate_dimension_evidence_valid(coordinate_restoration)
+                or not retopology_fbx_meter_evidence_valid(coordinate_restoration)
                 or coordinate_restoration.get("input_blend_sha256")
                 != manifest.get("agent_blend_sha256")
                 or coordinate_restoration.get("output_blend_sha256")
@@ -3959,7 +3962,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.progress = 100
             job.stage = "SUCCEEDED"
             coordinate_result = "变换已恢复" if blend_transform_changed else "坐标未变化、原样保留"
-            job.stage_message = f"Direct V2 {coordinate_result}，BLEND 与 FBX 已交付"
+            job.stage_message = f"Direct V2 {coordinate_result}，BLEND 与米制 FBX 已交付"
             job.estimated_remaining_seconds = 0
             job.last_progress_at = datetime.now(UTC)
             job.finished_at = job.last_progress_at
@@ -3974,12 +3977,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "automatic_post_generation_review": False,
                     "automatic_retry": False,
                     "coordinate_restoration": {
-                        "mode": "high_world_linear_and_aabb_center",
+                        "mode": "high_world_linear_aabb_center_and_fbx_meter",
                         "passed": True,
                         "blend_translation_changed": blend_translation_changed,
                         "blend_linear_transform_changed": (blend_linear_transform_changed),
                         "blend_transform_changed": blend_transform_changed,
                         "fbx_readback_passed": True,
+                        "fbx_unit_contract": fbx_readback["unit_contract"],
                     },
                     "assets": generation["assets"],
                 },
@@ -3995,6 +3999,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "engine_contract": "retopology-direct-v2",
                     "delivery_format": "blend+fbx",
                     "coordinate_restoration": "passed",
+                    "fbx_coordinate_unit": "meter",
                     "automatic_post_generation_review": False,
                 },
             )

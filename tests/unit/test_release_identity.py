@@ -40,7 +40,7 @@ def test_control_plane_build_defaults_match_release_version() -> None:
     compose = (REPOSITORY / "deploy/control-plane/compose.yaml").read_text(encoding="utf-8")
     assert compose.count(f"GPU_CONTROL_VERSION: ${{GPU_CONTROL_VERSION:-{expected_version}}}") == 4
     assert compose.count(f"APP_IMAGE_TAG:-{expected_version}") == 2
-    assert "ASSET_API_IMAGE_TAG:-1.6.13-retopology-alignment-v3" in compose
+    assert "ASSET_API_IMAGE_TAG:-1.6.14-retopology-fbx-meter-v1" in compose
 
 
 def test_worker_release_versions_and_evidence_contract_are_aligned() -> None:
@@ -59,13 +59,9 @@ def test_worker_release_versions_and_evidence_contract_are_aligned() -> None:
 def test_release_parts_are_tracked_by_git_lfs() -> None:
     attributes = (REPOSITORY / ".gitattributes").read_text(encoding="utf-8")
     assert (
-        "artifacts/control-plane/**/release-parts/*.part-* "
-        "filter=lfs diff=lfs merge=lfs -text"
+        "artifacts/control-plane/**/release-parts/*.part-* filter=lfs diff=lfs merge=lfs -text"
     ) in attributes
-    assert (
-        "artifacts/asset-worker/**/*.part-* "
-        "filter=lfs diff=lfs merge=lfs -text"
-    ) in attributes
+    assert ("artifacts/asset-worker/**/*.part-* filter=lfs diff=lfs merge=lfs -text") in attributes
 
 
 def test_release_revision_must_be_a_full_git_sha() -> None:

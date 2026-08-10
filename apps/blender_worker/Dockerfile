@@ -1,6 +1,6 @@
 ARG BLENDER_BASE_IMAGE=li3d/blender-runtime:5.1.2
 FROM ${BLENDER_BASE_IMAGE}
-ARG ASSET_WORKER_VERSION=1.4.8-retopology-alignment-v3
+ARG ASSET_WORKER_VERSION=1.4.9-retopology-fbx-meter-v1
 ARG GPU_CONTROL_REVISION=unknown
 USER root
 WORKDIR /app

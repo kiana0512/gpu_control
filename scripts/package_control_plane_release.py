@@ -37,7 +37,7 @@ ACCEPTED_ORIGIN_URLS = frozenset(
 REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_REFERENCE_PATTERN = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
-DEFAULT_ASSET_WORKER_VERSION = "1.4.8-retopology-alignment-v3"
+DEFAULT_ASSET_WORKER_VERSION = "1.4.9-retopology-fbx-meter-v1"
 OCI_MANIFEST_MEDIA_TYPES = frozenset(
     {
         "application/vnd.oci.image.manifest.v1+json",
@@ -79,7 +79,9 @@ class Component:
     def release_version(self, version: str, worker_version: str) -> str:
         return worker_version if self.key == "blender-worker" else version
 
-    def image_reference(self, version: str, worker_version: str = DEFAULT_ASSET_WORKER_VERSION) -> str:
+    def image_reference(
+        self, version: str, worker_version: str = DEFAULT_ASSET_WORKER_VERSION
+    ) -> str:
         return f"{self.image_repository}:{self.release_version(version, worker_version)}"
 
 
@@ -373,9 +375,7 @@ def source_worker_versions(repository: Path) -> dict[str, str]:
         "deploy/gpu-node/compose.yaml",
     )
     values = tuple((repository / path).read_text(encoding="utf-8") for path in paths)
-    return _worker_versions_from_text(
-        values[0], values[1], values[2], values[3], values[4]
-    )
+    return _worker_versions_from_text(values[0], values[1], values[2], values[3], values[4])
 
 
 def committed_source_worker_versions(repository: Path, revision: str) -> dict[str, str]:
@@ -387,9 +387,7 @@ def committed_source_worker_versions(repository: Path, revision: str) -> dict[st
         "deploy/gpu-node/compose.yaml",
     )
     values = tuple(_git(repository, "show", f"{revision}:{path}") for path in paths)
-    return _worker_versions_from_text(
-        values[0], values[1], values[2], values[3], values[4]
-    )
+    return _worker_versions_from_text(values[0], values[1], values[2], values[3], values[4])
 
 
 def _inspect_image(reference: str) -> dict[str, Any]:
@@ -492,7 +490,10 @@ def preflight(
         )
     worker_versions = source_worker_versions(repository)
     committed_worker_versions = committed_source_worker_versions(repository, revision)
-    if set(worker_versions.values()) != {worker_version} or committed_worker_versions != worker_versions:
+    if (
+        set(worker_versions.values()) != {worker_version}
+        or committed_worker_versions != worker_versions
+    ):
         raise ReleasePackagingError(
             "Worker source versions are not aligned: "
             f"working={worker_versions!r}, committed={committed_worker_versions!r}"
@@ -742,9 +743,7 @@ def extract_offline_attestations(
                 for descriptor in descriptors
                 if isinstance(descriptor, dict)
                 and str(descriptor.get("mediaType")) in OCI_INDEX_MEDIA_TYPES
-                and dict(descriptor.get("annotations") or {}).get(
-                    "vnd.docker.reference.type"
-                )
+                and dict(descriptor.get("annotations") or {}).get("vnd.docker.reference.type")
                 != ATTESTATION_REFERENCE_TYPE
             ]
             direct_images = [
@@ -752,9 +751,7 @@ def extract_offline_attestations(
                 for descriptor in descriptors
                 if isinstance(descriptor, dict)
                 and str(descriptor.get("mediaType")) in OCI_MANIFEST_MEDIA_TYPES
-                and dict(descriptor.get("annotations") or {}).get(
-                    "vnd.docker.reference.type"
-                )
+                and dict(descriptor.get("annotations") or {}).get("vnd.docker.reference.type")
                 != ATTESTATION_REFERENCE_TYPE
             ]
             if direct_images:

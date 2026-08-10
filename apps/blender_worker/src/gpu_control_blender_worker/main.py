@@ -25,6 +25,7 @@ from gpu_control_blender_worker.bootstrap import (
 )
 from packages.gpu_control_core.assets import (
     retopology_coordinate_dimension_evidence_valid,
+    retopology_fbx_meter_evidence_valid,
 )
 from packages.gpu_control_core.retopology_v6 import (
     POLICY_SHA256,
@@ -48,7 +49,7 @@ UV_UNWRAP_SCRIPT_SHA256 = "ebfa3546d61c548a11c0e7561c75f93b6ef93308d8da9f27788bf
 UV_QA_SCRIPT_SHA256 = "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
 UV_QA_ADAPTER_SHA256 = "8e6bc5dc20a49fac5be2e92accd518d9da9fa629e878f51dc151baa80ad3359a"
 RETOPOLOGY_COORDINATE_RESTORE_SCRIPT_SHA256 = (
-    "9ed679d2387d7ae8c5cd2de4c121b2f9aa5edeea3e3c620d62bc1c472f66d771"
+    "e4e01e98386484af9c61a3f96d46034820d5a48f7cca1d80d947435f2b12f8b7"
 )
 RETOPOLOGY_AUDIT_SCRIPT_SHA256 = "a6575902cfacd7b8106f9c887069d717a880d870fc48a6295431cdcf717a9dc4"
 RETOPOLOGY_PROCESS_SCRIPT_SHA256 = (
@@ -1825,11 +1826,12 @@ async def run_retopology_v6(
         item.get("coordinate_action") for item in reported_pairs or [] if isinstance(item, dict)
     ]
     if (
-        coordinate_report.get("schema_version") != "retopology_coordinate_restoration.v2"
-        or coordinate_report.get("mode") != "high_world_linear_and_aabb_center"
+        coordinate_report.get("schema_version") != "retopology_coordinate_restoration.v3"
+        or coordinate_report.get("mode") != "high_world_linear_aabb_center_and_fbx_meter"
         or coordinate_report.get("passed") is not True
         or coordinate_report.get("source_high_preserved") is not True
         or not retopology_coordinate_dimension_evidence_valid(coordinate_report)
+        or not retopology_fbx_meter_evidence_valid(coordinate_report)
         or coordinate_report.get("input_blend_sha256") != agent_blend_sha256
         or coordinate_report.get("output_blend_sha256") != restored_blend_sha256
         or not isinstance(reported_pairs, list)
@@ -1882,7 +1884,7 @@ async def run_retopology_v6(
     ):
         raise RuntimeError("Retopology Direct V2 coordinate restoration gate failed")
     delivery_manifest = {
-        "schema_version": "retopology_direct_delivery.v4",
+        "schema_version": "retopology_direct_delivery.v5",
         "job_id": job_id,
         "engine_contract": "retopology-direct-v2",
         "package_sha256": options.get("package_sha256"),
