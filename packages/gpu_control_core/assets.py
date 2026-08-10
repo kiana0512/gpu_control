@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any, Literal
@@ -123,13 +124,9 @@ class RetopologyReferenceView(BaseModel):
 class RetopologyProcessOptions(RetopologyAuditOptions):
     """Legacy V5 controls retained only for rollback and historical tests."""
 
-    generated_low_object: str = Field(
-        default="GPUCTRL_Retopo_v001", min_length=1, max_length=128
-    )
+    generated_low_object: str = Field(default="GPUCTRL_Retopo_v001", min_length=1, max_length=128)
     algorithm: Literal["agent", "quadriflow", "cleanup_existing"] = "agent"
-    topology_style: Literal[
-        "mixed", "quad_dominant", "preserve_existing"
-    ] = "mixed"
+    topology_style: Literal["mixed", "quad_dominant", "preserve_existing"] = "mixed"
     topology_mode: Literal["mixed", "quad_dominant"] = "mixed"
     target_faces: int | None = Field(default=None, ge=50, le=5_000_000)
     preserve_sharp: bool = True
@@ -223,12 +220,65 @@ class RetopologyV6ProcessMetadata(BaseModel):
         return value
 
 
-RETOPOLOGY_V6_POLICY_SHA256 = (
-    "e7b24c93c11d550ac9fedd167ff23f9ddd70cba4db014caaf2e157cddeafb266"
-)
+RETOPOLOGY_V6_POLICY_SHA256 = "e7b24c93c11d550ac9fedd167ff23f9ddd70cba4db014caaf2e157cddeafb266"
 RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256 = (
     "d86f218d2194bd6260a491da66f89b8954a72ef8e5309c0ff1062c639d8f6ec4"
 )
+RETOPOLOGY_DIRECT_V2_MAX_DIMENSION_RELATIVE_ERROR = 0.05
+
+
+def retopology_coordinate_dimension_evidence_valid(payload: object) -> bool:
+    """Validate the fail-closed Direct V2 high/low dimension evidence."""
+
+    if not isinstance(payload, dict):
+        return False
+    limit = payload.get("maximum_dimension_relative_error")
+    if (
+        not isinstance(limit, int | float)
+        or isinstance(limit, bool)
+        or not math.isclose(
+            float(limit),
+            RETOPOLOGY_DIRECT_V2_MAX_DIMENSION_RELATIVE_ERROR,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+    ):
+        return False
+    pairs = payload.get("pairs")
+    if not isinstance(pairs, list) or not pairs:
+        return False
+    for pair in pairs:
+        if not isinstance(pair, dict):
+            return False
+        errors = pair.get("high_low_dimension_relative_error")
+        maximum = pair.get("high_low_maximum_dimension_relative_error")
+        pair_limit = pair.get("maximum_dimension_relative_error_limit")
+        if (
+            not isinstance(errors, list)
+            or len(errors) != 3
+            or not all(
+                isinstance(value, int | float)
+                and not isinstance(value, bool)
+                and math.isfinite(float(value))
+                and 0.0 <= float(value) <= float(limit)
+                for value in errors
+            )
+            or not isinstance(maximum, int | float)
+            or isinstance(maximum, bool)
+            or not math.isfinite(float(maximum))
+            or not math.isclose(
+                float(maximum),
+                max(float(value) for value in errors),
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+            or not isinstance(pair_limit, int | float)
+            or isinstance(pair_limit, bool)
+            or not math.isclose(float(pair_limit), float(limit), rel_tol=0.0, abs_tol=1e-12)
+        ):
+            return False
+    return True
+
 
 _RETOPOLOGY_V5_IGNORED_OPTIONS = frozenset(
     {
@@ -385,9 +435,7 @@ def substance_bake_request_hash(
     ).hexdigest()
 
 
-def retopology_audit_request_hash(
-    metadata: RetopologyAuditMetadata, input_sha256: str
-) -> str:
+def retopology_audit_request_hash(metadata: RetopologyAuditMetadata, input_sha256: str) -> str:
     payload = {
         "job_type": "RETOPOLOGY_AUDIT",
         "external_asset_id": metadata.external_asset_id,

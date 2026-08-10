@@ -41,6 +41,7 @@ from packages.gpu_control_core.assets import (
     asset_request_hash,
     lease_token_hash,
     retopology_audit_request_hash,
+    retopology_coordinate_dimension_evidence_valid,
     retopology_v6_process_request_hash,
     substance_bake_request_hash,
     uv_process_request_hash,
@@ -134,9 +135,7 @@ SUBSTANCE_BAKE_COMMAND_COUNTS = {
     "pbr-core-v1": 2,
     "li3d-pbr-full-v2": 10,
 }
-CODEX_REQUIRED_JOB_TYPES = frozenset(
-    {"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"}
-)
+CODEX_REQUIRED_JOB_TYPES = frozenset({"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"})
 RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-retopology-v2.3.0"
 
 
@@ -1134,9 +1133,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, int]:
         """Use the same resource gates for capacity, ETA, and actual claim."""
 
-        heartbeat_cutoff = now - timedelta(
-            seconds=cfg.asset_worker_heartbeat_timeout_seconds
-        )
+        heartbeat_cutoff = now - timedelta(seconds=cfg.asset_worker_heartbeat_timeout_seconds)
         worker_filter = (
             (AssetWorker.id == SUBSTANCE_WORKER_ID)
             | AssetWorker.id.startswith(SUBSTANCE_WORKER_ID_PREFIX)
@@ -1174,10 +1171,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             pending_owned = bool(pending_ids) and owned_drain
             physical_available = bool(
                 node is not None
-                and (
-                    node.mode == "ACTIVE"
-                    or (owned_drain and (fenced_job_ids or pending_owned))
-                )
+                and (node.mode == "ACTIVE" or (owned_drain and (fenced_job_ids or pending_owned)))
                 and node.health == "ONLINE"
                 and node.current_jobs == 0
                 and not labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL)
@@ -1196,9 +1190,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     and worker.agent_started_at is not None
                 ]
                 physical_total_limit = SUBSTANCE_MAX_PARALLEL
-                physical_available_limit = max(
-                    0, SUBSTANCE_MAX_PARALLEL - len(fenced_job_ids)
-                )
+                physical_available_limit = max(0, SUBSTANCE_MAX_PARALLEL - len(fenced_job_ids))
                 physical_used_floor = len(fenced_job_ids)
         else:
             node_ids = {worker.node_id for worker in online_workers if worker.node_id}
@@ -1217,9 +1209,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 and linux_asset_claim_allowed(nodes_by_id[worker.node_id], now)
             ]
             if job_type in CODEX_REQUIRED_JOB_TYPES:
-                codex_probe_cutoff = now - timedelta(
-                    seconds=cfg.asset_codex_probe_max_age_seconds
-                )
+                codex_probe_cutoff = now - timedelta(seconds=cfg.asset_codex_probe_max_age_seconds)
                 eligible_workers = [
                     worker
                     for worker in eligible_workers
@@ -1231,8 +1221,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         total_slots = sum(worker.max_concurrency for worker in eligible_workers)
         used_slots = sum(worker.current_jobs for worker in eligible_workers)
         available_slots = sum(
-            max(0, worker.max_concurrency - worker.current_jobs)
-            for worker in eligible_workers
+            max(0, worker.max_concurrency - worker.current_jobs) for worker in eligible_workers
         )
         if physical_total_limit is not None and physical_available_limit is not None:
             total_slots = min(total_slots, physical_total_limit)
@@ -1359,8 +1348,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "artifacts_role": (
                 "isolated_diagnostic"
                 if job.job_type == "RETOPOLOGY_PROCESS_V2" and job.status == "FAILED"
-                else
-                "diagnostic"
+                else "diagnostic"
                 if job.status == "FAILED" and job.error_code in RETOPOLOGY_DIAGNOSTIC_ERROR_CODES
                 else "delivery"
                 if job.status == "SUCCEEDED"
@@ -1946,9 +1934,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 reference_sha[filename] = digest
                 reference_sizes[filename] = size
 
-            request_hash = retopology_v6_process_request_hash(
-                parsed, project_sha, reference_sha
-            )
+            request_hash = retopology_v6_process_request_hash(parsed, project_sha, reference_sha)
             reference_by_name = {
                 item.filename: item.model_dump(mode="json") for item in parsed.reference_views
             }
@@ -2251,9 +2237,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "schema_version": "1.0",
             "advisory": True,
             "online_workers": cpu["online_workers"] + substance["online_workers"],
-            "schedulable_workers": (
-                cpu["schedulable_workers"] + substance["schedulable_workers"]
-            ),
+            "schedulable_workers": (cpu["schedulable_workers"] + substance["schedulable_workers"]),
             "total_slots": cpu["total_slots"] + substance["total_slots"],
             "used_slots": cpu["used_slots"] + substance["used_slots"],
             "available_slots": cpu["available_slots"] + substance["available_slots"],
@@ -2321,8 +2305,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         durable_current_jobs = sum(
             1
             for job in durable_jobs
-            if job.lease_expires_at is None
-            or as_utc(job.lease_expires_at) >= heartbeat_at
+            if job.lease_expires_at is None or as_utc(job.lease_expires_at) >= heartbeat_at
         )
         durable_substance_host_jobs = durable_current_jobs
         if is_substance_worker_id(body.worker_id):
@@ -2343,8 +2326,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             durable_substance_host_jobs = sum(
                 1
                 for job in host_jobs
-                if job.lease_expires_at is None
-                or as_utc(job.lease_expires_at) >= heartbeat_at
+                if job.lease_expires_at is None or as_utc(job.lease_expires_at) >= heartbeat_at
             )
         if worker is not None:
             stored_started_at = (
@@ -2355,10 +2337,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             stale_or_legacy_generation = generation_changed and (
                 body.agent_instance_id is None
                 or body_started_at is None
-                or (
-                    stored_started_at is not None
-                    and body_started_at <= stored_started_at
-                )
+                or (stored_started_at is not None and body_started_at <= stored_started_at)
             )
             if stale_or_legacy_generation or (
                 durable_current_jobs > 0 and (generation_changed or node_changed)
@@ -2765,17 +2744,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 # audit/process work stays on the rollback pool because the
                 # two Skill contracts intentionally have incompatible inputs.
                 claim_query = claim_query.where(
-                    AssetJob.job_type.not_in(
-                        {"RETOPOLOGY_AUDIT", "RETOPOLOGY_PROCESS_V1"}
-                    )
+                    AssetJob.job_type.not_in({"RETOPOLOGY_AUDIT", "RETOPOLOGY_PROCESS_V1"})
                 )
             else:
                 # Old Workers must never claim a Direct V2 job: they still execute
                 # bootstrap-low/target-face semantics and would corrupt the
                 # new contract even if the external route is unchanged.
-                claim_query = claim_query.where(
-                    AssetJob.job_type != "RETOPOLOGY_PROCESS_V2"
-                )
+                claim_query = claim_query.where(AssetJob.job_type != "RETOPOLOGY_PROCESS_V2")
             codex_probe_cutoff = datetime.now(UTC) - timedelta(
                 seconds=cfg.asset_codex_probe_max_age_seconds
             )
@@ -3531,9 +3506,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for kind in RETOPOLOGY_V6_ARTIFACTS:
             upload = form.get(kind)
             if not isinstance(upload, StarletteUploadFile):
-                raise HTTPException(
-                    422, detail={"code": "ASSET_ARTIFACT_MISSING", "kind": kind}
-                )
+                raise HTTPException(422, detail={"code": "ASSET_ARTIFACT_MISSING", "kind": kind})
             uploads[kind] = upload
         unknown = set(form.keys()) - set(RETOPOLOGY_V6_ARTIFACTS)
         if unknown:
@@ -3557,9 +3530,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 path = staging / filename
                 digest, size = await persist_completion_upload(upload, path)
                 if size <= 0:
-                    raise HTTPException(
-                        422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind}
-                    )
+                    raise HTTPException(422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind})
                 created.append(
                     AssetArtifact(
                         id=str(uuid.uuid4()),
@@ -3575,15 +3546,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             try:
                 result_payload = json.loads((staging / "result.json").read_text("utf-8"))
-                plan_payload = json.loads(
-                    (staging / "execution_plan.json").read_text("utf-8")
-                )
+                plan_payload = json.loads((staging / "execution_plan.json").read_text("utf-8"))
                 qa_payload = json.loads((staging / "qa_report.json").read_text("utf-8"))
                 manifest_payload = json.loads((staging / "manifest.json").read_text("utf-8"))
             except (OSError, ValueError) as exc:
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_V6_JSON_INVALID"}
-                ) from exc
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_V6_JSON_INVALID"}) from exc
             try:
                 validate_contract_payload(
                     RETOPOLOGY_V6_ROOT,
@@ -3596,9 +3563,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     result_payload,
                 )
             except Exception as exc:
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_V6_SCHEMA_INVALID"}
-                ) from exc
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_V6_SCHEMA_INVALID"}) from exc
 
             if (
                 result_payload.get("job_id") != snapshot.id
@@ -3609,27 +3574,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or result_payload.get("source", {}).get("sha256_after")
                 != snapshot.options.get("project_sha256")
             ):
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_V6_IDENTITY_MISMATCH"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_V6_IDENTITY_MISMATCH"})
             if not isinstance(qa_payload, dict) or qa_payload.get("gates") != result_payload.get(
                 "gates"
             ):
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_V6_QA_RESULT_MISMATCH"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_V6_QA_RESULT_MISMATCH"})
             if (
                 not isinstance(manifest_payload, dict)
                 or manifest_payload.get("job_id") != snapshot.id
                 or manifest_payload.get("engine_contract") != "retopology-v6"
-                or manifest_payload.get("policy_sha256")
-                != snapshot.options.get("policy_sha256")
-                or manifest_payload.get("source_sha256")
-                != snapshot.options.get("project_sha256")
+                or manifest_payload.get("policy_sha256") != snapshot.options.get("policy_sha256")
+                or manifest_payload.get("source_sha256") != snapshot.options.get("project_sha256")
             ):
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_V6_MANIFEST_MISMATCH"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_V6_MANIFEST_MISMATCH"})
 
             staged_by_kind = {item.kind: item for item in created}
             result_artifacts = result_payload.get("artifacts")
@@ -3638,14 +3595,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     422, detail={"code": "RETOPOLOGY_V6_ARTIFACT_IDENTITIES_MISSING"}
                 )
             result_by_role = {
-                str(item.get("role")): item
-                for item in result_artifacts
-                if isinstance(item, dict)
+                str(item.get("role")): item for item in result_artifacts if isinstance(item, dict)
             }
             if RETOPOLOGY_V6_RESULT_ARTIFACT_ROLES.difference(result_by_role):
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_V6_ARTIFACT_ROLES_MISSING"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_V6_ARTIFACT_ROLES_MISSING"})
             for role in RETOPOLOGY_V6_RESULT_ARTIFACT_ROLES:
                 row = result_by_role[role]
                 artifact = staged_by_kind[role]
@@ -3681,9 +3634,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     ) from exc
 
             gates = result_payload.get("gates")
-            all_gates_passed = isinstance(gates, dict) and len(gates) == 8 and all(
-                isinstance(gate, dict) and gate.get("passed") is True
-                for gate in gates.values()
+            all_gates_passed = (
+                isinstance(gates, dict)
+                and len(gates) == 8
+                and all(
+                    isinstance(gate, dict) and gate.get("passed") is True for gate in gates.values()
+                )
             )
             strict_publish_allowed = (
                 result_payload.get("status") == "succeeded"
@@ -3692,17 +3648,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 and all_gates_passed
             )
             if result_payload.get("publish_allowed") is True and not strict_publish_allowed:
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_V6_PUBLISH_GATE_BYPASS"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_V6_PUBLISH_GATE_BYPASS"})
 
             # In production advisory mode, QA controls the warning attached to
             # a delivery, not whether intact candidate bytes are returned.
             # Identity, source immutability, schema, hashes and artifact
             # completeness above remain hard gates.
             advisory_warning = (
-                cfg.retopology_qa_enforcement == "advisory"
-                and not strict_publish_allowed
+                cfg.retopology_qa_enforcement == "advisory" and not strict_publish_allowed
             )
             delivery_allowed = strict_publish_allowed or advisory_warning
 
@@ -3812,9 +3765,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for kind in RETOPOLOGY_DIRECT_V2_ARTIFACTS:
             upload = form.get(kind)
             if not isinstance(upload, StarletteUploadFile):
-                raise HTTPException(
-                    422, detail={"code": "ASSET_ARTIFACT_MISSING", "kind": kind}
-                )
+                raise HTTPException(422, detail={"code": "ASSET_ARTIFACT_MISSING", "kind": kind})
             uploads[kind] = upload
         unknown = set(form.keys()) - set(RETOPOLOGY_DIRECT_V2_ARTIFACTS)
         if unknown:
@@ -3838,9 +3789,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 path = staging / filename
                 digest, size = await persist_completion_upload(upload, path)
                 if size <= 0:
-                    raise HTTPException(
-                        422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind}
-                    )
+                    raise HTTPException(422, detail={"code": "ASSET_ARTIFACT_EMPTY", "kind": kind})
                 created.append(
                     AssetArtifact(
                         id=str(uuid.uuid4()),
@@ -3855,13 +3804,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
 
             try:
-                generation = json.loads(
-                    (staging / "generation_report.json").read_text("utf-8")
-                )
+                generation = json.loads((staging / "generation_report.json").read_text("utf-8"))
                 result = json.loads((staging / "result.json").read_text("utf-8"))
-                manifest = json.loads(
-                    (staging / "delivery_manifest.json").read_text("utf-8")
-                )
+                manifest = json.loads((staging / "delivery_manifest.json").read_text("utf-8"))
             except (OSError, ValueError) as exc:
                 raise HTTPException(
                     422, detail={"code": "RETOPOLOGY_DIRECT_V2_JSON_INVALID"}
@@ -3875,9 +3820,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or result.get("automatic_post_generation_review") is not False
                 or result.get("automatic_retry") is not False
             ):
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_DIRECT_V2_RESULT_INVALID"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_DIRECT_V2_RESULT_INVALID"})
             staged_by_kind = {item.kind: item for item in created}
             coordinate_restoration = manifest.get("coordinate_restoration")
             coordinate_pairs = (
@@ -3905,36 +3848,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if isinstance(coordinate_restoration, dict)
                 else None
             )
+            blend_linear_transform_changed = (
+                coordinate_restoration.get("blend_linear_transform_changed")
+                if isinstance(coordinate_restoration, dict)
+                else None
+            )
+            blend_transform_changed = (
+                coordinate_restoration.get("blend_transform_changed")
+                if isinstance(coordinate_restoration, dict)
+                else None
+            )
             coordinate_actions = [
                 item.get("coordinate_action")
                 for item in coordinate_pairs or []
                 if isinstance(item, dict)
             ]
             if (
-                manifest.get("schema_version") != "retopology_direct_delivery.v3"
+                manifest.get("schema_version") != "retopology_direct_delivery.v4"
                 or manifest.get("job_id") != snapshot.id
                 or manifest.get("engine_contract") != "retopology-direct-v2"
-                or manifest.get("package_sha256")
-                != snapshot.options.get("package_sha256")
+                or manifest.get("package_sha256") != snapshot.options.get("package_sha256")
                 or manifest.get("source_sha256") != snapshot.options.get("project_sha256")
                 or manifest.get("agent_blend_sha256") != result.get("output_sha256")
-                or manifest.get("delivery_blend_sha256")
-                != staged_by_kind["blend"].sha256
-                or manifest.get("delivery_blend_size_bytes")
-                != staged_by_kind["blend"].size_bytes
-                or manifest.get("delivery_fbx_sha256")
-                != staged_by_kind["fbx"].sha256
-                or manifest.get("delivery_fbx_size_bytes")
-                != staged_by_kind["fbx"].size_bytes
+                or manifest.get("delivery_blend_sha256") != staged_by_kind["blend"].sha256
+                or manifest.get("delivery_blend_size_bytes") != staged_by_kind["blend"].size_bytes
+                or manifest.get("delivery_fbx_sha256") != staged_by_kind["fbx"].sha256
+                or manifest.get("delivery_fbx_size_bytes") != staged_by_kind["fbx"].size_bytes
                 or manifest.get("automatic_post_generation_review") is not False
                 or manifest.get("automatic_retry") is not False
                 or not isinstance(coordinate_restoration, dict)
                 or coordinate_restoration.get("schema_version")
-                != "retopology_coordinate_restoration.v1"
-                or coordinate_restoration.get("mode")
-                != "translation_only_world_aabb_center"
+                != "retopology_coordinate_restoration.v2"
+                or coordinate_restoration.get("mode") != "high_world_linear_and_aabb_center"
                 or coordinate_restoration.get("passed") is not True
                 or coordinate_restoration.get("source_high_preserved") is not True
+                or not retopology_coordinate_dimension_evidence_valid(coordinate_restoration)
                 or coordinate_restoration.get("input_blend_sha256")
                 != manifest.get("agent_blend_sha256")
                 or coordinate_restoration.get("output_blend_sha256")
@@ -3943,33 +3891,58 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or not coordinate_pairs
                 or actual_pairs != expected_pairs
                 or not isinstance(blend_translation_changed, bool)
+                or not isinstance(blend_linear_transform_changed, bool)
+                or not isinstance(blend_transform_changed, bool)
                 or len(coordinate_actions) != len(coordinate_pairs)
                 or not all(
-                    action in {"unchanged", "translation_restored"}
+                    action
+                    in {
+                        "unchanged",
+                        "translation_restored",
+                        "linear_transform_restored",
+                        "full_transform_restored",
+                    }
                     for action in coordinate_actions
                 )
                 or blend_translation_changed
-                != ("translation_restored" in coordinate_actions)
+                != any(
+                    action in {"translation_restored", "full_transform_restored"}
+                    for action in coordinate_actions
+                )
+                or blend_linear_transform_changed
+                != any(
+                    action in {"linear_transform_restored", "full_transform_restored"}
+                    for action in coordinate_actions
+                )
+                or blend_transform_changed
+                != (blend_translation_changed or blend_linear_transform_changed)
                 or (
-                    blend_translation_changed is False
-                    and manifest.get("agent_blend_sha256")
-                    != manifest.get("delivery_blend_sha256")
+                    blend_transform_changed is False
+                    and manifest.get("agent_blend_sha256") != manifest.get("delivery_blend_sha256")
                 )
                 or not all(
                     isinstance(item, dict)
                     and item.get("high_preserved") is True
                     and item.get("low_mesh_preserved") is True
-                    and item.get("low_rotation_scale_preserved") is True
+                    and isinstance(item.get("low_rotation_scale_preserved"), bool)
+                    and isinstance(item.get("low_rotation_scale_restored"), bool)
+                    and item.get("low_rotation_scale_preserved")
+                    == (item.get("coordinate_action") in {"unchanged", "translation_restored"})
+                    and item.get("low_rotation_scale_restored")
+                    == (
+                        item.get("coordinate_action")
+                        in {
+                            "linear_transform_restored",
+                            "full_transform_restored",
+                        }
+                    )
                     for item in coordinate_pairs
                 )
                 or not isinstance(fbx_readback, dict)
                 or fbx_readback.get("passed") is not True
-                or fbx_readback.get("sha256")
-                != manifest.get("delivery_fbx_sha256")
+                or fbx_readback.get("sha256") != manifest.get("delivery_fbx_sha256")
             ):
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_DIRECT_V2_IDENTITY_MISMATCH"}
-                )
+                raise HTTPException(422, detail={"code": "RETOPOLOGY_DIRECT_V2_IDENTITY_MISMATCH"})
 
             fsync_completion_staging(staging)
             job = await lock_asset_completion_for_publish(snapshot, lease, db)
@@ -3985,9 +3958,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.status = "SUCCEEDED"
             job.progress = 100
             job.stage = "SUCCEEDED"
-            coordinate_result = (
-                "坐标已恢复" if blend_translation_changed else "坐标未变化、原样保留"
-            )
+            coordinate_result = "变换已恢复" if blend_transform_changed else "坐标未变化、原样保留"
             job.stage_message = f"Direct V2 {coordinate_result}，BLEND 与 FBX 已交付"
             job.estimated_remaining_seconds = 0
             job.last_progress_at = datetime.now(UTC)
@@ -4003,9 +3974,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "automatic_post_generation_review": False,
                     "automatic_retry": False,
                     "coordinate_restoration": {
-                        "mode": "translation_only_world_aabb_center",
+                        "mode": "high_world_linear_and_aabb_center",
                         "passed": True,
                         "blend_translation_changed": blend_translation_changed,
+                        "blend_linear_transform_changed": (blend_linear_transform_changed),
+                        "blend_transform_changed": blend_transform_changed,
                         "fbx_readback_passed": True,
                     },
                     "assets": generation["assets"],
@@ -4419,9 +4392,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             and body.code == "BLENDER_EXECUTION_FAILED"
         )
         effective_retryable = (
-            body.retryable
-            and not requires_runtime_recovery
-            and not v6_post_build_failure
+            body.retryable and not requires_runtime_recovery and not v6_post_build_failure
         )
         await decrement_asset_worker_jobs_atomic(db, previous_worker_id)
         if requires_runtime_recovery:
@@ -4430,9 +4401,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # retryable; preserve its Worker identity for recovery evidence.
             job.status = "FAILED"
             job.stage = "RECOVERY_REQUIRED"
-            job.stage_message = (
-                "Substance Worker 终止或 ComfyUI 连续性无法确认；等待宿主恢复证据"
-            )
+            job.stage_message = "Substance Worker 终止或 ComfyUI 连续性无法确认；等待宿主恢复证据"
             job.estimated_remaining_seconds = 0
             job.finished_at = datetime.now(UTC)
         elif job.cancel_requested:

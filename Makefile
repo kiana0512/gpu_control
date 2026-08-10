@@ -51,7 +51,7 @@ release-package-plan:
 	@: "$${RELEASE_REVISION:?set RELEASE_REVISION to the pushed 40-character source SHA}"
 	$(PYTHON) scripts/package_control_plane_release.py \
 		--version "$${RELEASE_VERSION}" \
-		--worker-version "$${RELEASE_WORKER_VERSION:-1.4.7-retopology-coordinate-restore-v2}" \
+		--worker-version "$${RELEASE_WORKER_VERSION:-1.4.8-retopology-alignment-v3}" \
 		--revision "$${RELEASE_REVISION}"
 
 release-package-execute:
@@ -61,7 +61,7 @@ release-package-execute:
 	@: "$${RELEASE_PACKAGE_CONFIRM:?copy the exact confirmation token from release-package-plan}"
 	$(PYTHON) scripts/package_control_plane_release.py \
 		--version "$${RELEASE_VERSION}" \
-		--worker-version "$${RELEASE_WORKER_VERSION:-1.4.7-retopology-coordinate-restore-v2}" \
+		--worker-version "$${RELEASE_WORKER_VERSION:-1.4.8-retopology-alignment-v3}" \
 		--revision "$${RELEASE_REVISION}" \
 		--sbom-generator "$${RELEASE_SBOM_GENERATOR}" \
 		--execute \
@@ -80,7 +80,7 @@ verify-release-identity:
 	@: "$${RELEASE_SBOM_DIR:?set RELEASE_SBOM_DIR}"
 	$(PYTHON) scripts/verify_release_identity.py \
 		--expected-version "$${RELEASE_VERSION}" \
-		--expected-worker-version "$${RELEASE_WORKER_VERSION:-1.4.7-retopology-coordinate-restore-v2}" \
+		--expected-worker-version "$${RELEASE_WORKER_VERSION:-1.4.8-retopology-alignment-v3}" \
 		--expected-revision "$${RELEASE_REVISION}" \
 		--remote-ref "$${RELEASE_REMOTE_REF:-origin/main}" \
 		--image "api=$${RELEASE_API_IMAGE}" \

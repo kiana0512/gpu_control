@@ -3,36 +3,39 @@ from pathlib import Path
 
 ROOT = Path("packages/asset_processing")
 SCRIPT = ROOT / "blender_retopology_restore_coordinates.py"
-EXPECTED_SHA256 = "f4ffe4aef0628a151224553d78b67ebf31ff470d8970922269ce0e7dbbdf38e2"
+EXPECTED_SHA256 = "9ed679d2387d7ae8c5cd2de4c121b2f9aa5edeea3e3c620d62bc1c472f66d771"
 
 
-def test_coordinate_restore_is_translation_only_and_fbx_readback_gated() -> None:
+def test_coordinate_restore_is_transform_only_and_fbx_readback_gated() -> None:
     source = SCRIPT.read_text("utf-8")
     compile(source, str(SCRIPT), "exec")
 
     assert hashlib.sha256(SCRIPT.read_bytes()).hexdigest() == EXPECTED_SHA256
+    assert "matrix_world[row][column] = high.matrix_world[row][column]" in source
     assert "matrix_world.translation = matrix_world.translation + delta" in source
+    assert "if linear_transform_required:" in source
     assert "if translation_required:" in source
-    assert '"translation_restored" if translation_required else "unchanged"' in source
-    assert "if blend_translation_changed:" in source
-    assert '"low_rotation_scale_preserved": True' in source
-    assert 'bpy.ops.export_scene.fbx(' in source
-    assert 'bpy.ops.import_scene.fbx(filepath=str(output_fbx))' in source
+    assert 'coordinate_action = "full_transform_restored"' in source
+    assert "if blend_transform_changed:" in source
+    assert '"low_rotation_scale_restored": linear_transform_required' in source
+    assert "bpy.ops.export_scene.fbx(" in source
+    assert "bpy.ops.import_scene.fbx(filepath=str(output_fbx))" in source
     assert "FBX readback changed aligned bounds" in source
-    assert 'MODE = "translation_only_world_aabb_center"' in source
+    assert 'MODE = "high_world_linear_and_aabb_center"' in source
+    assert "MAXIMUM_DIMENSION_RELATIVE_ERROR = 0.05" in source
+    assert "generated low dimensions do not match the source high" in source
+    assert "refusing to scale or distort generated topology" in source
 
 
 def test_direct_v2_delivery_requires_coordinate_restore_evidence() -> None:
-    worker = Path(
-        "apps/blender_worker/src/gpu_control_blender_worker/main.py"
-    ).read_text("utf-8")
+    worker = Path("apps/blender_worker/src/gpu_control_blender_worker/main.py").read_text("utf-8")
     api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text("utf-8")
 
     assert f'"{EXPECTED_SHA256}"' in worker
-    assert '"schema_version": "retopology_direct_delivery.v3"' in worker
+    assert '"schema_version": "retopology_direct_delivery.v4"' in worker
     assert '"coordinate_restoration": coordinate_report' in worker
-    assert 'manifest.get("schema_version") != "retopology_direct_delivery.v3"' in api
-    assert '!= "translation_only_world_aabb_center"' in api
+    assert 'manifest.get("schema_version") != "retopology_direct_delivery.v4"' in api
+    assert '!= "high_world_linear_and_aabb_center"' in api
     assert 'fbx_readback.get("passed") is not True' in api
 
 

@@ -14,7 +14,7 @@ from typing import Any
 
 REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
-DEFAULT_ASSET_WORKER_VERSION = "1.4.7-retopology-coordinate-restore-v2"
+DEFAULT_ASSET_WORKER_VERSION = "1.4.8-retopology-alignment-v3"
 REQUIRED_IMAGE_COMPONENTS = frozenset(
     {"api", "scheduler", "asset-api", "web", "blender-worker"}
 )

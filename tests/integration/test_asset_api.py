@@ -334,9 +334,7 @@ def asset_worker_generation(
     started_at: datetime | None = None,
 ) -> dict[str, str]:
     return {
-        "agent_instance_id": hashlib.sha256(
-            f"{worker_id}:{generation}".encode()
-        ).hexdigest()[:32],
+        "agent_instance_id": hashlib.sha256(f"{worker_id}:{generation}".encode()).hexdigest()[:32],
         "agent_started_at": (started_at or datetime.now(UTC)).isoformat(),
     }
 
@@ -349,9 +347,7 @@ def asset_worker_claim_identity(
     return {
         "worker_id": worker_id,
         "node_id": node_id,
-        "agent_instance_id": asset_worker_generation(worker_id, generation)[
-            "agent_instance_id"
-        ],
+        "agent_instance_id": asset_worker_generation(worker_id, generation)["agent_instance_id"],
     }
 
 
@@ -562,13 +558,23 @@ async def test_retopology_process_creates_v230_direct_contract(tmp_path: Path) -
 
 
 @pytest.mark.parametrize(
-    ("coordinate_action", "blend_translation_changed"),
-    (("translation_restored", True), ("unchanged", False)),
+    (
+        "coordinate_action",
+        "blend_translation_changed",
+        "blend_linear_transform_changed",
+    ),
+    (
+        ("unchanged", False, False),
+        ("translation_restored", True, False),
+        ("linear_transform_restored", False, True),
+        ("full_transform_restored", True, True),
+    ),
 )
 async def test_direct_v2_completion_requires_coordinate_decision_and_fbx_readback(
     tmp_path: Path,
     coordinate_action: str,
     blend_translation_changed: bool,
+    blend_linear_transform_changed: bool,
 ) -> None:
     async for settings, client in prepared_asset_app(tmp_path):
         created = await post_retopology_process(
@@ -587,11 +593,8 @@ async def test_direct_v2_completion_requires_coordinate_decision_and_fbx_readbac
         assert leased["job_id"] == created_payload["job_id"]
 
         agent_blend = b"agent-presentation-blend"
-        delivery_blend = (
-            b"translation-restored-blend"
-            if blend_translation_changed
-            else agent_blend
-        )
+        blend_transform_changed = blend_translation_changed or blend_linear_transform_changed
+        delivery_blend = b"transform-restored-blend" if blend_transform_changed else agent_blend
         delivery_fbx = b"translation-restored-fbx"
         agent_sha = hashlib.sha256(agent_blend).hexdigest()
         blend_sha = hashlib.sha256(delivery_blend).hexdigest()
@@ -616,13 +619,16 @@ async def test_direct_v2_completion_requires_coordinate_decision_and_fbx_readbac
             "automatic_retry": False,
         }
         coordinate_restoration = {
-            "schema_version": "retopology_coordinate_restoration.v1",
-            "mode": "translation_only_world_aabb_center",
+            "schema_version": "retopology_coordinate_restoration.v2",
+            "mode": "high_world_linear_and_aabb_center",
             "passed": True,
             "input_blend_sha256": agent_sha,
             "output_blend_sha256": blend_sha,
             "source_high_preserved": True,
+            "maximum_dimension_relative_error": 0.05,
             "blend_translation_changed": blend_translation_changed,
+            "blend_linear_transform_changed": blend_linear_transform_changed,
+            "blend_transform_changed": blend_transform_changed,
             "pairs": [
                 {
                     "high_object": "SOURCE_HIGH",
@@ -630,7 +636,11 @@ async def test_direct_v2_completion_requires_coordinate_decision_and_fbx_readbac
                     "coordinate_action": coordinate_action,
                     "high_preserved": True,
                     "low_mesh_preserved": True,
-                    "low_rotation_scale_preserved": True,
+                    "low_rotation_scale_preserved": (not blend_linear_transform_changed),
+                    "low_rotation_scale_restored": (blend_linear_transform_changed),
+                    "high_low_dimension_relative_error": [0.01, 0.02, 0.015],
+                    "high_low_maximum_dimension_relative_error": 0.02,
+                    "maximum_dimension_relative_error_limit": 0.05,
                 }
             ],
             "fbx_readback": {"passed": True, "sha256": fbx_sha},
@@ -650,16 +660,11 @@ async def test_direct_v2_completion_requires_coordinate_decision_and_fbx_readbac
             "coordinate_restoration": coordinate_restoration,
         }
 
-        endpoint = (
-            f"/internal/v1/assets/jobs/{created_payload['job_id']}"
-            "/retopology-v6-complete"
-        )
+        endpoint = f"/internal/v1/assets/jobs/{created_payload['job_id']}/retopology-v6-complete"
         legacy = await client.post(
             endpoint,
             headers={"X-Asset-Lease": str(leased["lease_token"])},
-            files=direct_v2_completion_files(
-                "retopology_direct_delivery.v2", completion_context
-            ),
+            files=direct_v2_completion_files("retopology_direct_delivery.v3", completion_context),
         )
         assert legacy.status_code == 422, legacy.text
         assert legacy.json()["detail"]["code"] == "RETOPOLOGY_DIRECT_V2_IDENTITY_MISMATCH"
@@ -667,9 +672,7 @@ async def test_direct_v2_completion_requires_coordinate_decision_and_fbx_readbac
         completed = await client.post(
             endpoint,
             headers={"X-Asset-Lease": str(leased["lease_token"])},
-            files=direct_v2_completion_files(
-                "retopology_direct_delivery.v3", completion_context
-            ),
+            files=direct_v2_completion_files("retopology_direct_delivery.v4", completion_context),
         )
         assert completed.status_code == 200, completed.text
         status = await client.get(
@@ -680,9 +683,11 @@ async def test_direct_v2_completion_requires_coordinate_decision_and_fbx_readbac
         payload = status.json()
         assert payload["status"] == "SUCCEEDED"
         assert payload["options"]["direct_v2_result"]["coordinate_restoration"] == {
-            "mode": "translation_only_world_aabb_center",
+            "mode": "high_world_linear_and_aabb_center",
             "passed": True,
             "blend_translation_changed": blend_translation_changed,
+            "blend_linear_transform_changed": blend_linear_transform_changed,
+            "blend_transform_changed": blend_transform_changed,
             "fbx_readback_passed": True,
         }
 
@@ -1972,9 +1977,7 @@ async def test_unconfirmed_baker_termination_is_never_retried_and_recovers_two_p
     async for settings, client in prepared_asset_app(tmp_path):
         worker_id = "asset-worker-3090-b-windows-01"
         await register_substance_worker(client, settings, worker_id)
-        created = await create_minimal_substance_job(
-            client, "baker-termination-unconfirmed"
-        )
+        created = await create_minimal_substance_job(client, "baker-termination-unconfirmed")
         assert created.status_code == 202, created.text
         job_id = created.json()["job_id"]
         claimed = await claim_substance_job(client, settings, worker_id)
@@ -2876,9 +2879,7 @@ async def test_substance_capacity_preserves_total_used_available_identity(
             "used_slots": 1,
             "available_slots": 3,
         }
-        assert snapshot["total_slots"] == (
-            snapshot["used_slots"] + snapshot["available_slots"]
-        )
+        assert snapshot["total_slots"] == (snapshot["used_slots"] + snapshot["available_slots"])
 
         async with app.state.db.session() as db:
             node = await db.get(Node, "worker-3090-b")
@@ -2990,9 +2991,10 @@ async def test_linux_worker_durable_job_blocks_generation_and_node_migration(
             worker = await db.get(AssetWorker, "asset-worker-3090-a")
             assert worker is not None
             assert worker.node_id == "worker-3090-a"
-            assert worker.agent_instance_id == asset_worker_generation(
-                "asset-worker-3090-a", "old"
-            )["agent_instance_id"]
+            assert (
+                worker.agent_instance_id
+                == asset_worker_generation("asset-worker-3090-a", "old")["agent_instance_id"]
+            )
             assert worker.current_jobs == 1
 
         no_second_slot = await signed_post(
@@ -3055,9 +3057,10 @@ async def test_linux_worker_restart_can_reconcile_an_expired_durable_lease(
             assert job.status == "CLAIMED"
             assert job.error_code is None
             assert job.error_message is None
-            assert job.worker_instance_id == asset_worker_generation(
-                "asset-worker-3090-a", "new"
-            )["agent_instance_id"]
+            assert (
+                job.worker_instance_id
+                == asset_worker_generation("asset-worker-3090-a", "new")["agent_instance_id"]
+            )
             assert worker.current_jobs == 1
         public = await client.get(
             f"/api/v1/assets/jobs/{created.json()['job_id']}",
@@ -3101,9 +3104,10 @@ async def test_linux_worker_newer_idle_generation_cannot_be_replaced_by_stale_in
             worker = await db.get(AssetWorker, "asset-worker-3090-a")
             assert worker is not None
             assert worker.node_id == "worker-3090-b"
-            assert worker.agent_instance_id == asset_worker_generation(
-                "asset-worker-3090-a", "new"
-            )["agent_instance_id"]
+            assert (
+                worker.agent_instance_id
+                == asset_worker_generation("asset-worker-3090-a", "new")["agent_instance_id"]
+            )
 
 
 def queued_asset_job(

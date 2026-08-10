@@ -23,6 +23,9 @@ from gpu_control_blender_worker.bootstrap import (
     BootstrapError,
     validate_codex_skill_link,
 )
+from packages.gpu_control_core.assets import (
+    retopology_coordinate_dimension_evidence_valid,
+)
 from packages.gpu_control_core.retopology_v6 import (
     POLICY_SHA256,
     POLICY_VERSION,
@@ -45,17 +48,13 @@ UV_UNWRAP_SCRIPT_SHA256 = "ebfa3546d61c548a11c0e7561c75f93b6ef93308d8da9f27788bf
 UV_QA_SCRIPT_SHA256 = "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
 UV_QA_ADAPTER_SHA256 = "8e6bc5dc20a49fac5be2e92accd518d9da9fa629e878f51dc151baa80ad3359a"
 RETOPOLOGY_COORDINATE_RESTORE_SCRIPT_SHA256 = (
-    "f4ffe4aef0628a151224553d78b67ebf31ff470d8970922269ce0e7dbbdf38e2"
+    "9ed679d2387d7ae8c5cd2de4c121b2f9aa5edeea3e3c620d62bc1c472f66d771"
 )
-RETOPOLOGY_AUDIT_SCRIPT_SHA256 = (
-    "a6575902cfacd7b8106f9c887069d717a880d870fc48a6295431cdcf717a9dc4"
-)
+RETOPOLOGY_AUDIT_SCRIPT_SHA256 = "a6575902cfacd7b8106f9c887069d717a880d870fc48a6295431cdcf717a9dc4"
 RETOPOLOGY_PROCESS_SCRIPT_SHA256 = (
     "f18ceebcc5f47279ee1f11c5bcfcec9c76cec8ebdd7247c74b9412b26aa47501"
 )
-RETOPOLOGY_RENDER_SCRIPT_SHA256 = (
-    "b1b6344ec78a7c1d333cc875c0eeee20087df27878d67c28fa413f9ab3dcdf09"
-)
+RETOPOLOGY_RENDER_SCRIPT_SHA256 = "b1b6344ec78a7c1d333cc875c0eeee20087df27878d67c28fa413f9ab3dcdf09"
 RETOPOLOGY_V6_MERGE_SCRIPT_SHA256 = (
     "ccde46b64203c9f9d11895b6d6bb208ac8074aa0d4aeec4f216210c88006008f"
 )
@@ -81,12 +80,8 @@ class WorkerSettings(BaseSettings):
     blender_version: str = "5.1.2"
     blender_skill_version: str = "asset-skills-2026.07.28"
     uv_skill_root: Path = Path("/opt/codex/skills/blender-pbr-uv")
-    uv_qa_adapter_script: Path = Path(
-        "/app/packages/asset_processing/blender_uv_qa_adapter.py"
-    )
-    retopology_skill_root: Path = Path(
-        "/opt/codex/skills/blender-retopology-compare-iterate"
-    )
+    uv_qa_adapter_script: Path = Path("/app/packages/asset_processing/blender_uv_qa_adapter.py")
+    retopology_skill_root: Path = Path("/opt/codex/skills/blender-retopology-compare-iterate")
     retopology_v6_root: Path = Path("/opt/li3d/retopology-v6")
     retopology_direct_v2_root: Path = Path("/opt/li3d/retopology-direct-v2")
     retopology_coordinate_restore_script: Path = Path(
@@ -143,9 +138,7 @@ def worker_accepts_codex_jobs(
 ) -> bool:
     """Return whether the Worker's single process-wide Codex slot is free."""
 
-    return not any(
-        job_requires_codex(job) for job in running_jobs.values()
-    )
+    return not any(job_requires_codex(job) for job in running_jobs.values())
 
 
 def signed_headers(settings: WorkerSettings, method: str, path: str, body: bytes) -> dict[str, str]:
@@ -203,9 +196,7 @@ async def post_completion_with_lease_keepalive(
     )
     try:
         while True:
-            completed, _ = await asyncio.wait(
-                {upload_task}, timeout=keepalive_seconds
-            )
+            completed, _ = await asyncio.wait({upload_task}, timeout=keepalive_seconds)
             if completed:
                 return await upload_task
 
@@ -226,14 +217,10 @@ async def post_completion_with_lease_keepalive(
                 # Completion may have committed and cleared the lease while the
                 # progress request was in flight.  Prefer its authoritative
                 # response when it arrives within a small bounded grace period.
-                completed, _ = await asyncio.wait(
-                    {upload_task}, timeout=renewal_grace_seconds
-                )
+                completed, _ = await asyncio.wait({upload_task}, timeout=renewal_grace_seconds)
                 if completed:
                     return await upload_task
-                raise RuntimeError(
-                    "completion upload lease renewal failed before commit"
-                ) from exc
+                raise RuntimeError("completion upload lease renewal failed before commit") from exc
 
             if renewal.json().get("cancel_requested"):
                 raise RuntimeError("asset job cancelled during completion upload")
@@ -280,9 +267,7 @@ async def heartbeat(
         **codex_health,
         **retopoflow_health,
     }
-    response = await signed_post(
-        client, settings, "/internal/v1/assets/workers/heartbeat", payload
-    )
+    response = await signed_post(client, settings, "/internal/v1/assets/workers/heartbeat", payload)
     response.raise_for_status()
 
 
@@ -361,9 +346,7 @@ def verify_retopology_direct_v2_package(root: Path) -> None:
         )
 
 
-def update_codex_skill_mount_health(
-    settings: WorkerSettings, health: dict[str, Any]
-) -> bool:
+def update_codex_skill_mount_health(settings: WorkerSettings, health: dict[str, Any]) -> bool:
     """Fail the reported probe immediately when a business Skill drifts."""
     try:
         validate_codex_business_skill_links(settings)
@@ -509,9 +492,7 @@ async def inspect_codex_runtime(settings: WorkerSettings) -> dict[str, Any]:
     }
 
 
-async def run_codex_health_probe(
-    settings: WorkerSettings, health: dict[str, Any]
-) -> None:
+async def run_codex_health_probe(settings: WorkerSettings, health: dict[str, Any]) -> None:
     """Run a bounded, read-only model round-trip; never expose auth or response text."""
     started = time.monotonic()
     checked_at = datetime.now(UTC).isoformat()
@@ -650,9 +631,7 @@ def retopoflow_revision(root: Path) -> str | None:
     return value if len(value) == 40 and all(ch in "0123456789abcdef" for ch in value) else None
 
 
-async def run_retopoflow_health_probe(
-    settings: WorkerSettings, health: dict[str, Any]
-) -> None:
+async def run_retopoflow_health_probe(settings: WorkerSettings, health: dict[str, Any]) -> None:
     checked_at = datetime.now(UTC).isoformat()
     started = time.monotonic()
     if not settings.retopoflow_addon_root.is_dir():
@@ -740,6 +719,13 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def has_raw_blend_signature(path: Path) -> bool:
+    if not path.is_file() or path.stat().st_size < 7:
+        return False
+    with path.open("rb") as handle:
+        return handle.read(7) == b"BLENDER"
+
+
 def extract_retopology_bundle(bundle: Path, destination: Path) -> dict[str, Any]:
     destination.mkdir(parents=True, exist_ok=False)
     destination_root = destination.resolve()
@@ -794,9 +780,7 @@ def contact_sheet(
         raise RuntimeError("cannot create an empty contact sheet")
     rows = (len(sources) + columns - 1) // columns
     label_height = 28
-    sheet = Image.new(
-        "RGB", (columns * cell_size, rows * (cell_size + label_height)), (8, 10, 18)
-    )
+    sheet = Image.new("RGB", (columns * cell_size, rows * (cell_size + label_height)), (8, 10, 18))
     draw = ImageDraw.Draw(sheet)
     for index, (label, source) in enumerate(sources):
         row, column = divmod(index, columns)
@@ -851,9 +835,7 @@ def retopology_quality_gate(
             failures.append(f"{metric.upper()}={int(low.get(metric, 0) or 0)}")
     if not bool(options.get("allow_ngons", False)) and int(low.get("ngons", 0) or 0):
         failures.append(f"NGONS={int(low.get('ngons', 0) or 0)}")
-    if not bool(options.get("allow_triangles", True)) and int(
-        low.get("triangles", 0) or 0
-    ):
+    if not bool(options.get("allow_triangles", True)) and int(low.get("triangles", 0) or 0):
         failures.append(f"TRIANGLES={int(low.get('triangles', 0) or 0)}")
     if int(low.get("faces", 0) or 0) <= 0:
         failures.append("EMPTY_LOW_MESH")
@@ -888,18 +870,12 @@ def retopology_quality_gate(
         ):
             failures.append("COMPONENT_EVIDENCE_MISSING")
         else:
-            required_components = max(
-                cast(int, value) for value in source_components.values()
-            )
+            required_components = max(cast(int, value) for value in source_components.values())
             measured_components = candidate_components
             if measured_components < required_components:
-                failures.append(
-                    f"FACE_COMPONENTS_LOST={required_components - measured_components}"
-                )
+                failures.append(f"FACE_COMPONENTS_LOST={required_components - measured_components}")
         if isinstance(candidate_components, int) and candidate_components <= 0:
-            failures.append(
-                "CANDIDATE_COMPONENT_COUNT_INVALID"
-            )
+            failures.append("CANDIDATE_COMPONENT_COUNT_INVALID")
 
     topology_mode = str(options.get("topology_mode", "mixed"))
     if topology_mode == "quad_dominant" and float(candidate.get("quad_ratio", 0.0)) < 0.8:
@@ -993,17 +969,17 @@ authority. The current low is only a starting candidate. Every generated result 
 strict audit and matched front/side/top/perspective visual evidence checks.
 
 User request:
-{input_manifest.get('user_request') or 'No additional natural-language request was supplied.'}
+{input_manifest.get("user_request") or "No additional natural-language request was supplied."}
 
 Object selectors:
-- high: {options['high_object']}
-- reference low: {options['reference_object']}
-- current low: {options['low_object']}
+- high: {options["high_object"]}
+- reference low: {options["reference_object"]}
+- current low: {options["low_object"]}
 
-Requested target_faces: {options.get('target_faces') or 'derive from reference low'}
-Requested algorithm: {options.get('algorithm')}
-Requested topology style: {options.get('topology_style', 'quad_dominant')}
-External reference views: {json.dumps(input_manifest.get('reference_views', []), ensure_ascii=False)}
+Requested target_faces: {options.get("target_faces") or "derive from reference low"}
+Requested algorithm: {options.get("algorithm")}
+Requested topology style: {options.get("topology_style", "quad_dominant")}
+External reference views: {json.dumps(input_manifest.get("reference_views", []), ensure_ascii=False)}
 
 Real baseline Blender audit:
 {baseline}
@@ -1025,9 +1001,7 @@ Real baseline Blender audit:
         str(workspace),
     ]
     for reference in input_manifest.get("reference_views", []):
-        command.extend(
-            ("--image", str(workspace / "references" / str(reference["filename"])))
-        )
+        command.extend(("--image", str(workspace / "references" / str(reference["filename"]))))
     command.append("-")
     async with CODEX_EXEC_LOCK:
         process = await asyncio.create_subprocess_exec(
@@ -1228,18 +1202,12 @@ async def run_retopology_v6_legacy(
             str(extracted / "references" / str(item["filename"]))
             for item in input_manifest.get("reference_views", [])
         ],
-        "policy_path": str(
-            settings.retopology_v6_root / "config" / "retopology-policy-v6.json"
-        ),
+        "policy_path": str(settings.retopology_v6_root / "config" / "retopology-policy-v6.json"),
         "plan_schema_path": str(
-            settings.retopology_v6_root
-            / "contracts"
-            / "retopology-plan-v6.schema.json"
+            settings.retopology_v6_root / "contracts" / "retopology-plan-v6.schema.json"
         ),
         "result_schema_path": str(
-            settings.retopology_v6_root
-            / "contracts"
-            / "retopology-result-v6.schema.json"
+            settings.retopology_v6_root / "contracts" / "retopology-result-v6.schema.json"
         ),
         "skill_root": str(settings.retopology_skill_root),
         "blender_executable": settings.blender_binary,
@@ -1320,13 +1288,10 @@ async def run_retopology_v6_legacy(
         object_names = ["advisory_candidate_low"]
 
     required_paths = {
-        role: output_dir / filename
-        for role, filename in RETOPOLOGY_V6_REQUIRED_OUTPUTS.items()
+        role: output_dir / filename for role, filename in RETOPOLOGY_V6_REQUIRED_OUTPUTS.items()
     }
     pre_qa_required = {
-        role: path
-        for role, path in required_paths.items()
-        if role not in {"qa_report", "manifest"}
+        role: path for role, path in required_paths.items() if role not in {"qa_report", "manifest"}
     }
     for role, path in pre_qa_required.items():
         if not path.is_file() or path.stat().st_size <= 0:
@@ -1585,9 +1550,7 @@ async def run_retopology_v6_legacy(
     result_artifacts = independent_result.get("artifacts")
     if not isinstance(result_artifacts, list):
         raise RuntimeError("Retopology V6 result omitted artifact identities")
-    by_role = {
-        str(item.get("role")): item for item in result_artifacts if isinstance(item, dict)
-    }
+    by_role = {str(item.get("role")): item for item in result_artifacts if isinstance(item, dict)}
     if set(RETOPOLOGY_V6_REQUIRED_OUTPUTS).difference(by_role):
         raise RuntimeError("Retopology V6 result omitted required artifact roles")
     for role, path in required_paths.items():
@@ -1604,8 +1567,7 @@ async def run_retopology_v6_legacy(
             raise RuntimeError("Retopology V6 publish flag conflicts with status")
         gates = independent_result.get("gates")
         if not isinstance(gates, dict) or not all(
-            isinstance(gate, dict) and gate.get("passed") is True
-            for gate in gates.values()
+            isinstance(gate, dict) and gate.get("passed") is True for gate in gates.values()
         ):
             raise RuntimeError("Retopology V6 publish flag bypassed a required gate")
 
@@ -1656,7 +1618,11 @@ async def run_retopology_v6(
     # SOURCE_HIGH manifest. Other legacy upload formats retain the existing
     # GPU Control normalization path so the public single-file API stays
     # backward compatible.
-    if project_path.suffix.lower() not in {".fbx", ".blend"}:
+    project_suffix = project_path.suffix.lower()
+    normalization_required = project_suffix not in {".fbx", ".blend"} or (
+        project_suffix == ".blend" and not has_raw_blend_signature(project_path)
+    )
+    if normalization_required:
         direct_source_path = workspace / "retopology-direct-v2-source.blend"
         import_process = await start_blender(
             settings,
@@ -1683,7 +1649,7 @@ async def run_retopology_v6(
             hard_timeout_seconds=300,
         )
         (output_dir / "source_import.log").write_bytes(import_log)
-        if not direct_source_path.is_file() or direct_source_path.stat().st_size <= 0:
+        if not has_raw_blend_signature(direct_source_path):
             raise RuntimeError("Retopology Direct V2 source normalization failed")
         direct_source_path.chmod(0o444)
     direct_source_sha = file_sha256(direct_source_path)
@@ -1781,9 +1747,7 @@ async def run_retopology_v6(
     if not isinstance(generation.get("assets"), list) or not generation["assets"]:
         raise RuntimeError("Retopology Direct V2 generation report has no asset records")
     low_objects = [
-        item.get("low_object")
-        for item in generation["assets"]
-        if isinstance(item, dict)
+        item.get("low_object") for item in generation["assets"] if isinstance(item, dict)
     ]
     if not low_objects or not all(isinstance(name, str) and name for name in low_objects):
         raise RuntimeError("Retopology Direct V2 report has invalid low object names")
@@ -1832,7 +1796,7 @@ async def run_retopology_v6(
         92,
         94,
         "RETOPOLOGY_V2_COORD_RESTORE",
-        "低模已生成，正在只平移回高模坐标并回读验证正式 FBX",
+        "低模已生成，正在恢复高模世界变换并回读验证正式 FBX",
         120,
         hard_timeout_seconds=300,
     )
@@ -1855,39 +1819,61 @@ async def run_retopology_v6(
     }
     fbx_readback = coordinate_report.get("fbx_readback")
     blend_translation_changed = coordinate_report.get("blend_translation_changed")
+    blend_linear_transform_changed = coordinate_report.get("blend_linear_transform_changed")
+    blend_transform_changed = coordinate_report.get("blend_transform_changed")
     coordinate_actions = [
-        item.get("coordinate_action")
-        for item in reported_pairs or []
-        if isinstance(item, dict)
+        item.get("coordinate_action") for item in reported_pairs or [] if isinstance(item, dict)
     ]
     if (
-        coordinate_report.get("schema_version")
-        != "retopology_coordinate_restoration.v1"
-        or coordinate_report.get("mode") != "translation_only_world_aabb_center"
+        coordinate_report.get("schema_version") != "retopology_coordinate_restoration.v2"
+        or coordinate_report.get("mode") != "high_world_linear_and_aabb_center"
         or coordinate_report.get("passed") is not True
         or coordinate_report.get("source_high_preserved") is not True
+        or not retopology_coordinate_dimension_evidence_valid(coordinate_report)
         or coordinate_report.get("input_blend_sha256") != agent_blend_sha256
         or coordinate_report.get("output_blend_sha256") != restored_blend_sha256
         or not isinstance(reported_pairs, list)
         or not reported_pairs
         or actual_pairs != expected_pairs
         or not isinstance(blend_translation_changed, bool)
+        or not isinstance(blend_linear_transform_changed, bool)
+        or not isinstance(blend_transform_changed, bool)
         or len(coordinate_actions) != len(reported_pairs)
         or not all(
-            action in {"unchanged", "translation_restored"}
+            action
+            in {
+                "unchanged",
+                "translation_restored",
+                "linear_transform_restored",
+                "full_transform_restored",
+            }
             for action in coordinate_actions
         )
         or blend_translation_changed
-        != ("translation_restored" in coordinate_actions)
-        or (
-            blend_translation_changed is False
-            and agent_blend_sha256 != restored_blend_sha256
+        != any(
+            action in {"translation_restored", "full_transform_restored"}
+            for action in coordinate_actions
         )
+        or blend_linear_transform_changed
+        != any(
+            action in {"linear_transform_restored", "full_transform_restored"}
+            for action in coordinate_actions
+        )
+        or blend_transform_changed != (blend_translation_changed or blend_linear_transform_changed)
+        or (blend_transform_changed is False and agent_blend_sha256 != restored_blend_sha256)
         or not all(
             isinstance(item, dict)
             and item.get("high_preserved") is True
             and item.get("low_mesh_preserved") is True
-            and item.get("low_rotation_scale_preserved") is True
+            and isinstance(item.get("low_rotation_scale_preserved"), bool)
+            and isinstance(item.get("low_rotation_scale_restored"), bool)
+            and item.get("low_rotation_scale_preserved")
+            == (item.get("coordinate_action") in {"unchanged", "translation_restored"})
+            and item.get("low_rotation_scale_restored")
+            == (
+                item.get("coordinate_action")
+                in {"linear_transform_restored", "full_transform_restored"}
+            )
             for item in reported_pairs
         )
         or not isinstance(fbx_readback, dict)
@@ -1896,7 +1882,7 @@ async def run_retopology_v6(
     ):
         raise RuntimeError("Retopology Direct V2 coordinate restoration gate failed")
     delivery_manifest = {
-        "schema_version": "retopology_direct_delivery.v3",
+        "schema_version": "retopology_direct_delivery.v4",
         "job_id": job_id,
         "engine_contract": "retopology-direct-v2",
         "package_sha256": options.get("package_sha256"),
@@ -1932,9 +1918,7 @@ async def run_retopology_v6(
     }
 
 
-async def start_blender(
-    settings: WorkerSettings, *arguments: str
-) -> asyncio.subprocess.Process:
+async def start_blender(settings: WorkerSettings, *arguments: str) -> asyncio.subprocess.Process:
     environment = dict(os.environ)
     environment["CUDA_VISIBLE_DEVICES"] = ""
     return await asyncio.create_subprocess_exec(
@@ -2019,9 +2003,7 @@ async def wait_for_blender(
                 raise RuntimeError("subprocess output drain hard timeout exceeded")
             wait_seconds = 15.0
             if hard_timeout_seconds is not None:
-                wait_seconds = min(
-                    wait_seconds, max(0.1, hard_timeout_seconds - elapsed)
-                )
+                wait_seconds = min(wait_seconds, max(0.1, hard_timeout_seconds - elapsed))
             done, _ = await asyncio.wait({output_task}, timeout=wait_seconds)
             if done:
                 break
@@ -2103,9 +2085,7 @@ async def run_uv_skill(
     unwrap_script = verified_script(
         settings.uv_skill_root / "scripts" / "unwrap_fbx.py", UV_UNWRAP_SCRIPT_SHA256
     )
-    verified_script(
-        settings.uv_skill_root / "scripts" / "qa_uv.py", UV_QA_SCRIPT_SHA256
-    )
+    verified_script(settings.uv_skill_root / "scripts" / "qa_uv.py", UV_QA_SCRIPT_SHA256)
     qa_adapter = verified_script(settings.uv_qa_adapter_script, UV_QA_ADAPTER_SHA256)
     output_dir.mkdir(parents=True, exist_ok=False)
     if job_type == "UV_PROCESS_V2":
@@ -2387,9 +2367,7 @@ async def run_retopology_process(
     )
     algorithm_resolution_reason = "requested_or_agent_recommendation"
     baseline_payload = json.loads(baseline_path.read_text("utf-8"))
-    high_topology = (
-        baseline_payload.get("objects", {}).get("high", {}).get("topology", {})
-    )
+    high_topology = baseline_payload.get("objects", {}).get("high", {}).get("topology", {})
     # QuadriFlow deterministically cancels on fragmented/open high meshes.  Do
     # not let a non-deterministic Agent recommendation turn the same immutable
     # input into alternating success/failure results.  The existing low mesh is
@@ -2619,8 +2597,7 @@ async def run_retopology_process(
             "manual_review_required": False,
         },
         "quality_gate": quality_gate,
-        "automatic_final_promotion_allowed": bool(quality_gate["passed"])
-        and source_preserved,
+        "automatic_final_promotion_allowed": bool(quality_gate["passed"]) and source_preserved,
         "uv_status": report_payload.get("uv_status"),
         "cage_status": report_payload.get("cage_status"),
         "bake_status": report_payload.get("bake_status"),
@@ -2731,8 +2708,14 @@ async def process_job(
                 else run_retopology_v6
             )
             contract = await retopology_runner(
-                client, settings, job_id, lease_headers, input_path, output_dir,
-                job["options"], str(job["input_sha256"])
+                client,
+                settings,
+                job_id,
+                lease_headers,
+                input_path,
+                output_dir,
+                job["options"],
+                str(job["input_sha256"]),
             )
         else:
             raise RuntimeError(f"unsupported asset job type: {job['job_type']}")
@@ -2757,9 +2740,7 @@ async def process_job(
             elif job["job_type"] == "UV_PROCESS_V2":
                 complete_path = f"/internal/v1/assets/jobs/{job_id}/uv-v2-complete"
             elif job["job_type"] == "RETOPOLOGY_PROCESS_V1":
-                complete_path = (
-                    f"/internal/v1/assets/jobs/{job_id}/retopology-process-complete"
-                )
+                complete_path = f"/internal/v1/assets/jobs/{job_id}/retopology-process-complete"
             elif job["job_type"] == "RETOPOLOGY_PROCESS_V2":
                 completion_suffix = (
                     "retopology-v6-formal-complete"
@@ -2768,9 +2749,7 @@ async def process_job(
                 )
                 complete_path = f"/internal/v1/assets/jobs/{job_id}/{completion_suffix}"
             else:
-                complete_path = (
-                    f"/internal/v1/assets/jobs/{job_id}/retopology-complete"
-                )
+                complete_path = f"/internal/v1/assets/jobs/{job_id}/retopology-complete"
             for kind, filename in contract.items():
                 handle = (output_dir / filename).open("rb")
                 handles.append(handle)
@@ -2915,9 +2894,7 @@ async def worker_loop(settings: WorkerSettings) -> None:
         finally:
             probe_task.cancel()
             retopoflow_probe_task.cancel()
-            await asyncio.gather(
-                probe_task, retopoflow_probe_task, return_exceptions=True
-            )
+            await asyncio.gather(probe_task, retopoflow_probe_task, return_exceptions=True)
 
 
 def run() -> None:

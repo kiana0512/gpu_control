@@ -1,10 +1,11 @@
-"""Restore Direct V2 low meshes to their high-mesh world centers before delivery.
+"""Restore Direct V2 low meshes to the authoritative high-mesh transform.
 
-The topology agent may translate its generated low mesh for presentation.  That
-presentation transform must never leak into the authoritative Blend/FBX used by
-UV and baking.  This adapter changes translation only, saves the aligned Blend,
-exports the requested lows, and fails closed unless FBX readback preserves the
-aligned world-space bounds.
+The topology agent may alter an object's presentation transform after generating
+the low mesh.  That presentation transform must never leak into the authoritative
+Blend/FBX used by UV and baking.  This adapter restores the high object's exact
+world linear transform and aligns world-space centers without changing low mesh
+vertices, edges, faces or topology.  It then fails closed unless the dimensions
+remain within the delivery limit and FBX readback preserves the aligned bounds.
 """
 
 from __future__ import annotations
@@ -21,8 +22,9 @@ from typing import Any
 import bpy
 from mathutils import Vector
 
-SCHEMA_VERSION = "retopology_coordinate_restoration.v1"
-MODE = "translation_only_world_aabb_center"
+SCHEMA_VERSION = "retopology_coordinate_restoration.v2"
+MODE = "high_world_linear_and_aabb_center"
+MAXIMUM_DIMENSION_RELATIVE_ERROR = 0.05
 
 
 def arguments() -> argparse.Namespace:
@@ -49,10 +51,7 @@ def vector_values(value: Vector) -> list[float]:
 
 def matrix_values(obj: bpy.types.Object, size: int) -> list[list[float]]:
     matrix = obj.matrix_world
-    return [
-        [float(matrix[row][column]) for column in range(size)]
-        for row in range(size)
-    ]
+    return [[float(matrix[row][column]) for column in range(size)] for row in range(size)]
 
 
 def mesh_sha256(obj: bpy.types.Object) -> str:
@@ -78,8 +77,7 @@ def object_signature(obj: bpy.types.Object, *, include_translation: bool) -> dic
     }
     if include_translation:
         signature["world_matrix_4x4"] = [
-            [float(obj.matrix_world[row][column]) for column in range(4)]
-            for row in range(4)
+            [float(obj.matrix_world[row][column]) for column in range(4)] for row in range(4)
         ]
     return signature
 
@@ -90,14 +88,16 @@ def require_static_mesh(name: str, role: str) -> bpy.types.Object:
         raise RuntimeError(f"{role} mesh is missing or empty: {name}")
     if role == "low":
         if obj.parent is not None:
-            raise RuntimeError(f"generated low has a parent and cannot be translated safely: {name}")
+            raise RuntimeError(
+                f"generated low has a parent and cannot be translated safely: {name}"
+            )
         if len(obj.constraints):
-            raise RuntimeError(f"generated low has constraints and cannot be translated safely: {name}")
+            raise RuntimeError(
+                f"generated low has constraints and cannot be translated safely: {name}"
+            )
         animation = obj.animation_data
         if animation is not None and (
-            animation.action is not None
-            or len(animation.drivers)
-            or len(animation.nla_tracks)
+            animation.action is not None or len(animation.drivers) or len(animation.nla_tracks)
         ):
             raise RuntimeError(
                 f"generated low has transform animation and cannot be translated safely: {name}"
@@ -132,6 +132,22 @@ def bounds_payload(objects: list[bpy.types.Object]) -> dict[str, list[float]]:
 
 def max_vector_delta(left: list[float], right: list[float]) -> float:
     return max(abs(left[index] - right[index]) for index in range(3))
+
+
+def max_matrix_delta(left: list[list[float]], right: list[list[float]]) -> float:
+    return max(
+        abs(left[row][column] - right[row][column]) for row in range(3) for column in range(3)
+    )
+
+
+def dimension_relative_errors(
+    high_dimensions: list[float], low_dimensions: list[float], tolerance: float
+) -> list[float]:
+    return [
+        abs(low_dimensions[index] - high_dimensions[index])
+        / max(abs(high_dimensions[index]), tolerance)
+        for index in range(3)
+    ]
 
 
 def nearly_equal(left: Any, right: Any, tolerance: float = 1e-9) -> bool:
@@ -235,14 +251,41 @@ def main() -> None:
         high = require_static_mesh(high_name, "high")
         low = require_static_mesh(low_name, "low")
         high_signature = object_signature(high, include_translation=True)
-        low_signature = object_signature(low, include_translation=False)
+        low_mesh_sha256 = mesh_sha256(low)
+        high_world_linear = matrix_values(high, 3)
+        low_world_linear_before = matrix_values(low, 3)
         high_bounds = bounds_payload([high])
         low_bounds_before = bounds_payload([low])
-        delta = Vector(high_bounds["center"]) - Vector(low_bounds_before["center"])
         transform_tolerance = max(
             1e-6,
             max(abs(value) for value in high_bounds["dimensions"]) * 1e-6,
         )
+        linear_transform_tolerance = 1e-6
+        linear_transform_delta = max_matrix_delta(high_world_linear, low_world_linear_before)
+        linear_transform_required = linear_transform_delta > linear_transform_tolerance
+        if linear_transform_required:
+            matrix_world = low.matrix_world.copy()
+            for row in range(3):
+                for column in range(3):
+                    matrix_world[row][column] = high.matrix_world[row][column]
+            low.matrix_world = matrix_world
+            bpy.context.view_layer.update()
+
+        low_bounds_after_linear_restore = bounds_payload([low])
+        dimension_errors = dimension_relative_errors(
+            high_bounds["dimensions"],
+            low_bounds_after_linear_restore["dimensions"],
+            transform_tolerance,
+        )
+        maximum_dimension_error = max(dimension_errors)
+        if maximum_dimension_error > MAXIMUM_DIMENSION_RELATIVE_ERROR:
+            raise RuntimeError(
+                "generated low dimensions do not match the source high; "
+                f"{low_name}; maximum_relative_error={maximum_dimension_error:.9g}, "
+                f"limit={MAXIMUM_DIMENSION_RELATIVE_ERROR:.9g}; "
+                "refusing to scale or distort generated topology"
+            )
+        delta = Vector(high_bounds["center"]) - Vector(low_bounds_after_linear_restore["center"])
         translation_required = max(abs(value) for value in delta) > transform_tolerance
         if translation_required:
             matrix_world = low.matrix_world.copy()
@@ -252,54 +295,79 @@ def main() -> None:
 
         low_bounds_after = bounds_payload([low])
         high_after = object_signature(high, include_translation=True)
-        low_after = object_signature(low, include_translation=False)
-        center_residual = max_vector_delta(
-            high_bounds["center"], low_bounds_after["center"]
-        )
-        dimension_delta = max_vector_delta(
+        low_world_linear_after = matrix_values(low, 3)
+        center_residual = max_vector_delta(high_bounds["center"], low_bounds_after["center"])
+        dimensions_change = max_vector_delta(
             low_bounds_before["dimensions"], low_bounds_after["dimensions"]
         )
+        linear_transform_residual = max_matrix_delta(high_world_linear, low_world_linear_after)
         if high_after != high_signature:
             raise RuntimeError(f"coordinate restoration changed the high mesh: {high_name}")
-        if not nearly_equal(low_after, low_signature):
+        if mesh_sha256(low) != low_mesh_sha256:
             raise RuntimeError(
-                f"coordinate restoration changed low geometry, rotation, or scale: {low_name}"
+                f"coordinate restoration changed low mesh topology or geometry: {low_name}"
             )
-        if center_residual > transform_tolerance or dimension_delta > transform_tolerance:
+        if (
+            center_residual > transform_tolerance
+            or linear_transform_residual > linear_transform_tolerance
+        ):
             raise RuntimeError(
-                "coordinate restoration did not produce a translation-only match: "
+                "coordinate restoration did not reproduce the high transform: "
                 f"{low_name}; center_residual={center_residual:.9g}, "
-                f"dimension_delta={dimension_delta:.9g}, "
+                f"linear_transform_residual={linear_transform_residual:.9g}, "
                 f"tolerance={transform_tolerance:.9g}"
             )
+        if linear_transform_required and translation_required:
+            coordinate_action = "full_transform_restored"
+        elif linear_transform_required:
+            coordinate_action = "linear_transform_restored"
+        elif translation_required:
+            coordinate_action = "translation_restored"
+        else:
+            coordinate_action = "unchanged"
         records.append(
             {
                 "high_object": high_name,
                 "low_object": low_name,
-                "coordinate_action": (
-                    "translation_restored" if translation_required else "unchanged"
-                ),
+                "coordinate_action": coordinate_action,
                 "translation_applied": (
                     vector_values(delta) if translation_required else [0.0, 0.0, 0.0]
                 ),
+                "world_linear_before": low_world_linear_before,
+                "world_linear_after": low_world_linear_after,
+                "authoritative_high_world_linear": high_world_linear,
+                "linear_transform_max_abs_delta_before": linear_transform_delta,
+                "linear_transform_max_abs_residual": linear_transform_residual,
+                "linear_transform_tolerance": linear_transform_tolerance,
                 "high_bounds": high_bounds,
                 "low_bounds_before": low_bounds_before,
+                "low_bounds_after_linear_restore": low_bounds_after_linear_restore,
                 "low_bounds_after": low_bounds_after,
                 "center_residual": center_residual,
-                "dimensions_max_abs_delta": dimension_delta,
+                "dimensions_max_abs_change": dimensions_change,
+                "high_low_dimension_relative_error": dimension_errors,
+                "high_low_maximum_dimension_relative_error": maximum_dimension_error,
+                "maximum_dimension_relative_error_limit": (MAXIMUM_DIMENSION_RELATIVE_ERROR),
                 "transform_tolerance": transform_tolerance,
                 "high_preserved": True,
                 "low_mesh_preserved": True,
-                "low_rotation_scale_preserved": True,
+                "low_rotation_scale_preserved": not linear_transform_required,
+                "low_rotation_scale_restored": linear_transform_required,
             }
         )
         low_objects.append(low)
 
     blend_translation_changed = any(
-        record["coordinate_action"] == "translation_restored" for record in records
+        record["coordinate_action"] in {"translation_restored", "full_transform_restored"}
+        for record in records
     )
+    blend_linear_transform_changed = any(
+        record["coordinate_action"] in {"linear_transform_restored", "full_transform_restored"}
+        for record in records
+    )
+    blend_transform_changed = blend_translation_changed or blend_linear_transform_changed
     aligned_union_bounds = bounds_payload(low_objects)
-    if blend_translation_changed:
+    if blend_transform_changed:
         args.output_blend.parent.mkdir(parents=True, exist_ok=True)
         bpy.ops.wm.save_as_mainfile(filepath=str(args.output_blend), check_existing=False)
     output_blend_sha256 = file_sha256(args.output_blend)
@@ -308,11 +376,14 @@ def main() -> None:
         "schema_version": SCHEMA_VERSION,
         "mode": MODE,
         "passed": True,
-        "allowed_change": "generated_low_world_translation_only",
+        "allowed_change": "generated_low_object_world_transform_only",
+        "maximum_dimension_relative_error": MAXIMUM_DIMENSION_RELATIVE_ERROR,
         "input_blend_sha256": input_blend_sha256,
         "output_blend_sha256": output_blend_sha256,
         "source_high_preserved": True,
         "blend_translation_changed": blend_translation_changed,
+        "blend_linear_transform_changed": blend_linear_transform_changed,
+        "blend_transform_changed": blend_transform_changed,
         "pairs": records,
         "fbx_readback": fbx,
     }
