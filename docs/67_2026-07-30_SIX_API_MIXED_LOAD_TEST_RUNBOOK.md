@@ -111,6 +111,8 @@ tenant-binding = SHA-256("<tenant-1>,<tenant-2>,...")
 - 从当前时刻计算，scenario 的全部 stage 必须能在窗口结束前完成；
 - `LOAD_TEST_BACKUP_DIR` 指向 `scripts/backup.sh --mode full` 在本窗口前创建的最新完整恢复点；
 - scenario 的 `maximum_preexisting_gpu_jobs` 和 `maximum_preexisting_asset_jobs` 必须均为 `0`；
+- scenario 峰值必须在已批准的 100～120 VU 范围内，最后阶段必须等于本场景峰值；100 VU 正式场景
+  不需要为了满足旧版 120 VU 硬编码而额外升压；
 - `LOAD_TEST_SOURCE_REVISION` 和五个 `LOAD_TEST_*_IMAGE_DIGEST` 必须完整；五个 digest 声明必须逐项等于
   远端发布证据中对应组件的 `local_image_id`，不能用 tag 或 `PENDING_REGISTRY_PUSH`；
 - `LOAD_TEST_RELEASE_EVIDENCE_COMMIT` 必须是当前 GitHub `origin/main` 的完整 tip `E`，本地 harness

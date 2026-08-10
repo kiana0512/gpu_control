@@ -2256,8 +2256,15 @@ def test_extended_six_api_scenario_requires_a_75_minute_window() -> None:
     )
 
 
-@pytest.mark.parametrize("users", [100, 121])
-def test_production_six_api_profile_requires_exactly_120_users(tmp_path: Path, users: int) -> None:
+@pytest.mark.parametrize(
+    ("users", "profile_blocked"),
+    [(100, False), (120, False), (121, True)],
+)
+def test_production_six_api_profile_requires_100_to_120_users_and_finishes_at_peak(
+    tmp_path: Path,
+    users: int,
+    profile_blocked: bool,
+) -> None:
     payload = scenario_payload()
     payload["stages"][-1]["users"] = users
     scenario = load_scenario(write_yaml(tmp_path / "scenario.yaml", payload))
@@ -2285,7 +2292,10 @@ def test_production_six_api_profile_requires_exactly_120_users(tmp_path: Path, u
         validate_backup=False,
     )
 
-    assert any("exactly 120 users" in blocker for blocker in blockers)
+    assert (
+        any("peak between 100 and 120 users" in blocker for blocker in blockers)
+        is profile_blocked
+    )
     if users > 120:
         assert any("safety cap of 120" in blocker for blocker in blockers)
 

@@ -2298,9 +2298,14 @@ class RuntimeSettings:
                 blockers.append(
                     "production scenarios must require zero pre-existing GPU and asset jobs"
                 )
-            if scenario.maximum_users != 120 or scenario.stages[-1].users != 120:
+            if (
+                scenario.maximum_users < 100
+                or scenario.maximum_users > 120
+                or scenario.stages[-1].users != scenario.maximum_users
+            ):
                 blockers.append(
-                    "production six-API scenario must peak and finish at exactly 120 users"
+                    "production six-API scenario must peak between 100 and 120 users "
+                    "and finish at that peak"
                 )
             if len(self.api_keys) < MINIMUM_PRODUCTION_LOAD_IDENTITIES or len(
                 set(self.api_keys)
