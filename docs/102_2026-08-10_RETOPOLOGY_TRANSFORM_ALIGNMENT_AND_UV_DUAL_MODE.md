@@ -55,7 +55,7 @@ BLEND QA 和 FBX QA 均记录实际 `algorithm`，Asset API 完成门禁要求�
 
 | kind | 文件 | 用途 |
 |---|---|---|
-| `blend` | `<stem>_BAKE_ALIGNMENT.blend` | 保留原对象和最终烘焙高低模的检查工程 |
+| `blend` | `<stem>_GAME_LOW.blend` | 保留原对象和最终烘焙高低模的检查工程；文件名兼容冻结的 Li3D V6 正式模型识别合同 |
 | `fbx` | `<stem>_GAME_LOW.fbx` | 最终低模，只传给烘焙引擎 |
 | `high_fbx` | `<stem>_BAKE_HIGH.fbx` | 最终高模，只传给烘焙引擎 |
 | `alignment_report` | `bake_alignment_report.json` | 角色、纯变换、指纹、七视图与米制导出证据 |
@@ -153,7 +153,7 @@ Worker/bootstrap/对齐专项 `55 passed`。Skill SHA 校验、Python 编译、R
 | canary 几何门禁 | 0 退化面、0 非流形边、0 松散边/点、0 重复点/面、0 朝向不一致边 |
 | canary FBX 回读 | 全新 Blender 场景重新导入通过；米制合同通过；低模中心/尺寸回读最大误差不超过 `5.03e-7 m` |
 | canary 视觉门禁 | 前、后、左、右、顶、底、透视全部检查并通过；方向、非对称部件、轮廓与部件位置匹配；无错误镜像、长刺、可见穿插、折叠或坍塌 |
-| 正式制品 | `_BAKE_ALIGNMENT.blend`、`_BAKE_HIGH.fbx`、`_GAME_LOW.fbx`、对齐/回读报告、两张总图、七方向 ZIP、视觉 QA 与生成事件均已原子发布 |
+| 正式制品 | `_GAME_LOW.blend`、`_BAKE_HIGH.fbx`、`_GAME_LOW.fbx`、对齐/回读报告、两张总图、七方向 ZIP、视觉 QA 与生成事件均已原子发布 |
 
 首次线上 canary 在 98% 暴露 Codex Structured Outputs 不接受数组 `uniqueItems` 的兼容性问题；该字段
 已删除并增加合同测试，形成 Worker `1.4.13`。热修复专项回归 `46 passed`，随后上述真实 canary

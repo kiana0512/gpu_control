@@ -840,6 +840,15 @@ async def test_direct_v2_completion_requires_bake_pair_and_visual_qa(tmp_path: P
         assert status.status_code == 200, status.text
         payload = status.json()
         assert payload["status"] == "SUCCEEDED"
+        formal_models = {
+            (artifact["kind"], artifact["filename"])
+            for artifact in payload["artifacts"]
+            if artifact["kind"] in {"blend", "fbx"}
+        }
+        assert formal_models == {
+            ("blend", "crate_GAME_LOW.blend"),
+            ("fbx", "crate_GAME_LOW.fbx"),
+        }
         assert payload["options"]["direct_v2_result"]["bake_alignment"] == {
             "mode": "transform_only_alignment_then_separate_uv",
             "passed": True,

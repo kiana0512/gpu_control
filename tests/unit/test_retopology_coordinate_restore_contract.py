@@ -62,6 +62,8 @@ def test_direct_v2_delivery_requires_bake_alignment_evidence() -> None:
     assert '"visual_qa": visual_qa' in worker
     assert '"uniqueItems"' not in worker
     assert 'manifest.get("schema_version") != "retopology_direct_delivery.v6"' in api
+    assert 'staged_by_kind["blend"].filename = f"{stem}_GAME_LOW.blend"' in api
+    assert 'staged_by_kind["fbx"].filename = f"{stem}_GAME_LOW.fbx"' in api
     assert "retopology_bake_alignment_evidence_valid" in worker
     assert "retopology_bake_alignment_evidence_valid" in api
     assert "retopology_bake_pair_validation_evidence_valid" in worker

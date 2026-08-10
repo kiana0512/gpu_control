@@ -3963,7 +3963,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return cancelled
             stem = Path(snapshot.options["project_filename"]).stem
             staged_by_kind["blend"].kind = "blend"
-            staged_by_kind["blend"].filename = f"{stem}_BAKE_ALIGNMENT.blend"
+            # Keep the frozen V6 client-facing filename contract.  The BLEND now
+            # contains the preserved sources plus the validated bake pair, but
+            # existing Li3D clients classify the formal model by _GAME_LOW.
+            staged_by_kind["blend"].filename = f"{stem}_GAME_LOW.blend"
             staged_by_kind["fbx"].kind = "fbx"
             staged_by_kind["fbx"].filename = f"{stem}_GAME_LOW.fbx"
             staged_by_kind["high_fbx"].filename = f"{stem}_BAKE_HIGH.fbx"
