@@ -14,7 +14,7 @@ from typing import Any
 
 REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
-DEFAULT_ASSET_WORKER_VERSION = "1.4.14-retopology-uniform-scale-refine-v1"
+DEFAULT_ASSET_WORKER_VERSION = "1.4.15-retopology-uniform-scale-search-v2"
 REQUIRED_IMAGE_COMPONENTS = frozenset({"api", "scheduler", "asset-api", "web", "blender-worker"})
 OCI_TITLES = {
     "api": "GPU Control API",

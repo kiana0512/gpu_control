@@ -16,7 +16,7 @@ except ModuleNotFoundError:
 
 ROOT = Path("packages/asset_processing")
 SCRIPT = ROOT / "blender_retopology_bake_postprocess.py"
-EXPECTED_SHA256 = "b41a347d48e0307b2c6fed06a008529cc9a27f8ae38bcbe65448a324c2f40f97"
+EXPECTED_SHA256 = "13af9c8fdf3716cbf1d94a6a22c54d190665a99427c8290e1aca00ef9ed85a83"
 
 
 def load_postprocess_math(monkeypatch):
@@ -39,8 +39,16 @@ def load_postprocess_math(monkeypatch):
 
 
 class FakeAlignmentModule:
-    def __init__(self, low_size: np.ndarray) -> None:
+    def __init__(
+        self,
+        low_size: np.ndarray,
+        *,
+        surface_optimum: float = 1.0,
+        surface_slope: float = 0.05,
+    ) -> None:
         self.low_size = np.asarray(low_size, dtype=np.float64)
+        self.surface_optimum = surface_optimum
+        self.surface_slope = surface_slope
 
     def transformed_bounds(self, _objects, matrix):
         scale = float(np.cbrt(np.linalg.det(matrix[:3, :3])))
@@ -67,7 +75,7 @@ class FakeAlignmentModule:
         center_error = float(
             np.linalg.norm(bounds["center"] - high["center"]) / high["diagonal"]
         )
-        surface_error = 0.0596 + abs(scale - 1.0) * 0.05
+        surface_error = 0.059 + abs(scale - self.surface_optimum) * self.surface_slope
         return {
             "matrix": matrix,
             "score": surface_error + 0.1 * dimension_error,
@@ -152,6 +160,44 @@ def test_uniform_scale_refinement_rejects_incompatible_dimensions(monkeypatch) -
         "candidate_count": 0,
         "gate_passing_candidate_count": 0,
     }
+
+
+def test_uniform_scale_refinement_can_improve_surface_without_relaxing_gate(
+    monkeypatch,
+) -> None:
+    if np is None:
+        pytest.skip("Blender-bundled NumPy is not installed in the control-plane test runtime")
+    postprocess = load_postprocess_math(monkeypatch)
+    alignment = FakeAlignmentModule(
+        np.array([9.0, 7.5, 5.5]),
+        surface_optimum=1.05,
+        surface_slope=0.28,
+    )
+    high = {
+        "size": np.array([10.0, 8.0, 6.0]),
+        "center": np.array([2.0, 3.0, 4.0]),
+        "diagonal": math.sqrt(200.0),
+    }
+    baseline = alignment.evaluate_candidate(
+        np.eye(4), high, [], None, None, None, 0.82
+    )
+    assert baseline["surface_error_ratio"] > 0.070
+
+    selected, evidence = postprocess.refine_uniform_scale_for_dimension_gate(
+        np.eye(4, dtype=np.float64),
+        high,
+        object(),
+        alignment,
+        np.zeros((16, 3), dtype=np.float64),
+        np.zeros((16, 3), dtype=np.float64),
+        object(),
+        0.82,
+    )
+
+    assert selected is not None
+    assert evidence["gate_passing_candidate_count"] > 0
+    assert selected["surface_error_ratio"] <= 0.070
+    assert selected["dimension_error_ratio"] <= 0.100
 
 
 def test_post_topology_bake_alignment_is_fail_closed() -> None:

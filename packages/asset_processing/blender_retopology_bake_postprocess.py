@@ -548,15 +548,17 @@ def transform_only_alignment(
     before_uniform_scale_refinement = module.serializable_candidate(best)
     uniform_scale_refinement: dict[str, Any] = {
         "attempted": False,
-        "reason": "baseline_candidate_did_not_require_safe_dimension_refinement",
+        "reason": "baseline_candidate_already_passes_surface_and_dimension_gates",
         "uniform_scale_only": True,
         "axis_scale_used": False,
         "reflection_allowed": False,
     }
     if (
-        best["surface_error_ratio"] <= ALIGNMENT_SURFACE_ERROR_LIMIT
-        and best["center_error_ratio"] <= ALIGNMENT_CENTER_ERROR_LIMIT
-        and best["dimension_error_ratio"] > ALIGNMENT_DIMENSION_ERROR_LIMIT
+        best["center_error_ratio"] <= ALIGNMENT_CENTER_ERROR_LIMIT
+        and (
+            best["surface_error_ratio"] > ALIGNMENT_SURFACE_ERROR_LIMIT
+            or best["dimension_error_ratio"] > ALIGNMENT_DIMENSION_ERROR_LIMIT
+        )
         and best["reflected"] is False
     ):
         refined, uniform_scale_refinement = refine_uniform_scale_for_dimension_gate(
