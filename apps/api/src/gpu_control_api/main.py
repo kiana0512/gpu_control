@@ -3203,6 +3203,22 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         elif status:
             query = query.where(Job.status == status)
         job_rows = list((await db.scalars(query)).all())
+        idempotency_rows = (
+            list(
+                (
+                    await db.scalars(
+                        select(IdempotencyKey)
+                        .where(IdempotencyKey.job_id.in_([row.id for row in job_rows]))
+                        .order_by(IdempotencyKey.created_at.desc())
+                    )
+                ).all()
+            )
+            if job_rows
+            else []
+        )
+        idempotency_keys_by_job: dict[str, list[str]] = {}
+        for idempotency in idempotency_rows:
+            idempotency_keys_by_job.setdefault(idempotency.job_id, []).append(idempotency.key)
         batch_query = (
             select(JobBatch)
             .where(*batch_scope)
@@ -3227,11 +3243,17 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         for job in job_rows:
             payload = job_payload(job)
             owner = client_by_id.get(job.tenant_id)
+            job_idempotency_keys = idempotency_keys_by_job.get(job.id, [])
             payload.update(
                 {
                     "tenant_id": job.tenant_id,
                     "client_kind": owner.client_kind if owner else "production",
                     "request_id": job.request_id,
+                    # Admin-only recovery identity. A job with zero or multiple
+                    # historical keys remains deliberately ambiguous.
+                    "idempotency_key": (
+                        job_idempotency_keys[0] if len(job_idempotency_keys) == 1 else None
+                    ),
                 }
             )
             rows.append(payload)

@@ -55,6 +55,8 @@
 | Direct V2 压测件沿用审计用三角色场景 | 旧低模和参考模被误当成额外高模 | Direct V2 测试件只含唯一高模；三角色场景继续仅用于审计 API |
 | Direct `.blend` 没有 FBX 专用 `source-manifest.json` | Codex 已生成有效 Blend，但报告别名无法补齐，任务在 92% 失败 | 拓扑结束后只读确认唯一源高模与最终低模，补齐报告后再执行现有坐标恢复 |
 | 操作员同时中断外层脚本与 Locust | 无效压测虽然停止，但外层提前退出、未写完整 teardown/summary | 外层只向 Locust 转发 SIGINT并等待最多 360 秒完成范围清场 |
+| 临时 Locust 镜像缺少完整项目依赖 | 正式 runner 启动时缺少 `pydantic`，无法进入预检 | 新增受版本锁定、可追溯的 `docker/load-runner/Dockerfile`，不再依赖临时镜像 |
+| Nginx 用网关 `$request_id` 覆盖客户端 `X-Request-ID` | Roughness 是本轮任务，却被 watchdog 当成来源不明任务并 fail closed | 管理 API 只对管理员返回唯一幂等键；watchdog/清场优先按 session 幂等键和租户绑定精确识别，旧响应才回退 request ID |
 | Python/前端依赖存在已知安全公告 | 镜像/锁文件扫描失败 | 升级至修复版本；候选环境 `pip-audit` 与 `npm audit` 均为 0 |
 
 旧 Windows `asset-worker-3090-b-windows` 数据库行保留兼容历史，但管理 API 按心跳超时投影为
@@ -64,9 +66,9 @@
 
 | 门禁 | 结果 |
 |---|---|
-| Python 全量测试 | `516 passed, 11 skipped, 0 failed` |
+| Python 全量测试 | `518 passed, 11 skipped, 0 failed` |
 | Ruff | 通过 |
-| mypy strict | 43 个源码文件通过 |
+| mypy strict | 44 个源码文件通过 |
 | Web Vitest | 18/18 通过 |
 | Web ESLint / Prettier / vue-tsc / production build | 通过 |
 | npm audit（完整依赖） | 0 vulnerabilities |
@@ -198,6 +200,25 @@ ACTIVE。三 Worker 均为 `ONLINE / AUTHENTICATED / Codex HEALTHY / RetopoFlow 
 `[-3, 0, 0]` 世界平移；高模、低模网格及低模旋转/缩放均保持，最终 FBX 回读中心和尺寸误差均为 0。
 这证明修复后的生产路径会在拓扑结束后对齐交付坐标，且不修改拓扑结果。
 
+正式 100 VU 启动前又进行了两轮生产保护实跑。session
+`936dc955-9cfc-4587-933a-7a1b4f5788c6` 在 51 秒发现真实生产
+ModelView 任务 `999a9029…` 后主动停测；session
+`e19ab52a-3776-4395-9254-8831f9863b4f` 到 10 VU、65 秒时发现真实生产任务
+`4cfc9c4b…` 后主动停测。两笔真实任务均正常成功，压测器只清理本 session 任务；第一轮清场
+`1/1` 收敛，第二轮 ImageClip 任务也已取消收敛。它们是生产优先保护通过，不是 100 VU 验收结果。
+
+第二轮同时暴露了 Roughness 身份边界：网关会生成新的 server request ID，原工具只能看到客户端
+request ID，因而把本 session 的 `319e2b8f…` 也列入歧义项。数据库的幂等记录能够把该任务唯一绑定到
+`load:e19ab52a-3776-4395-9254-8831f9863b4f:mvr:00000005` 和第 6 个隔离测试租户。
+本轮修复没有放松生产 watchdog，而是把该持久幂等身份加入管理员只读任务视图、实时识别和范围清场；
+任一缺失、跨 session、租户不一致或多键歧义仍立即停止，绝不猜测或取消。
+
+固定 runner 镜像为 `gpu-control-load-runner:20260810-r2`，本地镜像 ID
+`sha256:7eefbd8914a985aa26d09d3d8401edf8bcb892d6a6dd7dafbff631072b9c4abd`；Dockerfile
+提交 `227aca1fd49d48cad0a1e96f308c1ba904a5e9e1` 已推送。上述幂等身份修复的整库门禁为
+`518 passed, 11 skipped`、Ruff、mypy strict、Web 18/18、生产构建与 Compose 全通过；它必须先从同一
+已推送 SHA 重建并滚动控制面镜像，之后才允许启动下一轮正式 100 VU。
+
 ## 6. 安全发布顺序
 
 1. 等待受保护的 118 帧真实序列完成并校验下载产物；再次确认 GPU/Batch/Asset/lease 为 0，生成并
@@ -225,5 +246,5 @@ ACTIVE。三 Worker 均为 `ONLINE / AUTHENTICATED / Codex HEALTHY / RetopoFlow 
 | 0013 生产迁移 | `PASS`；当前 revision `20260810_0013` |
 | Asset API / 三 Worker / API / Web / Scheduler 滚动 | `PASS`；目标容器 RestartCount 均为 0 |
 | 三节点、四 Baker、Codex、Prometheus 发布后验证 | `PASS`；三节点 ACTIVE/ONLINE，14 条规则已加载 |
-| 六 API canary | 三次诊断任务已定位并修复 Direct Blend 报告兼容缺口；新镜像部署后成功 canary `PENDING` |
+| 六 API canary | Direct V2 生产 canary `eaef9725-a24f-4538-9b67-6d6560f09d1a` 成功；7/7 产物与坐标恢复回读通过 |
 | 100 VU 原始结果、阈值、清场与分析 | `PENDING` |

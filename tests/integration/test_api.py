@@ -30,6 +30,7 @@ from packages.gpu_control_core.models import (
     BatchArtifact,
     BatchCancelOperation,
     BatchIdempotencyKey,
+    IdempotencyKey,
     Job,
     JobArtifact,
     JobAttempt,
@@ -2556,6 +2557,16 @@ async def test_admin_views_separate_production_and_test_traffic(tmp_path: Path) 
                     ),
                 ]
             )
+            db.add(
+                IdempotencyKey(
+                    client_id="load-test-tenant",
+                    key="load:run-01:mvr:00000001",
+                    request_hash="f" * 64,
+                    job_id="test-job",
+                    created_at=now,
+                    expires_at=now + timedelta(days=1),
+                )
+            )
             await db.commit()
 
         production_jobs = await client.get("/admin/jobs", headers=auth)
@@ -2568,6 +2579,7 @@ async def test_admin_views_separate_production_and_test_traffic(tmp_path: Path) 
         assert [row["job_id"] for row in test_jobs.json()] == ["test-job"]
         assert test_jobs.json()[0]["client_kind"] == "test"
         assert test_jobs.json()[0]["request_id"] == "test-request"
+        assert test_jobs.json()[0]["idempotency_key"] == "load:run-01:mvr:00000001"
 
         all_jobs = await client.get("/admin/jobs?client_kind=all", headers=auth)
         assert {row["job_id"] for row in all_jobs.json()} == {

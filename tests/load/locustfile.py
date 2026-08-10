@@ -393,6 +393,7 @@ class SessionRegistry:
         self._lock = threading.Lock()
         self._records: dict[str, dict[str, Any]] = {}
         self._roughness_request_key_indices: dict[str, int] = {}
+        self._roughness_idempotency_key_indices: dict[str, int] = {}
         self._admission: Counter[str] = Counter()
         self._retry_events: Counter[str] = Counter()
 
@@ -427,7 +428,9 @@ class SessionRegistry:
         with self._lock:
             self.recovery_started_at = utc_now()
 
-    def register_roughness_request(self, request_id: str, api_key_index: int) -> None:
+    def register_roughness_request(
+        self, request_id: str, idempotency_key: str, api_key_index: int
+    ) -> None:
         """Bind a sync request before I/O so teardown can recover a lost response."""
 
         with self._lock:
@@ -437,6 +440,12 @@ class SessionRegistry:
                     "roughness request ID was reused by another load-test API key"
                 )
             self._roughness_request_key_indices[request_id] = api_key_index
+            existing_idempotency = self._roughness_idempotency_key_indices.get(idempotency_key)
+            if existing_idempotency is not None and existing_idempotency != api_key_index:
+                raise LoadTestConfigurationError(
+                    "roughness idempotency key was reused by another load-test API key"
+                )
+            self._roughness_idempotency_key_indices[idempotency_key] = api_key_index
         self.event(
             "task.sync_request_registered",
             api="modelview_roughness",
@@ -447,6 +456,10 @@ class SessionRegistry:
     def roughness_request_key_indices(self) -> dict[str, int]:
         with self._lock:
             return dict(self._roughness_request_key_indices)
+
+    def roughness_idempotency_key_indices(self) -> dict[str, int]:
+        with self._lock:
+            return dict(self._roughness_idempotency_key_indices)
 
     def register(
         self,
@@ -1150,6 +1163,7 @@ def collect_telemetry(client: httpx.Client) -> dict[str, Any]:
         test_tenant_ids=RUNTIME.tenant_ids,
         session_id=RUNTIME.session_id,
         roughness_request_key_indices=REGISTRY.roughness_request_key_indices(),
+        roughness_idempotency_key_indices=REGISTRY.roughness_idempotency_key_indices(),
     )
     if not isinstance(capacity, dict) or not isinstance(asset_capacity, dict):
         raise LoadTestConfigurationError("telemetry capacity response has the wrong shape")
@@ -2032,7 +2046,7 @@ class SixApiUser(HttpUser):
         api_name = "modelview_roughness"
         self.ensure_not_preempted(f"{api_name}:submit")
         request_id, idempotency_key, traceparent = correlation(api_name, ordinal)
-        REGISTRY.register_roughness_request(request_id, self.api_key_index)
+        REGISTRY.register_roughness_request(request_id, idempotency_key, self.api_key_index)
         headers = request_headers(self.api_key, request_id, traceparent, idempotency_key)
 
         def builder(stack: ExitStack) -> tuple[dict[str, str], list[tuple[str, Any]]]:
@@ -2316,6 +2330,7 @@ def discover_teardown_records(
         roughness_request_key_indices=REGISTRY.roughness_request_key_indices(),
         session_id=RUNTIME.session_id,
         started_at=REGISTRY.recovery_started_at,
+        roughness_idempotency_key_indices=REGISTRY.roughness_idempotency_key_indices(),
     )
     return candidates, {
         "passed": True,

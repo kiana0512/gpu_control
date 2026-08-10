@@ -1517,14 +1517,17 @@ def identify_foreign_active_work(
     test_tenant_ids: Sequence[str],
     session_id: str,
     roughness_request_key_indices: Mapping[str, int],
+    roughness_idempotency_key_indices: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     """Return minimal evidence for active work outside this load session.
 
     Asset rows use their session-prefixed external ID. ImageClip uses its
-    external batch ID, while synchronous Roughness must match a request/key
-    binding registered by this harness process. GPU rows also require
-    ``client_kind=test`` when the field is present. Missing, cross-session, or
-    unknown ownership fails closed. Business payloads are never returned.
+    external batch ID. Synchronous Roughness prefers the server-side
+    idempotency key because a gateway may replace ``request_id``; older admin
+    payloads fall back to the request/key binding registered by this harness.
+    GPU rows also require ``client_kind=test`` when the field is present.
+    Missing, cross-session, or unknown ownership fails closed. Business
+    payloads are never returned.
     """
 
     approved_tenant_order = tuple(str(value) for value in test_tenant_ids if str(value))
@@ -1536,6 +1539,10 @@ def identify_foreign_active_work(
     tenant_key_indices = {tenant_id: index for index, tenant_id in enumerate(approved_tenant_order)}
     escaped_session = re.escape(session_id)
     roughness_pattern = re.compile(rf"^lt:{escaped_session}:mvr:[0-9]{{8}}$")
+    roughness_idempotency_pattern = re.compile(
+        rf"^load:{escaped_session}:mvr:[0-9]{{8}}$"
+    )
+    roughness_idempotency_bindings = dict(roughness_idempotency_key_indices or {})
     imageclip_pattern = re.compile(rf"^loadtest:{escaped_session}:imageclip_batch:[0-9]{{8}}$")
     asset_patterns = {
         api_name: re.compile(rf"^loadtest:{escaped_session}:{re.escape(api_name)}:[0-9]{{8}}$")
@@ -1578,11 +1585,19 @@ def identify_foreign_active_work(
                 and row.get("workflow_key") == "modelview-roughness"
             ):
                 request_id = str(row.get("request_id") or "")
-                belongs_to_session = roughness_pattern.fullmatch(
-                    request_id
-                ) is not None and roughness_request_key_indices.get(
-                    request_id
-                ) == tenant_key_indices.get(owner)
+                idempotency_key = str(row.get("idempotency_key") or "")
+                if idempotency_key:
+                    belongs_to_session = (
+                        roughness_idempotency_pattern.fullmatch(idempotency_key) is not None
+                        and roughness_idempotency_bindings.get(idempotency_key)
+                        == tenant_key_indices.get(owner)
+                    )
+                else:
+                    belongs_to_session = (
+                        roughness_pattern.fullmatch(request_id) is not None
+                        and roughness_request_key_indices.get(request_id)
+                        == tenant_key_indices.get(owner)
+                    )
             if belongs_to_session:
                 continue
             identifier = row.get("job_id") or row.get("batch_id") or "unknown"
@@ -1610,15 +1625,16 @@ def discover_scoped_teardown_tasks(
     roughness_request_key_indices: Mapping[str, int],
     session_id: str,
     started_at: str,
+    roughness_idempotency_key_indices: Mapping[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Recover active run-owned tasks without widening cancellation scope.
 
     The configured load tenants are dedicated to one run and map one-to-one to
     API keys. Asset jobs and ImageClip batches must additionally carry the
     harness session prefix. The synchronous roughness contract has no external
-    business ID, so its authoritative server-side ``request_id`` must exactly
-    match a request/key binding registered by this harness process. The request
-    ID also carries the current session prefix. ``created_at`` remains a
+    business ID, so its server-side idempotency key must exactly match a
+    key/tenant binding registered by this harness. Older admin payloads without
+    that field fall back to the registered request ID. ``created_at`` remains a
     secondary lower bound for every row. Any ambiguous active row owned by a
     load tenant aborts discovery instead of being guessed or cancelled.
     """
@@ -1643,6 +1659,9 @@ def discover_scoped_teardown_tasks(
             "teardown scan requires a unique API key index for every tenant"
         )
     roughness_request_pattern = re.compile(rf"^lt:{re.escape(session_id)}:mvr:[0-9]{{8}}$")
+    roughness_idempotency_pattern = re.compile(
+        rf"^load:{re.escape(session_id)}:mvr:[0-9]{{8}}$"
+    )
     normalized_roughness_requests: dict[str, int] = {}
     for request_id, raw_index in roughness_request_key_indices.items():
         normalized_request_id = str(request_id).strip()
@@ -1657,6 +1676,20 @@ def discover_scoped_teardown_tasks(
                 "teardown scan received an invalid roughness request binding"
             )
         normalized_roughness_requests[normalized_request_id] = raw_index
+    normalized_roughness_idempotency_keys: dict[str, int] = {}
+    for idempotency_key, raw_index in (roughness_idempotency_key_indices or {}).items():
+        normalized_idempotency_key = str(idempotency_key).strip()
+        if (
+            not roughness_idempotency_pattern.fullmatch(normalized_idempotency_key)
+            or isinstance(raw_index, bool)
+            or not isinstance(raw_index, int)
+            or raw_index < 0
+            or raw_index not in normalized_indices.values()
+        ):
+            raise LoadTestConfigurationError(
+                "teardown scan received an invalid roughness idempotency binding"
+            )
+        normalized_roughness_idempotency_keys[normalized_idempotency_key] = raw_index
     run_started_at = _parse_window_timestamp(started_at)
     if run_started_at is None:
         raise LoadTestConfigurationError("teardown scan requires an aware RFC3339 run start")
@@ -1729,11 +1762,24 @@ def discover_scoped_teardown_tasks(
             )
             continue
         roughness_request_id = str(row.get("request_id") or "")
+        roughness_idempotency_key = str(row.get("idempotency_key") or "")
+        if roughness_idempotency_key:
+            roughness_identity_matches = (
+                roughness_idempotency_pattern.fullmatch(roughness_idempotency_key) is not None
+                and normalized_roughness_idempotency_keys.get(roughness_idempotency_key)
+                == key_index
+            )
+            scope_basis = "tenant+created_at+workflow_key+idempotency_key"
+        else:
+            roughness_identity_matches = (
+                roughness_request_pattern.fullmatch(roughness_request_id) is not None
+                and normalized_roughness_requests.get(roughness_request_id) == key_index
+            )
+            scope_basis = "tenant+created_at+workflow_key+request_id"
         if (
             kind != "job"
             or row.get("workflow_key") != "modelview-roughness"
-            or not roughness_request_pattern.fullmatch(roughness_request_id)
-            or normalized_roughness_requests.get(roughness_request_id) != key_index
+            or not roughness_identity_matches
         ):
             raise LoadTestConfigurationError("teardown scan found an ambiguous load-tenant GPU job")
         discovered.append(
@@ -1748,7 +1794,8 @@ def discover_scoped_teardown_tasks(
                 "last_status": status,
                 "recovery_source": "admin_scope_scan",
                 "request_id": roughness_request_id,
-                "scope_basis": "tenant+created_at+workflow_key+request_id",
+                "idempotency_key": roughness_idempotency_key or None,
+                "scope_basis": scope_basis,
             }
         )
 

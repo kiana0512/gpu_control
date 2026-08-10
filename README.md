@@ -5,42 +5,25 @@
 面向两台 RTX 3090 工作节点和一台 RTX 4090 控制中心的统一任务调度、运维与可观测平台；GPU
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
-当前是分组件生产基线，不能用一个统一的“1.5.8 已全量上线”概括：GPU Control API、
-Scheduler 和 Web 仍运行 `1.5.7`；Asset API 已滚动到 `1.5.8`，生产镜像 source revision 为
-`7f7fd197f86288ffbeeab622cc39199335e22c61`；数据库已升级到 `20260803_0012`。当前总状态为
-`DEPLOYED_NOT_ACCEPTED`：控制面统一版本、registry digest/SBOM、artifact API 三重 SHA、固定基准、
-完整故障矩阵和连续七天观察尚未闭环，禁止标记 `FROZEN` 或 `PRODUCTION_ACCEPTED`。
+当前生产基线为 GPU Control API/Scheduler/Web `1.5.11`、Asset API
+`1.6.12-retopology-coordinate-restore-v2`、三台 Linux Blender Worker
+`1.4.7-retopology-coordinate-restore-v2`、数据库 `20260810_0013`。当前总状态为
+`DEPLOYED_NOT_ACCEPTED`：第三次正式 100 VU、registry digest/SBOM、固定基准、完整故障矩阵和
+连续七天观察尚未闭环，禁止标记 `FROZEN` 或 `PRODUCTION_ACCEPTED`。
 
 生产 `UV_QA_ENFORCEMENT=advisory` 和 `RETOPOLOGY_QA_ENFORCEMENT=advisory` 已生效：几何质量不达标
 只保留告警与诊断，通过输入身份、manifest、文件完整性和 SHA 硬门禁的正式制品仍交付；
-缺失、空文件、非法 JSON、身份、租约或 SHA 失败仍硬拒绝。Linux Blender Worker 均使用 tag
-`1.2.4`；4090 Worker revision 为 `7f7fd197…`，3090-A/3090-B 为 `e2cab4c8…`，但 Worker
-相关源码和三项批准 Skill 文件 SHA 已逐节点校验一致；统一 OCI image digest/SBOM 仍待归档。
+缺失、空文件、非法 JSON、身份、租约或 SHA 失败仍硬拒绝。三台 Linux Worker 使用同一镜像、
+同一源码和同一批准包 SHA；统一 registry digest/SBOM 仍待补齐。
 
 3090-B 上四个 Windows Substance Baker Agent 已更新为
-`substance-baker-2026.08.03-v5`，均为 `ONLINE/HEALTHY`，用 PBR 成功 marker、逐命令证据和制品完整性
+`substance-baker-2026.08.03-v6`，均为 `ONLINE/HEALTHY`，用 PBR 成功 marker、逐命令证据和制品完整性
 消除 PowerShell 空 `ExitCode` 假失败，但不放行真实非零退出或缺少 marker。三节点 ComfyUI 仍是同一
 `projects-0.2.3` 镜像，健康、`RestartCount=0`；本轮未停止/重启 ComfyUI，也未调用 `/free` 或
-清理模型缓存。本轮没有注入额外合成流量，而是使用现有真实任务完成 PBR、UV warning、UV clean
-以及连续两笔自动重拓扑 canary；均成功交付，质量未达项仅以 advisory 告警返回。分阶段发布、回滚与剩余门禁见
-`docs/80_2026-08-03_CONTROL_PLANE_1_5_8_CANDIDATE_AND_SAFE_ROLLOUT.md`，故障证据与验收表见
-`docs/82_2026-08-03_ASSET_FAILURES_UV_ADVISORY_AND_RELEASE_ACCEPTANCE.md`。
-
-上述 v5 是已记录的生产基线，不是下一版安全身份。`1.5.9` 候选要求
-`substance-baker-2026.08.03-v6`：无法证实 native Baker 已终止时强制
-`SUBSTANCE_BAKER_TERMINATION_UNCONFIRMED / RECOVERY_REQUIRED`，保留 3090-B durable recovery
-interlock；Worker 本地 `current_jobs` 与 durable lease 矛盾或宿主 Baker 进程数无法由 live lease
-解释时只能 `DRAINING`。旧 v5 在新 Asset API 下不会领取任务。
-
-仓库下一统一发布候选版本为控制面 `1.5.9`、Blender Worker `1.2.5`；最终 commit/digest 冻结后才构成不可变发布目标。它补齐 PBR/Blender 大文件哈希与
-最终 multipart 上传期间的租约续期、Worker generation/node claim binding、真实 schedulable capacity、
-Substance drain 下 CPU 独立调度和管理员 interrupt `NOWAIT`，并把五个一方镜像纳入同一 40 位 Git
-SHA、镜像身份和 SBOM 门禁，同时把 Windows Substance Agent 升为上述 v6 身份。先前 `b410a6a`
-五个本地镜像已被后续安全修复取代，必须从最终 SHA
-重建。该候选只有在三节点空闲、冻结新任务并按兼容顺序滚动时才允许部署；真实六 API canary、
-递增压力、精确清场和回滚证据完成前，不能把源码候选写成已部署版本。统一候选、灰度、精确产物
-合同、压测和动画管家回执入口见
-`docs/83_2026-08-03_CONTROL_PLANE_1_5_9_RELEASE_AND_SIX_API_ACCEPTANCE.md`。
+清理模型缓存。Direct V2 真实 canary 已验证 7/7 制品、仅平移坐标恢复以及 FBX 回读；没有修改
+外部 ImageClip/ModelViewCreator 工作流、模型或参数。当前 1.5.11 审计、发布、3090-B WSL 探针、
+压测保护和待回填结果统一见
+`docs/98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`。
 
 六 API、120 VU 的独立 R8 有界压力已以退出码 0 完成：`39,778` 个 HTTP 请求、0 失败，六 API、
 七项阈值、`120/120` 清场、三 GPU 饱和和 379 个连续遥测样本全部通过。该结果只验收综合有界压力，

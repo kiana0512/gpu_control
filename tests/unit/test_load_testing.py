@@ -1756,6 +1756,39 @@ def test_watchdog_treats_same_tenant_cross_session_work_as_foreign() -> None:
     assert result["jobs"][0]["job_id"] == "other-run-roughness"
 
 
+def test_watchdog_uses_roughness_idempotency_when_gateway_rewrites_request_id() -> None:
+    row = {
+        "job_id": "own-roughness",
+        "status": "RUNNING",
+        "client_kind": "test",
+        "tenant_id": "load-tenant",
+        "kind": "job",
+        "workflow_key": "modelview-roughness",
+        "request_id": "server-generated-request-id",
+        "idempotency_key": "load:run-01:mvr:00000001",
+    }
+
+    own = identify_foreign_active_work(
+        [row],
+        [],
+        test_tenant_ids=("load-tenant",),
+        session_id="run-01",
+        roughness_request_key_indices={"lt:run-01:mvr:00000001": 0},
+        roughness_idempotency_key_indices={"load:run-01:mvr:00000001": 0},
+    )
+    assert own["detected"] is False
+
+    foreign = identify_foreign_active_work(
+        [row],
+        [],
+        test_tenant_ids=("load-tenant",),
+        session_id="run-01",
+        roughness_request_key_indices={"lt:run-01:mvr:00000001": 0},
+        roughness_idempotency_key_indices={"load:run-01:mvr:00000002": 0},
+    )
+    assert foreign["detected"] is True
+
+
 def test_watchdog_rejects_session_prefix_collisions_and_asset_type_mismatch() -> None:
     result = identify_foreign_active_work(
         [
@@ -2099,6 +2132,47 @@ def test_roughness_teardown_recovery_requires_same_api_key_binding() -> None:
             session_id="run-01",
             started_at="2026-07-30T12:00:00Z",
         )
+
+
+def test_roughness_teardown_uses_idempotency_when_gateway_rewrites_request_id() -> None:
+    discovered = discover_scoped_teardown_tasks(
+        [
+            {
+                "kind": "job",
+                "job_id": "roughness-job",
+                "tenant_id": "tenant-a",
+                "client_kind": "test",
+                "workflow_key": "modelview-roughness",
+                "request_id": "server-generated-request-id",
+                "idempotency_key": "load:run-01:mvr:00000001",
+                "status": "RUNNING",
+                "created_at": "2026-07-30T12:00:01Z",
+            }
+        ],
+        [],
+        tenant_key_indices={"tenant-a": 0},
+        roughness_request_key_indices={"lt:run-01:mvr:00000001": 0},
+        roughness_idempotency_key_indices={"load:run-01:mvr:00000001": 0},
+        session_id="run-01",
+        started_at="2026-07-30T12:00:00Z",
+    )
+
+    assert discovered == [
+        {
+            "id": "roughness-job",
+            "api": "modelview_roughness",
+            "kind": "job",
+            "status_url": "/api/v1/jobs/roughness-job",
+            "cancel_url": "/api/v1/jobs/roughness-job/cancel",
+            "external_id": None,
+            "api_key_index": 0,
+            "last_status": "RUNNING",
+            "recovery_source": "admin_scope_scan",
+            "request_id": "server-generated-request-id",
+            "idempotency_key": "load:run-01:mvr:00000001",
+            "scope_basis": "tenant+created_at+workflow_key+idempotency_key",
+        }
+    ]
 
 
 def test_execution_requires_all_gates_and_external_valid_fixtures(tmp_path: Path) -> None:
