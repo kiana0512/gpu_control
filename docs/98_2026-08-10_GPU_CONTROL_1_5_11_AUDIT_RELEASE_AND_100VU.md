@@ -179,7 +179,16 @@ preflight；到 10 VU 时 7 个 Direct V2 提交均在执行前拒绝。测试�
 `.blend` 不生成 FBX 路径使用的 `source-manifest.json`，旧兼容器因此没有调用已有的 Blend 只读
 交付检查。补丁只在 Codex 成功并保存结果后读取源/结果 Blend，唯一确认高低模名称并规范化报告；
 之后仍由坐标恢复 v2 决定“未移动则原样交付、移动则只平移恢复”。针对性回归
-`96 passed`、Ruff 与 strict mypy 通过。重新构建、三节点滚动及成功 canary 的证据将在正式压测前回填。
+`96 passed`、Ruff 与 strict mypy 通过。
+
+补丁源码 `3583023db112a684a757fa2f1a10fec5fcd47463` 推送后，第三套候选从同一 SHA 重新构建五个
+镜像，位于 `artifacts/control-plane/1.5.11-r3/release-parts`；组合归档 SHA-256 为
+`e51c810aed37a274b6dd349c10cfa874be5ce9e473dfe42f55594ea80afde705`，7 个分片 SHA、gzip、
+OCI/Docker config 身份和 `git lfs fsck` 均通过，候选提交
+`0be5ac28cb59f86256e5782f5f122c86850e9cdc` 已推送。三节点按零任务门禁全部 DRAINING，依次替换
+Asset API、3090-B Worker、3090-A Worker、control-4090 Worker、API、Web、Scheduler，再恢复
+ACTIVE。三 Worker 均为 `ONLINE / AUTHENTICATED / Codex HEALTHY / RetopoFlow HEALTHY / 0 jobs`；
+所有新容器 RestartCount=0，三台 ComfyUI 的容器 ID、启动时间与 RestartCount 保持不变。
 
 ## 6. 安全发布顺序
 
@@ -199,11 +208,11 @@ preflight；到 10 VU 时 7 个 Direct V2 提交均在执行前拒绝。测试�
 
 | 项目 | 状态 |
 |---|---|
-| 镜像源码 Git SHA | `969b535645e05be32597a9a86d1510cd84febd51`；已推送 |
-| 候选归档 Git/LFS | `2cbfd1632c759cf729e68d7f6f25fd19a03b038f`；`1.5.11-r2` 7/7 LFS 已推送，`git lfs fsck` 通过 |
-| 五镜像构建与本地不可变 ID | `VERIFIED / DEPLOYED`；API `2898f261`、Scheduler `deaa7447`、Asset API `224c7143`、Web `3df278ec`、三 Worker `e062df65`；组合归档 SHA-256 `4cb3836718c6060d9785a6a92eba9fe3b3c8039a5ac93e4fedba13f3ae21b7dd` |
+| 镜像源码 Git SHA | `3583023db112a684a757fa2f1a10fec5fcd47463`；已推送 |
+| 候选归档 Git/LFS | `0be5ac28cb59f86256e5782f5f122c86850e9cdc`；`1.5.11-r3` 7/7 LFS 已推送，`git lfs fsck` 通过 |
+| 五镜像构建与本地不可变 ID | `VERIFIED / DEPLOYED`；API `cc377158`、Scheduler `8f7d2490`、Asset API `e35fa7d2`、Web `e647fc83`、三 Worker `072b4175`；组合归档 SHA-256 `e51c810aed37a274b6dd349c10cfa874be5ce9e473dfe42f55594ea80afde705` |
 | Registry digest / SBOM | `PENDING_REGISTRY_PUSH / PENDING_PINNED_SBOM_GENERATOR`；不得宣称 strict release accepted |
-| live deployment receipt | `artifacts/control-plane/1.5.11/deployment/live-deployment-receipt.json`；blob SHA-256 `fdc3664a5aecd9e4097945fe17802830521ab9e6249287404f49c9d9e507dfc6`；状态 `DEPLOYED_NOT_ACCEPTED` |
+| live deployment receipt | `artifacts/control-plane/1.5.11/deployment/live-deployment-receipt.json`；blob SHA-256 `61c75c6cdb98a97e4e4a8d1f232ef1843d9c1bf3350b1264ddcdf841e5b02b36`；状态 `DEPLOYED_NOT_ACCEPTED` |
 | full backup 与离线完整性校验 | `PASS`；`/srv/gpu-control/backups/20260810T033212Z-full` |
 | 0013 生产迁移 | `PASS`；当前 revision `20260810_0013` |
 | Asset API / 三 Worker / API / Web / Scheduler 滚动 | `PASS`；目标容器 RestartCount 均为 0 |
