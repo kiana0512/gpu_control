@@ -2,9 +2,9 @@
 
 本页是仓库文档导航。今天部署时不要从 30 多份文档逐一翻找，按下面的“现场主线”执行即可；其余文档是遇到具体问题时的细节手册。
 
-2026-08-10 的生产基线为 API/Scheduler/Web `1.5.11`、Asset API
-`1.6.12-retopology-coordinate-restore-v2`、三台 Linux Worker
-`1.4.7-retopology-coordinate-restore-v2`、数据库 `20260810_0013`。1.5.11 综合稳定性候选已经完成
+2026-08-10 的生产基线为 API/Scheduler `1.5.12`、Web `1.5.11-retopo-direct-v2`、Asset API
+`1.6.16-retopology-v6-client-filename-v1`、三台 Linux Worker
+`1.4.15-retopology-uniform-scale-search-v2`、数据库 `20260810_0013`。1.5.11 综合稳定性候选已经完成
 源码审计、五镜像滚动和 Direct V2 真实 canary；第三次正式 100 VU 完成前保持
 `DEPLOYED_NOT_ACCEPTED`。最新执行与证据只看
 `98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`。
@@ -61,6 +61,7 @@ UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重
 40. `docs/82_2026-08-03_ASSET_FAILURES_UV_ADVISORY_AND_RELEASE_ACCEPTANCE.md`：PBR 空 ExitCode 假失败、UV advisory 五件套交付、Codex Skill 子链接修复的局部生产事实、剩余 canary 与证据回填表。
 41. `docs/83_2026-08-03_CONTROL_PLANE_1_5_9_RELEASE_AND_SIX_API_ACCEPTANCE.md`：1.5.9/Worker 1.2.5 的统一候选、生产优先原子准入、六 API 精确产物、五镜像发布、灰度、压测和动画管家回执入口；所有 `PENDING_*` 回填前仍非生产验收。
 42. `docs/98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`：1.5.11 全服务审计、三机 Codex/CPU 槽位、五镜像滚动、数据库心跳膨胀修复和第三次 100 VU 的当前唯一事实记录。
+43. `docs/103_2026-08-10_MODELVIEW_INPAINT_INTERACTIVE_PRIORITY.md`：1.5.12 局部重绘不再老化排在批量抠图之后、同租户最多三卡并行、镜像身份与无损滚动证据。
 
 3090-A 的已完成部署、动态心跳、Web 修复和真实任务证据见
 `docs/34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md`。
