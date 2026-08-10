@@ -145,6 +145,20 @@ Git bundle、敏感配置和前后两次 zero-work gate 均通过离线校验。
 未被使用。修复后控制面只读接口按精确 session 前缀直接在数据库计数三类持久命名空间；任一计数非零
 仍拒绝执行，历史数量本身不再造成假阻断。专项验证为 `124 passed, 1 skipped`，Ruff 通过。
 
+精确碰撞修复源码 `969b535645e05be32597a9a86d1510cd84febd51` 推送后，重新从该提交构建全部
+五个镜像；没有混用先前 `04e281cd` 镜像。第二套候选位于
+`artifacts/control-plane/1.5.11-r2/release-parts`，组合归档 SHA-256 为
+`4cb3836718c6060d9785a6a92eba9fe3b3c8039a5ac93e4fedba13f3ae21b7dd`。7 个分片的本地 SHA、
+Git LFS 指针、上传结果和 `git lfs fsck` 均通过，候选与 live receipt 在提交
+`2cbfd1632c759cf729e68d7f6f25fd19a03b038f` 推送到 `origin/main`。
+
+生产重新滚动时先将三节点置为 `DRAINING`，确认运行中任务、Asset 作业、活动租约和三台 ComfyUI
+队列为 0，再按 Asset API、3090-B Worker、3090-A Worker、control-4090 Worker、API、Web、
+Scheduler 的单服务顺序替换。滚动窗口中出现 1 个新的排队 GPU 任务；它没有被 Worker 领取，未被
+取消或修改，节点恢复 `ACTIVE` 后由 control-4090 正常完成。三台 ComfyUI 的容器 ID、启动时间和
+RestartCount 全程不变。滚动后新精确碰撞接口实机返回 HTTP 200、空 session 计数 0；最终任务、
+租约再次归零。
+
 ## 6. 安全发布顺序
 
 1. 等待受保护的 118 帧真实序列完成并校验下载产物；再次确认 GPU/Batch/Asset/lease 为 0，生成并
@@ -163,11 +177,11 @@ Git bundle、敏感配置和前后两次 zero-work gate 均通过离线校验。
 
 | 项目 | 状态 |
 |---|---|
-| 镜像源码 Git SHA | `04e281cd5a4a4c865e738255af7edd31e78a6c06`；已推送 |
-| 候选归档 Git/LFS | `1df1bcfecfd8ea690dc07e884b8e5dddbd5a5ab1`；7/7 LFS 已推送 |
-| 五镜像构建与本地不可变 ID | `VERIFIED / DEPLOYED`；组合归档 SHA-256 `964b16389f8726903065aa3b2e39ab475207294d8cb2fccec0e74bdd08a7f998` |
+| 镜像源码 Git SHA | `969b535645e05be32597a9a86d1510cd84febd51`；已推送 |
+| 候选归档 Git/LFS | `2cbfd1632c759cf729e68d7f6f25fd19a03b038f`；`1.5.11-r2` 7/7 LFS 已推送，`git lfs fsck` 通过 |
+| 五镜像构建与本地不可变 ID | `VERIFIED / DEPLOYED`；API `2898f261`、Scheduler `deaa7447`、Asset API `224c7143`、Web `3df278ec`、三 Worker `e062df65`；组合归档 SHA-256 `4cb3836718c6060d9785a6a92eba9fe3b3c8039a5ac93e4fedba13f3ae21b7dd` |
 | Registry digest / SBOM | `PENDING_REGISTRY_PUSH / PENDING_PINNED_SBOM_GENERATOR`；不得宣称 strict release accepted |
-| live deployment receipt | `artifacts/control-plane/1.5.11/deployment/live-deployment-receipt.json`；状态 `DEPLOYED_NOT_ACCEPTED` |
+| live deployment receipt | `artifacts/control-plane/1.5.11/deployment/live-deployment-receipt.json`；blob SHA-256 `fdc3664a5aecd9e4097945fe17802830521ab9e6249287404f49c9d9e507dfc6`；状态 `DEPLOYED_NOT_ACCEPTED` |
 | full backup 与离线完整性校验 | `PASS`；`/srv/gpu-control/backups/20260810T033212Z-full` |
 | 0013 生产迁移 | `PASS`；当前 revision `20260810_0013` |
 | Asset API / 三 Worker / API / Web / Scheduler 滚动 | `PASS`；目标容器 RestartCount 均为 0 |
