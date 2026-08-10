@@ -169,6 +169,9 @@ host data、Docker/Git 清单和前后两份 quiesce gate；数据库必须是 `
 - `/admin/jobs?client_kind=all&status=<active>&limit=500`：逐 active status 拼接 GPU work，避免历史总数
   达到 500 后误判；
 - `/admin/asset-processing?limit=500`：活动 asset work、worker、Substance 槽位和五个 asset route 合同。
+- `/admin/load-sessions/<uuidv4>/collisions`：按本次规范 UUIDv4 精确计数 GPU job、ImageClip batch 和
+  Asset job 三个持久命名空间；任一计数非零即拒绝。该查询不依赖最近 500 条历史页，因此不会在长期
+  累积 test 审计记录后误把“历史页已满”当成 session 冲突，也不会删除旧记录。
 
 普通非生产按 scenario 中的最大既有任务数判断。生产额外要求以下权威计数全部等于 0：
 

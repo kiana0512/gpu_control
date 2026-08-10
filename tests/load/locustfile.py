@@ -59,7 +59,6 @@ from packages.gpu_control_core.load_testing import (  # noqa: E402
     execute_bounded_teardown_cancel,
     expected_load_artifact_kinds,
     file_sha256,
-    find_load_session_identity_collisions,
     identify_foreign_active_work,
     load_fixture_manifest,
     load_queue_start,
@@ -851,8 +850,7 @@ def active_asset_jobs(asset_overview: Mapping[str, Any], *, context: str) -> lis
 
 def perform_preflight() -> dict[str, Any]:
     admin_headers = {"Authorization": f"Bearer {RUNTIME.admin_bearer_token}"}
-    historical_gpu_jobs: object = []
-    historical_asset_overview: object = {}
+    session_collision_evidence: object = {}
     with httpx.Client(
         base_url=RUNTIME.target,
         verify=httpx_verify(),
@@ -896,14 +894,9 @@ def perform_preflight() -> dict[str, Any]:
             admin_headers,
         )
         if RUNTIME.is_production_target():
-            historical_gpu_jobs = preflight_json(
+            session_collision_evidence = preflight_json(
                 client,
-                "/admin/jobs?client_kind=test&limit=500",
-                admin_headers,
-            )
-            historical_asset_overview = preflight_json(
-                client,
-                "/admin/asset-processing?limit=500&active_only=false",
+                f"/admin/load-sessions/{RUNTIME.session_id}/collisions",
                 admin_headers,
             )
 
@@ -1013,44 +1006,25 @@ def perform_preflight() -> dict[str, Any]:
         raise LoadTestConfigurationError("server six-API contract set has drifted")
 
     if RUNTIME.is_production_target():
-        if not isinstance(historical_gpu_jobs, list) or not all(
-            isinstance(item, dict) for item in historical_gpu_jobs
-        ):
-            raise LoadTestConfigurationError(
-                "production session history GPU scan returned the wrong shape"
-            )
-        if len(historical_gpu_jobs) >= 500:
-            raise LoadTestConfigurationError(
-                "production session history GPU scan reached the 500-row safety limit"
-            )
-        if not isinstance(historical_asset_overview, dict):
-            raise LoadTestConfigurationError(
-                "production session history Asset scan returned the wrong shape"
-            )
-        historical_asset_scope = historical_asset_overview.get("jobs_scope")
-        historical_asset_jobs = historical_asset_overview.get("jobs")
+        expected_collision_counts = {
+            "gpu_jobs": 0,
+            "gpu_batches": 0,
+            "asset_jobs": 0,
+        }
         if (
-            not isinstance(historical_asset_scope, Mapping)
-            or historical_asset_scope.get("active_only") is not False
-            or not isinstance(historical_asset_jobs, list)
-            or not all(isinstance(item, dict) for item in historical_asset_jobs)
+            not isinstance(session_collision_evidence, Mapping)
+            or session_collision_evidence.get("schema_version")
+            != "gpu-control-load-session-collision.v1"
+            or session_collision_evidence.get("session_id") != RUNTIME.session_id
+            or session_collision_evidence.get("scope")
+            != "exact_global_session_namespace"
+            or session_collision_evidence.get("counts") != expected_collision_counts
+            or session_collision_evidence.get("collision_count") != 0
+            or session_collision_evidence.get("collision_free") is not True
         ):
             raise LoadTestConfigurationError(
-                "production session history Asset scan was not an all-status audit"
-            )
-        if historical_asset_scope.get("saturated") is True or len(historical_asset_jobs) >= 500:
-            raise LoadTestConfigurationError(
-                "production session history Asset scan reached the 500-row safety limit"
-            )
-        session_collisions = find_load_session_identity_collisions(
-            historical_gpu_jobs,
-            historical_asset_jobs,
-            tenant_ids=RUNTIME.tenant_ids,
-            session_id=RUNTIME.session_id,
-        )
-        if session_collisions:
-            raise LoadTestConfigurationError(
-                "production LOAD_TEST_SESSION_ID already exists in persisted GPU/Asset history"
+                "production LOAD_TEST_SESSION_ID already exists or its exact collision "
+                "evidence is invalid"
             )
         cluster = capacity.get("cluster")
         if not isinstance(cluster, dict):
@@ -1118,9 +1092,21 @@ def perform_preflight() -> dict[str, Any]:
         "gpu_active_audit": gpu_audit,
         "session_history_scan": {
             "required": RUNTIME.is_production_target(),
-            "gpu_rows": len(historical_gpu_jobs) if isinstance(historical_gpu_jobs, list) else None,
-            "asset_rows": len(historical_asset_jobs) if RUNTIME.is_production_target() else None,
-            "collisions": 0 if RUNTIME.is_production_target() else None,
+            "scope": (
+                session_collision_evidence.get("scope")
+                if isinstance(session_collision_evidence, Mapping)
+                else None
+            ),
+            "counts": (
+                session_collision_evidence.get("counts")
+                if isinstance(session_collision_evidence, Mapping)
+                else None
+            ),
+            "collisions": (
+                session_collision_evidence.get("collision_count")
+                if isinstance(session_collision_evidence, Mapping)
+                else None
+            ),
         },
         "substance_available_slots": substance_slots,
         "secrets_recorded": False,

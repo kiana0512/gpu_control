@@ -2583,6 +2583,116 @@ async def test_admin_views_separate_production_and_test_traffic(tmp_path: Path) 
         assert test_dashboard.json()["jobs"]["SUCCEEDED"] == 1
 
 
+async def test_admin_load_session_collision_lookup_is_exact_and_uncapped(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        session_id = str(uuid.uuid4())
+        other_session_id = str(uuid.uuid4())
+        now = datetime.now(UTC)
+        async with app.state.db.session() as db:
+            db.add(
+                Job(
+                    id=str(uuid.uuid4()),
+                    tenant_id="tenant",
+                    workflow_key="modelview-roughness",
+                    workflow_version="1",
+                    status="SUCCEEDED",
+                    priority="normal",
+                    parameters={},
+                    request_hash="load-session-gpu",
+                    request_id=f"lt:{session_id}:mvr:00000001",
+                    trace_id="load-session-gpu-trace",
+                    job_dir=str(tmp_path / "load-session-gpu"),
+                    progress=100,
+                    created_at=now,
+                    started_at=now,
+                    finished_at=now,
+                )
+            )
+            db.add(
+                JobBatch(
+                    id=str(uuid.uuid4()),
+                    tenant_id="tenant",
+                    external_batch_id=(
+                        f"loadtest:{session_id}:imageclip_batch:00000002"
+                    ),
+                    workflow_key="imageclip-rgba",
+                    workflow_version="1",
+                    status="SUCCEEDED",
+                    parameters={},
+                    request_hash="load-session-batch",
+                    request_id="load-session-batch-request",
+                    trace_id="load-session-batch-trace",
+                    batch_dir=str(tmp_path / "load-session-batch"),
+                    manifest_sha256="1" * 64,
+                    archive_sha256="2" * 64,
+                    archive_size_bytes=1,
+                    total_items=1,
+                    pending_items=0,
+                    succeeded_items=1,
+                    progress=100,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            db.add(
+                AssetJob(
+                    id=str(uuid.uuid4()),
+                    client_id="tenant",
+                    external_asset_id=f"loadtest:{session_id}:uv_process:00000003",
+                    job_type="UV_PROCESS_V2",
+                    status="SUCCEEDED",
+                    source_filename="load-session.fbx",
+                    input_path=str(tmp_path / "load-session.fbx"),
+                    input_sha256="3" * 64,
+                    input_size_bytes=1,
+                    options={},
+                    request_hash="load-session-asset",
+                    request_id="load-session-asset-request",
+                    progress=100,
+                    created_at=now,
+                    started_at=now,
+                    finished_at=now,
+                )
+            )
+            await db.commit()
+
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        collision = await client.get(
+            f"/admin/load-sessions/{session_id}/collisions",
+            headers=auth,
+        )
+        assert collision.status_code == 200, collision.text
+        assert collision.json() == {
+            "schema_version": "gpu-control-load-session-collision.v1",
+            "session_id": session_id,
+            "collision_free": False,
+            "collision_count": 3,
+            "counts": {"gpu_jobs": 1, "gpu_batches": 1, "asset_jobs": 1},
+            "scope": "exact_global_session_namespace",
+        }
+
+        collision_free = await client.get(
+            f"/admin/load-sessions/{other_session_id}/collisions",
+            headers=auth,
+        )
+        assert collision_free.status_code == 200
+        assert collision_free.json()["collision_free"] is True
+        assert collision_free.json()["collision_count"] == 0
+
+        invalid = await client.get(
+            "/admin/load-sessions/not-a-uuid/collisions",
+            headers=auth,
+        )
+        assert invalid.status_code == 422
+        assert invalid.json()["detail"]["code"] == "LOAD_SESSION_INVALID"
+
+
 async def test_admin_retry_clears_previous_execution_and_keeps_error_audit(
     tmp_path: Path,
 ) -> None:

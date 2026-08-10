@@ -137,6 +137,24 @@ def is_postgres_lock_not_available(exc: DBAPIError) -> bool:
     )
 
 
+def canonical_load_session_id(value: str) -> str:
+    """Return one canonical UUIDv4 load-session identifier or reject it."""
+
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError as exc:
+        raise HTTPException(
+            422,
+            detail={"code": "LOAD_SESSION_INVALID", "message": "压测 session 必须是 UUIDv4"},
+        ) from exc
+    if parsed.version != 4 or str(parsed) != value:
+        raise HTTPException(
+            422,
+            detail={"code": "LOAD_SESSION_INVALID", "message": "压测 session 必须是规范 UUIDv4"},
+        )
+    return value
+
+
 REQUESTS = Counter(
     "gpu_control_http_requests_total", "HTTP requests", ["method", "route", "status"]
 )
@@ -3242,6 +3260,54 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             rows.append(payload)
         rows.sort(key=lambda row: row["created_at"], reverse=True)
         return rows[:bounded_limit]
+
+    @app.get("/admin/load-sessions/{load_session_id}/collisions")
+    async def admin_load_session_collisions(
+        load_session_id: str,
+        _: Annotated[Principal, Depends(admin_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+    ) -> dict[str, Any]:
+        """Check one exact load namespace without scanning capped history pages."""
+
+        session_id = canonical_load_session_id(load_session_id)
+        roughness_prefix = f"lt:{session_id}:mvr:"
+        imageclip_prefix = f"loadtest:{session_id}:imageclip_batch:"
+        asset_prefix = f"loadtest:{session_id}:"
+        counts = {
+            "gpu_jobs": int(
+                await db.scalar(
+                    select(func.count(Job.id)).where(
+                        Job.request_id.like(f"{roughness_prefix}%")
+                    )
+                )
+                or 0
+            ),
+            "gpu_batches": int(
+                await db.scalar(
+                    select(func.count(JobBatch.id)).where(
+                        JobBatch.external_batch_id.like(f"{imageclip_prefix}%")
+                    )
+                )
+                or 0
+            ),
+            "asset_jobs": int(
+                await db.scalar(
+                    select(func.count(AssetJob.id)).where(
+                        AssetJob.external_asset_id.like(f"{asset_prefix}%")
+                    )
+                )
+                or 0
+            ),
+        }
+        collision_count = sum(counts.values())
+        return {
+            "schema_version": "gpu-control-load-session-collision.v1",
+            "session_id": session_id,
+            "collision_free": collision_count == 0,
+            "collision_count": collision_count,
+            "counts": counts,
+            "scope": "exact_global_session_namespace",
+        }
 
     @app.get("/admin/asset-processing")
     async def admin_asset_processing(

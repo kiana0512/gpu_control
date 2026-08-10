@@ -1316,10 +1316,10 @@ def test_production_preflight_scans_all_status_history_before_submissions() -> N
     )
     preflight_source = ast.get_source_segment(source, preflight) or ""
 
-    assert "/admin/jobs?client_kind=test&limit=500" in preflight_source
-    assert "/admin/asset-processing?limit=500&active_only=false" in preflight_source
-    assert "find_load_session_identity_collisions" in preflight_source
-    assert "reached the 500-row safety limit" in preflight_source
+    assert "/admin/load-sessions/{RUNTIME.session_id}/collisions" in preflight_source
+    assert "gpu-control-load-session-collision.v1" in preflight_source
+    assert "exact_global_session_namespace" in preflight_source
+    assert "collision_count" in preflight_source
 
 
 def test_locust_virtual_users_fence_cycles_submissions_and_retries() -> None:

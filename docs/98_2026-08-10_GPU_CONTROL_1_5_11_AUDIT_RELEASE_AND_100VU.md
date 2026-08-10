@@ -50,6 +50,7 @@
 | 3090-B 只能看到“在线/离线”和任务耗时，缺少 WSL 内核直接证据 | 宿主异常要等任务变慢后才能确认 | 新增签名 `/v1/system-metrics`，采集 boot ID/uptime、load/CPU、内存/swap、CPU/内存/IO PSI；异常只告警、不影响调度资格 |
 | 3090-B 无 DCGM，通用 `GPUHot` 不覆盖 WSL2 | B 的高温/功耗异常无法自动告警 | 签名 GPU 查询导出利用率、显存、温度、功耗/上限；新增 `WSLGPUHot` |
 | 六 API 压测仍按退役 V1 的 22/23 件拓扑产物验收 | Direct V2 成功也会被测试工具误判失败 | 精确对齐 Direct V2 的 7 件正式产物 |
+| 生产 test 历史超过 500 条后，旧 session 防重扫描饱和 | 正式压测在 0 请求阶段 fail closed，无法继续升压 | 新增规范 UUIDv4 精确碰撞查询，分别计数 GPU job、ImageClip batch、Asset job，不删除历史 |
 | Python/前端依赖存在已知安全公告 | 镜像/锁文件扫描失败 | 升级至修复版本；候选环境 `pip-audit` 与 `npm audit` 均为 0 |
 
 旧 Windows `asset-worker-3090-b-windows` 数据库行保留兼容历史，但管理 API 按心跳超时投影为
@@ -137,6 +138,12 @@ Git bundle、敏感配置和前后两次 zero-work gate 均通过离线校验。
 35% 拓扑流量会有意触发三 Codex 槽的排队极限；这用于量出真实队列延迟，不通过在单机并发多个 Codex
 来伪造容量。测试采用 `bounded_stress`，生产优先门禁和 watchdog 保持启用，只能清理本 session 的
 任务。HTTP、提交、同步端到端、poll、artifact、queue 和 retry 七类阈值全部 fail closed。
+
+首次正式启动 session `ae607325-580d-4147-b13c-e8a64fb88e45` 在 preflight 阶段发现历史 test GPU
+记录已达到 500 条上限，压测器按设计以 exit 2 停止：业务请求 `0`、创建任务 `0`、残留任务 `0`，
+七容器身份在退出前后保持一致。该结果不是服务压测失败，而是旧防重查询无法在截断历史上证明 UUID
+未被使用。修复后控制面只读接口按精确 session 前缀直接在数据库计数三类持久命名空间；任一计数非零
+仍拒绝执行，历史数量本身不再造成假阻断。专项验证为 `124 passed, 1 skipped`，Ruff 通过。
 
 ## 6. 安全发布顺序
 
