@@ -576,13 +576,13 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
                   : "任务处理成功，最终结果已返回"
                 : selectedJob.status === "PARTIAL_SUCCESS"
                   ? "部分帧已校验并生成结果包；失败帧可定向补算"
-                : selectedJob.status === "FAILED"
-                  ? isBatch
-                    ? "父批次失败，未发布不完整结果"
-                    : "任务执行失败，请查看错误信息"
-                  : selectedDisplayStatus === "FAILING"
-                    ? "子任务失败，系统正在安全收尾；这不是用户取消"
-                    : "任务状态与进度已同步"
+                  : selectedJob.status === "FAILED"
+                    ? isBatch
+                      ? "父批次失败，未发布不完整结果"
+                      : "任务执行失败，请查看错误信息"
+                    : selectedDisplayStatus === "FAILING"
+                      ? "子任务失败，系统正在安全收尾；这不是用户取消"
+                      : "任务状态与进度已同步"
             }}</strong>
             <span>进度 {{ selectedJob.progress.toFixed(0) }}%</span>
           </div>
@@ -759,7 +759,13 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             v-if="isBatch && selectedJob.artifacts?.length"
             class="batch-artifacts"
           >
-            <h3>{{ selectedJob.status === "PARTIAL_SUCCESS" ? "部分成功结果归档" : "完整结果归档" }}</h3>
+            <h3>
+              {{
+                selectedJob.status === "PARTIAL_SUCCESS"
+                  ? "部分成功结果归档"
+                  : "完整结果归档"
+              }}
+            </h3>
             <a
               v-for="artifact in selectedJob.artifacts"
               :key="artifact.id"
@@ -775,10 +781,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             </a>
           </section>
 
-          <section
-            v-if="selectedJob.failed_items?.length"
-            class="task-error"
-          >
+          <section v-if="selectedJob.failed_items?.length" class="task-error">
             <h3>待补算帧（{{ selectedJob.failed_items.length }}）</h3>
             <p
               v-for="item in selectedJob.failed_items"
@@ -796,7 +799,11 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           </section>
           <section v-else class="task-help">
             <h3>
-              {{ ["SUCCEEDED", "PARTIAL_SUCCESS"].includes(selectedJob.status) ? "结果说明" : "操作说明" }}
+              {{
+                ["SUCCEEDED", "PARTIAL_SUCCESS"].includes(selectedJob.status)
+                  ? "结果说明"
+                  : "操作说明"
+              }}
             </h3>
             <p>
               {{

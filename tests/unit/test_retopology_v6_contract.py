@@ -18,7 +18,6 @@ from packages.gpu_control_core.retopology_v6 import (
     verify_runtime_resources,
 )
 
-
 RESOURCE_ROOT = Path(__file__).resolve().parents[2] / "resources" / "retopology-v6"
 
 
@@ -60,9 +59,7 @@ def test_v6_runtime_resources_match_frozen_manifest() -> None:
 def test_v6_rejects_direct_reduction_plan_and_agent_script(tmp_path: Path) -> None:
     direct_plan = {
         "method": "controlled_direct_reduction",
-        "component_decisions": [
-            {"component_id": "body", "method": "controlled_direct_reduction"}
-        ],
+        "component_decisions": [{"component_id": "body", "method": "controlled_direct_reduction"}],
     }
     with pytest.raises(RetopologyV6ResourceError, match="DIRECT_REDUCTION_FORBIDDEN"):
         assert_structured_retopology_plan(direct_plan)
@@ -78,21 +75,17 @@ def test_v6_accepts_structured_reconstruction_plan_and_script(tmp_path: Path) ->
     assert_structured_retopology_plan(
         {
             "method": "semantic_reconstruction",
-            "component_decisions": [
-                {"component_id": "body", "method": "semantic_reconstruction"}
-            ],
+            "component_decisions": [{"component_id": "body", "method": "semantic_reconstruction"}],
         }
     )
-    (tmp_path / "build_low.py").write_text(
-        "# deliberate cage and patch reconstruction\n", "utf-8"
-    )
+    (tmp_path / "build_low.py").write_text("# deliberate cage and patch reconstruction\n", "utf-8")
     assert_no_forbidden_generator_scripts(tmp_path)
 
 
 def test_v6_delivery_merge_script_is_pinned_and_preserves_disconnected_islands() -> None:
-    worker_source = Path(
-        "apps/blender_worker/src/gpu_control_blender_worker/main.py"
-    ).read_text("utf-8")
+    worker_source = Path("apps/blender_worker/src/gpu_control_blender_worker/main.py").read_text(
+        "utf-8"
+    )
     merge_path = Path("packages/asset_processing/blender_retopology_merge.py")
     merge_source = merge_path.read_text("utf-8")
     merge_sha256 = hashlib.sha256(merge_path.read_bytes()).hexdigest()
@@ -106,9 +99,9 @@ def test_v6_delivery_merge_script_is_pinned_and_preserves_disconnected_islands()
 
 
 def test_v6_formal_build_has_bounded_iteration_and_realistic_eta() -> None:
-    worker_source = Path(
-        "apps/blender_worker/src/gpu_control_blender_worker/main.py"
-    ).read_text("utf-8")
+    worker_source = Path("apps/blender_worker/src/gpu_control_blender_worker/main.py").read_text(
+        "utf-8"
+    )
 
     assert "one authoritative build, one render/audit pass" in worker_source
     assert "estimated_stage_seconds=360" in worker_source

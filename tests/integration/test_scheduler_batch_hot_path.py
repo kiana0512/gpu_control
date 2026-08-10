@@ -347,6 +347,7 @@ async def test_sync_and_assembly_bulk_read_latest_artifacts_in_ordinal_order(
             _workflow_identity: dict[str, str | None],
             staging_path: Path,
             _cancel_event: threading.Event,
+            _total_items: int,
         ) -> BuiltBatchArchive:
             captured_ordinals.extend(frame.ordinal for frame in frames)
             staging_path.parent.mkdir(parents=True, exist_ok=True)
@@ -404,6 +405,7 @@ async def test_cancelled_old_archive_thread_cannot_overwrite_new_publish(
         _workflow_identity: dict[str, str | None],
         staging_path: Path,
         _cancel_event: threading.Event,
+        _total_items: int,
     ) -> BuiltBatchArchive:
         nonlocal invocation
         with invocation_lock:

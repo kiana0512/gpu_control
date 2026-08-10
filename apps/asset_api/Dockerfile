@@ -5,10 +5,12 @@ COPY pyproject.toml README.md ./
 COPY packages ./packages
 COPY apps/asset_api/src ./apps/asset_api/src
 COPY resources/retopology-v6 /opt/li3d/retopology-v6
-RUN python -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir .
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/python -m pip install --no-cache-dir --upgrade pip==26.2.1 \
+    && /opt/venv/bin/python -m pip install --no-cache-dir .
 
 FROM ${PYTHON_BASE_IMAGE} AS runtime
-ARG GPU_CONTROL_VERSION=1.5.10
+ARG GPU_CONTROL_VERSION=1.5.11
 ARG GPU_CONTROL_REVISION=unknown
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PATH=/opt/venv/bin:$PATH
 ENV GPU_CONTROL_BUILD_VERSION=${GPU_CONTROL_VERSION} \
@@ -17,7 +19,9 @@ LABEL org.opencontainers.image.title="GPU Control Asset API" \
       org.opencontainers.image.version="${GPU_CONTROL_VERSION}" \
       org.opencontainers.image.revision="${GPU_CONTROL_REVISION}" \
       org.opencontainers.image.source="https://github.com/kiana0512/gpu_control.git"
-RUN groupadd --gid 10001 gpucontrol && useradd --uid 10001 --gid gpucontrol --create-home gpucontrol
+RUN python -m pip install --no-cache-dir --upgrade pip==26.2.1 \
+    && groupadd --gid 10001 gpucontrol \
+    && useradd --uid 10001 --gid gpucontrol --create-home gpucontrol
 WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /opt/li3d/retopology-v6 /opt/li3d/retopology-v6

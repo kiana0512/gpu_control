@@ -37,7 +37,7 @@ ACCEPTED_ORIGIN_URLS = frozenset(
 REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_REFERENCE_PATTERN = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
-DEFAULT_ASSET_WORKER_VERSION = "1.2.5"
+DEFAULT_ASSET_WORKER_VERSION = "1.4.7-retopology-coordinate-restore-v2"
 OCI_MANIFEST_MEDIA_TYPES = frozenset(
     {
         "application/vnd.oci.image.manifest.v1+json",

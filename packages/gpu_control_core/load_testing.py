@@ -134,19 +134,11 @@ RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS = frozenset(
     {
         "blend",
         "fbx",
-        "process_report",
-        "baseline_audit",
-        "audit",
-        "manifest",
-        "comparison",
-        "agent_plan",
-        "agent_prompt",
+        "generation_report",
+        "delivery_manifest",
+        "result",
         "agent_events",
-        *{
-            f"view_{role}_{view}"
-            for role in ("high", "reference", "generated")
-            for view in ("front", "side", "top", "perspective")
-        },
+        "wrapper_events",
     }
 )
 SUBSTANCE_LOAD_ARTIFACT_KINDS: dict[str, frozenset[str]] = {
@@ -996,16 +988,7 @@ def expected_load_artifact_kinds(
         return fixed
     payload = metadata if isinstance(metadata, Mapping) else {}
     if api_name == "retopology_process":
-        references = payload.get("reference_views")
-        if references is not None and (
-            not isinstance(references, Sequence) or isinstance(references, str | bytes)
-        ):
-            raise LoadTestConfigurationError(
-                "retopology_process reference_views must be a sequence"
-            )
-        return RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS | (
-            frozenset({"reference_images"}) if references else frozenset()
-        )
+        return RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS
     if api_name == "substance_bake":
         options = payload.get("options")
         profile = str(options.get("profile") or "") if isinstance(options, Mapping) else ""

@@ -84,7 +84,7 @@ async def prepared_app(tmp_path: Path) -> AsyncIterator[tuple[FastAPI, httpx.Asy
         database_url=f"sqlite+aiosqlite:///{(tmp_path / 'api.db').as_posix()}",
         redis_url="redis://127.0.0.1:6399/15",
         job_root=tmp_path / "jobs",
-        jwt_secret="test-jwt",
+        jwt_secret="test-jwt-secret-at-least-32-bytes-long",
         api_key_pepper="test-pepper",
         node_agent_hmac_secret="test-agent",
         alertmanager_webhook_token="development-only-change-me",
@@ -3102,3 +3102,26 @@ async def test_signed_node_heartbeat_updates_address_and_dynamic_monitoring(
         targets = await client.get("/internal/prometheus/workers")
         assert targets.status_code == 200
         assert any(group["targets"] == ["10.0.0.99:9400"] for group in targets.json())
+
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-a")
+            assert node is not None
+            node.labels = {**dict(node.labels or {}), "wsl_runtime": "Ubuntu WSL2"}
+            await db.commit()
+        wsl_targets = await client.get("/internal/prometheus/workers")
+        assert wsl_targets.status_code == 200
+        assert not any(
+            group["targets"] == ["10.0.0.99:9400"] for group in wsl_targets.json()
+        )
+        assert any(group["targets"] == ["10.0.0.99:9100"] for group in wsl_targets.json())
+
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-a")
+            assert node is not None
+            node.labels = {**dict(node.labels or {}), "dcgm_exporter_enabled": True}
+            await db.commit()
+        explicit_dcgm_targets = await client.get("/internal/prometheus/workers")
+        assert any(
+            group["targets"] == ["10.0.0.99:9400"]
+            for group in explicit_dcgm_targets.json()
+        )

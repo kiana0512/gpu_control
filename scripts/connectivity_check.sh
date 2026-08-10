@@ -39,7 +39,11 @@ else
     check_url "${label} ComfyUI" "http://${host}:8188/system_stats"
     check_url "${label} Agent" "http://${host}:9201/health/ready"
     check_url "${label} node metrics" "http://${host}:9100/metrics"
-    check_url "${label} GPU metrics" "http://${host}:9400/metrics"
+    if [[ "${label}" == "3090-B" ]]; then
+      echo "SKIP ${label} DCGM metrics       WSL 节点由 Node Agent 上报 GPU 指标"
+    else
+      check_url "${label} GPU metrics" "http://${host}:9400/metrics"
+    fi
   done
   if docker compose -f deploy/control-plane/compose.yaml exec -T postgres \
       pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" >/dev/null; then

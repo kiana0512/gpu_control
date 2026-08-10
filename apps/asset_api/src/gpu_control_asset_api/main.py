@@ -820,6 +820,10 @@ class WorkerClaim(BaseModel):
     agent_instance_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$", max_length=32)
     load_1m: float = Field(ge=0, le=4096)
     available_memory_mb: int = Field(ge=0)
+    # A Worker has several Blender/CPU slots but deliberately only one Codex
+    # execution slot. Rolling Workers omit this field and retain the previous
+    # behavior of accepting either class of work.
+    accepts_codex_jobs: bool = True
 
 
 class WorkerProgress(BaseModel):
@@ -2785,6 +2789,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 # Codex planning is required only by the full retopology
                 # process. Keep UV and Blender-only retopology audit capacity
                 # available while the credential or live probe is unhealthy.
+                claim_query = claim_query.where(AssetJob.job_type.not_in(CODEX_REQUIRED_JOB_TYPES))
+            elif not body.accepts_codex_jobs:
+                # Keep filling the Worker's remaining CPU slots with UV and
+                # audit work while its single Codex-backed topology slot is in
+                # use. Do not lease a second Codex job merely to let it expire
+                # while waiting on the process-wide execution lock.
                 claim_query = claim_query.where(AssetJob.job_type.not_in(CODEX_REQUIRED_JOB_TYPES))
         claimed_row = (
             await db.execute(

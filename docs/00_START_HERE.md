@@ -2,12 +2,11 @@
 
 本页是仓库文档导航。今天部署时不要从 30 多份文档逐一翻找，按下面的“现场主线”执行即可；其余文档是遇到具体问题时的细节手册。
 
-当前是分组件生产基线：GPU Control API、Scheduler 和 Web 仍为 `1.5.7`；Asset API 已更新到
-`1.5.8`，生产镜像 revision 为 `7f7fd197f86288ffbeeab622cc39199335e22c61`；数据库为
-`20260803_0012`。总状态为 `DEPLOYED_NOT_ACCEPTED`，不能写成整套 1.5.8 控制面已部署。Linux
-Blender Worker 均使用 tag `1.2.4`；4090 revision 为 `7f7fd197…`，3090-A/3090-B 为
-`e2cab4c8…`，但 Worker 相关源码和批准 Skill SHA 已逐节点核对一致；统一 OCI image digest/SBOM
-仍待归档。
+2026-08-10 的生产基线为 API/Scheduler `1.5.10`、Asset API
+`1.6.11-retopology-coordinate-restore-v2`、Web `1.5.10-retopo-direct-v2`、三台 Linux Worker
+`1.4.6-retopology-coordinate-restore-v2`、数据库 `20260803_0012`。1.5.11 综合稳定性候选已经完成
+源码审计和离线回归，但镜像、滚动和第三次 100 VU 完成前保持 `NOT_ACCEPTED`；最新执行与证据只看
+`98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`。
 
 生产 UV 和 Retopology 都是 `advisory`：几何质量告警不阻断正式制品交付，但身份、manifest、
 文件完整性、租约和 SHA 仍为硬门禁。四个 Windows Substance Baker Agent v5 均为
@@ -60,6 +59,7 @@ UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重
 39. `docs/81_2026-08-03_ASSET_V4_UV_RETOPOLOGY_LATEST_HANDOFF.md`：Li3D/动画管家当前 UV 与自动重拓扑唯一最新应用端合同，包含 CA、幂等、仅 BLEND、双 advisory、正式制品、SSE、SHA 和当前分组件部署边界。
 40. `docs/82_2026-08-03_ASSET_FAILURES_UV_ADVISORY_AND_RELEASE_ACCEPTANCE.md`：PBR 空 ExitCode 假失败、UV advisory 五件套交付、Codex Skill 子链接修复的局部生产事实、剩余 canary 与证据回填表。
 41. `docs/83_2026-08-03_CONTROL_PLANE_1_5_9_RELEASE_AND_SIX_API_ACCEPTANCE.md`：1.5.9/Worker 1.2.5 的统一候选、生产优先原子准入、六 API 精确产物、五镜像发布、灰度、压测和动画管家回执入口；所有 `PENDING_*` 回填前仍非生产验收。
+42. `docs/98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`：1.5.11 全服务审计、三机 Codex/CPU 槽位、五镜像滚动、数据库心跳膨胀修复和第三次 100 VU 的当前唯一事实记录。
 
 3090-A 的已完成部署、动态心跳、Web 修复和真实任务证据见
 `docs/34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md`。

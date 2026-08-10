@@ -8,7 +8,7 @@ usage() {
 本脚本只构建控制面四镜像和 control-4090 Blender Worker 镜像，不激活服务。
 生产激活必须按滚动发布手册执行：先冻结新提交并将节点置为 DRAINING，确认
 GPU/批次/Asset/Worker/Windows Baker 全部为 0，再按四个 Windows v6 Agent ->
-Asset API 1.5.9 -> 三台 Linux Worker 1.2.5 -> API/Web/Scheduler 顺序逐项更新。
+Asset API -> 三台 Linux Worker -> API/Web/Scheduler 顺序逐项更新。
 禁止用全栈 compose up 触碰 ComfyUI。
 TXT
 }

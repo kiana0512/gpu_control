@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import requests
+import httpx
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def checked(response: requests.Response, expected: set[int]) -> requests.Response:
+def checked(response: httpx.Response, expected: set[int]) -> httpx.Response:
     if response.status_code not in expected:
         raise RuntimeError(f"HTTP {response.status_code}: {response.text[:500]}")
     return response
@@ -58,26 +58,28 @@ def main() -> int:
     if args.output_dir:
         output_dir.mkdir(parents=True, exist_ok=False)
 
+    admin_client = httpx.Client(
+        base_url=base_url,
+        verify=verify,
+        timeout=20,
+        follow_redirects=False,
+    )
     login = checked(
-        requests.post(
-            f"{base_url}/admin/auth/login",
+        admin_client.post(
+            "/admin/auth/login",
             json={"username": args.admin_user, "password": password},
-            timeout=20,
-            verify=verify,
         ),
         {200},
     ).json()
     admin_headers = {"Authorization": f"Bearer {login['access_token']}"}
 
-    def admin_request(method: str, path: str, **kwargs: Any) -> requests.Response:
-        response: requests.Response | None = None
+    def admin_request(method: str, path: str, **kwargs: Any) -> httpx.Response:
+        response: httpx.Response | None = None
         for attempt in range(8):
-            response = requests.request(
+            response = admin_client.request(
                 method,
-                f"{base_url}{path}",
+                path,
                 headers=admin_headers,
-                timeout=20,
-                verify=verify,
                 **kwargs,
             )
             if response.status_code != 429:
@@ -138,16 +140,22 @@ def main() -> int:
         # and the scheduler's warm-cache preference/fallback behavior.
         workflow = "imageclip-rgba" if index % 2 == 0 else "modelview-inpaint"
         started = time.monotonic()
-        response = requests.post(
-            f"{base_url}/api/v1/services/{workflow}",
-            headers={
-                "X-API-Key": client["key"],
-                "Idempotency-Key": f"smoke10-{run_id}-{index + 1:02d}-{uuid.uuid4().hex[:8]}",
-            },
-            files={"image": (args.input.name, image_bytes, mime)},
-            timeout=args.timeout,
+        with httpx.Client(
+            base_url=base_url,
             verify=verify,
-        )
+            timeout=args.timeout,
+            follow_redirects=False,
+        ) as business_client:
+            response = business_client.post(
+                f"/api/v1/services/{workflow}",
+                headers={
+                    "X-API-Key": client["key"],
+                    "Idempotency-Key": (
+                        f"smoke10-{run_id}-{index + 1:02d}-{uuid.uuid4().hex[:8]}"
+                    ),
+                },
+                files={"image": (args.input.name, image_bytes, mime)},
+            )
         elapsed = round(time.monotonic() - started, 3)
         job_id = response.headers.get("X-Job-ID")
         content_type = response.headers.get("Content-Type", "")
@@ -176,15 +184,14 @@ def main() -> int:
     wall_seconds = round(time.monotonic() - started_all, 3)
 
     jobs = checked(
-        requests.get(
-            f"{base_url}/admin/jobs",
+        admin_client.get(
+            "/admin/jobs",
             headers=admin_headers,
             params={"limit": 100},
-            timeout=20,
-            verify=verify,
         ),
         {200},
     ).json()
+    admin_client.close()
     jobs_by_id = {job["job_id"]: job for job in jobs}
     for result in results:
         job = jobs_by_id.get(result["job_id"], {})

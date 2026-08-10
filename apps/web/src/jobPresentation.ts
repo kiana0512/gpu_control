@@ -100,9 +100,13 @@ export function statusGroup(job: TaskJob): string {
 }
 
 export function isTerminal(job: TaskJob): boolean {
-  return ["SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "TIMED_OUT", "CANCELLED"].includes(
-    job.status.toUpperCase(),
-  );
+  return [
+    "SUCCEEDED",
+    "PARTIAL_SUCCESS",
+    "FAILED",
+    "TIMED_OUT",
+    "CANCELLED",
+  ].includes(job.status.toUpperCase());
 }
 
 export function validTimestamp(

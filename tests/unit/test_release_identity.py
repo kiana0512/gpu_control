@@ -16,14 +16,14 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 
 def test_source_release_versions_are_aligned() -> None:
     assert source_versions(REPOSITORY) == {
-        "python": "1.5.10",
-        "web": "1.5.10",
-        "web_lock": "1.5.10",
+        "python": "1.5.11",
+        "web": "1.5.11",
+        "web_lock": "1.5.11",
     }
 
 
 def test_control_plane_build_defaults_match_release_version() -> None:
-    expected_version = "1.5.10"
+    expected_version = "1.5.11"
     for dockerfile in (
         "apps/api/Dockerfile",
         "apps/asset_api/Dockerfile",
@@ -40,7 +40,7 @@ def test_control_plane_build_defaults_match_release_version() -> None:
     compose = (REPOSITORY / "deploy/control-plane/compose.yaml").read_text(encoding="utf-8")
     assert compose.count(f"GPU_CONTROL_VERSION: ${{GPU_CONTROL_VERSION:-{expected_version}}}") == 4
     assert compose.count(f"APP_IMAGE_TAG:-{expected_version}") == 2
-    assert "ASSET_API_IMAGE_TAG:-1.6.11-retopology-coordinate-restore-v2" in compose
+    assert "ASSET_API_IMAGE_TAG:-1.6.12-retopology-coordinate-restore-v2" in compose
 
 
 def test_worker_release_versions_and_evidence_contract_are_aligned() -> None:

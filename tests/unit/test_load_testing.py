@@ -374,10 +374,20 @@ def test_six_api_artifact_contracts_match_server_contracts() -> None:
         "uv_process": frozenset({"blend", "fbx", "report", "qa", "fbx_qa"}),
         "retopology_audit": frozenset({"audit", "manifest"}),
     }
-    assert len(RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS) == 22
+    assert RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS == frozenset(
+        {
+            "blend",
+            "fbx",
+            "generation_report",
+            "delivery_manifest",
+            "result",
+            "agent_events",
+            "wrapper_events",
+        }
+    )
     assert expected_load_artifact_kinds(
         "retopology_process", metadata={"reference_views": [{"filename": "front.png"}]}
-    ) == RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS | {"reference_images"}
+    ) == RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS
     assert (
         expected_load_artifact_kinds("retopology_process", metadata={"reference_views": []})
         == RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS
@@ -409,26 +419,8 @@ def test_six_api_artifact_contracts_match_server_contracts() -> None:
         profile: frozenset(contract) for profile, contract in server_substance.items()
     } == SUBSTANCE_LOAD_ARTIFACT_KINDS
 
-    required_node = assignments["RETOPOLOGY_PROCESS_REQUIRED_FILENAMES"]
-    assert isinstance(required_node, ast.Dict)
-    required_kinds: set[str] = set()
-    for key, value in zip(required_node.keys, required_node.values, strict=True):
-        if key is not None:
-            pair = ast.literal_eval(value)
-            required_kinds.add(str(pair[0]))
-            continue
-        assert isinstance(value, ast.DictComp)
-        generator_values = [ast.literal_eval(item.iter) for item in value.generators]
-        required_kinds.update(
-            f"view_{role}_{view}" for role in generator_values[0] for view in generator_values[1]
-        )
-    promotions = ast.literal_eval(assignments["RETOPOLOGY_FINAL_MODEL_ARTIFACTS"])
-    final_required_kinds = {
-        str(promotions[kind][0]) if kind in promotions else kind for kind in required_kinds
-    }
-    assert frozenset(final_required_kinds) == RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS
-    optional = ast.literal_eval(assignments["RETOPOLOGY_PROCESS_OPTIONAL_FILENAMES"])
-    assert {value[0] for value in optional.values()} == {"reference_images"}
+    direct_v2 = ast.literal_eval(assignments["RETOPOLOGY_DIRECT_V2_ARTIFACTS"])
+    assert frozenset(direct_v2) == RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS
 
     uv_complete = next(
         node

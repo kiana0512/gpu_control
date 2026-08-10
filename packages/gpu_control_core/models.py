@@ -324,7 +324,7 @@ class AssetWorker(Base):
     )
     retopoflow_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, index=True
+        DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(

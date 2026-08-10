@@ -139,10 +139,10 @@ def main() -> None:
         timeout=timeout,
         follow_redirects=False,
     ) as client:
-        request_files = {
-            "archive": ("frames.zip", archive, "application/zip"),
-            "manifest": (None, manifest_json),
-        }
+        request_files: list[tuple[str, tuple[str | None, bytes | str, str | None]]] = [
+            ("archive", ("frames.zip", archive, "application/zip")),
+            ("manifest", (None, manifest_json, "application/json")),
+        ]
         created = client.post(
             "/api/v1/batches/imageclip-rgba", headers=headers, files=request_files
         )

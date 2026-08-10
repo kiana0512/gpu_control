@@ -2516,6 +2516,7 @@ async def claim_asset_job(
     worker_id: str = "asset-worker-3090-a",
     node_id: str = "worker-3090-a",
     generation: str = "initial",
+    accepts_codex_jobs: bool = True,
 ) -> dict[str, object]:
     response = await signed_post(
         client,
@@ -2525,12 +2526,67 @@ async def claim_asset_job(
             **asset_worker_claim_identity(worker_id, node_id, generation),
             "load_1m": 1.0,
             "available_memory_mb": 100000,
+            "accepts_codex_jobs": accepts_codex_jobs,
         },
     )
     assert response.status_code == 200, response.text
     job = response.json()["job"]
     assert job is not None
     return job
+
+
+async def test_busy_codex_slot_still_claims_blender_only_work(tmp_path: Path) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        await register_asset_worker(
+            client,
+            settings,
+            skill_version="asset-skills-retopology-v2.3.0",
+        )
+        retopology = await post_retopology_process(
+            client,
+            "asset:codex-slot-busy:retopology",
+            "asset:codex-slot-busy:retopology",
+        )
+        assert retopology.status_code == 202, retopology.text
+        uv = await post_uv_process(
+            client,
+            "asset:codex-slot-busy:uv",
+            "asset:codex-slot-busy:uv",
+        )
+        assert uv.status_code == 202, uv.text
+
+        claimed = await claim_asset_job(
+            client,
+            settings,
+            accepts_codex_jobs=False,
+        )
+        assert claimed["job_id"] == uv.json()["job_id"]
+        assert claimed["job_type"] == "UV_PROCESS_V2"
+
+
+async def convert_retopology_job_to_legacy_v1(
+    client: httpx.AsyncClient,
+    job_id: str,
+) -> None:
+    """Model an in-flight V1 job retained across the Direct V2 rollout.
+
+    The public retopology route now always creates Direct V2 work.  The V1
+    completion endpoint remains supported so jobs admitted before that rollout
+    can finish safely; these tests exercise that rolling-upgrade contract by
+    converting only their isolated database fixture back to the legacy type.
+    """
+
+    app = client._transport.app  # type: ignore[attr-defined]
+    async with app.state.db.session() as db:
+        job = await db.get(AssetJob, job_id)
+        assert job is not None
+        assert job.job_type == "RETOPOLOGY_PROCESS_V2"
+        job.job_type = "RETOPOLOGY_PROCESS_V1"
+        legacy_metadata = retopology_process_metadata(job.external_asset_id)
+        legacy_options = legacy_metadata["options"]
+        assert isinstance(legacy_options, dict)
+        job.options = {**dict(job.options or {}), **legacy_options}
+        await db.commit()
 
 
 @pytest.mark.parametrize(
@@ -3899,6 +3955,7 @@ async def test_retopology_process_accepts_reference_views_and_publishes_review_s
         assert created.status_code == 202, created.text
         job_id = created.json()["job_id"]
         assert created.json()["timing"]["queue_position"] == 1
+        await convert_retopology_job_to_legacy_v1(client, job_id)
         await register_asset_worker(client, settings)
         job = await claim_asset_job(client, settings)
         assert job["job_id"] == job_id
@@ -4253,6 +4310,7 @@ async def create_and_claim_retopology_process(
         },
     )
     assert created.status_code == 202, created.text
+    await convert_retopology_job_to_legacy_v1(client, created.json()["job_id"])
     await register_asset_worker(client, settings)
     claimed = await claim_asset_job(client, settings)
     assert claimed["job_id"] == created.json()["job_id"]

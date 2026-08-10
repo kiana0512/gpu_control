@@ -133,15 +133,17 @@ def worker_can_claim_another_job(
     running_jobs: dict[asyncio.Task[None], dict[str, Any]],
     max_concurrency: int,
 ) -> bool:
-    """Protect the single Codex runtime without reducing Blender-only capacity.
+    """Return whether one of the Worker's general CPU slots is available."""
 
-    The Worker can run multiple Blender-only jobs, but every Codex-backed job
-    uses ``CODEX_EXEC_LOCK``. Claiming a second such job makes it wait outside
-    the lease-renewal loop; after five minutes the server requeues it while the
-    old process is still alive. Keep at most one Codex-backed job per process.
-    """
+    return len(running_jobs) < max_concurrency
 
-    return len(running_jobs) < max_concurrency and not any(
+
+def worker_accepts_codex_jobs(
+    running_jobs: dict[asyncio.Task[None], dict[str, Any]],
+) -> bool:
+    """Return whether the Worker's single process-wide Codex slot is free."""
+
+    return not any(
         job_requires_codex(job) for job in running_jobs.values()
     )
 
@@ -1267,7 +1269,12 @@ async def run_retopology_v6_legacy(
         "regenerating them. Finish by returning only the formal receipt JSON.\n"
         f"```json\n{json.dumps(formal_context, ensure_ascii=False, indent=2)}\n```\n"
     )
-    reference_paths = [Path(path) for path in formal_context["reference_image_paths"]]
+    raw_reference_paths = formal_context.get("reference_image_paths")
+    if not isinstance(raw_reference_paths, list) or not all(
+        isinstance(path, str) for path in raw_reference_paths
+    ):
+        raise RuntimeError("Retopology V6 formal context has invalid reference image paths")
+    reference_paths = [Path(path) for path in raw_reference_paths]
     formal_receipt = await run_v6_codex_agent(
         client,
         settings,
@@ -1575,11 +1582,11 @@ async def run_retopology_v6_legacy(
     for role, path in required_paths.items():
         if not path.is_file() or path.stat().st_size <= 0:
             raise RuntimeError(f"Retopology V6 output omitted required artifact {role}")
-    artifact_rows = independent_result.get("artifacts")
-    if not isinstance(artifact_rows, list):
+    result_artifacts = independent_result.get("artifacts")
+    if not isinstance(result_artifacts, list):
         raise RuntimeError("Retopology V6 result omitted artifact identities")
     by_role = {
-        str(item.get("role")): item for item in artifact_rows if isinstance(item, dict)
+        str(item.get("role")): item for item in result_artifacts if isinstance(item, dict)
     }
     if set(RETOPOLOGY_V6_REQUIRED_OUTPUTS).difference(by_role):
         raise RuntimeError("Retopology V6 result omitted required artifact roles")
@@ -2881,6 +2888,7 @@ async def worker_loop(settings: WorkerSettings) -> None:
                                 "agent_instance_id": agent_instance_id,
                                 "load_1m": os.getloadavg()[0],
                                 "available_memory_mb": available_memory_mb(),
+                                "accepts_codex_jobs": worker_accepts_codex_jobs(running),
                             },
                         )
                         response.raise_for_status()

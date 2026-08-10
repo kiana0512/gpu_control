@@ -904,23 +904,28 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         )
         groups: list[dict[str, Any]] = []
         for node in nodes:
-            host = str((node.labels or {}).get("host", ""))
+            labels = dict(node.labels or {})
+            host = str(labels.get("host", ""))
             try:
                 host = str(ipaddress.ip_address(host))
             except ValueError:
                 continue
-            groups.extend(
-                [
-                    {
-                        "targets": [f"{host}:9100"],
-                        "labels": {"exporter": "node", "node_id": node.id},
-                    },
+            groups.append(
+                {
+                    "targets": [f"{host}:9100"],
+                    "labels": {"exporter": "node", "node_id": node.id},
+                }
+            )
+            dcgm_enabled = labels.get("dcgm_exporter_enabled")
+            if dcgm_enabled is True or (
+                dcgm_enabled is None and not labels.get("wsl_runtime")
+            ):
+                groups.append(
                     {
                         "targets": [f"{host}:9400"],
                         "labels": {"exporter": "dcgm", "node_id": node.id},
-                    },
-                ]
-            )
+                    }
+                )
         return groups
 
     @app.post("/admin/auth/login")

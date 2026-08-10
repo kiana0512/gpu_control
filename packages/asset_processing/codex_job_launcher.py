@@ -15,9 +15,8 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
-
 
 ALLOWED_METHODS = {
     "controlled_direct_reduction",
@@ -74,7 +73,7 @@ def inspect_blend_delivery(job_dir: Path, high_object: str) -> list[dict[str, ob
     output_path = job_dir / ".gpu-control-delivery-inspection.json"
     helper = Path(__file__).with_name("inspect_retopology_delivery.py")
     blender = os.environ.get("BLENDER_EXECUTABLE", "/opt/blender/blender")
-    completed = subprocess.run(
+    completed = subprocess.run(  # noqa: S603 - trusted Worker executable and fixed argv
         [
             blender,
             "--background",
