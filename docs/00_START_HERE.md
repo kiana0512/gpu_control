@@ -4,7 +4,7 @@
 
 2026-08-11 的生产基线为 API/Scheduler `1.5.12`、Web `1.5.11-retopo-direct-v2`、Asset API
 `1.6.16-retopology-v6-client-filename-v1`、三台 Linux Worker
-`1.4.16-retopology-degenerate-cleanup-v1`、数据库 `20260810_0013`。1.5.11 综合稳定性候选已经完成
+`1.4.17-uv-fbx-meter-contract-v1`、数据库 `20260810_0013`。1.5.11 综合稳定性候选已经完成
 源码审计、五镜像滚动和 Direct V2 真实 canary；第三次正式 100 VU 完成前保持
 `DEPLOYED_NOT_ACCEPTED`。最新执行与证据只看
 `98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`；最新自动拓扑热修复见

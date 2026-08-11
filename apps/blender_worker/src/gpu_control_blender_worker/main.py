@@ -52,6 +52,9 @@ ALIGN_BAKE_MODELS_SCRIPT_SHA256 = (
     "ea0588e81fa50772080bc19ff096ee29cb5b6dbc67cdb303b9d32cdbf6a99a78"
 )
 UV_QA_ADAPTER_SHA256 = "8e6bc5dc20a49fac5be2e92accd518d9da9fa629e878f51dc151baa80ad3359a"
+UV_FBX_UNITS_SCRIPT_SHA256 = (
+    "ca5889965c5e3b5d72a6a05bf7c8beecc77a9e5fe133987d3db8807c3291277b"
+)
 RETOPOLOGY_BAKE_POSTPROCESS_SCRIPT_SHA256 = (
     "917ca181f7239dc82c24b205bdb68d7babd223daa621b550f41340a55c8f680b"
 )
@@ -87,6 +90,9 @@ class WorkerSettings(BaseSettings):
     uv_skill_root: Path = Path("/opt/codex/skills/blender-pbr-uv")
     alignment_skill_root: Path = Path("/opt/codex/skills/blender-align-bake-models")
     uv_qa_adapter_script: Path = Path("/app/packages/asset_processing/blender_uv_qa_adapter.py")
+    uv_fbx_units_script: Path = Path(
+        "/app/packages/asset_processing/blender_uv_fbx_units.py"
+    )
     retopology_skill_root: Path = Path("/opt/codex/skills/blender-retopology-compare-iterate")
     retopology_v6_root: Path = Path("/opt/li3d/retopology-v6")
     retopology_direct_v2_root: Path = Path("/opt/li3d/retopology-direct-v2")
@@ -2287,6 +2293,10 @@ async def run_uv_skill(
     )
     verified_script(settings.uv_skill_root / "scripts" / "qa_uv.py", UV_QA_SCRIPT_SHA256)
     qa_adapter = verified_script(settings.uv_qa_adapter_script, UV_QA_ADAPTER_SHA256)
+    units_script = verified_script(
+        settings.uv_fbx_units_script,
+        UV_FBX_UNITS_SCRIPT_SHA256,
+    )
     output_dir.mkdir(parents=True, exist_ok=False)
     if job_type == "UV_PROCESS_V2":
         stem = input_path.stem
@@ -2342,18 +2352,51 @@ async def run_uv_skill(
         "Blender 正在执行切缝、展开、打直与排版",
         180,
     )
+    unit_report_path = output_dir / ".fbx-unit-contract.json"
+    process = await start_blender(
+        settings,
+        "--background",
+        "--factory-startup",
+        "--disable-autoexec",
+        "--python-exit-code",
+        "1",
+        "--python",
+        str(units_script),
+        "--",
+        "--input-blend",
+        str(output_blend),
+        "--output-fbx",
+        str(output_fbx),
+        "--output-report",
+        str(unit_report_path),
+    )
+    await wait_for_blender(
+        client,
+        job_id,
+        lease_headers,
+        process,
+        60,
+        66,
+        "UV_FBX_UNIT_NORMALIZATION",
+        "正在保持拓扑与 UV 不变并统一 FBX 米制单位",
+        45,
+    )
+    unit_report = json.loads(unit_report_path.read_text("utf-8"))
+    if not isinstance(unit_report, dict) or unit_report.get("passed") is not True:
+        raise RuntimeError("UV FBX metre unit contract did not pass")
     unwrap_report = json.loads(output_report.read_text("utf-8"))
     if not isinstance(unwrap_report, dict):
         raise RuntimeError("UV unwrap report is not a JSON object")
     unwrap_report["algorithm"] = algorithm
+    unwrap_report["fbx_unit_contract"] = unit_report
     output_report.write_text(
         json.dumps(unwrap_report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
     qa_payloads: dict[str, Any] = {}
     for label, source, qa_path, start, end in (
-        ("blend", output_blend, blend_qa_path, 60.0, 76.0),
-        ("fbx_readback", output_fbx, fbx_qa_path, 76.0, 90.0),
+        ("blend", output_blend, blend_qa_path, 66.0, 78.0),
+        ("fbx_readback", output_fbx, fbx_qa_path, 78.0, 90.0),
     ):
         process = await start_blender(
             settings,
@@ -2378,6 +2421,7 @@ async def run_uv_skill(
             json.dumps(qa_payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         qa_payloads[label] = qa_payload
+    unit_report_path.unlink()
     if job_type == "UV_PROCESS_V2":
         return {
             "blend": output_blend.name,
