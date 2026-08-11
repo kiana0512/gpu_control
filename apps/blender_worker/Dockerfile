@@ -1,6 +1,6 @@
 ARG BLENDER_BASE_IMAGE=li3d/blender-runtime:5.1.2
 FROM ${BLENDER_BASE_IMAGE}
-ARG ASSET_WORKER_VERSION=1.4.17-uv-fbx-meter-contract-v1
+ARG ASSET_WORKER_VERSION=1.4.18-retopo-axis-visual-qa-v1
 ARG GPU_CONTROL_REVISION=unknown
 USER root
 WORKDIR /app

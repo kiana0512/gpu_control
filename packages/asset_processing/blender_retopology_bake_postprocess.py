@@ -343,15 +343,16 @@ def cleanup_delivery_degenerate_geometry(
     *,
     stage: str,
 ) -> dict[str, Any]:
-    """Remove only invalid zero-area geometry from the bake-delivery copy.
+    """Normalize invalid geometry on the bake-delivery copy only.
 
     Direct V2 output remains preserved as the hidden original low.  This helper
     is deliberately narrower than a general mesh cleanup: it does not merge
-    nearby vertices, remesh, reduce polygons, rebuild, or touch a valid mesh.
-    It first dissolves numerically zero-length edges and then removes only faces that
-    still fail the same scale-relative area test used by ``topology_metrics``.
-    Any edges or vertices made loose by removing those invalid faces are also
-    removed from the delivery duplicate.
+    nearby vertices, remesh, reduce polygons, or rebuild.  It dissolves
+    numerically zero-length edges, removes only faces that fail the same
+    scale-relative area test used by ``topology_metrics``, triangulates N-gons
+    whose exchange-format tessellation would otherwise be ambiguous, and
+    recalculates the disconnected closed shells outward.  The generated Direct
+    V2 low remains preserved and hidden as immutable evidence.
     """
 
     before = topology_metrics(obj, inspect_intersections=False)
@@ -359,8 +360,11 @@ def cleanup_delivery_degenerate_geometry(
         "stage": stage,
         "scope": "bake_delivery_duplicate_only",
         "original_low_modified": False,
-        "attempted": False,
-        "method": "dissolve_zero_length_edges_then_delete_zero_area_faces",
+        "attempted": True,
+        "method": (
+            "dissolve_zero_length_edges_delete_zero_area_faces_"
+            "triangulate_ngons_recalculate_outward_normals"
+        ),
         "merge_by_distance_used": False,
         "remesh_used": False,
         "polygon_reduction_used": False,
@@ -372,13 +376,6 @@ def cleanup_delivery_degenerate_geometry(
             "delivery low has non-finite coordinates; refusing unsafe cleanup: "
             f"{json.dumps(evidence, ensure_ascii=False, sort_keys=True)}"
         )
-    if not before["degenerate_faces"]:
-        evidence["after"] = before
-        evidence["reason"] = "no_degenerate_faces"
-        evidence["passed"] = True
-        return evidence
-
-    evidence["attempted"] = True
     diagonal = max(float(obj.dimensions.length), 1.0e-9)
     area_tolerance = diagonal * diagonal * 1.0e-12
     edge_tolerance = max(diagonal * 1.0e-10, 1.0e-12)
@@ -410,8 +407,20 @@ def cleanup_delivery_degenerate_geometry(
         evidence["resulting_loose_vertices_deleted"] = len(loose_vertices)
         if loose_vertices:
             bmesh.ops.delete(bm, geom=loose_vertices, context="VERTS")
+        bm.faces.ensure_lookup_table()
+        ngons = [face for face in bm.faces if len(face.verts) > 4]
+        evidence["ngons_triangulated"] = len(ngons)
+        if ngons:
+            bmesh.ops.triangulate(
+                bm,
+                faces=ngons,
+                quad_method="BEAUTY",
+                ngon_method="BEAUTY",
+            )
+        bm.faces.ensure_lookup_table()
         if bm.faces:
             bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+        evidence["face_normals_recalculated"] = True
         bm.to_mesh(mesh)
         mesh.update()
     finally:
@@ -419,11 +428,14 @@ def cleanup_delivery_degenerate_geometry(
 
     after = topology_metrics(obj, inspect_intersections=False)
     evidence["after"] = after
-    evidence["vertices_removed"] = int(before["vertices"]) - int(after["vertices"])
-    evidence["edges_removed"] = int(before["edges"]) - int(after["edges"])
-    evidence["faces_removed"] = int(before["faces"]) - int(after["faces"])
+    for element in ("vertices", "edges", "faces"):
+        delta = int(after[element]) - int(before[element])
+        evidence[f"{element}_removed"] = max(-delta, 0)
+        evidence[f"{element}_added"] = max(delta, 0)
     evidence["passed"] = bool(
-        after["finite_coordinates"] and not after["degenerate_faces"]
+        after["finite_coordinates"]
+        and not after["degenerate_faces"]
+        and not after["ngons"]
     )
     return evidence
 
@@ -578,6 +590,118 @@ def refine_uniform_scale_for_dimension_gate(
     return selected, evidence
 
 
+def source_axis_uniform_alignment_candidate(
+    high_data: dict[str, Any],
+    low: bpy.types.Object,
+    module: ModuleType,
+    high_evaluation: np.ndarray,
+    low_evaluation: np.ndarray,
+    high_tree: Any,
+    trim_fraction: float,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Evaluate the Direct V2 source axes before allowing rotational ICP.
+
+    Direct V2 authors its generated low in the measured high-local coordinate
+    frame.  It may move that low aside for presentation, but it does not use a
+    different semantic axis system.  A free similarity ICP can nevertheless
+    add a small rotation to thin or nearly symmetric props.  That small
+    numerical improvement visibly displaces long handles in the orthographic
+    bake views.
+
+    Keep the source axes exact and search only a single uniform scale plus a
+    center correction.  The unchanged surface, center and dimension gates
+    remain mandatory.  If no source-axis candidate passes, the caller may use
+    the general proper-rotation solver.
+    """
+
+    current = module.transformed_bounds([low], np.eye(4, dtype=np.float64))
+    if np.any(current["size"] <= 1.0e-12):
+        return None, {
+            "enabled": True,
+            "selected": False,
+            "reason": "source_axis_low_has_zero_size_dimension",
+            "uniform_scale_only": True,
+            "rotation_locked_to_source_axes": True,
+        }
+
+    ratios = np.asarray(high_data["size"], dtype=np.float64) / np.asarray(
+        current["size"], dtype=np.float64
+    )
+    lower = max(float(np.min(ratios)) * 0.985, 1.0e-9)
+    upper = max(float(np.max(ratios)) * 1.015, lower)
+    seeds = [
+        1.0,
+        float(np.mean(ratios)),
+        float(np.median(ratios)),
+        float(np.cbrt(np.prod(ratios))),
+        float(np.linalg.norm(high_data["size"]) / np.linalg.norm(current["size"])),
+        *[float(value) for value in ratios],
+        *[float(value) for value in np.linspace(lower, upper, 81)],
+    ]
+    factors = sorted(
+        {
+            round(value, 12)
+            for value in seeds
+            if math.isfinite(value) and value > 1.0e-9
+        }
+    )
+    evaluations: list[tuple[float, dict[str, Any]]] = []
+    passing: list[tuple[float, dict[str, Any]]] = []
+    for factor in factors:
+        matrix = np.eye(4, dtype=np.float64)
+        matrix[:3, :3] *= factor
+        matrix[:3, 3] = high_data["center"] - factor * current["center"]
+        candidate = module.evaluate_candidate(
+            matrix,
+            high_data,
+            [low],
+            high_evaluation,
+            low_evaluation,
+            high_tree,
+            trim_fraction,
+        )
+        evaluations.append((factor, candidate))
+        if (
+            candidate["surface_error_ratio"] <= ALIGNMENT_SURFACE_ERROR_LIMIT
+            and candidate["center_error_ratio"] <= ALIGNMENT_CENTER_ERROR_LIMIT
+            and candidate["dimension_error_ratio"] <= ALIGNMENT_DIMENSION_ERROR_LIMIT
+            and candidate["reflected"] is False
+        ):
+            passing.append((factor, candidate))
+
+    best_any = min(evaluations, key=lambda item: item[1]["score"])
+    evidence: dict[str, Any] = {
+        "enabled": True,
+        "candidate_count": len(evaluations),
+        "gate_passing_candidate_count": len(passing),
+        "rotation_locked_to_source_axes": True,
+        "uniform_scale_only": True,
+        "axis_scale_used": False,
+        "reflection_allowed": False,
+        "dimension_ratios": [float(value) for value in ratios],
+        "best_evaluated": module.serializable_candidate(best_any[1]),
+    }
+    if not passing:
+        evidence.update(
+            {
+                "selected": False,
+                "reason": "no_source_axis_candidate_passed_unchanged_geometry_gates",
+            }
+        )
+        return None, evidence
+
+    factor, selected = min(passing, key=lambda item: item[1]["score"])
+    evidence.update(
+        {
+            "selected": True,
+            "reason": "direct_v2_high_local_axes_are_authoritative",
+            "selected_uniform_scale": factor,
+            "selected_candidate": module.serializable_candidate(selected),
+        }
+    )
+    return selected, evidence
+
+
 def transform_only_alignment(
     high: bpy.types.Object,
     low: bpy.types.Object,
@@ -598,6 +722,22 @@ def transform_only_alignment(
     )
     high_data = module.collect_points([high], solver_args.target_points, seed=3)
     low_data = module.collect_points([low], solver_args.target_points, seed=5)
+    high_evaluation = module.deterministic_subset(
+        high_data["points"], min(solver_args.samples, len(high_data["points"])), 11
+    )
+    low_evaluation = module.deterministic_subset(
+        low_data["points"], min(solver_args.samples, len(low_data["points"])), 13
+    )
+    high_tree = module.build_tree(high_evaluation)
+    source_axis_candidate, source_axis_evidence = source_axis_uniform_alignment_candidate(
+        high_data,
+        low,
+        module,
+        high_evaluation,
+        low_evaluation,
+        high_tree,
+        solver_args.trim_fraction,
+    )
     proper = module.solve(
         high_data,
         low_data,
@@ -610,31 +750,26 @@ def transform_only_alignment(
         raise RuntimeError("pure-transform alignment produced no proper-rotation candidate")
     tied_limit = proper[0]["score"] * (1.0 + solver_args.source_axis_score_gap) + 1e-7
     tied = [candidate for candidate in proper if candidate["score"] <= tied_limit]
-    best = min(
+    icp_best = min(
         tied,
         key=lambda candidate: module.source_local_axis_difference_degrees(
             candidate, [high], [low]
         ),
     )
-    current_bounds = module.transformed_bounds([low], best["matrix"])
+    current_bounds = module.transformed_bounds([low], icp_best["matrix"])
     correction = np.eye(4, dtype=np.float64)
     correction[:3, 3] = high_data["center"] - current_bounds["center"]
-    centered_matrix = correction @ best["matrix"]
-    high_evaluation = module.deterministic_subset(
-        high_data["points"], min(solver_args.samples, len(high_data["points"])), 11
-    )
-    low_evaluation = module.deterministic_subset(
-        low_data["points"], min(solver_args.samples, len(low_data["points"])), 13
-    )
-    best = module.evaluate_candidate(
+    centered_matrix = correction @ icp_best["matrix"]
+    icp_best = module.evaluate_candidate(
         centered_matrix,
         high_data,
         [low],
         high_evaluation,
         low_evaluation,
-        module.build_tree(high_evaluation),
+        high_tree,
         solver_args.trim_fraction,
     )
+    best = source_axis_candidate if source_axis_candidate is not None else icp_best
     before_uniform_scale_refinement = module.serializable_candidate(best)
     uniform_scale_refinement: dict[str, Any] = {
         "attempted": False,
@@ -658,7 +793,7 @@ def transform_only_alignment(
             module,
             high_evaluation,
             low_evaluation,
-            module.build_tree(high_evaluation),
+            high_tree,
             solver_args.trim_fraction,
         )
         if refined is not None:
@@ -738,6 +873,7 @@ def transform_only_alignment(
         "before_uniform_scale_refinement": before_uniform_scale_refinement,
         "uniform_scale_refinement": uniform_scale_refinement,
         "source_axis_preference": True,
+        "direct_v2_source_axis_candidate": source_axis_evidence,
         "source_local_axis_preference": source_axis_preference,
         "orientation_ambiguous_before_source_axis_preference": ambiguous,
         "orientation_competitor": (
@@ -1667,7 +1803,7 @@ def main() -> None:
         }
         uv = ensure_final_uv(final_low, args.uv_algorithm, legacy_uv)
         topology_after_uv = topology_metrics(final_low, inspect_intersections=False)
-        if topology_after_uv["degenerate_faces"]:
+        if topology_after_uv["degenerate_faces"] or topology_after_uv["ngons"]:
             delivery_geometry_cleanup["after_uv"] = cleanup_delivery_degenerate_geometry(
                 final_low,
                 stage="after_uv",
@@ -1691,6 +1827,7 @@ def main() -> None:
         if (
             not topology_after_uv["finite_coordinates"]
             or topology_after_uv["degenerate_faces"]
+            or topology_after_uv["ngons"]
         ):
             raise RuntimeError(
                 "UV-prepared low has invalid geometry after bounded delivery cleanup: "

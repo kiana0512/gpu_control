@@ -2,7 +2,7 @@
 
 最后更新：2026-08-11
 版本：生产 API/Scheduler 1.5.12、Web 1.5.11-retopo-direct-v2 / Asset API 1.6.17-substance-glb-input-v1 / Worker
-1.4.17-uv-fbx-meter-contract-v1 / DB 20260810_0013；源码审计、Direct V2 拓扑后纯变换高低模对齐、
+1.4.18-retopo-axis-visual-qa-v1 / DB 20260810_0013；源码审计、Direct V2 拓扑后纯变换高低模对齐、
 独立 UV、七方向视觉门禁和米制 FBX 重导验证已完成真实生产 canary。三节点均为 `ACTIVE / ONLINE`，
 真实抠图继续三卡并行，发布未重启三台 ComfyUI。第三次正式 100 VU 在
 execute 前由用户取消，r7 为 0 请求、0 压测任务。综合发布见
@@ -11,7 +11,22 @@ execute 前由用户取消，r7 为 0 请求、0 压测任务。综合发布见
 `100_2026-08-10_RETOPOLOGY_FBX_BROWSER_METER_HOTFIX.md`，最终包围盒恢复 V2 与真实失败任务重试见
 `101_2026-08-10_RETOPOLOGY_ENVELOPE_V2_HOTFIX.md`，最终纯变换交付和生产证据见
 `102_2026-08-10_RETOPOLOGY_TRANSFORM_ALIGNMENT_AND_UV_DUAL_MODE.md`，Substance GLB 输入热修复见
-`106_2026-08-11_SUBSTANCE_GLB_INPUT_HOTFIX.md`。
+`106_2026-08-11_SUBSTANCE_GLB_INPUT_HOTFIX.md`，Direct V2 源轴向锁定与视觉 QA 叠加证据见
+`107_2026-08-11_RETOPOLOGY_SOURCE_AXIS_VISUAL_QA_HOTFIX.md`。
+
+## 2026-08-11 Direct V2 源轴向与视觉 QA 热修复
+
+- 失败任务 `2b68690b-d616-438f-97e5-503369807c9b` 已定位为拓扑完成后的视觉 QA 拒绝；Worker、Codex
+  认证和生成阶段均正常。第二轮低模中心、尺寸、UV 与 FBX 回读均通过，但通用 ICP 对细长手柄加入
+  约 `0.46°` 微旋转，且独立 reviewer 同时看到了预对齐展示图，放大为左右/顶底轮廓误判。
+- Direct V2 交付优先锁定高模原轴向，只搜索整体等比缩放和中心平移；该候选必须通过原有表面、中心、
+  尺寸、非镜像门禁，否则才回退通用 proper-rotation ICP。没有复制高模对象变换，也没有 XYZ 非等比缩放。
+- 仅在保留并隐藏原始低模之外的 `BAKE_LOW` 副本上三角化 4 个 N-gon、统一闭合壳体朝外法线并生成
+  UV；严格审计结果为 320 面、384 triangle-equivalent、0 N-gon、0 退化面、0 非流形边、0 负体积壳体。
+- 视觉 reviewer 新增确定性轮廓叠加图（绿=重合、蓝=仅高模、橙=仅低模），只以最终七视图和叠加图
+  判定；初始移开展示图继续保留作审计证据，但不得作为最终失败依据。数值仍不能覆盖真实视觉错位。
+- 同一失败样本 Blender 5.1.2 复测：旋转严格 `0°`、中心误差 `0`、三轴尺寸误差最大约 `1.05%`、
+  高模 100000 面/低模 320 面、低模 UV 有效、全新场景 FBX 重导通过；原候选 Blend SHA 未改变。
 
 ## 2026-08-11 Substance Baker GLB 输入热修复
 

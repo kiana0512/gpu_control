@@ -16,7 +16,7 @@ except ModuleNotFoundError:
 
 ROOT = Path("packages/asset_processing")
 SCRIPT = ROOT / "blender_retopology_bake_postprocess.py"
-EXPECTED_SHA256 = "917ca181f7239dc82c24b205bdb68d7babd223daa621b550f41340a55c8f680b"
+EXPECTED_SHA256 = "bc14804d9c0bde6610360aacc8de3d80cf6847368e26eff5c29abb0b0c0c6797"
 
 
 def load_postprocess_math(monkeypatch):
@@ -84,6 +84,12 @@ class FakeAlignmentModule:
             "dimension_error_ratio": dimension_error,
             "uniform_scale": scale,
             "reflected": False,
+        }
+
+    def serializable_candidate(self, candidate):
+        return {
+            key: (value.tolist() if hasattr(value, "tolist") else value)
+            for key, value in candidate.items()
         }
 
 
@@ -200,6 +206,42 @@ def test_uniform_scale_refinement_can_improve_surface_without_relaxing_gate(
     assert selected["dimension_error_ratio"] <= 0.100
 
 
+def test_direct_v2_source_axis_candidate_locks_rotation_and_passes_unchanged_gates(
+    monkeypatch,
+) -> None:
+    if np is None:
+        pytest.skip("Blender-bundled NumPy is not installed in the control-plane test runtime")
+    postprocess = load_postprocess_math(monkeypatch)
+    alignment = FakeAlignmentModule(np.array([9.9, 7.9, 5.9]))
+    high = {
+        "size": np.array([10.0, 8.0, 6.0]),
+        "center": np.array([42.0, -2.0, 1.5]),
+        "diagonal": math.sqrt(200.0),
+    }
+
+    selected, evidence = postprocess.source_axis_uniform_alignment_candidate(
+        high,
+        object(),
+        alignment,
+        np.zeros((16, 3), dtype=np.float64),
+        np.zeros((16, 3), dtype=np.float64),
+        object(),
+        0.82,
+    )
+
+    assert selected is not None
+    assert evidence["selected"] is True
+    assert evidence["rotation_locked_to_source_axes"] is True
+    assert evidence["gate_passing_candidate_count"] > 0
+    assert np.allclose(
+        selected["matrix"][:3, :3],
+        np.eye(3) * selected["uniform_scale"],
+    )
+    assert selected["surface_error_ratio"] <= 0.070
+    assert selected["center_error_ratio"] <= 0.020
+    assert selected["dimension_error_ratio"] <= 0.100
+
+
 def test_post_topology_bake_alignment_is_fail_closed() -> None:
     source = SCRIPT.read_text("utf-8")
     compile(source, str(SCRIPT), "exec")
@@ -223,6 +265,8 @@ def test_post_topology_bake_alignment_is_fail_closed() -> None:
     assert '"scope": "bake_delivery_duplicate_only"' in source
     assert '"original_low_modified": False' in source
     assert "bmesh.ops.dissolve_degenerate" in source
+    assert "bmesh.ops.triangulate" in source
+    assert "bmesh.ops.recalc_face_normals" in source
     assert 'context="FACES_ONLY"' in source
     assert '"delivery_geometry_cleanup": delivery_geometry_cleanup' in source
     assert "remove_doubles" not in source
@@ -271,6 +315,10 @@ def test_direct_v2_delivery_requires_bake_alignment_evidence() -> None:
     assert "retopology_bake_pair_validation_evidence_valid" in api
     assert "retopology_bake_visual_qa_evidence_valid" in worker
     assert "retopology_bake_visual_qa_evidence_valid" in api
+    assert "silhouette_overlay_sheet" in worker
+    assert 'views_dir / "final_silhouette_overlay.png"' in worker
+    assert "reference_images=[final_contact_sheet, final_overlay_sheet]" in worker
+    assert "expected pre-alignment displacement must never be reported" in worker
 
 
 def test_alignment_is_post_topology_and_has_no_frontend_mutation_surface() -> None:

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import httpx
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -56,7 +56,7 @@ UV_FBX_UNITS_SCRIPT_SHA256 = (
     "ca5889965c5e3b5d72a6a05bf7c8beecc77a9e5fe133987d3db8807c3291277b"
 )
 RETOPOLOGY_BAKE_POSTPROCESS_SCRIPT_SHA256 = (
-    "917ca181f7239dc82c24b205bdb68d7babd223daa621b550f41340a55c8f680b"
+    "bc14804d9c0bde6610360aacc8de3d80cf6847368e26eff5c29abb0b0c0c6797"
 )
 RETOPOLOGY_AUDIT_SCRIPT_SHA256 = "a6575902cfacd7b8106f9c887069d717a880d870fc48a6295431cdcf717a9dc4"
 RETOPOLOGY_PROCESS_SCRIPT_SHA256 = (
@@ -814,6 +814,63 @@ def contact_sheet(
         draw.text(
             (column * cell_size + 8, row * (cell_size + label_height) + 7),
             label,
+            fill=(225, 230, 240),
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(output, format="PNG", optimize=True)
+
+
+def silhouette_overlay_sheet(
+    sources: list[tuple[str, Path, Path]],
+    output: Path,
+    *,
+    columns: int = 2,
+    cell_size: int = 256,
+) -> None:
+    """Render deterministic high/low silhouette overlap evidence for visual QA.
+
+    Green is shared silhouette, blue is high-only and orange is low-only.  The
+    alpha channel is used so dark lighting or wire lines cannot be mistaken for
+    missing geometry by the independent reviewer.
+    """
+
+    if not sources:
+        raise RuntimeError("cannot create an empty silhouette overlay sheet")
+    rows = (len(sources) + columns - 1) // columns
+    label_height = 44
+    sheet = Image.new(
+        "RGB",
+        (columns * cell_size, rows * (cell_size + label_height)),
+        (8, 10, 18),
+    )
+    draw = ImageDraw.Draw(sheet)
+    for index, (label, high_path, low_path) in enumerate(sources):
+        row, column = divmod(index, columns)
+        with Image.open(high_path) as high_opened, Image.open(low_path) as low_opened:
+            high = high_opened.convert("RGBA")
+            low = low_opened.convert("RGBA")
+            if high.size != low.size:
+                raise RuntimeError(f"silhouette overlay size mismatch: {label}")
+            high_mask = high.getchannel("A").point(lambda value: 255 if value > 12 else 0)
+            low_mask = low.getchannel("A").point(lambda value: 255 if value > 12 else 0)
+            overlap = ImageChops.darker(high_mask, low_mask)
+            high_only = ImageChops.subtract(high_mask, overlap)
+            low_only = ImageChops.subtract(low_mask, overlap)
+            overlay = Image.new("RGB", high.size, (12, 15, 25))
+            overlay.paste((35, 105, 255), mask=high_only)
+            overlay.paste((255, 105, 20), mask=low_only)
+            overlay.paste((55, 220, 135), mask=overlap)
+            overlay.thumbnail((cell_size, cell_size), Image.Resampling.NEAREST)
+            cell = Image.new("RGB", (cell_size, cell_size), (12, 15, 25))
+            position = ((cell_size - overlay.width) // 2, (cell_size - overlay.height) // 2)
+            cell.paste(overlay, position)
+            sheet.paste(
+                cell,
+                (column * cell_size, row * (cell_size + label_height) + label_height),
+            )
+        draw.text(
+            (column * cell_size + 8, row * (cell_size + label_height) + 5),
+            f"{label}\ngreen=overlap blue=high orange=low",
             fill=(225, 230, 240),
         )
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -1609,6 +1666,7 @@ async def run_retopology_bake_visual_qa(
     validation_report_path: Path,
     initial_contact_sheet: Path,
     final_contact_sheet: Path,
+    final_overlay_sheet: Path,
 ) -> tuple[dict[str, Any], Path, Path]:
     schema = {
         "type": "object",
@@ -1666,6 +1724,7 @@ async def run_retopology_bake_visual_qa(
             validation_report_path,
             initial_contact_sheet,
             final_contact_sheet,
+            final_overlay_sheet,
         )
     }
     prompt = f"""Use $blender-retopology-compare-iterate only as an independent visual QA reviewer.
@@ -1673,14 +1732,23 @@ Do not modify any input, model, report, or image. Return only JSON matching the 
 
 The high-poly is blue. The final low-poly is an opaque bright-orange solid with dark wire;
 it is never transparent or X-Ray. Inspect front, back, left, right, top, bottom and perspective.
-Fail closed if scale, center, axis, rotation, asymmetric-feature direction, silhouette, openings,
-protrusions or component placement visibly differ. Fail on a wrong mirror, long spike, visible
-intersection, fold or collapse. Numeric evidence can support a pass but can never override a
-visual mismatch or uncertainty. `passed` may be true only when every boolean check is true,
-all seven view names are present, and failure_codes is empty.
+The silhouette overlay uses green for overlap, blue for high-only and orange for low-only.
+Judge the FINAL pair and overlay. The INITIAL sheet is transformation-audit evidence only;
+its expected pre-alignment displacement must never be reported as a final-pair failure.
+
+Fail closed if scale, center, axis, rotation, asymmetric-feature direction, major silhouette,
+openings, protrusions or component placement visibly differ. Fail on a wrong mirror, long spike,
+visible intersection, fold or collapse. Normal lower-poly simplification may omit baked surface
+detail and approximate small bevels or rounded corners; do not fail merely because the orange
+wire has fewer edges or a thin projection has small pixel-level boundary differences while its
+major contour, endpoints and feature proportions remain visibly registered. Numeric evidence can
+support a pass but can never override a visible semantic mismatch or uncertainty. `passed` may be
+true only when every boolean check is true, all seven view names are present, and failure_codes is
+empty.
 
 Initial before-alignment contact sheet: {initial_contact_sheet}
 Final bake-pair contact sheet: {final_contact_sheet}
+Final deterministic silhouette overlay: {final_overlay_sheet}
 Measured alignment report: {alignment_report_path}
 Fresh-scene FBX reimport report: {validation_report_path}
 """
@@ -1694,7 +1762,7 @@ Fresh-scene FBX reimport report: {validation_report_path}
         schema_path=schema_path,
         result_path=result_path,
         events_path=events_path,
-        reference_images=[initial_contact_sheet, final_contact_sheet],
+        reference_images=[final_contact_sheet, final_overlay_sheet],
         progress_start=98,
         progress_end=99,
         stage="RETOPOLOGY_BAKE_VISUAL_QA",
@@ -1709,6 +1777,7 @@ Fresh-scene FBX reimport report: {validation_report_path}
             validation_report_path,
             initial_contact_sheet,
             final_contact_sheet,
+            final_overlay_sheet,
         )
     }
     if current != protected:
@@ -2041,6 +2110,19 @@ async def run_retopology_v6(
     final_contact_sheet = output_dir / "alignment_final_contact_sheet.png"
     contact_sheet(initial_sources, initial_contact_sheet, columns=2, cell_size=256)
     contact_sheet(final_sources, final_contact_sheet, columns=2, cell_size=256)
+    final_overlay_sheet = views_dir / "final_silhouette_overlay.png"
+    silhouette_overlay_sheet(
+        [
+            (
+                f"pair {pair_index} / {view}",
+                views_dir / f"pair_{pair_index:03d}" / "final" / f"{view}_high.png",
+                views_dir / f"pair_{pair_index:03d}" / "final" / f"{view}_low.png",
+            )
+            for pair_index in range(1, pair_count + 1)
+            for view in ("front", "back", "left", "right", "top", "bottom", "perspective")
+        ],
+        final_overlay_sheet,
+    )
     views_zip = output_dir / "alignment_views.zip"
     with zipfile.ZipFile(
         views_zip,
@@ -2064,6 +2146,7 @@ async def run_retopology_v6(
             validation_report_path=validation_report_path,
             initial_contact_sheet=initial_contact_sheet,
             final_contact_sheet=final_contact_sheet,
+            final_overlay_sheet=final_overlay_sheet,
         )
     )
     delivery_manifest = {

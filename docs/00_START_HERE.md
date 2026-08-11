@@ -4,13 +4,14 @@
 
 2026-08-11 的生产基线为 API/Scheduler `1.5.12`、Web `1.5.11-retopo-direct-v2`、Asset API
 `1.6.17-substance-glb-input-v1`、三台 Linux Worker
-`1.4.17-uv-fbx-meter-contract-v1`、数据库 `20260810_0013`。1.5.11 综合稳定性候选已经完成
+`1.4.18-retopo-axis-visual-qa-v1`、数据库 `20260810_0013`。1.5.11 综合稳定性候选已经完成
 源码审计、五镜像滚动和 Direct V2 真实 canary；第三次正式 100 VU 完成前保持
 `DEPLOYED_NOT_ACCEPTED`。最新执行与证据只看
 `98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`；最新自动拓扑热修复见
 `104_2026-08-11_RETOPOLOGY_DEGENERATE_DELIVERY_HOTFIX.md`；拓扑低模进入 UV 后的 FBX 米制单位修复见
 `105_2026-08-11_UV_FBX_METER_UNIT_HOTFIX.md`；一键烘焙 GLB 输入 422 修复见
-`106_2026-08-11_SUBSTANCE_GLB_INPUT_HOTFIX.md`。
+`106_2026-08-11_SUBSTANCE_GLB_INPUT_HOTFIX.md`；最新 Direct V2 轴向与视觉 QA 修复见
+`107_2026-08-11_RETOPOLOGY_SOURCE_AXIS_VISUAL_QA_HOTFIX.md`。
 
 生产 UV 和 Retopology 都是 `advisory`：几何质量告警不阻断正式制品交付，但身份、manifest、
 文件完整性、租约和 SHA 仍为硬门禁。四个 Windows Substance Baker Agent v5 均为
