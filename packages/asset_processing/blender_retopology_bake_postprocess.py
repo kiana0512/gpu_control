@@ -338,6 +338,96 @@ def topology_metrics(obj: bpy.types.Object, *, inspect_intersections: bool = Fal
     return result
 
 
+def cleanup_delivery_degenerate_geometry(
+    obj: bpy.types.Object,
+    *,
+    stage: str,
+) -> dict[str, Any]:
+    """Remove only invalid zero-area geometry from the bake-delivery copy.
+
+    Direct V2 output remains preserved as the hidden original low.  This helper
+    is deliberately narrower than a general mesh cleanup: it does not merge
+    nearby vertices, remesh, reduce polygons, rebuild, or touch a valid mesh.
+    It first dissolves numerically zero-length edges and then removes only faces that
+    still fail the same scale-relative area test used by ``topology_metrics``.
+    Any edges or vertices made loose by removing those invalid faces are also
+    removed from the delivery duplicate.
+    """
+
+    before = topology_metrics(obj, inspect_intersections=False)
+    evidence: dict[str, Any] = {
+        "stage": stage,
+        "scope": "bake_delivery_duplicate_only",
+        "original_low_modified": False,
+        "attempted": False,
+        "method": "dissolve_zero_length_edges_then_delete_zero_area_faces",
+        "merge_by_distance_used": False,
+        "remesh_used": False,
+        "polygon_reduction_used": False,
+        "before": before,
+    }
+    if not before["finite_coordinates"]:
+        evidence["reason"] = "non_finite_coordinates_are_not_repairable_safely"
+        raise RuntimeError(
+            "delivery low has non-finite coordinates; refusing unsafe cleanup: "
+            f"{json.dumps(evidence, ensure_ascii=False, sort_keys=True)}"
+        )
+    if not before["degenerate_faces"]:
+        evidence["after"] = before
+        evidence["reason"] = "no_degenerate_faces"
+        evidence["passed"] = True
+        return evidence
+
+    evidence["attempted"] = True
+    diagonal = max(float(obj.dimensions.length), 1.0e-9)
+    area_tolerance = diagonal * diagonal * 1.0e-12
+    edge_tolerance = max(diagonal * 1.0e-10, 1.0e-12)
+    evidence["area_tolerance"] = area_tolerance
+    evidence["edge_tolerance"] = edge_tolerance
+    mesh = obj.data
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        bm.faces.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+        bmesh.ops.dissolve_degenerate(
+            bm,
+            edges=list(bm.edges),
+            dist=edge_tolerance,
+        )
+        bm.faces.ensure_lookup_table()
+        invalid_faces = [
+            face for face in bm.faces if float(face.calc_area()) <= area_tolerance
+        ]
+        evidence["zero_area_faces_deleted"] = len(invalid_faces)
+        if invalid_faces:
+            bmesh.ops.delete(bm, geom=invalid_faces, context="FACES_ONLY")
+        loose_edges = [edge for edge in bm.edges if not edge.link_faces]
+        evidence["resulting_loose_edges_deleted"] = len(loose_edges)
+        if loose_edges:
+            bmesh.ops.delete(bm, geom=loose_edges, context="EDGES")
+        loose_vertices = [vertex for vertex in bm.verts if not vertex.link_edges]
+        evidence["resulting_loose_vertices_deleted"] = len(loose_vertices)
+        if loose_vertices:
+            bmesh.ops.delete(bm, geom=loose_vertices, context="VERTS")
+        if bm.faces:
+            bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+        bm.to_mesh(mesh)
+        mesh.update()
+    finally:
+        bm.free()
+
+    after = topology_metrics(obj, inspect_intersections=False)
+    evidence["after"] = after
+    evidence["vertices_removed"] = int(before["vertices"]) - int(after["vertices"])
+    evidence["edges_removed"] = int(before["edges"]) - int(after["edges"])
+    evidence["faces_removed"] = int(before["faces"]) - int(after["faces"])
+    evidence["passed"] = bool(
+        after["finite_coordinates"] and not after["degenerate_faces"]
+    )
+    return evidence
+
+
 def import_uv_module(path: Path) -> ModuleType:
     if not path.is_file():
         raise RuntimeError(f"verified legacy PBR UV script is missing: {path}")
@@ -1569,8 +1659,31 @@ def main() -> None:
             args.resolution,
         )
         topology_before_uv = topology_metrics(final_low, inspect_intersections=False)
+        delivery_geometry_cleanup = {
+            "before_uv": cleanup_delivery_degenerate_geometry(
+                final_low,
+                stage="before_uv",
+            )
+        }
         uv = ensure_final_uv(final_low, args.uv_algorithm, legacy_uv)
         topology_after_uv = topology_metrics(final_low, inspect_intersections=False)
+        if topology_after_uv["degenerate_faces"]:
+            delivery_geometry_cleanup["after_uv"] = cleanup_delivery_degenerate_geometry(
+                final_low,
+                stage="after_uv",
+            )
+            if not basic_uv_valid(final_low):
+                delivery_geometry_cleanup["uv_after_cleanup"] = ensure_final_uv(
+                    final_low,
+                    args.uv_algorithm,
+                    legacy_uv,
+                )
+            else:
+                delivery_geometry_cleanup["uv_after_cleanup"] = {
+                    "preserved_existing": True,
+                    "reason": "cleanup_preserved_valid_uv",
+                }
+            topology_after_uv = topology_metrics(final_low, inspect_intersections=False)
         if not basic_uv_valid(final_low):
             raise RuntimeError(f"final bake low has no valid UV: {final_low.name}")
         if topology_after_uv["faces"] >= high_faces:
@@ -1579,7 +1692,10 @@ def main() -> None:
             not topology_after_uv["finite_coordinates"]
             or topology_after_uv["degenerate_faces"]
         ):
-            raise RuntimeError("UV-prepared low has invalid geometry")
+            raise RuntimeError(
+                "UV-prepared low has invalid geometry after bounded delivery cleanup: "
+                f"{json.dumps(delivery_geometry_cleanup, ensure_ascii=False, sort_keys=True)}"
+            )
         alignment = transform_only_alignment(
             bake_high,
             final_low,
@@ -1632,6 +1748,7 @@ def main() -> None:
                 "alignment_scope": "transform_only",
                 "topology_before_separate_uv_stage": topology_before_uv,
                 "topology_after_separate_uv_stage": topology_after_uv,
+                "delivery_geometry_cleanup": delivery_geometry_cleanup,
                 "preliminary_views": preliminary_views,
                 "fallback": None,
                 "rebuild_allowed": False,

@@ -16,7 +16,7 @@ except ModuleNotFoundError:
 
 ROOT = Path("packages/asset_processing")
 SCRIPT = ROOT / "blender_retopology_bake_postprocess.py"
-EXPECTED_SHA256 = "13af9c8fdf3716cbf1d94a6a22c54d190665a99427c8290e1aca00ef9ed85a83"
+EXPECTED_SHA256 = "917ca181f7239dc82c24b205bdb68d7babd223daa621b550f41340a55c8f680b"
 
 
 def load_postprocess_math(monkeypatch):
@@ -219,6 +219,13 @@ def test_post_topology_bake_alignment_is_fail_closed() -> None:
     assert '"topology_rebuild_allowed": False' in source
     assert '"alignment_changes_topology_or_uv": False' in source
     assert '"uv_is_a_separate_pre_alignment_stage": True' in source
+    assert "cleanup_delivery_degenerate_geometry" in source
+    assert '"scope": "bake_delivery_duplicate_only"' in source
+    assert '"original_low_modified": False' in source
+    assert "bmesh.ops.dissolve_degenerate" in source
+    assert 'context="FACES_ONLY"' in source
+    assert '"delivery_geometry_cleanup": delivery_geometry_cleanup' in source
+    assert "remove_doubles" not in source
     assert "rebuild_from_high" not in source
     assert "apply_volume_union" not in source
     assert "quadriflow_remesh" not in source
