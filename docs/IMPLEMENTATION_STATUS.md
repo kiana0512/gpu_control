@@ -1,8 +1,9 @@
 # 实施状态
 
 最后更新：2026-08-11
-版本：生产 API/Scheduler 1.5.12、Web 1.5.11-retopo-direct-v2 / Asset API 1.6.19-retopo-align-v3 / Worker
-1.4.20-retopo-align-v3 / DB 20260810_0013；源码审计、自动拓扑对齐包 v3.0.0 的高模坐标权威恢复、
+版本：生产 API/Scheduler 1.5.12、Web 1.5.11-retopo-direct-v2 / Asset API
+1.6.21-retopo-topology-v302 / Worker 1.4.23-uv-source-units-v2 / DB 20260810_0013；源码审计、
+自动拓扑对齐包 v3.0.2 的高模坐标权威恢复、triangle-soup 安全工作副本、
 低模拓扑/UV 指纹保护和高低模 FBX 重导验证已完成真实生产任务。v3 同任务生成按批准合同不执行旧版
 自动七方向复核，由用户检查最终外观。三台 Linux Worker 均为 `ONLINE`；各节点升级验证后均恢复过
 `ACTIVE`，3090-B 在真实 Substance 烘焙期间会由 Asset API 临时置为 `DRAINING`，这是物理 GPU 互斥
@@ -17,7 +18,35 @@ execute 前由用户取消，r7 为 0 请求、0 压测任务。综合发布见
 `106_2026-08-11_SUBSTANCE_GLB_INPUT_HOTFIX.md`，Direct V2 源轴向锁定与视觉 QA 叠加证据见
 `107_2026-08-11_RETOPOLOGY_SOURCE_AXIS_VISUAL_QA_HOTFIX.md`，进度/ETA/重试热修复见
 `108_2026-08-11_RETOPOLOGY_PROGRESS_AND_RETRY_HOTFIX.md`，v3.0.0 当前生产发布见
-`109_2026-08-11_AUTO_RETOPO_ALIGN_V3_RELEASE.md`。
+`109_2026-08-11_AUTO_RETOPO_ALIGN_V3_RELEASE.md`，碎片高模/破面交付修复与 v3.0.2 发布见
+`110_2026-08-11_RETOPOLOGY_FRAGMENTED_SOURCE_TOPOLOGY_HOTFIX.md`，UV 输入单位继承修复见
+`111_2026-08-11_UV_SOURCE_UNIT_PRESERVATION_HOTFIX.md`。
+
+## 2026-08-11 UV 交付继承源 FBX 单位热修复
+
+- 项目 `a898d6c6-d01c-414a-a56e-3a6b9c29b38d` 的高模和拓扑低模都使用
+  `UnitScaleFactor=1`；UV 交付适配器却固定输出 `100`。Blender 世界空间几何仍然对齐，但烘焙页的
+  原始包围盒路径因此把低模缩小 100 倍，显示尺寸差 `99.0%`、中心偏移 `46.5%`。
+- Worker `1.4.23-uv-source-units-v2` 读取输入 FBX 的单位合同，并只在 UV Skill 完成后按源单位重新导出；
+  输入为 `1` 就交付 `1`，输入为 `100` 就交付 `100`，非 FBX 输入使用浏览器安全的米制默认值。
+- 适配器不修改源模型、网格、拓扑、UV 或材质；全新 Blender 场景回读必须同时通过世界包围盒、对象
+  结构和源单位门禁。输入单位不受支持时硬失败，不发布可能缩放错误的制品。
+- 精确故障样本本地 Blender 5.1.2 回归：顶点 `2936`、边 `9000`、面 `6000`、循环 `18000`、UV 层
+  `1`、材质槽 `1` 全部不变；高低模浏览器包围盒尺寸差约 `0.22%`、中心偏移约 `0.000005%`、
+  轮廓比例差约 `0.13%`。单位 `100` 的回归样本也保持 `100` 且世界包围盒误差为 `0`。
+
+## 2026-08-11 自动拓扑 triangle-soup 与闭合流形交付 v3.0.2
+
+- 精确故障高模是被 FBX 拆成 `38697` 个面分量的重复顶点 triangle soup；原算法直接降每个碎片，
+  产生 `20308` 条开边、`41436` 条游离边和 `6058` 个重复点。
+- 新源准备器只在临时工作副本上以严格容差焊接同位置顶点；原高模不变。精确问题副本移除
+  `159802` 个重复点后成为 1 个闭合流形，同时保持 `300000` 面和原世界包围盒。
+- 同一副本按原故障的 5% 比例降到 `15000` 面后，开边、游离边点、重复点面、退化面、非流形边和
+  错误朝向全部为 0，1 个 UV 层保留；Blend 保存回读和高低模 FBX 新场景回读全部通过。
+- finalizer 和 Asset API 对生成 Blend、保存回读、FBX 回读执行三层闭合流形硬门禁，失败件不发布、
+  不自动重复建模。
+- 生产 Asset API 与三台 Worker 已滚动到 v3.0.2，三节点包自检、Codex 与 RetopoFlow 探针均通过；
+  真实抠图任务全部等待自然完成后才替换 Worker，三台 ComfyUI 未重启。
 
 ## 2026-08-11 自动拓扑与原坐标对齐包 v3.0.0
 

@@ -54,9 +54,7 @@ ALIGN_BAKE_MODELS_SCRIPT_SHA256 = (
     "ea0588e81fa50772080bc19ff096ee29cb5b6dbc67cdb303b9d32cdbf6a99a78"
 )
 UV_QA_ADAPTER_SHA256 = "8e6bc5dc20a49fac5be2e92accd518d9da9fa629e878f51dc151baa80ad3359a"
-UV_FBX_UNITS_SCRIPT_SHA256 = (
-    "ca5889965c5e3b5d72a6a05bf7c8beecc77a9e5fe133987d3db8807c3291277b"
-)
+UV_FBX_UNITS_SCRIPT_SHA256 = "67e98dc5db415a83736ee154856b2c3b54f057e69440d1edbc76e43873afa24e"
 RETOPOLOGY_BAKE_POSTPROCESS_SCRIPT_SHA256 = (
     "bc14804d9c0bde6610360aacc8de3d80cf6847368e26eff5c29abb0b0c0c6797"
 )
@@ -2375,6 +2373,8 @@ async def run_uv_skill(
         "--python",
         str(units_script),
         "--",
+        "--source-asset",
+        str(input_path),
         "--input-blend",
         str(output_blend),
         "--output-fbx",
@@ -2389,13 +2389,13 @@ async def run_uv_skill(
         process,
         60,
         66,
-        "UV_FBX_UNIT_NORMALIZATION",
-        "正在保持拓扑与 UV 不变并统一 FBX 米制单位",
+        "UV_FBX_UNIT_PRESERVATION",
+        "正在保持拓扑与 UV 不变并继承输入 FBX 单位",
         45,
     )
     unit_report = json.loads(unit_report_path.read_text("utf-8"))
     if not isinstance(unit_report, dict) or unit_report.get("passed") is not True:
-        raise RuntimeError("UV FBX metre unit contract did not pass")
+        raise RuntimeError("UV FBX source unit contract did not pass")
     unwrap_report = json.loads(output_report.read_text("utf-8"))
     if not isinstance(unwrap_report, dict):
         raise RuntimeError("UV unwrap report is not a JSON object")
