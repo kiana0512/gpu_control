@@ -111,6 +111,87 @@ def test_failure_diagnostic_identifies_an_unexecuted_build_script(tmp_path: Path
     assert diagnostic["error_category"] == "BUILD_SCRIPT_NOT_EXECUTED"
 
 
+def test_completes_one_unexecuted_generated_build_script_once(
+    tmp_path: Path, monkeypatch
+) -> None:
+    script = tmp_path / "build_once.py"
+    script.write_text("# generated build\n", encoding="utf-8")
+    output = tmp_path / "artifacts" / "generated.blend"
+    observed: dict[str, object] = {}
+
+    def fake_run_logged(command, cwd, stdout_path, stderr_path, timeout):
+        observed["command"] = command
+        observed["cwd"] = cwd
+        observed["timeout"] = timeout
+        write_blend(output, b"server-completed")
+        (tmp_path / "generation_report.json").write_text("{}", encoding="utf-8")
+        return 0, False
+
+    monkeypatch.setattr(MODULE, "run_logged", fake_run_logged)
+
+    evidence = MODULE.complete_generated_build_script(
+        "/opt/blender/blender", tmp_path, output, 321
+    )
+
+    assert evidence is not None
+    assert evidence["script"] == "build_once.py"
+    assert evidence["executed_once"] is True
+    assert evidence["output_valid"] is True
+    assert evidence["generation_report_exists"] is True
+    assert observed["cwd"] == tmp_path
+    assert observed["timeout"] == 321
+    assert observed["command"][-2:] == ["--python", str(script)]
+    assert (tmp_path / "build_script_execution.json").is_file()
+
+
+def test_generated_build_completion_rejects_ambiguous_or_symlinked_scripts(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "build_once.py"
+    second = tmp_path / "build.py"
+    first.write_text("# one\n", encoding="utf-8")
+    second.write_text("# two\n", encoding="utf-8")
+    assert MODULE.generated_build_script(tmp_path) is None
+
+    second.unlink()
+    first.unlink()
+    first.symlink_to(tmp_path / "outside.py")
+    assert MODULE.generated_build_script(tmp_path) is None
+
+
+def test_generation_report_requires_nonempty_uv(tmp_path: Path) -> None:
+    report = tmp_path / "generation_report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "status": "generated_for_user_inspection",
+                "assets": [
+                    {
+                        "high_object": "SOURCE_HIGH",
+                        "low_object": "SOURCE_HIGH_LOW",
+                        "faces": 10,
+                        "triangles": 20,
+                        "uv_layers": 0,
+                        "method_decision": "semantic_reconstruction",
+                        "actual_plugin_use": [],
+                        "coordinate_space": "source_high_local",
+                        "coordinate_authority": "high_object_matrix_world",
+                        "presentation_offset_applied": False,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        MODULE.validate_generation_report(report, ["SOURCE_HIGH"])
+    except RuntimeError as error:
+        assert "RETOPOLOGY_TOPOLOGY_INVALID" in str(error)
+    else:
+        raise AssertionError("missing UV must fail generation-report validation")
+
+
 def test_one_click_prepares_every_supported_static_source_as_source_high() -> None:
     assert {".fbx", ".glb", ".gltf", ".obj"}.issubset(MODULE.SUPPORTED_INPUTS)
     source = Path(

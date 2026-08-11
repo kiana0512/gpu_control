@@ -44,6 +44,8 @@ REQUIRED_BAKE_OUTPUTS = {
     "bake_high.fbx",
     "bake_low.fbx",
 }
+BUILD_SCRIPT_NAMES = ("build_once.py", "build.py")
+MAX_BUILD_SCRIPT_BYTES = 2 * 1024 * 1024
 
 
 def sha256(path: Path) -> str:
@@ -255,6 +257,78 @@ def codex_failure_diagnostic(job_dir: Path) -> dict[str, object]:
     }
 
 
+def generated_build_script(job_dir: Path) -> Path | None:
+    """Return the one bounded, job-local Blender build script, if unambiguous."""
+
+    candidates: list[Path] = []
+    for name in BUILD_SCRIPT_NAMES:
+        candidate = job_dir / name
+        try:
+            stat = candidate.lstat()
+        except OSError:
+            continue
+        if candidate.is_symlink() or not candidate.is_file():
+            continue
+        if stat.st_size <= 0 or stat.st_size > MAX_BUILD_SCRIPT_BYTES:
+            continue
+        candidates.append(candidate)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def complete_generated_build_script(
+    blender: str,
+    job_dir: Path,
+    generated_blend: Path,
+    timeout: int,
+) -> dict[str, object] | None:
+    """Finish the same Codex generation when it wrote but did not run its script.
+
+    This is not a second topology attempt: the server executes the single script
+    authored during the completed Codex turn exactly once, then applies the same
+    output, report, topology, UV and FBX gates as an agent-executed build.
+    """
+
+    if valid_blend(generated_blend):
+        return None
+    script = generated_build_script(job_dir)
+    if script is None:
+        return None
+    command = [
+        blender,
+        "--background",
+        "--factory-startup",
+        "--disable-autoexec",
+        "--python-exit-code",
+        "1",
+        "--python",
+        str(script),
+    ]
+    returncode, timed_out = run_logged(
+        command,
+        job_dir,
+        job_dir / "build_script_stdout.log",
+        job_dir / "build_script_stderr.log",
+        timeout,
+    )
+    report_exists = (job_dir / "generation_report.json").is_file()
+    output_valid = valid_blend(generated_blend)
+    evidence: dict[str, object] = {
+        "schema": "li3d-retopology-build-completion-v1",
+        "script": script.relative_to(job_dir).as_posix(),
+        "script_sha256": sha256(script),
+        "executed_once": True,
+        "returncode": returncode,
+        "timed_out": timed_out,
+        "output_valid": output_valid,
+        "generation_report_exists": report_exists,
+    }
+    atomic_write(
+        job_dir / "build_script_execution.json",
+        json.dumps(evidence, ensure_ascii=False, indent=2) + "\n",
+    )
+    return evidence
+
+
 def run_logged(
     command: list[str], cwd: Path, stdout_path: Path, stderr_path: Path, timeout: int
 ) -> tuple[int | None, bool]:
@@ -342,6 +416,7 @@ def validate_generation_report(path: Path, requested_highs: list[str]) -> dict:
             "low_object",
             "faces",
             "triangles",
+            "uv_layers",
             "method_decision",
             "actual_plugin_use",
             "coordinate_space",
@@ -352,6 +427,10 @@ def validate_generation_report(path: Path, requested_highs: list[str]) -> dict:
                 raise RuntimeError(f"generation report asset {index} misses {field}")
         if item.get("method_decision") not in ALLOWED_METHODS:
             raise RuntimeError(f"generation report asset {index} has unsupported method_decision")
+        if not isinstance(item.get("uv_layers"), int) or item["uv_layers"] < 1:
+            raise RuntimeError(
+                f"RETOPOLOGY_TOPOLOGY_INVALID: generation report asset {index} has no UV"
+            )
         if item.get("coordinate_space") != "source_high_local":
             raise RuntimeError("RETOPOLOGY_COORDINATE_MISMATCH: low is not in source_high_local")
         if item.get("coordinate_authority") != "high_object_matrix_world":
@@ -554,6 +633,16 @@ def main() -> int:
         )
         return completed.returncode
     recovered_from = recover_declared_output_blend(job_dir, generated_blend)
+    build_completion = complete_generated_build_script(
+        blender,
+        job_dir,
+        generated_blend,
+        int(os.environ.get("RETOPOLOGY_GENERATED_BUILD_TIMEOUT_SECONDS", "1800")),
+    )
+    if build_completion is not None and not valid_blend(generated_blend):
+        recovered_after_build = recover_declared_output_blend(job_dir, generated_blend)
+        if recovered_after_build is not None:
+            recovered_from = recovered_after_build
     if not valid_blend(generated_blend):
         diagnostic = codex_failure_diagnostic(job_dir)
         error = (
@@ -578,13 +667,19 @@ def main() -> int:
     try:
         generation_report = validate_generation_report(generation_report_path, requested_highs)
     except (RuntimeError, OSError, json.JSONDecodeError) as error:
+        detail = str(error)
+        error_code = (
+            "RETOPOLOGY_TOPOLOGY_INVALID"
+            if "RETOPOLOGY_TOPOLOGY_INVALID" in detail
+            else "RETOPOLOGY_COORDINATE_MISMATCH"
+        )
         write_result(
             result_path,
             {
                 "job_id": job_id,
                 "status": "failed",
-                "error": "RETOPOLOGY_COORDINATE_MISMATCH",
-                "detail": str(error),
+                "error": error_code,
+                "detail": detail,
                 "automatic_retry": False,
             },
         )
@@ -698,6 +793,8 @@ def main() -> int:
     }
     if recovered_from is not None:
         result["output_contract_recovered_from"] = recovered_from
+    if build_completion is not None:
+        result["server_completed_generated_build_script"] = build_completion
     write_result(result_path, result)
     return 0
 

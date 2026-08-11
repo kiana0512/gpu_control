@@ -1,6 +1,6 @@
 ARG BLENDER_BASE_IMAGE=li3d/blender-runtime:5.1.2
 FROM ${BLENDER_BASE_IMAGE}
-ARG ASSET_WORKER_VERSION=1.4.25-retopo-static-input-v1
+ARG ASSET_WORKER_VERSION=1.4.26-retopo-build-completion-v1
 ARG GPU_CONTROL_REVISION=unknown
 USER root
 WORKDIR /app

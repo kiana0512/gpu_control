@@ -18,7 +18,7 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def test_approved_v304_package_is_complete() -> None:
+def test_approved_v305_package_is_complete() -> None:
     completed = subprocess.run(  # noqa: S603 - repository-owned verifier
         [sys.executable, str(ROOT / "server" / "verify_package.py")],
         capture_output=True,
@@ -31,10 +31,10 @@ def test_approved_v304_package_is_complete() -> None:
         file_sha256(ROOT / "blender-auto-retopo-align" / "SKILL.md")
         == "14a0011cc48233ece00d30382ef27e1e494bca16bc76b954799ac471e8c9dd2f"
     )
-    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.4"
+    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.5"
     assert (
         RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
-        == "a17c86ed58a052656846df77f80ef90aa7c18f4881913f18988cfecf15577188"
+        == "70934648f206af86bbaa2e954ed01962c57ac24c89a68d522049a446a4bd23b6"
     )
 
 
@@ -62,8 +62,8 @@ def test_rolling_completion_accepts_only_matching_approved_package_identity() ->
         "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
     }
     previous = {
-        "package_version": "3.0.3",
-        "package_sha256": ("6125113a5e703cd288a4265f381031baf125b262c9eddbddfa57cc05d9e36647"),
+        "package_version": "3.0.4",
+        "package_sha256": ("a17c86ed58a052656846df77f80ef90aa7c18f4881913f18988cfecf15577188"),
     }
     assert retopology_direct_v2_completion_identity_valid(current, current) is True
     assert retopology_direct_v2_completion_identity_valid(previous, previous) is True

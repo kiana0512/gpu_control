@@ -222,6 +222,7 @@ def main() -> int:
         "CODEX_EXEC_ARGS_JSON",
         "RETOPOLOGY_FBX_IMPORT_TIMEOUT_SECONDS",
         "RETOPOLOGY_TIMEOUT_SECONDS",
+        "RETOPOLOGY_GENERATED_BUILD_TIMEOUT_SECONDS",
         "RETOPOLOGY_FINALIZE_TIMEOUT_SECONDS",
     ):
         if f"{name}=" not in env_text:
@@ -236,7 +237,7 @@ def main() -> int:
 
     payload = {
         "ok": not errors,
-        "package_version": "3.0.4",
+        "package_version": "3.0.5",
         "skill_id": SKILL_ID,
         "skill_file_count": len(actual_skill),
         "one_click_entrypoint": str(ROOT / "server" / "one_click_retopology.py"),
