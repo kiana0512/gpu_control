@@ -18,7 +18,7 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def test_approved_v310_package_is_complete() -> None:
+def test_approved_v311_package_is_complete() -> None:
     completed = subprocess.run(  # noqa: S603 - repository-owned verifier
         [sys.executable, str(ROOT / "server" / "verify_package.py")],
         capture_output=True,
@@ -29,12 +29,12 @@ def test_approved_v310_package_is_complete() -> None:
     assert (ROOT / "server" / "batch_retopology.py").is_file()
     assert (
         file_sha256(ROOT / "blender-auto-retopo-align" / "SKILL.md")
-        == "2ade7e9c23ee9518d7775c0ca0b77df46526e35a3c0140aaa1b00ce9ce883e14"
+        == "81a55d39d737eca4ac7c57e492cadc4cdb13104fde5e41c16e47c84d574611c0"
     )
-    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.10"
+    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.11"
     assert (
         RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
-        == "9996f9fdbeafbcedcecbca74e58e29e1ffaaf8f03164ba672ea52d7297871e46"
+        == "8140b5b2359e4ea5542b533fe697992668b45b10a2496d9084c8e52a2e398f2c"
     )
 
 
@@ -72,7 +72,7 @@ def test_rolling_completion_accepts_only_matching_approved_package_identity() ->
     assert retopology_direct_v2_completion_identity_valid(unknown, unknown) is False
 
 
-def test_public_create_contract_selects_v310_without_changing_route() -> None:
+def test_public_create_contract_selects_v311_without_changing_route() -> None:
     api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text(encoding="utf-8")
     assert '@app.post("/api/v1/assets/retopology/process")' in api
     assert '"schema_version": "retopology_input.direct-v2"' in api
@@ -83,7 +83,7 @@ def test_public_create_contract_selects_v310_without_changing_route() -> None:
     ).read_text("utf-8")
 
 
-def test_v310_shape_seven_view_and_closed_build_contract_is_wired_into_delivery() -> None:
+def test_v311_retry_shape_seven_view_and_closed_build_contract_is_wired_into_delivery() -> None:
     entrypoint = (ROOT / "server" / "one_click_retopology.py").read_text("utf-8")
     validator = (ROOT / "blender-auto-retopo-align/scripts/validate_bake_pair.py").read_text(
         "utf-8"
@@ -103,3 +103,5 @@ def test_v310_shape_seven_view_and_closed_build_contract_is_wired_into_delivery(
     assert "bmesh.ops.holes_fill" in prompt
     assert "boundary_edges == 0" in prompt
     assert "真正的开口必须有内外壁和连接 rim" in prompt
+    assert "ATTEMPT_GUIDANCE" in prompt
+    assert '"--attempt-number"' in worker

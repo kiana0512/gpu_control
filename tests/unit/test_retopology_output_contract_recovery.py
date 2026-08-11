@@ -11,6 +11,17 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
+def test_second_attempt_changes_generation_method_without_relaxing_gates() -> None:
+    first = MODULE.attempt_guidance(1)
+    second = MODULE.attempt_guidance(2)
+
+    assert "首次生成" in first
+    assert "controlled_direct_reduction" in second
+    assert "per_component_hybrid" in second
+    assert "禁止原样重复低密度语义代理" in second
+    assert "SOURCE_HIGH" in second
+
+
 def write_blend(path: Path, payload: bytes = b"test") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"BLENDER" + payload)

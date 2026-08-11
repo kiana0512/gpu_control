@@ -1871,6 +1871,7 @@ async def run_retopology_v6(
     output_dir: Path,
     options: dict[str, Any],
     input_sha256: str,
+    attempt_count: int,
 ) -> dict[str, str]:
     """Run the approved v3 package once and publish its aligned bake pair."""
 
@@ -1957,6 +1958,8 @@ async def run_retopology_v6(
         str(settings.codex_job_timeout_seconds),
         "--package-root",
         str(settings.retopology_direct_v2_root),
+        "--attempt-number",
+        str(attempt_count),
     ]
     environment = codex_environment(settings)
     # ``codex_environment`` has already bootstrapped the node-private,
@@ -3069,21 +3072,29 @@ async def process_job(
                 str(job["input_sha256"]),
             )
         elif job["job_type"] == "RETOPOLOGY_PROCESS_V2":
-            retopology_runner = (
-                run_retopology_v6_legacy
-                if job["options"].get("engine_contract") == "retopology-v6"
-                else run_retopology_v6
-            )
-            contract = await retopology_runner(
-                client,
-                settings,
-                job_id,
-                lease_headers,
-                input_path,
-                output_dir,
-                job["options"],
-                str(job["input_sha256"]),
-            )
+            if job["options"].get("engine_contract") == "retopology-v6":
+                contract = await run_retopology_v6_legacy(
+                    client,
+                    settings,
+                    job_id,
+                    lease_headers,
+                    input_path,
+                    output_dir,
+                    job["options"],
+                    str(job["input_sha256"]),
+                )
+            else:
+                contract = await run_retopology_v6(
+                    client,
+                    settings,
+                    job_id,
+                    lease_headers,
+                    input_path,
+                    output_dir,
+                    job["options"],
+                    str(job["input_sha256"]),
+                    int(job.get("attempt_count") or 1),
+                )
         else:
             raise RuntimeError(f"unsupported asset job type: {job['job_type']}")
         progress = await client.post(

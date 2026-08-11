@@ -19,6 +19,7 @@ FBX/GLB/GLTF/OBJ 输入已经由技能的 `prepare_fbx_source.py` 导入为唯�
 1. 只读打开工作 Blend；指定高模是唯一形状依据，也是唯一坐标依据。
 2. 在创建几何前完成测量、方法选择和 shape-authority plan；写入 `{{JOB_DIR}}/plans/` 并运行 `guard_shape_authority_plan.py`。
 3. 每个指定高模只生成一个低模。方法只能是 `semantic_reconstruction`、`controlled_direct_reduction` 或 `per_component_hybrid`。普通硬表面优先结构重建/组件混合；不要用全物体 Decimate 或 remesh 代替分析。必须读取源清单的 `source_topology` 和 `normalized_work_source`。当原高模是重复顶点 triangle soup 时，只有清单明确 `normalized_work_source.qualified=true` 才能对 `SOURCE_HIGH_NORMALIZED_WORK` 做 controlled direct reduction；计划中同时写 `source_identity.normalized_work_object` 和 `direct_reduction_evidence.uses_normalized_work_source=true`。禁止焊接、降面或替换 `SOURCE_HIGH`。没有合格工作副本时改用语义重建/组件混合。
+   - 本次尝试指令：{{ATTEMPT_GUIDANCE}}
 4. 低模必须直接建立在高模本地坐标系：所有构建点使用 `source_high_local`，低模 `matrix_world` 必须等于对应高模的源矩阵。不要归零高模，不要只靠包围盒恢复坐标。
 5. 无人值守任务不做左右分开展示；不得给低模保留展示平移。低模使用不透明黄色/橙色材质或对象色，保持可见，不用半透明或 X-ray。
 6. 若构建时临时归一化，保存完整 4x4 `work_to_world`，并在保存前按技能的坐标恢复公式回到高模本地坐标。

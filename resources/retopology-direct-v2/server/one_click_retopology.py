@@ -98,6 +98,22 @@ def render_prompt(template: str, values: dict[str, str]) -> str:
     return rendered
 
 
+def attempt_guidance(attempt_number: int) -> str:
+    if attempt_number <= 1:
+        return (
+            "这是首次生成。按实测结构选择方法，并确保新低模局部包围盒严格来自高模测量；"
+            "禁止使用通用代理尺寸或额外展示缩放。"
+        )
+    return (
+        "这是唯一一次有界重试；前一候选未通过拓扑或形体门禁，禁止原样重复低密度语义代理。"
+        "先重新读取 source-manifest.json 的 source_topology。若计划 guard 允许全物体受控降面，"
+        "优先从未修改的 SOURCE_HIGH 新副本执行 controlled_direct_reduction，保留足够密度使三轴"
+        "尺寸与主要轮廓来自高模本身，再执行本包规定的闭合收尾与 UV；绝不直接降面 SOURCE_HIGH。"
+        "若 guard 不允许全物体降面，则必须改用按实测截面重建的 per_component_hybrid，"
+        "不得再次使用会改变整体尺寸、把手/附件位置或外轮廓的简化代理。"
+    )
+
+
 def load_codex_args(job_dir: Path) -> list[str]:
     raw = os.environ.get("CODEX_EXEC_ARGS_JSON")
     values = json.loads(raw) if raw else DEFAULT_CODEX_ARGS
@@ -510,6 +526,7 @@ def main() -> int:
         default=int(os.environ.get("RETOPOLOGY_FINALIZE_TIMEOUT_SECONDS", "1800")),
     )
     parser.add_argument("--package-root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--attempt-number", type=int, choices=(1, 2), default=1)
     args = parser.parse_args()
 
     source = args.input.resolve()
@@ -600,6 +617,7 @@ def main() -> int:
             ),
             "BLENDER_EXECUTABLE": blender,
             "JOB_DIR": str(job_dir),
+            "ATTEMPT_GUIDANCE": attempt_guidance(args.attempt_number),
         },
     )
     atomic_write(job_dir / "agent_prompt.md", prompt)

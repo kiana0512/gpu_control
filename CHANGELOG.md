@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-08-11 — Automatic retopology bounded-retry method diversification v3.0.11
+
+- Carry the authoritative Asset API `attempt_count` through the claim contract, Blender Worker,
+  and Direct V2 server launcher instead of making both generated candidates indistinguishable.
+- On the single bounded retry, forbid repeating a failed low-detail semantic proxy. Prefer a fresh
+  high duplicate with guarded controlled reduction when source topology permits it; otherwise switch
+  to measured per-component hybrid construction.
+- Keep the v3.0.10 zero-boundary finish and all topology, shape, seven-view, source-preservation, UV,
+  and FBX-readback gates unchanged.
+- Release Asset API `1.6.33-retopo-retry-method-v1`, Blender Worker
+  `1.4.33-retopo-retry-method-v1`, and retopology package v3.0.11.
+
 ## 2026-08-11 — Automatic retopology closed generated components v3.0.10
 
 - Require every newly generated low component to close accidental boundary loops before UV creation:

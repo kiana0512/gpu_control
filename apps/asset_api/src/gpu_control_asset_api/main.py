@@ -139,7 +139,7 @@ SUBSTANCE_BAKE_COMMAND_COUNTS = {
     "li3d-pbr-full-v2": 10,
 }
 CODEX_REQUIRED_JOB_TYPES = frozenset({"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"})
-RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-auto-retopo-align-v3.0.10"
+RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-auto-retopo-align-v3.0.11"
 
 
 @dataclass(frozen=True, slots=True)
@@ -2944,6 +2944,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "job": {
                     "job_id": job.id,
                     "job_type": job.job_type,
+                    "attempt_count": job.attempt_count,
                     "source_filename": job.source_filename,
                     "input_sha256": job.input_sha256,
                     "options": job.options,

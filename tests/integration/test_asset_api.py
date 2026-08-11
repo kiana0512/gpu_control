@@ -81,9 +81,9 @@ async def test_asset_api_version_exposes_aligned_immutable_provenance(
             "source_revision": "a" * 40,
             "retopology": {
                 "engine_contract": "retopology-direct-v2",
-                "package_version": "3.0.10",
+                "package_version": "3.0.11",
                 "package_sha256": (
-                    "9996f9fdbeafbcedcecbca74e58e29e1ffaaf8f03164ba672ea52d7297871e46"
+                    "8140b5b2359e4ea5542b533fe697992668b45b10a2496d9084c8e52a2e398f2c"
                 ),
                 "submission_mode": "one_file_per_job",
                 "recommended_upload_concurrency": 3,
@@ -584,7 +584,7 @@ def direct_v2_completion_files(
         "schema_version": schema_version,
         "job_id": context["job_id"],
         "engine_contract": "retopology-direct-v2",
-        "package_version": "3.0.10",
+        "package_version": "3.0.11",
         "package_sha256": context["package_sha256"],
         "source_sha256": context["project_sha256"],
         "adapter_input_sha256": context["adapter_input_sha"],
@@ -676,9 +676,9 @@ async def test_retopology_process_creates_v300_direct_contract(tmp_path: Path) -
         assert response.status_code == 202, response.text
         payload = response.json()
         assert payload["options"]["engine_contract"] == "retopology-direct-v2"
-        assert payload["options"]["package_version"] == "3.0.10"
+        assert payload["options"]["package_version"] == "3.0.11"
         assert payload["options"]["package_sha256"] == (
-            "9996f9fdbeafbcedcecbca74e58e29e1ffaaf8f03164ba672ea52d7297871e46"
+            "8140b5b2359e4ea5542b533fe697992668b45b10a2496d9084c8e52a2e398f2c"
         )
 
         bundle = settings.asset_root / payload["job_id"] / "retopology_input.zip"
@@ -701,7 +701,7 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.10",
+            skill_version="asset-skills-auto-retopo-align-v3.0.11",
         )
         leased = await claim_asset_job(client, settings)
         assert leased["job_id"] == created_payload["job_id"]
@@ -846,7 +846,7 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
 
         completion_context = {
             "job_id": created_payload["job_id"],
-            "package_version": "3.0.10",
+            "package_version": "3.0.11",
             "package_sha256": created_payload["options"]["package_sha256"],
             "project_sha256": created_payload["options"]["project_sha256"],
             "adapter_input_sha": adapter_input_sha,
@@ -2771,7 +2771,7 @@ async def test_retopology_retry_resets_active_attempt_progress(tmp_path: Path) -
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.10",
+            skill_version="asset-skills-auto-retopo-align-v3.0.11",
         )
         created = await post_retopology_process(
             client,
@@ -2781,6 +2781,7 @@ async def test_retopology_retry_resets_active_attempt_progress(tmp_path: Path) -
         assert created.status_code == 202, created.text
         job_id = created.json()["job_id"]
         first = await claim_asset_job(client, settings)
+        assert first["attempt_count"] == 1
         first_lease = {"X-Asset-Lease": str(first["lease_token"])}
 
         progress = await client.post(
@@ -2829,6 +2830,7 @@ async def test_retopology_retry_resets_active_attempt_progress(tmp_path: Path) -
 
         second = await claim_asset_job(client, settings)
         assert second["job_id"] == job_id
+        assert second["attempt_count"] == 2
         second_lease = {"X-Asset-Lease": str(second["lease_token"])}
         restarted = await client.post(
             f"/internal/v1/assets/jobs/{job_id}/progress",
@@ -2854,7 +2856,7 @@ async def test_retopology_post_build_qa_failure_is_not_retried(tmp_path: Path) -
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.10",
+            skill_version="asset-skills-auto-retopo-align-v3.0.11",
         )
         created = await post_retopology_process(
             client,
@@ -2915,7 +2917,7 @@ async def test_retopology_early_generated_low_qa_failure_retries_once(tmp_path: 
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.10",
+            skill_version="asset-skills-auto-retopo-align-v3.0.11",
         )
         created = await post_retopology_process(
             client,
@@ -2964,7 +2966,7 @@ async def test_busy_codex_slot_still_claims_blender_only_work(tmp_path: Path) ->
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.10",
+            skill_version="asset-skills-auto-retopo-align-v3.0.11",
         )
         retopology = await post_retopology_process(
             client,
@@ -2995,7 +2997,7 @@ async def test_durable_codex_assignment_blocks_racing_second_topology_claim(
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.10",
+            skill_version="asset-skills-auto-retopo-align-v3.0.11",
         )
         first = await post_retopology_process(
             client,

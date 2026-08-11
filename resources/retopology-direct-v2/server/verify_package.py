@@ -141,6 +141,7 @@ def main() -> int:
             "SOURCE_HIGH_NORMALIZED_WORK",
             "bmesh.ops.holes_fill",
             "boundary_edges == 0",
+            "ATTEMPT_GUIDANCE",
         ),
         "agent prompt",
         errors,
@@ -243,7 +244,7 @@ def main() -> int:
 
     payload = {
         "ok": not errors,
-        "package_version": "3.0.10",
+        "package_version": "3.0.11",
         "skill_id": SKILL_ID,
         "skill_file_count": len(actual_skill),
         "one_click_entrypoint": str(ROOT / "server" / "one_click_retopology.py"),

@@ -130,6 +130,8 @@ Return `RETOPOLOGY_COORDINATE_MISMATCH` and publish no final result if any of th
 
 Never retry modeling automatically after a coordinate, topology-preservation, or FBX-readback integrity failure. An early generated-candidate topology rejection or a post-generation shape-proximity mismatch may use the server's single bounded fresh attempt; preserve both attempts' logs and never publish the rejected candidate.
 
+On that single bounded fresh attempt, do not repeat the same low-detail semantic proxy. Re-read the immutable source topology. When the plan guard permits whole-object controlled reduction, prefer a fresh `SOURCE_HIGH` duplicate with enough retained density to inherit the measured high silhouette and dimensions, then run the same generated-low closure and UV finish. Otherwise change to measured per-component hybrid construction. The retry never modifies `SOURCE_HIGH` and never relaxes topology, shape, seven-view, or FBX-readback gates.
+
 ## Server Compatibility
 
 Keep the legacy one-file server entrypoint and success status so existing HTTP/queue code can replace the old worker package without changing its main contract. The requested `.blend` becomes the aligned result. Publish bake sidecars in `<output-stem>.bake/` and expose their paths in `result.json`.
