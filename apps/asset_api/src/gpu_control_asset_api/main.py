@@ -43,8 +43,8 @@ from packages.gpu_control_core.assets import (
     lease_token_hash,
     retopology_audit_request_hash,
     retopology_auto_align_v3_evidence_valid,
-    retopology_direct_v2_shape_evidence_valid,
     retopology_direct_v2_completion_identity_valid,
+    retopology_direct_v2_shape_evidence_valid,
     retopology_v6_process_request_hash,
     substance_bake_request_hash,
     uv_process_request_hash,
@@ -2803,6 +2803,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if pending_substance_job_ids:
                 claim_query = claim_query.where(AssetJob.id.in_(pending_substance_job_ids))
         else:
+            durable_codex_assignment = await db.scalar(
+                select(AssetJob.id)
+                .where(
+                    AssetJob.worker_id == worker.id,
+                    AssetJob.status.in_(["CLAIMED", "RUNNING", "CANCELLING"]),
+                    AssetJob.job_type.in_(CODEX_REQUIRED_JOB_TYPES),
+                )
+                .limit(1)
+            )
             claim_query = claim_query.where(AssetJob.job_type != "SUBSTANCE_BAKE_V1")
             claim_query = claim_query.where(
                 or_(
@@ -2838,11 +2847,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 # process. Keep UV and Blender-only retopology audit capacity
                 # available while the credential or live probe is unhealthy.
                 claim_query = claim_query.where(AssetJob.job_type.not_in(CODEX_REQUIRED_JOB_TYPES))
-            elif not body.accepts_codex_jobs:
+            elif not body.accepts_codex_jobs or durable_codex_assignment is not None:
                 # Keep filling the Worker's remaining CPU slots with UV and
                 # audit work while its single Codex-backed topology slot is in
-                # use. Do not lease a second Codex job merely to let it expire
-                # while waiting on the process-wide execution lock.
+                # use. The durable database assignment is authoritative even
+                # when a stale/racing local claim advertises the slot as free.
                 claim_query = claim_query.where(AssetJob.job_type.not_in(CODEX_REQUIRED_JOB_TYPES))
         claimed_row = (
             await db.execute(

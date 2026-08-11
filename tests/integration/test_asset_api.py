@@ -2988,6 +2988,40 @@ async def test_busy_codex_slot_still_claims_blender_only_work(tmp_path: Path) ->
         assert claimed["job_type"] == "UV_PROCESS_V2"
 
 
+async def test_durable_codex_assignment_blocks_racing_second_topology_claim(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        await register_asset_worker(
+            client,
+            settings,
+            skill_version="asset-skills-auto-retopo-align-v3.0.9",
+        )
+        first = await post_retopology_process(
+            client,
+            "asset:durable-codex:first",
+            "asset:durable-codex:first",
+        )
+        second = await post_retopology_process(
+            client,
+            "asset:durable-codex:second",
+            "asset:durable-codex:second",
+        )
+        uv = await post_uv_process(
+            client,
+            "asset:durable-codex:uv",
+            "asset:durable-codex:uv",
+        )
+        assert first.status_code == second.status_code == uv.status_code == 202
+
+        first_claim = await claim_asset_job(client, settings, accepts_codex_jobs=True)
+        assert first_claim["job_id"] == first.json()["job_id"]
+
+        racing_claim = await claim_asset_job(client, settings, accepts_codex_jobs=True)
+        assert racing_claim["job_id"] == uv.json()["job_id"]
+        assert racing_claim["job_type"] == "UV_PROCESS_V2"
+
+
 async def convert_retopology_job_to_legacy_v1(
     client: httpx.AsyncClient,
     job_id: str,

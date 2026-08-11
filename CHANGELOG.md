@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-08-11 — Automatic retopology durable Codex slot admission
+
+- Make the Asset API's durable active-job assignment authoritative when admitting Codex-backed
+  topology work, closing a stale/racing Worker claim window that could place two Codex topology
+  processes on one machine.
+- Continue filling remaining general CPU capacity with UV and Blender-only audit work while a
+  machine's single Codex topology slot is occupied.
+- Release Asset API `1.6.30-retopo-durable-codex-slot-v1`; Blender Worker and retopology package
+  remain byte-identical at `1.4.30-retopo-shape-view-gate-v1` and v3.0.9.
+
 ## 2026-08-11 — Automatic retopology shape and seven-view gate v3.0.9
 
 - Hotfix Asset API `1.6.29-retopo-shape-artifacts-v1` to atomically accept, hash-bind, validate,
