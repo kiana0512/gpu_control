@@ -37,7 +37,24 @@
 - Worker：`1.4.19-retopo-progress-v1`。
 - Asset API：`1.6.18-retopo-progress-v1`。
 - 代码回归：`41 passed, 4 skipped`；Python 编译、Ruff、Compose 配置和 `git diff --check`
-  均通过。镜像、Git 与三节点滚动证据在发布完成后回填。
+  均通过。
+
+### 3.1 正式发布证据
+
+| 项目 | 结果 |
+|---|---|
+| Git | `cd6d22c8b0b1671f82e4cc53aec15b4ac62ecbfe`，已推送 `origin/main` |
+| Worker 镜像 | `li3d/blender-worker:1.4.19-retopo-progress-v1`；镜像 ID `sha256:b51a947fd1552e9caa9368c40206d8b08bf8039b8c79591cd6a5a3525f85aecf` |
+| Asset API 镜像 | `unified-scheduler-asset-api:1.6.18-retopo-progress-v1`；镜像 ID `sha256:d8debd14e63084d068d22ce6e45be18d99e4f4a920cb04d3a4ad3f6c663add22` |
+| Worker 离线包 | `/srv/gpu-control/images/retopo-progress-v1-cd6d22c/blender-worker.tar.zst`；`690828772` bytes；SHA-256 `92749bba4aedc88d2316db21f27047f3160112b365db476256d60d33aec30bc5` |
+| Asset API 离线包 | `/srv/gpu-control/images/retopo-progress-v1-cd6d22c/asset-api.tar.zst`；`92795656` bytes；SHA-256 `7de6e223a5a71952f5c405327afbc76e966a4712a690ee108d4a8edd29d671b0` |
+| 三节点 | `control-4090`、`worker-3090-a`、`worker-3090-b` 均严格执行 `DRAINING -> 0 任务 -> 只替换 Blender Worker -> 三项探针健康 -> ACTIVE`；运行镜像 ID 一致 |
+| 任务保护 | 发布前最后一个旧版本真实任务 `be09ab4a-7d3a-4d42-950f-623bd70ea147` 等待至 `SUCCEEDED / 100%` 后才开始替换；未中断用户任务 |
+| ComfyUI / Baker | 三台 ComfyUI 容器身份、启动时间和重启次数保持不变；3090-B 四个 Windows Baker 槽保持 `ONLINE / 0 jobs / 0 processes` |
+| 发布后状态 | 三节点 `ACTIVE / ONLINE / 0 jobs`；三台 Linux Worker 均为 `AUTHENTICATED / HEALTHY / RetopoFlow HEALTHY`；Asset API `healthy` |
+
+本修复不需要以新任务改写或放宽拓扑输出门禁，发布后未主动占用生产槽位跑压力或破坏性 canary；
+进度曲线、ETA、重试重置和 QA 不重试均由自动化专项覆盖，下一笔真实任务可直接验证页面行为。
 
 本次不修改 Direct V2 的模型、prompt、网格构建算法或输出语义；不修改 ImageClip、ModelViewCreator、
 ComfyUI 工作流、模型或参数。
