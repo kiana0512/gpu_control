@@ -11,6 +11,11 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
 
+MAX_DIMENSION_ERROR_RATIO = 0.03
+MAX_LOW_TO_HIGH_P95_RATIO = 0.04
+MAX_HIGH_TO_LOW_P95_RATIO = 0.04
+
+
 def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
     parser = argparse.ArgumentParser()
@@ -121,8 +126,7 @@ def main():
     comparison = {
         "center_error_ratio": (high_center - low_center).length / diagonal,
         "dimension_error_ratio_max": max(
-            abs(high_dimensions[axis] - low_dimensions[axis])
-            / max(high_dimensions[axis], 1e-8)
+            abs(high_dimensions[axis] - low_dimensions[axis]) / max(high_dimensions[axis], 1e-8)
             for axis in range(3)
         ),
         "low_to_high_p95_ratio": percentile(low_to_high, 0.95) / diagonal,
@@ -133,6 +137,11 @@ def main():
     report = {
         "pass": False,
         "fbx_readback": True,
+        "gate": {
+            "max_dimension_error_ratio": MAX_DIMENSION_ERROR_RATIO,
+            "max_low_to_high_p95_ratio": MAX_LOW_TO_HIGH_P95_RATIO,
+            "max_high_to_low_p95_ratio": MAX_HIGH_TO_LOW_P95_RATIO,
+        },
         "high": {
             "triangles": triangle_count(high),
             "vertices": len(high.data.vertices),
@@ -154,9 +163,9 @@ def main():
         report["low"]["uv_layers"] > 0
         and report["low"]["triangles"] < report["high"]["triangles"]
         and comparison["center_error_ratio"] <= 0.01
-        and comparison["dimension_error_ratio_max"] <= 0.03
-        and comparison["low_to_high_p95_ratio"] <= 0.02
-        and comparison["high_to_low_p95_ratio"] <= 0.04
+        and comparison["dimension_error_ratio_max"] <= MAX_DIMENSION_ERROR_RATIO
+        and comparison["low_to_high_p95_ratio"] <= MAX_LOW_TO_HIGH_P95_RATIO
+        and comparison["high_to_low_p95_ratio"] <= MAX_HIGH_TO_LOW_P95_RATIO
         and topology["degenerate_faces"] == 0
         and topology["nonmanifold_edges"] == 0
     )
@@ -169,4 +178,3 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

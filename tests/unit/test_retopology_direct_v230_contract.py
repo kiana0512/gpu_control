@@ -18,7 +18,7 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def test_approved_v308_package_is_complete() -> None:
+def test_approved_v309_package_is_complete() -> None:
     completed = subprocess.run(  # noqa: S603 - repository-owned verifier
         [sys.executable, str(ROOT / "server" / "verify_package.py")],
         capture_output=True,
@@ -29,12 +29,12 @@ def test_approved_v308_package_is_complete() -> None:
     assert (ROOT / "server" / "batch_retopology.py").is_file()
     assert (
         file_sha256(ROOT / "blender-auto-retopo-align" / "SKILL.md")
-        == "6dbe417507f638a60dd5fd0a9c9cc89625a57e647fcc2a2dc753489f83b64b57"
+        == "9730f5d71bb85db74421fce8dd8b906b1a39b995c1750ca91e363a97b1a15fe6"
     )
-    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.8"
+    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.9"
     assert (
         RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
-        == "5211a7e772d8a2944bf42ea81c498a8f0414d7f8a5a3f9352a09785808624424"
+        == "bc0120433f98ad0115870ba760e663f75e515ce8e5b592e9d330af515c7ad232"
     )
 
 
@@ -62,8 +62,8 @@ def test_rolling_completion_accepts_only_matching_approved_package_identity() ->
         "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
     }
     previous = {
-        "package_version": "3.0.7",
-        "package_sha256": ("6c964cae8530b3d5e2bccfde2af485be90480fb1e08850cb4e3aaf0a9ec33162"),
+        "package_version": "3.0.8",
+        "package_sha256": ("5211a7e772d8a2944bf42ea81c498a8f0414d7f8a5a3f9352a09785808624424"),
     }
     assert retopology_direct_v2_completion_identity_valid(current, current) is True
     assert retopology_direct_v2_completion_identity_valid(previous, previous) is True
@@ -72,7 +72,7 @@ def test_rolling_completion_accepts_only_matching_approved_package_identity() ->
     assert retopology_direct_v2_completion_identity_valid(unknown, unknown) is False
 
 
-def test_public_create_contract_selects_v308_without_changing_route() -> None:
+def test_public_create_contract_selects_v309_without_changing_route() -> None:
     api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text(encoding="utf-8")
     assert '@app.post("/api/v1/assets/retopology/process")' in api
     assert '"schema_version": "retopology_input.direct-v2"' in api
@@ -81,3 +81,21 @@ def test_public_create_contract_selects_v308_without_changing_route() -> None:
     assert '"schema_version": "retopology_direct_delivery.v7"' in Path(
         "apps/blender_worker/src/gpu_control_blender_worker/main.py"
     ).read_text("utf-8")
+
+
+def test_v309_shape_and_seven_view_gate_is_wired_into_delivery() -> None:
+    entrypoint = (ROOT / "server" / "one_click_retopology.py").read_text("utf-8")
+    validator = (ROOT / "blender-auto-retopo-align/scripts/validate_bake_pair.py").read_text(
+        "utf-8"
+    )
+    worker = Path("apps/blender_worker/src/gpu_control_blender_worker/main.py").read_text(
+        "utf-8"
+    )
+    assert '"RETOPOLOGY_VISUAL_MISMATCH"' in entrypoint
+    assert '"alignment_views.zip"' in entrypoint
+    assert '"bake_pair_validation.json"' in entrypoint
+    assert "MAX_DIMENSION_ERROR_RATIO = 0.03" in validator
+    assert "MAX_LOW_TO_HIGH_P95_RATIO = 0.04" in validator
+    assert "MAX_HIGH_TO_LOW_P95_RATIO = 0.04" in validator
+    assert '"shape_validation": sidecar / "bake_pair_validation.json"' in worker
+    assert '"alignment_views": sidecar / "alignment_views.zip"' in worker

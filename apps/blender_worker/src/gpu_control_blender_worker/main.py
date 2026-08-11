@@ -2056,6 +2056,8 @@ async def run_retopology_v6(
         "fbx": sidecar / "bake_low.fbx",
         "high_fbx": sidecar / "bake_high.fbx",
         "alignment_report": sidecar / "bake_alignment_report.json",
+        "shape_validation": sidecar / "bake_pair_validation.json",
+        "alignment_views": sidecar / "alignment_views.zip",
     }
     for kind, source in required_sidecars.items():
         if not source.is_file() or source.stat().st_size <= 0:
@@ -2066,7 +2068,12 @@ async def run_retopology_v6(
     bake_high_fbx = output_dir / "bake_high.fbx"
     bake_low_fbx = output_dir / "bake_low.fbx"
     alignment_report_path = output_dir / "bake_alignment_report.json"
+    shape_validation_path = output_dir / "bake_pair_validation.json"
+    alignment_views_path = output_dir / "alignment_views.zip"
     alignment_report = json.loads(alignment_report_path.read_text("utf-8"))
+    shape_validation = json.loads(shape_validation_path.read_text("utf-8"))
+    if shape_validation.get("pass") is not True:
+        raise RuntimeError("RETOPOLOGY_VISUAL_MISMATCH: bake pair shape validation failed")
     bake_files = result.get("bake_files")
     expected_bake_files = {path.name: file_sha256(path) for path in required_sidecars.values()}
     evidence_failures = retopology_v3_delivery_evidence_failures(
@@ -2130,6 +2137,9 @@ async def run_retopology_v6(
         "source_manifest_sha256": file_sha256(source_manifest_path),
         "low_objects": low_objects,
         "bake_alignment": alignment_report,
+        "shape_validation": shape_validation,
+        "shape_validation_sha256": file_sha256(shape_validation_path),
+        "alignment_views_sha256": file_sha256(alignment_views_path),
         "status": "generated_for_user_inspection_aligned",
         "coordinate_authority": "high_object_matrix_world",
         "alignment_mode": "source_matrix_restore",
@@ -2148,6 +2158,8 @@ async def run_retopology_v6(
         "fbx": bake_low_fbx.name,
         "high_fbx": bake_high_fbx.name,
         "alignment_report": alignment_report_path.name,
+        "shape_validation": shape_validation_path.name,
+        "alignment_views": alignment_views_path.name,
         "generation_report": "generation_report.json",
         "delivery_manifest": "delivery_manifest.json",
         "result": "result.json",
@@ -3153,6 +3165,7 @@ async def execute_job(
                 "final bake low has no valid UV",
                 "UV_MOF_RUNTIME_UNAVAILABLE",
                 "RETOPOLOGY_TOPOLOGY_INVALID",
+                "RETOPOLOGY_VISUAL_MISMATCH",
             )
         ):
             error_code = "RETOPOLOGY_QA_FAILED"

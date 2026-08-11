@@ -451,11 +451,7 @@ def reconcile_generation_report_mesh_metrics(
     """
 
     assets = report.get("assets")
-    pairs = (
-        alignment_report.get("topology_validation", {})
-        .get("generated_blend", {})
-        .get("pairs")
-    )
+    pairs = alignment_report.get("topology_validation", {}).get("generated_blend", {}).get("pairs")
     if not isinstance(assets, list) or not isinstance(pairs, list):
         raise RuntimeError("RETOPOLOGY_TOPOLOGY_INVALID: verified mesh metrics are missing")
     if len(assets) != len(pairs):
@@ -463,9 +459,7 @@ def reconcile_generation_report_mesh_metrics(
     for index, (asset, pair) in enumerate(zip(assets, pairs, strict=True)):
         low = pair.get("low") if isinstance(pair, dict) else None
         if not isinstance(asset, dict) or not isinstance(low, dict):
-            raise RuntimeError(
-                f"RETOPOLOGY_TOPOLOGY_INVALID: verified pair {index} is invalid"
-            )
+            raise RuntimeError(f"RETOPOLOGY_TOPOLOGY_INVALID: verified pair {index} is invalid")
         for field in ("faces", "triangles", "uv_layers"):
             value = low.get(field)
             minimum = 1
@@ -690,9 +684,7 @@ def main() -> int:
                 ("build_stderr_tail", job_dir / "build_script_stderr.log"),
             ):
                 if log_path.is_file():
-                    diagnostic[key] = log_path.read_text(
-                        encoding="utf-8", errors="replace"
-                    )[-6000:]
+                    diagnostic[key] = log_path.read_text(encoding="utf-8", errors="replace")[-6000:]
         error = (
             "CODEX_AUTH_FAILED"
             if str(diagnostic.get("error_category", "")).startswith("CODEX_AUTH_")
@@ -809,6 +801,126 @@ def main() -> int:
         )
         return 3
 
+    shape_validation_path = aligned_dir / "bake_pair_validation.json"
+    shape_validation_command = [
+        blender,
+        "--background",
+        "--factory-startup",
+        "--disable-autoexec",
+        "--python-exit-code",
+        "1",
+        "--python",
+        str(installed_skill / "scripts" / "validate_bake_pair.py"),
+        "--",
+        "--high",
+        str(aligned_dir / "bake_high.fbx"),
+        "--low",
+        str(aligned_dir / "bake_low.fbx"),
+        "--report",
+        str(shape_validation_path),
+    ]
+    shape_code, shape_timed_out = run_logged(
+        shape_validation_command,
+        job_dir,
+        job_dir / "shape_validation_stdout.log",
+        job_dir / "shape_validation_stderr.log",
+        min(args.finalize_timeout_seconds, 600),
+    )
+
+    alignment_views_dir = aligned_dir / "alignment_views"
+    render_views_command = [
+        blender,
+        "--background",
+        "--factory-startup",
+        "--disable-autoexec",
+        "--python-exit-code",
+        "1",
+        "--python",
+        str(installed_skill / "scripts" / "render_alignment_views.py"),
+        "--",
+        "--blend",
+        str(aligned_dir / "bake_alignment.blend"),
+        "--output-dir",
+        str(alignment_views_dir),
+        "--resolution",
+        "384",
+    ]
+    views_code, views_timed_out = run_logged(
+        render_views_command,
+        job_dir,
+        job_dir / "alignment_views_stdout.log",
+        job_dir / "alignment_views_stderr.log",
+        min(args.finalize_timeout_seconds, 600),
+    )
+    expected_view_files = {
+        "front.png",
+        "back.png",
+        "left.png",
+        "right.png",
+        "top.png",
+        "bottom.png",
+        "perspective.png",
+        "views.json",
+    }
+    actual_view_files = (
+        {path.name for path in alignment_views_dir.iterdir() if path.is_file()}
+        if alignment_views_dir.is_dir()
+        else set()
+    )
+    views_valid = (
+        not views_timed_out
+        and views_code == 0
+        and expected_view_files.issubset(actual_view_files)
+        and all((alignment_views_dir / name).stat().st_size > 0 for name in expected_view_files)
+    )
+    views_archive = aligned_dir / "alignment_views.zip"
+    if views_valid:
+        shutil.make_archive(
+            str(views_archive.with_suffix("")),
+            "zip",
+            root_dir=alignment_views_dir,
+        )
+        views_valid = views_archive.is_file() and views_archive.stat().st_size > 0
+
+    shape_validation: dict = {}
+    if shape_validation_path.is_file():
+        try:
+            shape_validation = json.loads(shape_validation_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            shape_validation = {}
+    shape_valid = (
+        not shape_timed_out
+        and shape_code == 0
+        and shape_validation.get("pass") is True
+        and shape_validation.get("fbx_readback") is True
+    )
+    if not shape_valid or not views_valid:
+        failure = {
+            "shape_validation_passed": shape_valid,
+            "shape_validation_timed_out": shape_timed_out,
+            "shape_validation_returncode": shape_code,
+            "shape_validation": shape_validation,
+            "seven_view_evidence_passed": views_valid,
+            "seven_view_evidence_timed_out": views_timed_out,
+            "seven_view_evidence_returncode": views_code,
+            "expected_views": sorted(expected_view_files),
+            "actual_views": sorted(actual_view_files),
+        }
+        write_result(
+            result_path,
+            {
+                "job_id": job_id,
+                "status": "failed",
+                "error": "RETOPOLOGY_VISUAL_MISMATCH",
+                "detail": json.dumps(failure, ensure_ascii=False, sort_keys=True)[-12000:],
+                "alignment_report": str(alignment_report_path),
+                "shape_validation_report": str(shape_validation_path),
+                "alignment_views": str(alignment_views_dir),
+                "automatic_retry": False,
+            },
+        )
+        return 3
+
     if sha256(source) != sha256(input_copy):
         raise SystemExit("uploaded source copy hash mismatch")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -842,6 +954,10 @@ def main() -> int:
         "alignment_mode": alignment_report["alignment_mode"],
         "topology_uv_preserved": True,
         "fbx_readback_passed": True,
+        "shape_proximity_validation_passed": True,
+        "shape_validation_report": str(sidecar_destination / "bake_pair_validation.json"),
+        "seven_view_evidence_generated": True,
+        "alignment_views_archive": str(sidecar_destination / "alignment_views.zip"),
         "low_display": "opaque_yellow",
         "automatic_post_generation_review": False,
         "automatic_retry": False,

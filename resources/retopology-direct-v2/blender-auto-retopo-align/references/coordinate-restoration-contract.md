@@ -35,7 +35,7 @@ The finalizer defensively normalizes the low matrix into the high local space an
 
 - High and low final object matrices: exact within `1e-5` per matrix component before export baking.
 - Center error: at most `1e-5` of the high diagonal after presentation-offset removal.
-- Relative size error: at most `0.15` by default. A larger difference means the builder violated source-space construction.
+- Coordinate restoration retains its broad safety envelope, but formal server publication adds a stricter bake-shape gate: maximum per-axis high/low dimension error at most `0.03`, low-to-high P95 surface distance at most `0.04` of the high diagonal, and high-to-low P95 at most `0.04`. Exceeding any one means the generated candidate is visually/semantically unsafe even if its matrix and center are correct.
 - Determinant sign: identical; reflections are forbidden.
 - Blend topology and UV fingerprint: exactly unchanged.
 - Fresh FBX import: center/size error at most `1e-5` of the high diagonal and low structure counts unchanged.
@@ -46,4 +46,3 @@ The finalizer defensively normalizes the low matrix into the high local space an
 The uploader or web front end must not recenter the returned low or overwrite the object matrix, location, rotation, scale, axis conversion, or unit scale after the worker succeeds. Use the worker's aligned Blend/FBX files as the bake inputs.
 
 If the downstream baker independently normalizes imports, disable that option or apply the same deterministic transform to both `bake_high.fbx` and `bake_low.fbx`.
-

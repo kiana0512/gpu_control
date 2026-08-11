@@ -147,6 +147,10 @@ def main() -> int:
         ROOT / "server" / "one_click_retopology.py",
         (
             "finalize_generated_pair.py",
+            "validate_bake_pair.py",
+            "render_alignment_views.py",
+            "RETOPOLOGY_VISUAL_MISMATCH",
+            "seven_view_evidence_generated",
             "RETOPOLOGY_COORDINATE_MISMATCH",
             '"bake_alignment_status": "aligned"',
             '"status": "generated_for_user_inspection"',
@@ -237,7 +241,7 @@ def main() -> int:
 
     payload = {
         "ok": not errors,
-        "package_version": "3.0.8",
+        "package_version": "3.0.9",
         "skill_id": SKILL_ID,
         "skill_file_count": len(actual_skill),
         "one_click_entrypoint": str(ROOT / "server" / "one_click_retopology.py"),

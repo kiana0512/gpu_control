@@ -1,4 +1,4 @@
-# Blender 自动拓扑与原坐标对齐服务器包 v3.0.8
+# Blender 自动拓扑与原坐标对齐服务器包 v3.0.9
 
 本包合并两个正式技能：
 
@@ -7,7 +7,15 @@
 
 它用于替换现有 `blender-retopology-compare-iterate-server-package-v2.5.0`。旧单文件调用参数和成功状态保持兼容；成功后额外输出烘焙高低模 FBX 与对齐报告。
 
-## v3.0.8 行为
+## v3.0.9 行为
+
+- 每次正式交付都对新鲜导出的高低模 FBX 运行独立形状接近度门禁；任一轴尺寸误差超过 3%、低到高
+  P95 表面距离超过高模对角线 4%，或高到低 P95 超过 4%，均以
+  `RETOPOLOGY_VISUAL_MISMATCH` 拒绝，避免把手/附件错位但包围盒中心正确的结果误报成功。
+- 每次正式交付自动生成前、后、左、右、顶、底和透视 7 张不透明橙色低模加线框证据，并打包为
+  `alignment_views.zip`。缺任一视图或渲染失败均禁止发布。
+- 保留 v3.0.8 的生成低模重复点/退化面清理与一次有界早期重试；原高模仍只读，最终拓扑、UV、坐标
+  和 FBX 回读门禁不放宽。
 
 - 高模同时是形状依据和坐标依据。
 - FBX、GLB、GLTF、OBJ 统一导入为一个只读 `SOURCE_HIGH`，同时记录源哈希、原始世界包围盒和
@@ -58,8 +66,8 @@
 推荐把每个版本解压到独立 release 目录，再切换服务配置或符号链接，保留旧版用于回滚：
 
 ```bash
-unzip blender-auto-retopo-align-server-package-v3.0.8.zip -d /opt/li3d/releases/
-cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.8
+unzip blender-auto-retopo-align-server-package-v3.0.9.zip -d /opt/li3d/releases/
+cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.9
 python3 server/verify_package.py
 cp server/worker.env.example server/worker.env
 ```
@@ -176,7 +184,7 @@ python3 server/align_existing_low.py \
 docker build \
   --build-arg WORKER_IMAGE=现有Worker镜像@sha256:固定摘要 \
   -f Dockerfile.layer \
-  -t li3d/blender-auto-retopo-align:v3.0.8 .
+  -t li3d/blender-auto-retopo-align:v3.0.9 .
 ```
 
 本 Layer 不替换现有 HTTP、队列、存储、鉴权或 Worker entrypoint，只加入合并技能和兼容入口。

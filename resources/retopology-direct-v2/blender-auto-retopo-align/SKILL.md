@@ -37,7 +37,8 @@ Use this mode only when the user supplies a separately created low whose coordin
 
 - Run `scripts/align_bake_models.py` with the high and low files.
 - Keep all safety gates enabled. Do not write outputs when orientation, mirror, center, dimensions, or surface-fit gates fail.
-- Use `scripts/render_alignment_views.py` and inspect front, back, left, right, top, bottom, and perspective views when the task is interactive.
+- For every server delivery, generate front, back, left, right, top, bottom, and perspective evidence with `scripts/render_alignment_views.py`. Keep the low opaque orange with a dark wire overlay; never use transparency.
+- Run `scripts/validate_bake_pair.py` against freshly exported high/low FBX files before publication. A maximum-axis size difference above 3%, low-to-high P95 surface distance above 4% of the high diagonal, or high-to-low P95 above 4% is a visual/shape mismatch and must reject the candidate even when matrix, center, UV, and topology gates pass.
 - Never substitute retopology for a failed alignment.
 
 ## Complete Generated-Low Workflow
@@ -127,7 +128,7 @@ Return `RETOPOLOGY_COORDINATE_MISMATCH` and publish no final result if any of th
 - handedness changes or a mirror is introduced.
 - the generated Blend or fresh-imported low FBX contains boundary/open, loose, duplicate, degenerate, multi-face non-manifold, or inconsistently oriented geometry.
 
-Never retry modeling automatically after a final alignment, visual, topology-preservation, or FBX-readback failure. An early generated-candidate topology rejection may use the server's single bounded fresh attempt; preserve both attempts' logs and never publish the rejected candidate.
+Never retry modeling automatically after a coordinate, topology-preservation, or FBX-readback integrity failure. An early generated-candidate topology rejection or a post-generation shape-proximity mismatch may use the server's single bounded fresh attempt; preserve both attempts' logs and never publish the rejected candidate.
 
 ## Server Compatibility
 
