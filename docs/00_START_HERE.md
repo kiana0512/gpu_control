@@ -3,8 +3,8 @@
 本页是仓库文档导航。今天部署时不要从 30 多份文档逐一翻找，按下面的“现场主线”执行即可；其余文档是遇到具体问题时的细节手册。
 
 2026-08-11 的生产基线为 API/Scheduler `1.5.12`、Web `1.5.11-retopo-direct-v2`、Asset API
-`1.6.18-retopo-progress-v1`、三台 Linux Worker
-`1.4.19-retopo-progress-v1`、数据库 `20260810_0013`。1.5.11 综合稳定性候选已经完成
+`1.6.19-retopo-align-v3`、三台 Linux Worker
+`1.4.20-retopo-align-v3`、数据库 `20260810_0013`。1.5.11 综合稳定性候选已经完成
 源码审计、五镜像滚动和 Direct V2 真实 canary；第三次正式 100 VU 完成前保持
 `DEPLOYED_NOT_ACCEPTED`。最新执行与证据只看
 `98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`；最新自动拓扑热修复见
@@ -12,10 +12,12 @@
 `105_2026-08-11_UV_FBX_METER_UNIT_HOTFIX.md`；一键烘焙 GLB 输入 422 修复见
 `106_2026-08-11_SUBSTANCE_GLB_INPUT_HOTFIX.md`；最新 Direct V2 轴向与视觉 QA 修复见
 `107_2026-08-11_RETOPOLOGY_SOURCE_AXIS_VISUAL_QA_HOTFIX.md`；拓扑进度和无效重试修复见
-`108_2026-08-11_RETOPOLOGY_PROGRESS_AND_RETRY_HOTFIX.md`。
+`108_2026-08-11_RETOPOLOGY_PROGRESS_AND_RETRY_HOTFIX.md`；当前自动拓扑与高模原坐标对齐包 v3.0.0
+的合同、部署和真实交付证据见 `109_2026-08-11_AUTO_RETOPO_ALIGN_V3_RELEASE.md`。
 
-生产 UV 和 Retopology 都是 `advisory`：几何质量告警不阻断正式制品交付，但身份、manifest、
-文件完整性、租约和 SHA 仍为硬门禁。四个 Windows Substance Baker Agent v5 均为
+生产 UV 和旧 Retopology QA 保留 `advisory` 兼容语义；v3 同任务生成不运行旧自动视觉 QA，但坐标、
+拓扑/UV 指纹、FBX 回读、身份、manifest、文件完整性、租约和 SHA 仍为硬门禁。四个 Windows
+Substance Baker Agent v6 均为
 `ONLINE/HEALTHY`。三节点 ComfyUI 使用同一 `projects-0.2.3` 镜像，健康、`RestartCount=0`，本轮未
 停止/重启 ComfyUI，也未清理模型缓存。没有注入额外合成流量；现有真实任务已完成 PBR、UV warning、
 UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重 SHA、registry/SBOM、固定基准、
@@ -67,6 +69,7 @@ UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重
 41. `docs/83_2026-08-03_CONTROL_PLANE_1_5_9_RELEASE_AND_SIX_API_ACCEPTANCE.md`：1.5.9/Worker 1.2.5 的统一候选、生产优先原子准入、六 API 精确产物、五镜像发布、灰度、压测和动画管家回执入口；所有 `PENDING_*` 回填前仍非生产验收。
 42. `docs/98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`：1.5.11 全服务审计、三机 Codex/CPU 槽位、五镜像滚动、数据库心跳膨胀修复和第三次 100 VU 的当前唯一事实记录。
 43. `docs/103_2026-08-10_MODELVIEW_INPAINT_INTERACTIVE_PRIORITY.md`：1.5.12 局部重绘不再老化排在批量抠图之后、同租户最多三卡并行、镜像身份与无损滚动证据。
+44. `docs/109_2026-08-11_AUTO_RETOPO_ALIGN_V3_RELEASE.md`：自动拓扑对齐技能包 v3.0.0 的原样接入、十件套交付、三节点滚动和真实任务验收证据。
 
 3090-A 的已完成部署、动态心跳、Web 修复和真实任务证据见
 `docs/34_2026-07-23_3090_A_DEPLOYMENT_RECORD.md`。

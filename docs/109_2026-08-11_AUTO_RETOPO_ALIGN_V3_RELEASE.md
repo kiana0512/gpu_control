@@ -2,8 +2,8 @@
 
 日期：2026-08-11
 
-状态：代码与技能包已校验，目标发布为 Asset API `1.6.19-retopo-align-v3`、三台 Blender Worker
-`1.4.20-retopo-align-v3`。生产运行证据在滚动完成后回填到本文末尾。
+状态：已部署。Asset API 为 `1.6.19-retopo-align-v3`，三台 Blender Worker 为
+`1.4.20-retopo-align-v3`；真实自动拓扑任务已完成十件套原子交付。
 
 ## 1. 批准输入
 
@@ -93,5 +93,47 @@ Worker 必须一次上传以下 10 件制品，Asset API 对每件非空、文�
 
 ## 7. 生产证据
 
-待滚动完成后回填：Git revision、镜像 ID、三台 Worker 实例、包自检、队列状态、ComfyUI 连续性和
-最小真实交付验证。
+### 7.1 Git、镜像与离线归档
+
+| 项目 | 生产证据 |
+|---|---|
+| 源码 revision | `10b1b3e5c720b9a4a193b37c55e5751ae51f1d3c`，已推送 `origin/main` |
+| Asset API | `unified-scheduler-asset-api:1.6.19-retopo-align-v3`；image ID `sha256:b1866c4a00d70ad8a0014be44d4a35a0eb48ec36a30e77284c43818c11b47635` |
+| Blender Worker | `li3d/blender-worker:1.4.20-retopo-align-v3`；三节点统一 image ID `sha256:0505e57d35fb83b4f9fc2fa271ebe48847f6099c6850426ce438a4e13016945d` |
+| Asset API 归档 | `/srv/gpu-control/images/auto-retopo-align-v3-10b1b3e/asset-api.tar.zst`；`91842486` bytes；SHA-256 `e3d9542c96fb2131e11fe458f955c74ee7ae039cddb71c3275dc23229a64d7d7` |
+| Worker 归档 | `/srv/gpu-control/images/auto-retopo-align-v3-10b1b3e/blender-worker.tar.zst`；`683317994` bytes；SHA-256 `dbc6167d7a6f7597f1fba4e7d882fbf5c139f66706abfbbdf3bd6970c379223b` |
+
+两个 3090 节点均先校验归档 SHA 再载入同一 Worker 镜像；3090-B 的 WSL2 环境没有 `zstd`，因此从
+控制机解压后通过 SSH 直接送入 `docker image load`，最终 image ID 与另外两台完全一致。
+
+### 7.2 安全滚动与服务连续性
+
+- 严格按 `control-4090 -> worker-3090-a -> worker-3090-b` 顺序执行
+  `DRAINING -> GPU/Asset current_jobs=0 -> 只替换 Blender Worker -> 包自检/探针 -> ACTIVE`。
+- 发布窗口内三台各有真实 ImageClip 工作；均等待自然完成后才替换对应 Worker，没有取消或中断。
+- 三台 Worker 最终均为 `ACTIVE / ONLINE`，Skill 身份精确为
+  `asset-skills-auto-retopo-align-v3.0.0`，Codex 为 `AUTHENTICATED / HEALTHY`，RetopoFlow 为
+  `HEALTHY`。
+- 三台 ComfyUI 运行 image ID 仍为
+  `sha256:d76e54a137d7b630de4503e0f0b16fa4441b25f6a5b5e1561d7fb1615eca36ea`，容器 ID、启动时间和
+  `RestartCount=0` 均未改变；没有执行 stop/restart/free，也没有修改外部工作流、模型或参数。
+- Asset API `/health/live` 返回 `{"status":"live"}`。仓库和三台运行 Worker 的
+  `server/verify_package.py` 均返回 `ok=true / package_version=3.0.0 / skill_file_count=12`。
+
+### 7.3 真实 v3 自动拓扑交付
+
+真实任务 `c836a9dc-ec36-498e-a1ed-0e962d8ed666` 由 `asset-control-4090` 一次执行成功：
+
+| 验证项 | 结果 |
+|---|---|
+| 时间 | 2026-08-11 07:50:27Z 开始，07:54:16Z 完成，约 3 分 49 秒 |
+| 面数与 UV | 高模 `300000` 面；低模 `18000` 面、`1` 个 UV 层，低模面数严格更少 |
+| 坐标恢复 | `alignment_mode=source_matrix_restore`；矩阵误差 `0`、中心误差 `0`、尺寸误差 `0.0035643859` |
+| 方向/手性 | 高低模 determinant sign 均为 `+1`，没有镜像 |
+| FBX 回读 | `pass=true`；高模误差 `4.15695e-08`、低模误差 `1.03924e-08`，低模结构完全一致 |
+| 低模保护 | `icp_used=false`、`topology_or_uv_edited=false`、`topology_uv_unchanged=true` |
+| 展示/复核 | `opaque_yellow`；无自动后生成复核、无自动第二轮，等待用户视觉检查 |
+| 原子交付 | 10/10 件制品、10 种唯一 kind、全部非空并逐件 SHA-256 校验通过 |
+
+本次未执行用户已取消的压力测试。真实任务证明的是服务器端生成、坐标恢复、拓扑/UV 指纹保护、FBX
+回读和原子交付合同；按 v3 规则，最终形状和外观仍由用户在下载后检查，服务端不伪造视觉通过。

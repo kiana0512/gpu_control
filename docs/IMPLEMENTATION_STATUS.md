@@ -1,9 +1,10 @@
 # 实施状态
 
 最后更新：2026-08-11
-版本：生产 API/Scheduler 1.5.12、Web 1.5.11-retopo-direct-v2 / Asset API 1.6.18-retopo-progress-v1 / Worker
-1.4.19-retopo-progress-v1 / DB 20260810_0013；源码审计、Direct V2 拓扑后纯变换高低模对齐、
-独立 UV、七方向视觉门禁和米制 FBX 重导验证已完成真实生产 canary。三节点均为 `ACTIVE / ONLINE`，
+版本：生产 API/Scheduler 1.5.12、Web 1.5.11-retopo-direct-v2 / Asset API 1.6.19-retopo-align-v3 / Worker
+1.4.20-retopo-align-v3 / DB 20260810_0013；源码审计、自动拓扑对齐包 v3.0.0 的高模坐标权威恢复、
+低模拓扑/UV 指纹保护和高低模 FBX 重导验证已完成真实生产任务。v3 同任务生成按批准合同不执行旧版
+自动七方向复核，由用户检查最终外观。三节点均为 `ACTIVE / ONLINE`，
 真实抠图继续三卡并行，发布未重启三台 ComfyUI。第三次正式 100 VU 在
 execute 前由用户取消，r7 为 0 请求、0 压测任务。综合发布见
 `98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`，高低模对齐热修复见
@@ -13,7 +14,24 @@ execute 前由用户取消，r7 为 0 请求、0 压测任务。综合发布见
 `102_2026-08-10_RETOPOLOGY_TRANSFORM_ALIGNMENT_AND_UV_DUAL_MODE.md`，Substance GLB 输入热修复见
 `106_2026-08-11_SUBSTANCE_GLB_INPUT_HOTFIX.md`，Direct V2 源轴向锁定与视觉 QA 叠加证据见
 `107_2026-08-11_RETOPOLOGY_SOURCE_AXIS_VISUAL_QA_HOTFIX.md`，进度/ETA/重试热修复见
-`108_2026-08-11_RETOPOLOGY_PROGRESS_AND_RETRY_HOTFIX.md`。
+`108_2026-08-11_RETOPOLOGY_PROGRESS_AND_RETRY_HOTFIX.md`，v3.0.0 当前生产发布见
+`109_2026-08-11_AUTO_RETOPO_ALIGN_V3_RELEASE.md`。
+
+## 2026-08-11 自动拓扑与原坐标对齐包 v3.0.0
+
+- 用户批准 ZIP SHA-256 为 `0a6e539a03e6dcecd9518c6fa592c112892f829717d2c768721463796a604138`；
+  仓库正式 24 文件和镜像内包清单全部通过，Skill ID 为 `blender-auto-retopo-align`。
+- Asset API 已升级为 `1.6.19-retopo-align-v3`，三台 Worker 已逐台排空并升级为
+  `1.4.20-retopo-align-v3`；三台运行 Worker 镜像 ID 均为
+  `sha256:0505e57d35fb83b4f9fc2fa271ebe48847f6099c6850426ce438a4e13016945d`，身份均为
+  `ONLINE / AUTHENTICATED / HEALTHY`。
+- 真实任务 `c836a9dc-ec36-498e-a1ed-0e962d8ed666` 一次成功：高模 300000 面，低模 18000 面且有
+  1 个 UV 层；源矩阵和中心误差为 0、尺寸误差约 `0.3564%`，手性一致，FBX 新场景回读误差低于
+  `1e-7`，低模结构完全一致。
+- 正式交付 10 件制品全部非空并通过 SHA；报告证明没有 ICP、没有自动二次建模、没有修改低模拓扑
+  或 UV，最终状态等待用户视觉检查。
+- 三台 ComfyUI 的容器 ID、镜像、启动时间和 `RestartCount=0` 均保持不变；真实 ImageClip 任务先
+  自然结束再替换对应 Worker，没有中断业务任务，也没有执行用户已取消的压力测试。
 
 ## 2026-08-11 Direct V2 进度、ETA 与重试热修复
 
