@@ -1830,7 +1830,7 @@ async def run_retopology_v6(
     output_dir.mkdir(parents=True, exist_ok=False)
 
     direct_source_path = project_path
-    # The approved v3.0.0 package owns FBX preparation and its immutable
+    # The approved v3.0.1 package owns FBX preparation and its immutable
     # SOURCE_HIGH manifest. Other legacy upload formats retain the existing
     # GPU Control normalization path so the public single-file API stays
     # backward compatible.
@@ -3085,6 +3085,7 @@ async def execute_job(
                 "FBX clean-scene readback",
                 "final bake low has no valid UV",
                 "UV_MOF_RUNTIME_UNAVAILABLE",
+                "RETOPOLOGY_TOPOLOGY_INVALID",
             )
         ):
             error_code = "RETOPOLOGY_QA_FAILED"

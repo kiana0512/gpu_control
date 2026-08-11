@@ -55,7 +55,7 @@ Use this mode only when the user supplies a separately created low whose coordin
 - Write one shape-authority plan per high using `references/execution-plan-schema.md`.
 - Run `scripts/guard_shape_authority_plan.py` before creating geometry.
 - Select exactly one method: `semantic_reconstruction`, `controlled_direct_reduction`, or `per_component_hybrid`.
-- Use semantic reconstruction or per-component hybrid for normal hard-surface props. Do not use blanket whole-object Decimate or remesh as a generic answer.
+- Use semantic reconstruction or per-component hybrid for normal hard-surface props. Do not use blanket whole-object Decimate or remesh as a generic answer. The source manifest's measured fragmentation gate is authoritative: a highly disconnected or triangle-soup FBX may not use whole-object direct reduction, including the exceptional-complexity route.
 
 ### 3. Generate once
 
@@ -65,6 +65,7 @@ Use this mode only when the user supplies a separately created low whose coordin
 - Create the low in `source_high_local` coordinates and assign the same `matrix_world` as its high.
 - Give the low an opaque yellow/orange display material or object color. Do not use transparency.
 - Do not add a presentation offset in unattended/server mode.
+- Before reporting success, require zero loose edges/vertices, duplicate geometry, degenerate faces, multi-face non-manifold edges, and inconsistent orientation. This is a deterministic delivery gate, not a second modeling pass.
 - Write `generation_report.json` with the normal generation fields plus:
   - `coordinate_space: source_high_local`
   - `coordinate_authority: high_object_matrix_world`
@@ -120,10 +121,10 @@ Return `RETOPOLOGY_COORDINATE_MISMATCH` and publish no final result if any of th
 - a topology or UV fingerprint changes during finalization or Blend readback;
 - FBX fresh-import bounds or structure differ from the exported scene;
 - handedness changes or a mirror is introduced.
+- the generated Blend or fresh-imported low FBX contains loose, duplicate, degenerate, multi-face non-manifold, or inconsistently oriented geometry.
 
 Never retry modeling automatically after this failure. Preserve logs and reports for diagnosis.
 
 ## Server Compatibility
 
 Keep the legacy one-file server entrypoint and success status so existing HTTP/queue code can replace the old worker package without changing its main contract. The requested `.blend` becomes the aligned result. Publish bake sidecars in `<output-stem>.bake/` and expose their paths in `result.json`.
-

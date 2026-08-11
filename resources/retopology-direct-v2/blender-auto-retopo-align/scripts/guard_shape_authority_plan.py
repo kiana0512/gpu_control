@@ -27,10 +27,32 @@ ALLOWED_COMPONENT_METHODS = {
     "qualified_remeshing",
     "fresh_high_derived_cage",
 }
+DIRECT_REDUCTION_MAX_SOURCE_COMPONENTS = 512
+DIRECT_REDUCTION_MAX_DUPLICATE_VERTEX_RATIO = 0.25
 
 
 def nonempty_list(value: object) -> bool:
     return isinstance(value, list) and bool(value)
+
+
+def source_topology_from_manifest(plan: dict) -> tuple[dict | None, str | None]:
+    source = plan.get("source_identity")
+    if not isinstance(source, dict):
+        return None, "source_identity is unavailable"
+    manifest_value = source.get("source_manifest_filepath")
+    if not isinstance(manifest_value, str) or not manifest_value.strip():
+        return None, "source_manifest_filepath is unavailable"
+    manifest_path = Path(manifest_value).expanduser()
+    if not manifest_path.is_file():
+        return None, f"source manifest does not exist: {manifest_path}"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return None, f"source manifest is unreadable: {error}"
+    topology = manifest.get("source_topology")
+    if not isinstance(topology, dict):
+        return None, "source manifest has no source_topology"
+    return topology, None
 
 
 def guard(plan: object) -> tuple[list[str], list[str]]:
@@ -198,6 +220,35 @@ def guard(plan: object) -> tuple[list[str], list[str]]:
                 errors.append(f"count_evidence_policy.{key} must be false")
 
     if method == "controlled_direct_reduction":
+        source_topology, source_topology_error = source_topology_from_manifest(plan)
+        original_format = (
+            source.get("original_source_format") if isinstance(source, dict) else None
+        )
+        if original_format == "fbx" and source_topology is None:
+            errors.append(
+                "FBX direct reduction requires measured source_topology: "
+                + str(source_topology_error)
+            )
+        if source_topology is not None:
+            components = source_topology.get("face_components")
+            duplicate_ratio = source_topology.get("duplicate_vertex_ratio")
+            if not isinstance(components, int) or components < 1:
+                errors.append("source_topology.face_components must be a positive integer")
+            elif components > DIRECT_REDUCTION_MAX_SOURCE_COMPONENTS:
+                errors.append(
+                    "whole-object direct reduction is forbidden for fragmented source topology: "
+                    f"face_components={components} > {DIRECT_REDUCTION_MAX_SOURCE_COMPONENTS}; "
+                    "use semantic_reconstruction or per_component_hybrid"
+                )
+            if not isinstance(duplicate_ratio, (int, float)):
+                errors.append("source_topology.duplicate_vertex_ratio must be numeric")
+            elif float(duplicate_ratio) > DIRECT_REDUCTION_MAX_DUPLICATE_VERTEX_RATIO:
+                errors.append(
+                    "whole-object direct reduction is forbidden for triangle-soup source topology: "
+                    f"duplicate_vertex_ratio={float(duplicate_ratio):.6f} > "
+                    f"{DIRECT_REDUCTION_MAX_DUPLICATE_VERTEX_RATIO:.2f}; "
+                    "use semantic_reconstruction or per_component_hybrid"
+                )
         evidence = plan.get("direct_reduction_evidence")
         if not isinstance(evidence, dict):
             errors.append("direct_reduction_evidence is required")

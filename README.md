@@ -6,8 +6,8 @@
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
 当前生产基线为 GPU Control API/Scheduler `1.5.12`、Web `1.5.11-retopo-direct-v2`、Asset API
-`1.6.19-retopo-align-v3`、三台 Linux Blender Worker
-`1.4.20-retopo-align-v3`、数据库 `20260810_0013`。当前总状态为
+`1.6.20-retopo-topology-v301`、三台 Linux Blender Worker
+`1.4.21-retopo-topology-v301`、数据库 `20260810_0013`。当前总状态为
 `DEPLOYED_NOT_ACCEPTED`：第三次正式 100 VU、registry digest/SBOM、固定基准、完整故障矩阵和
 连续七天观察尚未闭环，禁止标记 `FROZEN` 或 `PRODUCTION_ACCEPTED`。
 
@@ -21,7 +21,8 @@ v3 同任务生成路径不运行旧自动视觉 QA，但坐标恢复、拓扑/U
 `substance-baker-2026.08.03-v6`，均为 `ONLINE/HEALTHY`，用 PBR 成功 marker、逐命令证据和制品完整性
 消除 PowerShell 空 `ExitCode` 假失败，但不放行真实非零退出或缺少 marker。三节点 ComfyUI 仍是同一
 `projects-0.2.3` 镜像，健康、`RestartCount=0`；本轮未停止/重启 ComfyUI，也未调用 `/free` 或
-清理模型缓存。自动拓扑对齐包 v3.0.0 的真实任务已验证 10/10 原子制品、高模坐标权威、源矩阵恢复、
+清理模型缓存。自动拓扑对齐包 v3.0.1 增加碎片高模整物体降面禁用和 Blend/FBX 拓扑硬门禁；v3.0.0
+的真实任务已验证 10/10 原子制品、高模坐标权威、源矩阵恢复、
 低模拓扑/UV 保持以及高低模 FBX 回读；没有修改
 外部 ImageClip/ModelViewCreator 工作流、模型或参数。当前 1.5.11 审计、3090-B WSL 探针、压测保护和
 待回填结果统一见 `docs/98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`；局部重绘
@@ -33,7 +34,8 @@ N-gon/法线规范化和视觉 QA 叠加证据见
 `docs/107_2026-08-11_RETOPOLOGY_SOURCE_AXIS_VISUAL_QA_HOTFIX.md`；Direct V2 进度、ETA、重试与质量失败
 快速终止修复见 `docs/108_2026-08-11_RETOPOLOGY_PROGRESS_AND_RETRY_HOTFIX.md`；当前自动拓扑与原坐标
 对齐 v3.0.0 的完整合同、镜像、滚动和真实交付证据见
-`docs/109_2026-08-11_AUTO_RETOPO_ALIGN_V3_RELEASE.md`。
+`docs/109_2026-08-11_AUTO_RETOPO_ALIGN_V3_RELEASE.md`；碎片高模和破面交付修复见
+`docs/110_2026-08-11_RETOPOLOGY_FRAGMENTED_SOURCE_TOPOLOGY_HOTFIX.md`。
 
 六 API、120 VU 的独立 R8 有界压力已以退出码 0 完成：`39,778` 个 HTTP 请求、0 失败，六 API、
 七项阈值、`120/120` 清场、三 GPU 饱和和 379 个连续遥测样本全部通过。该结果只验收综合有界压力，

@@ -227,9 +227,9 @@ class RetopologyV6ProcessMetadata(BaseModel):
 
 
 RETOPOLOGY_V6_POLICY_SHA256 = "e7b24c93c11d550ac9fedd167ff23f9ddd70cba4db014caaf2e157cddeafb266"
-RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION = "3.0.0"
+RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION = "3.0.1"
 RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256 = (
-    "0a6e539a03e6dcecd9518c6fa592c112892f829717d2c768721463796a604138"
+    "99d2f99f3b0d1732730edc9edf6e68f1a4deadcf80009d88248b891ce8a0e22c"
 )
 RETOPOLOGY_DIRECT_V2_MAX_DIMENSION_RELATIVE_ERROR = 0.05
 RETOPOLOGY_FBX_UNIT_SCALE_FACTOR_CENTIMETERS = 100.0
@@ -502,6 +502,75 @@ def retopology_bake_visual_qa_evidence_valid(payload: object) -> bool:
     )
 
 
+def _retopology_v3_topology_stage_valid(
+    payload: object,
+    *,
+    require_unique_vertex_positions: bool,
+) -> bool:
+    if not isinstance(payload, dict) or payload.get("passed") is not True:
+        return False
+    if payload.get("require_unique_vertex_positions") is not require_unique_vertex_positions:
+        return False
+    if payload.get("failures") != []:
+        return False
+    pairs = payload.get("pairs")
+    if not isinstance(pairs, list) or not pairs:
+        return False
+    required_zero = (
+        "boundary_edges",
+        "multi_face_nonmanifold_edges",
+        "loose_edges",
+        "loose_vertices",
+        "duplicate_faces",
+        "degenerate_faces",
+        "inconsistent_orientation_edges",
+    )
+    for pair in pairs:
+        if not isinstance(pair, dict) or pair.get("failures") != []:
+            return False
+        high = pair.get("high")
+        low = pair.get("low")
+        if not isinstance(high, dict) or not isinstance(low, dict):
+            return False
+        high_faces = high.get("faces")
+        low_faces = low.get("faces")
+        if (
+            not isinstance(high_faces, int)
+            or not isinstance(low_faces, int)
+            or low_faces <= 0
+            or low_faces >= high_faces
+            or low.get("finite_coordinates") is not True
+            or not isinstance(low.get("uv_layers"), int)
+            or low["uv_layers"] < 1
+            or any(low.get(field) != 0 for field in required_zero)
+            or require_unique_vertex_positions
+            and low.get("duplicate_vertices") != 0
+        ):
+            return False
+    return True
+
+
+def _retopology_v3_topology_evidence_valid(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return (
+        payload.get("schema") == "li3d-retopology-topology-v1"
+        and payload.get("passed") is True
+        and _retopology_v3_topology_stage_valid(
+            payload.get("generated_blend"),
+            require_unique_vertex_positions=True,
+        )
+        and _retopology_v3_topology_stage_valid(
+            payload.get("blend_readback"),
+            require_unique_vertex_positions=True,
+        )
+        and _retopology_v3_topology_stage_valid(
+            payload.get("fbx_readback"),
+            require_unique_vertex_positions=False,
+        )
+    )
+
+
 def retopology_auto_align_v3_evidence_valid(payload: object) -> bool:
     """Validate the v3 same-job source-coordinate finalization evidence.
 
@@ -523,6 +592,9 @@ def retopology_auto_align_v3_evidence_valid(payload: object) -> bool:
         or payload.get("topology_or_uv_edited") is not False
         or payload.get("low_display") != "opaque_yellow"
         or payload.get("topology_uv_unchanged") is not True
+        or not _retopology_v3_topology_evidence_valid(
+            payload.get("topology_validation")
+        )
     ):
         return False
     pairs = payload.get("pairs")

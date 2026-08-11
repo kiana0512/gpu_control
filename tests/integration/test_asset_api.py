@@ -81,9 +81,9 @@ async def test_asset_api_version_exposes_aligned_immutable_provenance(
             "source_revision": "a" * 40,
             "retopology": {
                 "engine_contract": "retopology-direct-v2",
-                "package_version": "3.0.0",
+                "package_version": "3.0.1",
                 "package_sha256": (
-                    "0a6e539a03e6dcecd9518c6fa592c112892f829717d2c768721463796a604138"
+                    "99d2f99f3b0d1732730edc9edf6e68f1a4deadcf80009d88248b891ce8a0e22c"
                 ),
                 "submission_mode": "one_file_per_job",
                 "recommended_upload_concurrency": 3,
@@ -549,7 +549,7 @@ def direct_v2_completion_files(
         "schema_version": schema_version,
         "job_id": context["job_id"],
         "engine_contract": "retopology-direct-v2",
-        "package_version": "3.0.0",
+        "package_version": "3.0.1",
         "package_sha256": context["package_sha256"],
         "source_sha256": context["project_sha256"],
         "adapter_input_sha256": context["adapter_input_sha"],
@@ -628,9 +628,9 @@ async def test_retopology_process_creates_v300_direct_contract(tmp_path: Path) -
         assert response.status_code == 202, response.text
         payload = response.json()
         assert payload["options"]["engine_contract"] == "retopology-direct-v2"
-        assert payload["options"]["package_version"] == "3.0.0"
+        assert payload["options"]["package_version"] == "3.0.1"
         assert payload["options"]["package_sha256"] == (
-            "0a6e539a03e6dcecd9518c6fa592c112892f829717d2c768721463796a604138"
+            "99d2f99f3b0d1732730edc9edf6e68f1a4deadcf80009d88248b891ce8a0e22c"
         )
 
         bundle = settings.asset_root / payload["job_id"] / "retopology_input.zip"
@@ -653,7 +653,7 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.0",
+            skill_version="asset-skills-auto-retopo-align-v3.0.1",
         )
         leased = await claim_asset_job(client, settings)
         assert leased["job_id"] == created_payload["job_id"]
@@ -728,6 +728,48 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
             "topology_or_uv_edited": False,
             "low_display": "opaque_yellow",
             "topology_uv_unchanged": True,
+            "topology_validation": {
+                "schema": "li3d-retopology-topology-v1",
+                "passed": True,
+                **{
+                    stage: {
+                        "stage": stage,
+                        "passed": True,
+                        "require_unique_vertex_positions": stage != "fbx_readback",
+                        "pairs": [
+                            {
+                                "pair": 0,
+                                "high": {
+                                    "faces": 200,
+                                    "boundary_edges": 0,
+                                    "boundary_edge_ratio": 0.0,
+                                },
+                                "low": {
+                                    "faces": 100,
+                                    "finite_coordinates": True,
+                                    "uv_layers": 1,
+                                    "boundary_edges": 0,
+                                    "boundary_edge_ratio": 0.0,
+                                    "multi_face_nonmanifold_edges": 0,
+                                    "loose_edges": 0,
+                                    "loose_vertices": 0,
+                                    "duplicate_vertices": 0,
+                                    "duplicate_faces": 0,
+                                    "degenerate_faces": 0,
+                                    "inconsistent_orientation_edges": 0,
+                                },
+                                "failures": [],
+                            }
+                        ],
+                        "failures": [],
+                    }
+                    for stage in (
+                        "generated_blend",
+                        "blend_readback",
+                        "fbx_readback",
+                    )
+                },
+            },
             "pairs": [
                 {
                     "matrix_error_after": 0.0,
@@ -756,7 +798,7 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
 
         completion_context = {
             "job_id": created_payload["job_id"],
-            "package_version": "3.0.0",
+            "package_version": "3.0.1",
             "package_sha256": created_payload["options"]["package_sha256"],
             "project_sha256": created_payload["options"]["project_sha256"],
             "adapter_input_sha": adapter_input_sha,
@@ -2683,7 +2725,7 @@ async def test_retopology_retry_resets_active_attempt_progress(tmp_path: Path) -
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.0",
+            skill_version="asset-skills-auto-retopo-align-v3.0.1",
         )
         created = await post_retopology_process(
             client,
@@ -2766,7 +2808,7 @@ async def test_retopology_post_build_qa_failure_is_not_retried(tmp_path: Path) -
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.0",
+            skill_version="asset-skills-auto-retopo-align-v3.0.1",
         )
         created = await post_retopology_process(
             client,
@@ -2827,7 +2869,7 @@ async def test_busy_codex_slot_still_claims_blender_only_work(tmp_path: Path) ->
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.0",
+            skill_version="asset-skills-auto-retopo-align-v3.0.1",
         )
         retopology = await post_retopology_process(
             client,

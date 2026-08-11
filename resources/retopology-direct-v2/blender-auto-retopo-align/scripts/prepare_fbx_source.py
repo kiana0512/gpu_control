@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import sys
 import traceback
@@ -77,6 +78,81 @@ def bounds_match(before: dict[str, list[float]], after: dict[str, list[float]]) 
         for key in ("min", "max")
         for index in range(3)
     )
+
+
+def source_topology(mesh_object: bpy.types.Object) -> dict[str, int | float | bool]:
+    """Record fragmentation evidence without changing the authoritative high."""
+
+    mesh = mesh_object.data
+    parent = list(range(len(mesh.vertices)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(first: int, second: int) -> None:
+        left = find(first)
+        right = find(second)
+        if left != right:
+            parent[right] = left
+
+    edge_face_counts: dict[tuple[int, int], int] = {}
+    polygon_vertices: set[int] = set()
+    zero_area_faces = 0
+    finite_coordinates = True
+    for vertex in mesh.vertices:
+        finite_coordinates = finite_coordinates and all(
+            math.isfinite(float(value)) for value in vertex.co
+        )
+    diagonal = max(float(mesh_object.dimensions.length), 1.0e-9)
+    area_tolerance = diagonal * diagonal * 1.0e-12
+    duplicate_tolerance = max(diagonal * 1.0e-8, 1.0e-10)
+    coordinate_keys = {
+        tuple(int(round(float(value) / duplicate_tolerance)) for value in vertex.co)
+        for vertex in mesh.vertices
+    }
+    for polygon in mesh.polygons:
+        indices = [int(index) for index in polygon.vertices]
+        polygon_vertices.update(indices)
+        zero_area_faces += int(float(polygon.area) <= area_tolerance)
+        if indices:
+            anchor = indices[0]
+            for index in indices[1:]:
+                union(anchor, index)
+        for offset, first in enumerate(indices):
+            second = indices[(offset + 1) % len(indices)]
+            edge = tuple(sorted((first, second)))
+            edge_face_counts[edge] = edge_face_counts.get(edge, 0) + 1
+    edge_vertices = {int(index) for edge in mesh.edges for index in edge.vertices}
+    used_vertices = polygon_vertices | edge_vertices
+    components = len({find(index) for index in used_vertices}) if used_vertices else 0
+    duplicate_vertices = len(mesh.vertices) - len(coordinate_keys)
+    return {
+        "finite_coordinates": finite_coordinates,
+        "vertices": len(mesh.vertices),
+        "edges": len(mesh.edges),
+        "polygons": len(mesh.polygons),
+        "face_components": components,
+        "boundary_edges": sum(count == 1 for count in edge_face_counts.values()),
+        "multi_face_nonmanifold_edges": sum(
+            count > 2 for count in edge_face_counts.values()
+        ),
+        "loose_edges": sum(
+            tuple(sorted((int(edge.vertices[0]), int(edge.vertices[1]))))
+            not in edge_face_counts
+            for edge in mesh.edges
+        ),
+        "loose_vertices": len(mesh.vertices) - len(used_vertices),
+        "duplicate_vertices": duplicate_vertices,
+        "duplicate_vertex_ratio": (
+            float(duplicate_vertices) / float(len(mesh.vertices))
+            if mesh.vertices
+            else 0.0
+        ),
+        "zero_area_faces": zero_area_faces,
+    }
 
 
 def write_json_atomic(file_path: str, payload: dict) -> None:
@@ -219,7 +295,7 @@ def main() -> None:
     bpy.context.view_layer.objects.active = high_object
 
     manifest = {
-        "schema": "li3d-retopology-fbx-source-v1",
+        "schema": "li3d-retopology-fbx-source-v2",
         "blender_version": bpy.app.version_string,
         "source_format": "fbx",
         "source_filepath": input_path,
@@ -235,6 +311,7 @@ def main() -> None:
         "joined_meshes": len(source_meshes) > 1,
         "vertices": len(high_object.data.vertices),
         "polygons": len(high_object.data.polygons),
+        "source_topology": source_topology(high_object),
         "world_matrix": matrix_rows(high_object.matrix_world),
         "world_bounds": after_bounds,
     }

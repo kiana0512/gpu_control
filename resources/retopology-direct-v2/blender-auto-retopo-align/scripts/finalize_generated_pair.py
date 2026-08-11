@@ -11,8 +11,9 @@ import os
 import struct
 import sys
 import traceback
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import bmesh
 import bpy
@@ -124,6 +125,156 @@ def structure_summary(objects: Iterable[bpy.types.Object]) -> dict[str, Any]:
             }
         )
     return {"object_count": len(records), "meshes": records}
+
+
+def topology_metrics(obj: bpy.types.Object) -> dict[str, Any]:
+    """Measure bake-safety defects without changing the generated low."""
+
+    mesh = obj.data
+    diagonal = max(float(obj.dimensions.length), 1.0e-9)
+    area_tolerance = diagonal * diagonal * 1.0e-12
+    duplicate_tolerance = max(diagonal * 1.0e-8, 1.0e-10)
+    coordinate_keys = {
+        tuple(int(round(float(value) / duplicate_tolerance)) for value in vertex.co)
+        for vertex in mesh.vertices
+    }
+    face_keys = [
+        tuple(sorted(int(index) for index in polygon.vertices))
+        for polygon in mesh.polygons
+    ]
+    editable = bmesh.new()
+    try:
+        editable.from_mesh(mesh)
+        editable.verts.ensure_lookup_table()
+        editable.edges.ensure_lookup_table()
+        editable.faces.ensure_lookup_table()
+        boundary_edges = sum(len(edge.link_faces) == 1 for edge in editable.edges)
+        multi_face_nonmanifold_edges = sum(
+            len(edge.link_faces) > 2 for edge in editable.edges
+        )
+        loose_edges = sum(not edge.link_faces for edge in editable.edges)
+        loose_vertices = sum(not vertex.link_edges for vertex in editable.verts)
+        inconsistent_orientation_edges = sum(
+            edge.is_manifold and not edge.is_contiguous for edge in editable.edges
+        )
+        remaining = set(editable.faces)
+        face_component_sizes: list[int] = []
+        while remaining:
+            seed = remaining.pop()
+            stack = [seed]
+            size = 0
+            while stack:
+                face = stack.pop()
+                size += 1
+                for edge in face.edges:
+                    for linked in edge.link_faces:
+                        if linked in remaining:
+                            remaining.remove(linked)
+                            stack.append(linked)
+            face_component_sizes.append(size)
+    finally:
+        editable.free()
+    face_edges = max(len(mesh.edges) - loose_edges, 0)
+    return {
+        "object": obj.name,
+        "finite_coordinates": all(
+            math.isfinite(float(value))
+            for vertex in mesh.vertices
+            for value in vertex.co
+        ),
+        "vertices": len(mesh.vertices),
+        "edges": len(mesh.edges),
+        "faces": len(mesh.polygons),
+        "triangles": sum(max(len(polygon.vertices) - 2, 1) for polygon in mesh.polygons),
+        "uv_layers": len(mesh.uv_layers),
+        "boundary_edges": boundary_edges,
+        "boundary_edge_ratio": (
+            float(boundary_edges) / float(face_edges) if face_edges else 0.0
+        ),
+        "multi_face_nonmanifold_edges": multi_face_nonmanifold_edges,
+        "loose_edges": loose_edges,
+        "loose_vertices": loose_vertices,
+        "duplicate_vertices": len(mesh.vertices) - len(coordinate_keys),
+        "duplicate_faces": len(face_keys) - len(set(face_keys)),
+        "degenerate_faces": sum(
+            float(polygon.area) <= area_tolerance for polygon in mesh.polygons
+        ),
+        "inconsistent_orientation_edges": inconsistent_orientation_edges,
+        "face_components": len(face_component_sizes),
+        "tiny_face_components": sum(size <= 4 for size in face_component_sizes),
+    }
+
+
+def topology_failures(
+    high: dict[str, Any],
+    low: dict[str, Any],
+    *,
+    require_unique_vertex_positions: bool,
+) -> list[str]:
+    failures: list[str] = []
+    if low["faces"] <= 0:
+        failures.append("EMPTY_LOW")
+    if low["faces"] >= high["faces"]:
+        failures.append("LOW_FACE_COUNT_NOT_BELOW_HIGH")
+    if not low["finite_coordinates"]:
+        failures.append("NON_FINITE_COORDINATES")
+    for field in (
+        "boundary_edges",
+        "multi_face_nonmanifold_edges",
+        "loose_edges",
+        "loose_vertices",
+        "duplicate_faces",
+        "degenerate_faces",
+        "inconsistent_orientation_edges",
+    ):
+        if low[field]:
+            failures.append(f"{field.upper()}={low[field]}")
+    if require_unique_vertex_positions and low["duplicate_vertices"]:
+        failures.append(f"DUPLICATE_VERTICES={low['duplicate_vertices']}")
+    return failures
+
+
+def require_clean_topology(
+    highs: list[bpy.types.Object],
+    lows: list[bpy.types.Object],
+    *,
+    stage: str,
+    require_unique_vertex_positions: bool,
+) -> dict[str, Any]:
+    if len(highs) != len(lows) or not highs:
+        raise RuntimeError("RETOPOLOGY_TOPOLOGY_INVALID: bake pair count mismatch")
+    records = []
+    all_failures: list[str] = []
+    for index, (high, low) in enumerate(zip(highs, lows, strict=True)):
+        high_metrics = topology_metrics(high)
+        low_metrics = topology_metrics(low)
+        failures = topology_failures(
+            high_metrics,
+            low_metrics,
+            require_unique_vertex_positions=require_unique_vertex_positions,
+        )
+        records.append(
+            {
+                "pair": index,
+                "high": high_metrics,
+                "low": low_metrics,
+                "failures": failures,
+            }
+        )
+        all_failures.extend(f"pair_{index}:{failure}" for failure in failures)
+    result = {
+        "stage": stage,
+        "passed": not all_failures,
+        "require_unique_vertex_positions": require_unique_vertex_positions,
+        "pairs": records,
+        "failures": all_failures,
+    }
+    if all_failures:
+        raise RuntimeError(
+            "RETOPOLOGY_TOPOLOGY_INVALID: "
+            + json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        )
+    return result
 
 
 def ensure_opaque_low_display(objects: Iterable[bpy.types.Object]) -> bool:
@@ -365,9 +516,19 @@ def main() -> int:
         after_records = topology_after_bake["meshes"]
         if len(before_records) != len(after_records) or any(
             any(before.get(field) != after.get(field) for field in invariant_fields)
-            for before, after in zip(before_records, after_records)
+            for before, after in zip(before_records, after_records, strict=True)
         ):
             raise RuntimeError("LOW_TOPOLOGY_OR_UV_CHANGED")
+
+    topology_validation = {
+        "schema": "li3d-retopology-topology-v1",
+        "generated_blend": require_clean_topology(
+            high_objects,
+            low_objects,
+            stage="generated_blend_after_coordinate_bake",
+            require_unique_vertex_positions=True,
+        ),
+    }
 
     expected_high_bounds = world_bounds(high_objects)
     expected_low_bounds = world_bounds(low_objects)
@@ -380,18 +541,36 @@ def main() -> int:
     export_fbx(low_objects, low_fbx)
 
     bpy.ops.wm.open_mainfile(filepath=str(blend_path), load_ui=False)
+    blend_high = sorted([obj for obj in bpy.context.scene.objects if obj.type == "MESH" and obj.name.startswith(HIGH_PREFIX)], key=lambda item: item.name)
     blend_low = sorted([obj for obj in bpy.context.scene.objects if obj.type == "MESH" and obj.name.startswith(LOW_PREFIX)], key=lambda item: item.name)
     topology_after_blend_readback = topology_uv_fingerprint(blend_low)
     if topology_after_blend_readback != topology_after_bake:
         raise RuntimeError("LOW_TOPOLOGY_OR_UV_CHANGED")
+    topology_validation["blend_readback"] = require_clean_topology(
+        blend_high,
+        blend_low,
+        stage="saved_blend_readback",
+        require_unique_vertex_positions=True,
+    )
 
     clear_scene()
     readback_high = import_fbx(high_fbx)
     actual_high_bounds = world_bounds(readback_high)
-    clear_scene()
+    readback_high = sorted(readback_high, key=lambda item: item.name)
     readback_low = import_fbx(low_fbx)
     actual_low_bounds = world_bounds(readback_low)
+    readback_low = sorted(readback_low, key=lambda item: item.name)
     actual_low_structure = structure_summary(readback_low)
+    topology_validation["fbx_readback"] = require_clean_topology(
+        readback_high,
+        readback_low,
+        stage="fresh_fbx_readback",
+        # FBX may split a used vertex at a legitimate UV or normal seam.  The
+        # generated Blend is authoritative for duplicate positions; fresh FBX
+        # still must contain no unused vertices, loose edges, or invalid faces.
+        require_unique_vertex_positions=False,
+    )
+    topology_validation["passed"] = True
     reference = max(vector(expected_high_bounds["size"]).length, 1e-12)
     high_error = bounds_error(actual_high_bounds, expected_high_bounds, reference)
     low_error = bounds_error(actual_low_bounds, expected_low_bounds, reference)
@@ -414,6 +593,7 @@ def main() -> int:
         "low_fingerprint_after_bake": topology_after_bake,
         "low_fingerprint_after_blend_readback": topology_after_blend_readback,
         "topology_uv_unchanged": True,
+        "topology_validation": topology_validation,
         "fbx_readback": {
             "pass": True,
             "high_center_size_error_ratio": float(high_error),

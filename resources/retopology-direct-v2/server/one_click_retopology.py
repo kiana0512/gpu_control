@@ -412,19 +412,37 @@ def main() -> int:
         if finalize_timed_out:
             raise RuntimeError("coordinate finalization timed out")
         if finalize_code != 0:
-            raise RuntimeError(f"coordinate finalizer exited {finalize_code}")
+            finalize_diagnostic = "\n".join(
+                path.read_text(encoding="utf-8", errors="replace")
+                for path in (
+                    job_dir / "finalize_stdout.log",
+                    job_dir / "finalize_stderr.log",
+                )
+                if path.is_file()
+            )[-12000:]
+            if "RETOPOLOGY_TOPOLOGY_INVALID" in finalize_diagnostic:
+                raise RuntimeError(finalize_diagnostic)
+            raise RuntimeError(
+                f"coordinate finalizer exited {finalize_code}: {finalize_diagnostic}"
+            )
         alignment_report = validate_alignment_report(alignment_report_path)
         missing = sorted(name for name in REQUIRED_BAKE_OUTPUTS if not (aligned_dir / name).is_file())
         if missing:
             raise RuntimeError("missing bake outputs: " + ",".join(missing))
     except (RuntimeError, OSError, json.JSONDecodeError) as error:
+        error_detail = str(error)
+        error_code = (
+            "RETOPOLOGY_TOPOLOGY_INVALID"
+            if "RETOPOLOGY_TOPOLOGY_INVALID" in error_detail
+            else "RETOPOLOGY_COORDINATE_MISMATCH"
+        )
         write_result(
             result_path,
             {
                 "job_id": job_id,
                 "status": "failed",
-                "error": "RETOPOLOGY_COORDINATE_MISMATCH",
-                "detail": str(error),
+                "error": error_code,
+                "detail": error_detail[-12000:],
                 "alignment_report": str(alignment_report_path),
                 "finalize_stderr_log": str(job_dir / "finalize_stderr.log"),
                 "automatic_retry": False,

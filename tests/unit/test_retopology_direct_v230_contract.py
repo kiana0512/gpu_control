@@ -17,7 +17,7 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def test_approved_v300_package_is_complete() -> None:
+def test_approved_v301_package_is_complete() -> None:
     completed = subprocess.run(  # noqa: S603 - repository-owned verifier
         [sys.executable, str(ROOT / "server" / "verify_package.py")],
         capture_output=True,
@@ -28,12 +28,12 @@ def test_approved_v300_package_is_complete() -> None:
     assert (ROOT / "server" / "batch_retopology.py").is_file()
     assert (
         file_sha256(ROOT / "blender-auto-retopo-align" / "SKILL.md")
-        == "655e240ca63a2d7ca745397404853bce379c4c6dc2de5c7285f4d8d1bacd6557"
+        == "ed9bf699f364bfac0300ce6477f79cbd504b1688ed0179b12a6c913d1e90005c"
     )
-    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.0"
+    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.1"
     assert (
         RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
-        == "0a6e539a03e6dcecd9518c6fa592c112892f829717d2c768721463796a604138"
+        == "99d2f99f3b0d1732730edc9edf6e68f1a4deadcf80009d88248b891ce8a0e22c"
     )
 
 
@@ -54,7 +54,7 @@ def test_direct_v2_task_auth_uses_the_rotated_node_private_credential() -> None:
     assert '"CODEX_AUTH_SOURCE": str(persistent_auth_source)' in worker
 
 
-def test_public_create_contract_selects_v300_without_changing_route() -> None:
+def test_public_create_contract_selects_v301_without_changing_route() -> None:
     api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text(
         encoding="utf-8"
     )

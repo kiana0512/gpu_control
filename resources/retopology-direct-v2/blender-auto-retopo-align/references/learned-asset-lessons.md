@@ -47,7 +47,7 @@ Use one continuous envelope for molded, cast, pressed, wrapped, anatomical, or b
 
 Direct reduction worked best for integrated, irregular, one-piece objects where semantic reconstruction destroyed identity. It failed when used as a blanket solution for mechanical or repeated hard-surface assets.
 
-User preference adds one fallback: when the whole asset is exceptionally complex and component separation, semantic reconstruction, or a hybrid build would be unreliable or lose identity, use one whole-asset controlled reduction from a fresh high duplicate. This preference can override the normal structured-asset route, but it must be based on current-high complexity evidence rather than source object count or a fixed triangle threshold.
+User preference adds one fallback: when the whole asset is exceptionally complex and component separation, semantic reconstruction, or a hybrid build would be unreliable or lose identity, use one whole-asset controlled reduction from a fresh high duplicate only when the measured source-topology fragmentation gate passes. This preference can override the normal structured-asset route, but it can never override a triangle-soup or extreme-fragmentation safety failure.
 
 ### Presentation must not change geometry
 

@@ -92,7 +92,7 @@ When required evidence is missing, stop before geometry. Emitting a generic prox
 
 Use for structurally complex, genuinely integrated forms whose surface identity would be lost by semantic proxy reconstruction. Also use it as the preferred fallback for an exceptionally complex whole asset when component separation, semantic reconstruction, or a hybrid build would be unreliable or would visibly lose identity.
 
-The FBX preparation step joins imported meshes into `SOURCE_HIGH`; that joined object is transport normalization, not integration evidence. Before selecting direct reduction, inspect disconnected mesh islands and macro structural regions. For ordinary assets, reject whole-asset direct reduction when a planar, rotational, vessel-shell, mechanical, or assembled region can be reconstructed deliberately. For an exceptionally complex asset, permit one whole-asset controlled reduction when those regions cannot be separated or reconstructed reliably without guessing or identity loss.
+The FBX preparation step joins imported meshes into `SOURCE_HIGH`; that joined object is transport normalization, not integration evidence. Before selecting direct reduction, inspect disconnected mesh islands and macro structural regions. For ordinary assets, reject whole-asset direct reduction when a planar, rotational, vessel-shell, mechanical, or assembled region can be reconstructed deliberately. For an exceptionally complex asset, permit one whole-asset controlled reduction only when the immutable source manifest's measured fragmentation gate also passes. Excessive disconnected components or duplicate triangle-soup vertices require semantic reconstruction or a per-component hybrid.
 
 Treat complexity as an evidence-backed routing judgment, not a fixed triangle-count threshold. Suitable evidence includes heavily fused scans, dense irregular assemblies, many interpenetrating parts, mixed hard/organic surfaces with indeterminate boundaries, or a high-derived component plan that cannot be established safely in one pass.
 
@@ -132,7 +132,7 @@ A vessel, bowl, bucket, tray, box, or housing with irregular contents is normall
 - Preserve the rim/cavity boundary, visible separation, contact/occlusion, and contents silhouette.
 - Never apply one whole-object reduction to both structured shell and irregular contents.
 
-Exception: when the complete asset is exceptionally complex and a reliable shell/content boundary cannot be established without speculation or identity loss, use one planned whole-asset controlled reduction from the fresh high duplicate.
+Exception: when the complete asset is exceptionally complex and a reliable shell/content boundary cannot be established without speculation or identity loss, a planned whole-asset controlled reduction is allowed only if the measured source-topology fragmentation gate passes. Fragmented or triangle-soup inputs have no whole-object exception.
 
 Record the split before geometry in `component_method_map`: each entry names its component evidence, measured responsibility boundary, and construction method. A hybrid is not proven unless the plan contains at least one semantic-reconstruction region and at least one eligible high-derived organic region.
 
@@ -241,7 +241,7 @@ Intersecting closed parts are allowed only when the intersection is hidden and c
 
 - RetopoFlow: use for deliberate PolyStrips, Contours, patches, and manual cage flow.
 - QuadriFlow or similar: use for qualified integrated organic surfaces with current-high correspondence.
-- Decimate: use only as a controlled direct-reduction operator on a fresh high duplicate for an eligible integrated region or an evidence-backed exceptionally complex whole asset; never use the joined `SOURCE_HIGH` state alone to justify it.
+- Decimate: use only as a controlled direct-reduction operator on a fresh high duplicate for an eligible integrated region or an evidence-backed exceptionally complex whole asset that passes the measured fragmentation gate; never use the joined `SOURCE_HIGH` state alone to justify it.
 - Shrinkwrap or projection: use temporarily and bound it to the responsible high region.
 - Primitive/profile builders: use for mechanical and hard-surface macro geometry after current-high measurement.
 - Boolean: use only for an isolated, proven construction. Prefer explicitly authored openings and stitched profiles.
