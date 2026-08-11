@@ -12,6 +12,25 @@ execute 前由用户取消，r7 为 0 请求、0 压测任务。综合发布见
 `101_2026-08-10_RETOPOLOGY_ENVELOPE_V2_HOTFIX.md`，最终纯变换交付和生产证据见
 `102_2026-08-10_RETOPOLOGY_TRANSFORM_ALIGNMENT_AND_UV_DUAL_MODE.md`。
 
+## 2026-08-11 拓扑低模 UV 后 FBX 米制单位热修复
+
+- 任务 `d7fdc2e9-8d26-4947-bf8b-7538f9850ddf` 的拓扑交付低模正确使用
+  `UnitScaleFactor=100 / OriginalUnitScaleFactor=100`；后续 UV 任务
+  `24c999b1-18cb-40b4-8802-1c6a1810c8a9` 使用 Skill 默认 FBX 导出后变成 `1 / 1`。浏览器按原始
+  坐标加载时因此把低模放大约 100 倍，烘焙页显示尺寸差 `9838.4%`。
+- Worker `1.4.17-uv-fbx-meter-contract-v1` 在批准 UV Skill 完成后增加 GPU Control 交付适配器：只从
+  已生成的 UV Blend 重新导出 FBX，固定米制 `FBX_SCALE_UNITS`，不修改 Skill、源文件、拓扑、UV、
+  材质或对象结构；随后在全新 Blender 场景回读，并把单位、中心、尺寸和结构证据写入正式报告。
+- 精确故障 Blend 实测为 `100 / 100`，中心和三轴尺寸回读误差均为 `0`；顶点 `2605`、边 `4844`、
+  面 `2313`、循环 `7635`、UV 层 `1`、材质槽 `1` 在导出前后完全一致。
+- 生产 canary `b5364345-8c95-41d5-bc9e-dbae3b2d800f` 使用同一份问题低模，经真实
+  `/api/v1/assets/uv/process` 一次成功，正式五件套原子发布，单位 `100 / 100`、中心/尺寸误差 `0`。
+- 三台 Worker 均已逐台排空并滚动到镜像
+  `sha256:20ee34af498af5955835d176e4f228a813bf4599dc0490a6cd77bd0603d41f8e`，新实例均为
+  `ONLINE / AUTHENTICATED / HEALTHY`；三台 ComfyUI 的容器 ID、启动时间和重启次数未改变。
+- 旧错误 UV 制品保持不可变，不覆盖、不删除；项目需要重新执行一次 UV 才会获得已修复的新 FBX。
+  完整证据见 `105_2026-08-11_UV_FBX_METER_UNIT_HOTFIX.md`。
+
 ## 2026-08-11 自动拓扑交付退化几何热修复
 
 - 失败任务 `437c4d37-047d-4963-a1cf-fa24926dbca5` 已定位为 98% 拓扑后处理门禁
