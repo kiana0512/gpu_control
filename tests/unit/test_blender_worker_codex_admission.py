@@ -4,10 +4,19 @@ import asyncio
 from typing import Any
 
 from gpu_control_blender_worker.main import (
+    asset_failure_is_retryable,
     job_requires_codex,
     worker_accepts_codex_jobs,
     worker_can_claim_another_job,
 )
+
+
+def test_early_generated_low_qa_failure_can_use_one_bounded_retry() -> None:
+    assert asset_failure_is_retryable("RETOPOLOGY_QA_FAILED")
+    assert asset_failure_is_retryable("BLENDER_EXECUTION_FAILED")
+    assert not asset_failure_is_retryable("CODEX_AUTH_FAILED")
+    assert not asset_failure_is_retryable("RETOPOLOGY_OUTPUT_MISSING")
+    assert not asset_failure_is_retryable("RETOPOLOGY_COORDINATE_MISMATCH")
 
 
 async def _idle() -> None:

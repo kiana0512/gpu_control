@@ -67,6 +67,7 @@ Use this mode only when the user supplies a separately created low whose coordin
 - Create at least one non-empty UV layer during this single generation build. A low with no UV is a failed generation and must never be reported as deliverable.
 - Give the low an opaque yellow/orange display material or object color. Do not use transparency.
 - Do not add a presentation offset in unattended/server mode.
+- After applying generated modifiers, converting curves, and joining the fresh low, clean construction residue before UV creation: use a scale-relative exact-position tolerance to merge only duplicate generated vertices, dissolve numerically degenerate edges, delete zero-area faces plus resulting loose edges/vertices, and recalculate normals. This cleanup is allowed only on the newly generated low, never on `SOURCE_HIGH`; it must not use broad merge distances, Decimate, remesh, or reconstruction.
 - Before reporting success, require a closed manifold: zero boundary/open edges, loose edges/vertices, duplicate geometry, degenerate faces, multi-face non-manifold edges, and inconsistent orientation. This is a deterministic delivery gate, not a second modeling pass.
 - Execute the Blender build; writing a plan or build script without producing the requested Blend is a failed generation.
 - Write `generation_report.json` with the normal generation fields, including `uv_layers >= 1`, plus:
@@ -97,7 +98,7 @@ It may not change vertex count, edge connectivity, polygon connectivity, polygon
 
 ### 5. Stop at the defined terminal
 
-Coordinate restoration, topology/UV preservation checks, and FBX readback are fixed persistence checks, not a second topology review. Do not render, score, revise, retry, or generate another low automatically after the builder finishes. Return the generated result for user inspection with coordinate validation attached.
+Coordinate restoration, topology/UV preservation checks, and FBX readback are fixed persistence checks, not a second topology review. Do not render, score, revise, retry, or generate another low automatically after the builder has produced a gate-passing Blend. An early builder rejection for a malformed generated candidate may be returned to the queue for at most one fresh attempt; the malformed candidate is never published. Return only a gate-passing generated result for user inspection with coordinate validation attached.
 
 ## Required Outputs
 
@@ -126,7 +127,7 @@ Return `RETOPOLOGY_COORDINATE_MISMATCH` and publish no final result if any of th
 - handedness changes or a mirror is introduced.
 - the generated Blend or fresh-imported low FBX contains boundary/open, loose, duplicate, degenerate, multi-face non-manifold, or inconsistently oriented geometry.
 
-Never retry modeling automatically after this failure. Preserve logs and reports for diagnosis.
+Never retry modeling automatically after a final alignment, visual, topology-preservation, or FBX-readback failure. An early generated-candidate topology rejection may use the server's single bounded fresh attempt; preserve both attempts' logs and never publish the rejected candidate.
 
 ## Server Compatibility
 

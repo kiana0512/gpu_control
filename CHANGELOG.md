@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-08-11 — Automatic retopology generated-low cleanup v3.0.8
+
+- Require scale-relative exact-duplicate and degenerate construction cleanup on the fresh generated
+  low after modifiers/conversion/join and before UV creation; never modify `SOURCE_HIGH` or relax the
+  final topology gate.
+- Let an early generated-candidate QA rejection use the configured second attempt while the Asset API
+  continues to suppress retries after the final alignment/FBX threshold.
+- Release Asset API `1.6.27-retopo-generated-cleanup-v1` and Blender Worker
+  `1.4.29-retopo-generated-cleanup-v1`.
+
 ## 2026-08-11 — Automatic retopology build-context completion v3.0.7
 
 - Open the server-prepared, immutable working Blend before executing the one bounded generated build

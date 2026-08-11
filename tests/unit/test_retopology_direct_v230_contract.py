@@ -18,7 +18,7 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def test_approved_v307_package_is_complete() -> None:
+def test_approved_v308_package_is_complete() -> None:
     completed = subprocess.run(  # noqa: S603 - repository-owned verifier
         [sys.executable, str(ROOT / "server" / "verify_package.py")],
         capture_output=True,
@@ -29,12 +29,12 @@ def test_approved_v307_package_is_complete() -> None:
     assert (ROOT / "server" / "batch_retopology.py").is_file()
     assert (
         file_sha256(ROOT / "blender-auto-retopo-align" / "SKILL.md")
-        == "14a0011cc48233ece00d30382ef27e1e494bca16bc76b954799ac471e8c9dd2f"
+        == "6dbe417507f638a60dd5fd0a9c9cc89625a57e647fcc2a2dc753489f83b64b57"
     )
-    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.7"
+    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.8"
     assert (
         RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
-        == "6c964cae8530b3d5e2bccfde2af485be90480fb1e08850cb4e3aaf0a9ec33162"
+        == "5211a7e772d8a2944bf42ea81c498a8f0414d7f8a5a3f9352a09785808624424"
     )
 
 
@@ -62,8 +62,8 @@ def test_rolling_completion_accepts_only_matching_approved_package_identity() ->
         "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
     }
     previous = {
-        "package_version": "3.0.6",
-        "package_sha256": ("12353fc401df4aa0a8247c3da962ccaa7e0786cdba63cf5c3360f380109583e6"),
+        "package_version": "3.0.7",
+        "package_sha256": ("6c964cae8530b3d5e2bccfde2af485be90480fb1e08850cb4e3aaf0a9ec33162"),
     }
     assert retopology_direct_v2_completion_identity_valid(current, current) is True
     assert retopology_direct_v2_completion_identity_valid(previous, previous) is True
@@ -72,7 +72,7 @@ def test_rolling_completion_accepts_only_matching_approved_package_identity() ->
     assert retopology_direct_v2_completion_identity_valid(unknown, unknown) is False
 
 
-def test_public_create_contract_selects_v307_without_changing_route() -> None:
+def test_public_create_contract_selects_v308_without_changing_route() -> None:
     api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text(encoding="utf-8")
     assert '@app.post("/api/v1/assets/retopology/process")' in api
     assert '"schema_version": "retopology_input.direct-v2"' in api

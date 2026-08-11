@@ -102,7 +102,7 @@ Procedure:
 2. Choose one asset-specific planned density.
 3. Use a qualified reduction or remeshing operator.
 4. Use bounded same-region fitting when needed so vertices do not jump to another body part.
-5. Clean only duplicate/degenerate construction artifacts that prevent a usable mesh.
+5. After modifiers/conversion/join and before UV creation, clean only duplicate/degenerate construction artifacts on the fresh generated low. Derive an exact-position tolerance from the low bounds; merge only coincident generated vertices, dissolve zero-length/degenerate edges, delete zero-area faces and resulting loose geometry, then recalculate normals. Never apply this cleanup to `SOURCE_HIGH`, and never substitute broad merge distances, Decimate, remesh, or reconstruction.
 6. Save the single result for the user.
 
 Do not generate conservative/aggressive/intermediate variants in formal work. Do not reduce a prior low again. Do not run a second density after generation.

@@ -48,6 +48,14 @@ COMPLETION_UPLOAD_RENEWAL_GRACE_SECONDS = 2.0
 CODEX_REQUIRED_JOB_TYPES = frozenset({"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"})
 DIRECT_V2_ESTIMATED_STAGE_SECONDS = 720
 
+NON_RETRYABLE_ASSET_FAILURE_CODES = frozenset(
+    {
+        "CODEX_AUTH_FAILED",
+        "RETOPOLOGY_OUTPUT_MISSING",
+        "RETOPOLOGY_COORDINATE_MISMATCH",
+    }
+)
+
 UV_UNWRAP_SCRIPT_SHA256 = "ebfa3546d61c548a11c0e7561c75f93b6ef93308d8da9f27788bf35643303758"
 UV_QA_SCRIPT_SHA256 = "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
 ALIGN_BAKE_MODELS_SCRIPT_SHA256 = "ea0588e81fa50772080bc19ff096ee29cb5b6dbc67cdb303b9d32cdbf6a99a78"
@@ -147,6 +155,19 @@ def worker_accepts_codex_jobs(
     """Return whether the Worker's single process-wide Codex slot is free."""
 
     return not any(job_requires_codex(job) for job in running_jobs.values())
+
+
+def asset_failure_is_retryable(error_code: str) -> bool:
+    """Allow one bounded rebuild for an early generated-low QA rejection.
+
+    The Asset API still suppresses retries after the Direct V2 post-build
+    threshold, so a final alignment/FBX gate never starts a second model.
+    Early RETOPOLOGY_QA_FAILED results are generated-candidate defects and may
+    use the configured second attempt instead of exposing stochastic failure
+    to the user.
+    """
+
+    return error_code not in NON_RETRYABLE_ASSET_FAILURE_CODES
 
 
 def signed_headers(settings: WorkerSettings, method: str, path: str, body: bytes) -> dict[str, str]:
@@ -3144,13 +3165,7 @@ async def execute_job(
                 json={
                     "code": error_code,
                     "message": diagnostic,
-                    "retryable": error_code
-                    not in {
-                        "CODEX_AUTH_FAILED",
-                        "RETOPOLOGY_OUTPUT_MISSING",
-                        "RETOPOLOGY_QA_FAILED",
-                        "RETOPOLOGY_COORDINATE_MISMATCH",
-                    },
+                    "retryable": asset_failure_is_retryable(error_code),
                 },
             )
             response.raise_for_status()
