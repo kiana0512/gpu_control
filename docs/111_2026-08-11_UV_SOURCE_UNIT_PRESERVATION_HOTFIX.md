@@ -49,5 +49,21 @@
 
 ## 生产发布
 
-待完成三节点逐台排空、镜像身份验证和真实 UV canary 后回填。旧制品保持不可变；受影响项目需要重新
-执行一次 UV，或导入新修复的低模 FBX，才能使用新的单位合同。
+- Git revision：`30b16a7a9f768113f0a95de06cd3640c8b40b4b4`，已推送 `origin/main`。
+- Worker：`1.4.23-uv-source-units-v2`；三节点统一 image ID
+  `sha256:02652e8b643eeb583a20523e7fc1f4c41f95255e5c18a07c0744479a3381ca45`；单位适配器
+  SHA-256 为 `67e98dc5db415a83736ee154856b2c3b54f057e69440d1edbc76e43873afa24e`。
+- 离线归档：`/srv/gpu-control/images/uv-source-units-v2-30b16a7/blender-worker.tar.zst`，
+  `690758141` bytes，SHA-256
+  `e687deb31a508b4ef2b07a5295d0ac9c9e6b6ae8b55dd1cb07dd86d85bb6146e`。
+- 三节点严格逐台执行 `DRAINING -> GPU/Asset/lease=0 -> 只替换 Blender Worker -> 包/脚本/探针验证
+  -> ACTIVE`。真实 ImageClip 任务均等待自然完成；3090-A/B 的 ComfyUI 容器 ID、启动时间和
+  `RestartCount=0` 保持不变，未修改外部业务工作流。
+- 精确问题低模真实 UV canary `b4b87366-0d77-4cd3-a310-2b4a7bc6ce23` 在
+  `asset-worker-3090-a` 一次成功，排队到交付共 `11s`，五件制品均有 SHA。正式报告为
+  `uv_fbx_unit_contract.v2 / passed=true`，源与输出单位均为 `1 / 1`，世界中心和三轴尺寸回读误差为
+  `0`；2936 顶点、9000 边、6000 面、18000 loops、1 个 UV 层和1个材质槽全部保持。
+- 用生产前端同一 Three.js FBXLoader 重新读取高模与 canary FBX：尺寸差 `0.220394%`、中心偏移
+  `0.000005108%`、轮廓比例差 `0.125617%`，均低于烘焙页门禁。
+- 已把同一正式 canary FBX 和报告复制到用户下载目录。旧制品保持不可变；受影响项目需要重新执行一次
+  UV，或导入新修复的低模 FBX，才能使用新的单位合同。
