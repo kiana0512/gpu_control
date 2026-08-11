@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-08-11 — Automatic retopology resilient live-process leases
+
+- Keep an already-running Codex/Blender topology subprocess alive across transient Asset API
+  connection errors, HTTP 429 responses, and HTTP 5xx responses instead of turning a short control
+  plane restart into a false topology failure and eventual lease expiry.
+- Preserve strict handling for definitive lease/cancellation responses: a non-retryable HTTP 4xx
+  still stops the subprocess rather than publishing work without ownership.
+- Release Asset API `1.6.31-retopo-resilient-leases-v1` and Blender Worker
+  `1.4.31-retopo-resilient-leases-v1`; retopology package remains v3.0.9.
+
 ## 2026-08-11 — Automatic retopology durable Codex slot admission
 
 - Make the Asset API's durable active-job assignment authoritative when admitting Codex-backed

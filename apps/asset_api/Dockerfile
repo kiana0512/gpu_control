@@ -10,7 +10,7 @@ RUN python -m venv /opt/venv \
     && /opt/venv/bin/python -m pip install --no-cache-dir .
 
 FROM ${PYTHON_BASE_IMAGE} AS runtime
-ARG GPU_CONTROL_VERSION=1.6.30-retopo-durable-codex-slot-v1
+ARG GPU_CONTROL_VERSION=1.6.31-retopo-resilient-leases-v1
 ARG GPU_CONTROL_REVISION=unknown
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PATH=/opt/venv/bin:$PATH
 ENV GPU_CONTROL_BUILD_VERSION=${GPU_CONTROL_VERSION} \

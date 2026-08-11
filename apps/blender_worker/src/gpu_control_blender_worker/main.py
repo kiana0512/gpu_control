@@ -2181,6 +2181,36 @@ async def start_blender(settings: WorkerSettings, *arguments: str) -> asyncio.su
     )
 
 
+async def report_subprocess_progress(
+    client: httpx.AsyncClient,
+    job_id: str,
+    lease_headers: dict[str, str],
+    payload: dict[str, Any],
+) -> bool:
+    """Renew a live subprocess lease without killing it for a transient API outage."""
+
+    try:
+        status = await client.post(
+            f"/internal/v1/assets/jobs/{job_id}/progress",
+            headers=lease_headers,
+            json=payload,
+        )
+    except httpx.RequestError as exc:
+        LOG.warning(
+            "asset progress unavailable for live subprocess (%s); keeping process alive",
+            type(exc).__name__,
+        )
+        return False
+    if status.status_code == 429 or status.status_code >= 500:
+        LOG.warning(
+            "asset progress returned transient HTTP %s; keeping live subprocess alive",
+            status.status_code,
+        )
+        return False
+    status.raise_for_status()
+    return bool(status.json().get("cancel_requested"))
+
+
 async def wait_for_blender(
     client: httpx.AsyncClient,
     job_id: str,
@@ -2198,18 +2228,18 @@ async def wait_for_blender(
     started = time.monotonic()
     output_task = asyncio.create_task(read_subprocess_output(process.stdout))
     try:
-        status = await client.post(
-            f"/internal/v1/assets/jobs/{job_id}/progress",
-            headers=lease_headers,
-            json={
+        cancel_requested = await report_subprocess_progress(
+            client,
+            job_id,
+            lease_headers,
+            {
                 "progress": progress,
                 "stage": stage,
                 "message": message,
                 "estimated_remaining_seconds": estimated_stage_seconds,
             },
         )
-        status.raise_for_status()
-        if status.json().get("cancel_requested"):
+        if cancel_requested:
             await terminate_subprocess(process)
             raise RuntimeError("asset job cancelled")
         while process.returncode is None:
@@ -2230,10 +2260,11 @@ async def wait_for_blender(
                     elapsed,
                     estimated_stage_seconds,
                 )
-                status = await client.post(
-                    f"/internal/v1/assets/jobs/{job_id}/progress",
-                    headers=lease_headers,
-                    json={
+                cancel_requested = await report_subprocess_progress(
+                    client,
+                    job_id,
+                    lease_headers,
+                    {
                         "progress": progress,
                         "stage": stage,
                         "message": message,
@@ -2243,8 +2274,7 @@ async def wait_for_blender(
                         ),
                     },
                 )
-                status.raise_for_status()
-                if status.json().get("cancel_requested"):
+                if cancel_requested:
                     await terminate_subprocess(process)
                     raise RuntimeError("asset job cancelled") from exc
         # Codex/Blender may spawn a short-lived descendant that inherits the
@@ -2262,10 +2292,11 @@ async def wait_for_blender(
             done, _ = await asyncio.wait({output_task}, timeout=wait_seconds)
             if done:
                 break
-            status = await client.post(
-                f"/internal/v1/assets/jobs/{job_id}/progress",
-                headers=lease_headers,
-                json={
+            cancel_requested = await report_subprocess_progress(
+                client,
+                job_id,
+                lease_headers,
+                {
                     "progress": progress,
                     "stage": stage,
                     "message": message,
@@ -2275,8 +2306,7 @@ async def wait_for_blender(
                     ),
                 },
             )
-            status.raise_for_status()
-            if status.json().get("cancel_requested"):
+            if cancel_requested:
                 output_task.cancel()
                 await asyncio.gather(output_task, return_exceptions=True)
                 raise RuntimeError("asset job cancelled while draining output")
