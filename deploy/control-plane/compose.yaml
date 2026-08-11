@@ -61,7 +61,7 @@ services:
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
       sbom: true
       provenance: mode=max
-    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}unified-scheduler-asset-api:${ASSET_API_IMAGE_TAG:-1.6.17-substance-glb-input-v1}
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}unified-scheduler-asset-api:${ASSET_API_IMAGE_TAG:-1.6.18-retopo-progress-v1}
     environment:
       TMPDIR: /srv/gpu-control/assets
       ASSET_ROOT: ${ASSET_ROOT:-/srv/gpu-control/assets}
@@ -80,9 +80,9 @@ services:
       dockerfile: apps/blender_worker/Dockerfile
       args:
         BLENDER_BASE_IMAGE: ${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}
-        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.18-retopo-axis-visual-qa-v1}
+        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.19-retopo-progress-v1}
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
-    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.18-retopo-axis-visual-qa-v1}
+    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.19-retopo-progress-v1}
     restart: unless-stopped
     # Codex workspace-write uses bubblewrap inside the already isolated Worker
     # container. SYS_ADMIN plus unconfined seccomp/AppArmor are required for

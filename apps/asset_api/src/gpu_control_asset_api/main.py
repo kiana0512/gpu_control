@@ -2895,7 +2895,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job.lease_expires_at = now + timedelta(seconds=cfg.asset_worker_lease_seconds)
         job.attempt_count += 1
         job.started_at = job.started_at or now
-        job.progress = max(job.progress, 1)
+        # ``progress`` represents the active attempt. A retried job must start
+        # from a fresh scale instead of inheriting 99% from the rejected
+        # attempt and appearing permanently stuck while it rebuilds.
+        job.progress = 1
         job.stage = "CLAIMED"
         job.stage_message = f"任务已分配给 {worker.display_name}"
         job.estimated_remaining_seconds = {
@@ -4410,6 +4413,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job = await leased_job(job_id, lease, db, lock_substance_node=True)
         previous_worker_id = job.worker_id
         previous_worker_instance_id = job.worker_instance_id
+        previous_attempt_progress = job.progress
         requires_runtime_recovery = (
             job.job_type == "SUBSTANCE_BAKE_V1"
             and body.code
@@ -4422,7 +4426,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         v6_post_build_failure = (
             job.job_type == "RETOPOLOGY_PROCESS_V2"
             and job.progress >= 70
-            and body.code == "BLENDER_EXECUTION_FAILED"
+            and body.code
+            in {
+                "BLENDER_EXECUTION_FAILED",
+                "RETOPOLOGY_QA_FAILED",
+            }
         )
         effective_retryable = (
             body.retryable and not requires_runtime_recovery and not v6_post_build_failure
@@ -4445,6 +4453,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.finished_at = datetime.now(UTC)
         elif effective_retryable and job.attempt_count < cfg.asset_job_max_attempts:
             job.status = "QUEUED"
+            job.progress = 0
             job.stage = "RETRY_QUEUED"
             job.stage_message = "执行失败，任务已按策略返回队列重试"
             job.estimated_remaining_seconds = None
@@ -4493,6 +4502,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "v6_post_build_retry_suppressed": v6_post_build_failure,
                 "recovery_required": requires_runtime_recovery,
                 "worker_instance_id": previous_worker_instance_id,
+                "previous_attempt_progress": previous_attempt_progress,
             },
         )
         await db.commit()

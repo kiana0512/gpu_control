@@ -2760,6 +2760,150 @@ async def claim_asset_job(
     return job
 
 
+async def test_retopology_retry_resets_active_attempt_progress(tmp_path: Path) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        await register_asset_worker(
+            client,
+            settings,
+            skill_version="asset-skills-retopology-v2.3.0",
+        )
+        created = await post_retopology_process(
+            client,
+            "asset:retopology:retry-progress",
+            "asset:retopology:retry-progress",
+        )
+        assert created.status_code == 202, created.text
+        job_id = created.json()["job_id"]
+        first = await claim_asset_job(client, settings)
+        first_lease = {"X-Asset-Lease": str(first["lease_token"])}
+
+        progress = await client.post(
+            f"/internal/v1/assets/jobs/{job_id}/progress",
+            headers=first_lease,
+            json={
+                "progress": 99,
+                "stage": "RETOPOLOGY_BAKE_VISUAL_QA",
+                "message": "first attempt visual QA",
+                "estimated_remaining_seconds": 60,
+            },
+        )
+        assert progress.status_code == 200, progress.text
+        failed = await client.post(
+            f"/internal/v1/assets/jobs/{job_id}/fail",
+            headers=first_lease,
+            json={
+                "code": "ASSET_WORKER_TRANSIENT",
+                "message": "first attempt lost a transient worker dependency",
+                "retryable": True,
+            },
+        )
+        assert failed.status_code == 200, failed.text
+        assert failed.json() == {"accepted": True, "status": "QUEUED"}
+
+        queued = await client.get(
+            f"/api/v1/assets/jobs/{job_id}",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert queued.status_code == 200, queued.text
+        assert queued.json()["progress"] == 0
+        assert queued.json()["stage"] == "RETRY_QUEUED"
+        assert queued.json()["attempt_count"] == 1
+        assert queued.json()["timing"]["estimated_remaining_seconds"] is None
+
+        app = client._transport.app  # type: ignore[attr-defined]
+        async with app.state.db.session() as db:
+            event = await db.scalar(
+                select(AssetJobEvent)
+                .where(AssetJobEvent.job_id == job_id)
+                .order_by(AssetJobEvent.sequence.desc())
+            )
+            assert event is not None
+            assert event.progress == 0
+            assert event.details["previous_attempt_progress"] == 99
+
+        second = await claim_asset_job(client, settings)
+        assert second["job_id"] == job_id
+        second_lease = {"X-Asset-Lease": str(second["lease_token"])}
+        restarted = await client.post(
+            f"/internal/v1/assets/jobs/{job_id}/progress",
+            headers=second_lease,
+            json={
+                "progress": 8,
+                "stage": "RETOPOLOGY_DIRECT_V2_BUILD",
+                "message": "second attempt is rebuilding",
+                "estimated_remaining_seconds": 600,
+            },
+        )
+        assert restarted.status_code == 200, restarted.text
+        status = await client.get(
+            f"/api/v1/assets/jobs/{job_id}",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert status.json()["progress"] == 8
+        assert status.json()["attempt_count"] == 2
+
+
+async def test_retopology_post_build_qa_failure_is_not_retried(tmp_path: Path) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        await register_asset_worker(
+            client,
+            settings,
+            skill_version="asset-skills-retopology-v2.3.0",
+        )
+        created = await post_retopology_process(
+            client,
+            "asset:retopology:qa-fail-fast",
+            "asset:retopology:qa-fail-fast",
+        )
+        assert created.status_code == 202, created.text
+        job_id = created.json()["job_id"]
+        claimed = await claim_asset_job(client, settings)
+        lease_headers = {"X-Asset-Lease": str(claimed["lease_token"])}
+        progress = await client.post(
+            f"/internal/v1/assets/jobs/{job_id}/progress",
+            headers=lease_headers,
+            json={
+                "progress": 99,
+                "stage": "RETOPOLOGY_BAKE_VISUAL_QA",
+                "message": "final visual gate",
+                "estimated_remaining_seconds": 30,
+            },
+        )
+        assert progress.status_code == 200, progress.text
+        failed = await client.post(
+            f"/internal/v1/assets/jobs/{job_id}/fail",
+            headers=lease_headers,
+            json={
+                "code": "RETOPOLOGY_QA_FAILED",
+                "message": "candidate is not the same visible asset",
+                "retryable": True,
+            },
+        )
+        assert failed.status_code == 200, failed.text
+        assert failed.json() == {"accepted": True, "status": "FAILED"}
+
+        status = await client.get(
+            f"/api/v1/assets/jobs/{job_id}",
+            headers={"X-API-Key": "gpc_assetkey_secret"},
+        )
+        assert status.json()["status"] == "FAILED"
+        assert status.json()["attempt_count"] == 1
+        assert status.json()["timing"]["estimated_remaining_seconds"] == 0
+
+        app = client._transport.app  # type: ignore[attr-defined]
+        async with app.state.db.session() as db:
+            event = await db.scalar(
+                select(AssetJobEvent)
+                .where(AssetJobEvent.job_id == job_id)
+                .order_by(AssetJobEvent.sequence.desc())
+            )
+            assert event is not None
+            assert event.details["event"] == "asset.failed"
+            assert event.details["reported_retryable"] is True
+            assert event.details["retryable"] is False
+            assert event.details["v6_post_build_retry_suppressed"] is True
+
+
 async def test_busy_codex_slot_still_claims_blender_only_work(tmp_path: Path) -> None:
     async for settings, client in prepared_asset_app(tmp_path):
         await register_asset_worker(

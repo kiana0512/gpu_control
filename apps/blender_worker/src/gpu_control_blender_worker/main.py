@@ -45,6 +45,7 @@ SUBPROCESS_OUTPUT_LIMIT = 16 * 1024 * 1024
 COMPLETION_UPLOAD_KEEPALIVE_SECONDS = 15.0
 COMPLETION_UPLOAD_RENEWAL_GRACE_SECONDS = 2.0
 CODEX_REQUIRED_JOB_TYPES = frozenset({"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"})
+DIRECT_V2_ESTIMATED_STAGE_SECONDS = 600
 
 UV_UNWRAP_SCRIPT_SHA256 = "ebfa3546d61c548a11c0e7561c75f93b6ef93308d8da9f27788bf35643303758"
 UV_QA_SCRIPT_SHA256 = "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
@@ -1928,8 +1929,8 @@ async def run_retopology_v6(
             8,
             92,
             "RETOPOLOGY_DIRECT_V2_BUILD",
-            "Direct V2 正在按只读高模生成一个低模；保存后立即交付",
-            settings.codex_job_timeout_seconds,
+            ("Direct V2 正在按只读高模生成低模；完成后继续坐标对齐、UV、七方向检查与 FBX 回读"),
+            DIRECT_V2_ESTIMATED_STAGE_SECONDS,
             hard_timeout_seconds=settings.codex_job_timeout_seconds + 60,
         )
 
@@ -2256,9 +2257,12 @@ async def wait_for_blender(
             try:
                 await asyncio.wait_for(process.wait(), timeout=wait_seconds)
             except TimeoutError as exc:
-                progress = min(
+                elapsed = time.monotonic() - started
+                progress = stage_progress_for_elapsed(
+                    progress_start,
                     progress_end,
-                    progress + max(1.0, (progress_end - progress_start) / 8),
+                    elapsed,
+                    estimated_stage_seconds,
                 )
                 status = await client.post(
                     f"/internal/v1/assets/jobs/{job_id}/progress",
@@ -2267,8 +2271,9 @@ async def wait_for_blender(
                         "progress": progress,
                         "stage": stage,
                         "message": message,
-                        "estimated_remaining_seconds": max(
-                            0, estimated_stage_seconds - int(time.monotonic() - started)
+                        "estimated_remaining_seconds": stage_eta_for_elapsed(
+                            estimated_stage_seconds,
+                            elapsed,
                         ),
                     },
                 )
@@ -2298,8 +2303,9 @@ async def wait_for_blender(
                     "progress": progress,
                     "stage": stage,
                     "message": message,
-                    "estimated_remaining_seconds": max(
-                        0, estimated_stage_seconds - int(time.monotonic() - started)
+                    "estimated_remaining_seconds": stage_eta_for_elapsed(
+                        estimated_stage_seconds,
+                        elapsed,
                     ),
                 },
             )
@@ -2326,6 +2332,30 @@ async def wait_for_blender(
     if process.returncode != 0:
         raise RuntimeError(output.decode("utf-8", "replace")[-4000:])
     return output
+
+
+def stage_progress_for_elapsed(
+    progress_start: float,
+    progress_end: float,
+    elapsed_seconds: float,
+    estimated_stage_seconds: int,
+) -> float:
+    """Report honest in-stage progress without reaching the completion boundary early."""
+
+    if progress_end <= progress_start or estimated_stage_seconds <= 0:
+        return progress_start
+    fraction = min(max(elapsed_seconds / estimated_stage_seconds, 0.0), 0.95)
+    return min(progress_end, progress_start + (progress_end - progress_start) * fraction)
+
+
+def stage_eta_for_elapsed(
+    estimated_stage_seconds: int,
+    elapsed_seconds: float,
+) -> int | None:
+    """Stop presenting a hard timeout as an ETA once the normal window is exceeded."""
+
+    remaining = estimated_stage_seconds - int(max(elapsed_seconds, 0.0))
+    return remaining if remaining > 0 else None
 
 
 def uv_qa_blender_arguments(
@@ -3163,7 +3193,7 @@ async def execute_job(
                 json={
                     "code": error_code,
                     "message": diagnostic,
-                    "retryable": True,
+                    "retryable": error_code != "RETOPOLOGY_QA_FAILED",
                 },
             )
             response.raise_for_status()
