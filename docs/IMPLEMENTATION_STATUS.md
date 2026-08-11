@@ -10,7 +10,20 @@ execute 前由用户取消，r7 为 0 请求、0 压测任务。综合发布见
 `99_2026-08-10_RETOPOLOGY_ALIGNMENT_V3_HOTFIX.md`，FBX 浏览器米制热修复见
 `100_2026-08-10_RETOPOLOGY_FBX_BROWSER_METER_HOTFIX.md`，最终包围盒恢复 V2 与真实失败任务重试见
 `101_2026-08-10_RETOPOLOGY_ENVELOPE_V2_HOTFIX.md`，最终纯变换交付和生产证据见
-`102_2026-08-10_RETOPOLOGY_TRANSFORM_ALIGNMENT_AND_UV_DUAL_MODE.md`。
+`102_2026-08-10_RETOPOLOGY_TRANSFORM_ALIGNMENT_AND_UV_DUAL_MODE.md`，Substance GLB 输入热修复见
+`106_2026-08-11_SUBSTANCE_GLB_INPUT_HOTFIX.md`。
+
+## 2026-08-11 Substance Baker GLB 输入热修复
+
+- 一键烘焙 422 已定位为 Asset API 旧白名单只接受 FBX/OBJ；请求未入队，和对齐、UV、Worker 或
+  Substance 执行失败无关。
+- 生产 `substance3d_baker.exe 15.1.0` 已对真实 GLB 原生解析成功，Baker mesh 合同扩展为
+  `FBX / OBJ / GLB`；不转换模型，不修改坐标、拓扑、UV 或材质，仍拒绝 `.blend` 和外链式 `.gltf`。
+- 真实 GLB 高低模 canary `20412247-a0c4-44b7-8acf-97dd1b40a73d` 在
+  `asset-worker-3090-b-windows-01` 一次成功，5 秒发布 AO、DirectX 法线、日志和结果 JSON。
+- Asset API `1.6.17-substance-glb-input-v1` 已健康上线，镜像
+  `sha256:64b13ef572589bca38703040b0ae8d65c91e5c8156efa1a6cc90a2e83093891b`；发布前后均为
+  0 活跃任务，7 Worker / 13 槽位全部可用，其他服务和三台 ComfyUI 未重启。
 
 ## 2026-08-11 拓扑低模 UV 后 FBX 米制单位热修复
 
