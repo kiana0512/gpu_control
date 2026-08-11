@@ -1,4 +1,4 @@
-# Blender 自动拓扑与原坐标对齐服务器包 v3.0.5
+# Blender 自动拓扑与原坐标对齐服务器包 v3.0.6
 
 本包合并两个正式技能：
 
@@ -7,7 +7,7 @@
 
 它用于替换现有 `blender-retopology-compare-iterate-server-package-v2.5.0`。旧单文件调用参数和成功状态保持兼容；成功后额外输出烘焙高低模 FBX 与对齐报告。
 
-## v3.0.5 行为
+## v3.0.6 行为
 
 - 高模同时是形状依据和坐标依据。
 - FBX、GLB、GLTF、OBJ 统一导入为一个只读 `SOURCE_HIGH`，同时记录源哈希、原始世界包围盒和
@@ -21,7 +21,13 @@
 - 对低模执行拓扑/UV 指纹、Blend 回读、FBX 新导入回读。
 - 生成代理只写 `build.py`/`build_once.py` 而未真正执行 Blender 时，服务器只执行任务根目录内唯一、
   非符号链接且大小受限的既有构建脚本一次；这不是第二次建模，完成后仍经过相同报告、UV、拓扑、
-  坐标和 FBX 回读门禁。脚本缺失、歧义、超限或执行失败时保持 `BUILD_SCRIPT_NOT_EXECUTED` 硬失败。
+  坐标和 FBX 回读门禁。脚本缺失、歧义或超限保持输出缺失硬失败；实际执行失败明确返回
+  `BLENDER_EXECUTION_FAILED`。
+- `faces`、`triangles`、`uv_layers` 不再相信代理写入的可波动文本值；服务器以最终化 Blender 对
+  generated Blend、保存后 Blend 和重新导入 FBX 的实际读取为权威，并将真实数值回填报告。报告漏字段
+  不再误杀有效模型，真实无 UV、空低模或低模面数不小于高模仍由几何门禁硬拒绝。
+- 服务器补执行脚本若失败，结果会保留执行退出码以及 Blender stdout/stderr 尾部，避免再次只显示
+  `BUILD_SCRIPT_NOT_EXECUTED` 而丢失真实异常。
 - 低模缺少非空 UV 时在最终化阶段直接返回 `RETOPOLOGY_TOPOLOGY_INVALID`，并在交付门返回具体的
   `*_LOW_UV_MISSING` 缺陷代码。
 - Codex 正常结束但把有效 Blend 保存到声明的兼容别名时，只复制该唯一候选到正式输出名；不修改几何，
@@ -44,8 +50,8 @@
 推荐把每个版本解压到独立 release 目录，再切换服务配置或符号链接，保留旧版用于回滚：
 
 ```bash
-unzip blender-auto-retopo-align-server-package-v3.0.5.zip -d /opt/li3d/releases/
-cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.5
+unzip blender-auto-retopo-align-server-package-v3.0.6.zip -d /opt/li3d/releases/
+cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.6
 python3 server/verify_package.py
 cp server/worker.env.example server/worker.env
 ```
@@ -161,7 +167,7 @@ python3 server/align_existing_low.py \
 docker build \
   --build-arg WORKER_IMAGE=现有Worker镜像@sha256:固定摘要 \
   -f Dockerfile.layer \
-  -t li3d/blender-auto-retopo-align:v3.0.5 .
+  -t li3d/blender-auto-retopo-align:v3.0.6 .
 ```
 
 本 Layer 不替换现有 HTTP、队列、存储、鉴权或 Worker entrypoint，只加入合并技能和兼容入口。

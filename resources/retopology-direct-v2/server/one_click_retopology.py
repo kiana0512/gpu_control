@@ -414,9 +414,6 @@ def validate_generation_report(path: Path, requested_highs: list[str]) -> dict:
         for field in (
             "high_object",
             "low_object",
-            "faces",
-            "triangles",
-            "uv_layers",
             "method_decision",
             "actual_plugin_use",
             "coordinate_space",
@@ -427,10 +424,6 @@ def validate_generation_report(path: Path, requested_highs: list[str]) -> dict:
                 raise RuntimeError(f"generation report asset {index} misses {field}")
         if item.get("method_decision") not in ALLOWED_METHODS:
             raise RuntimeError(f"generation report asset {index} has unsupported method_decision")
-        if not isinstance(item.get("uv_layers"), int) or item["uv_layers"] < 1:
-            raise RuntimeError(
-                f"RETOPOLOGY_TOPOLOGY_INVALID: generation report asset {index} has no UV"
-            )
         if item.get("coordinate_space") != "source_high_local":
             raise RuntimeError("RETOPOLOGY_COORDINATE_MISMATCH: low is not in source_high_local")
         if item.get("coordinate_authority") != "high_object_matrix_world":
@@ -439,6 +432,47 @@ def validate_generation_report(path: Path, requested_highs: list[str]) -> dict:
             )
         if item.get("presentation_offset_applied") is not False:
             raise RuntimeError("RETOPOLOGY_COORDINATE_MISMATCH: presentation offset is forbidden")
+    return report
+
+
+def reconcile_generation_report_mesh_metrics(
+    report: dict, alignment_report: dict, path: Path
+) -> dict:
+    """Replace advisory agent counts with Blender-verified delivery metrics.
+
+    Object names and coordinate intent still come from the generation contract,
+    while faces, triangles and UV layers are facts that the deterministic
+    finalizer already reads from the generated Blend, saved Blend and FBX
+    readback.  A missing or stale text field must therefore never discard an
+    otherwise valid topology delivery.
+    """
+
+    assets = report.get("assets")
+    pairs = (
+        alignment_report.get("topology_validation", {})
+        .get("generated_blend", {})
+        .get("pairs")
+    )
+    if not isinstance(assets, list) or not isinstance(pairs, list):
+        raise RuntimeError("RETOPOLOGY_TOPOLOGY_INVALID: verified mesh metrics are missing")
+    if len(assets) != len(pairs):
+        raise RuntimeError("RETOPOLOGY_TOPOLOGY_INVALID: verified pair count differs")
+    for index, (asset, pair) in enumerate(zip(assets, pairs, strict=True)):
+        low = pair.get("low") if isinstance(pair, dict) else None
+        if not isinstance(asset, dict) or not isinstance(low, dict):
+            raise RuntimeError(
+                f"RETOPOLOGY_TOPOLOGY_INVALID: verified pair {index} is invalid"
+            )
+        for field in ("faces", "triangles", "uv_layers"):
+            value = low.get(field)
+            minimum = 1
+            if not isinstance(value, int) or value < minimum:
+                raise RuntimeError(
+                    f"RETOPOLOGY_TOPOLOGY_INVALID: verified low {index} has invalid {field}"
+                )
+            asset[field] = value
+        asset["mesh_metrics_authority"] = "blender_generated_blend_and_fbx_readback"
+    atomic_write(path, json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     return report
 
 
@@ -645,10 +679,24 @@ def main() -> int:
             recovered_from = recovered_after_build
     if not valid_blend(generated_blend):
         diagnostic = codex_failure_diagnostic(job_dir)
+        if build_completion is not None:
+            diagnostic["build_completion"] = build_completion
+            for key, log_path in (
+                ("build_stdout_tail", job_dir / "build_script_stdout.log"),
+                ("build_stderr_tail", job_dir / "build_script_stderr.log"),
+            ):
+                if log_path.is_file():
+                    diagnostic[key] = log_path.read_text(
+                        encoding="utf-8", errors="replace"
+                    )[-6000:]
         error = (
             "CODEX_AUTH_FAILED"
             if str(diagnostic.get("error_category", "")).startswith("CODEX_AUTH_")
-            else "RETOPOLOGY_OUTPUT_MISSING"
+            else (
+                "BLENDER_EXECUTION_FAILED"
+                if build_completion is not None
+                else "RETOPOLOGY_OUTPUT_MISSING"
+            )
         )
         write_result(
             result_path,
@@ -733,6 +781,9 @@ def main() -> int:
         )
         if missing:
             raise RuntimeError("missing bake outputs: " + ",".join(missing))
+        generation_report = reconcile_generation_report_mesh_metrics(
+            generation_report, alignment_report, generation_report_path
+        )
     except (RuntimeError, OSError, json.JSONDecodeError) as error:
         error_detail = str(error)
         error_code = (

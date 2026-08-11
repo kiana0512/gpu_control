@@ -6,8 +6,8 @@
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
 当前生产基线为 GPU Control API/Scheduler `1.5.12`、Web `1.5.11-retopo-direct-v2`、Asset API
-`1.6.24-retopo-build-completion-v1`、三台 Linux Blender Worker
-`1.4.26-retopo-build-completion-v1`、数据库 `20260810_0013`。当前总状态为
+`1.6.25-retopo-report-reconciliation-v1`、三台 Linux Blender Worker
+`1.4.27-retopo-report-reconciliation-v1`、数据库 `20260810_0013`。当前总状态为
 `DEPLOYED_NOT_ACCEPTED`：第三次正式 100 VU、registry digest/SBOM、固定基准、完整故障矩阵和
 连续七天观察尚未闭环，禁止标记 `FROZEN` 或 `PRODUCTION_ACCEPTED`。
 
@@ -21,7 +21,7 @@ v3 同任务生成路径不运行旧自动视觉 QA，但坐标恢复、拓扑/U
 `substance-baker-2026.08.03-v6`，均为 `ONLINE/HEALTHY`，用 PBR 成功 marker、逐命令证据和制品完整性
 消除 PowerShell 空 `ExitCode` 假失败，但不放行真实非零退出或缺少 marker。三节点 ComfyUI 仍是同一
 `projects-0.2.3` 镜像，健康、`RestartCount=0`；本轮未停止/重启 ComfyUI，也未调用 `/free` 或
-清理模型缓存。自动拓扑对齐包 v3.0.5 统一 FBX/GLB/GLTF/OBJ 的只读高模准备入口，并由服务器确定性执行
+清理模型缓存。自动拓扑对齐包 v3.0.6 统一 FBX/GLB/GLTF/OBJ 的只读高模准备入口，并由服务器确定性执行
 任务中唯一且受限、但被 Codex 遗漏执行的生成脚本一次；随后继续执行相同的 UV、拓扑、坐标和 FBX 门禁。
 缺 UV 和逐项拓扑缺陷显式化；v3.0.3 增加输出契约恢复、认证刷新持久化和逐项门禁诊断；v3.0.2
 增加 triangle-soup 安全工作副本和 Blend/FBX 拓扑硬门禁；v3.0.0

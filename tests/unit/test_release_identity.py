@@ -32,7 +32,7 @@ def test_control_plane_build_defaults_match_release_version() -> None:
         contents = (REPOSITORY / dockerfile).read_text(encoding="utf-8")
         assert f"ARG GPU_CONTROL_VERSION={expected_version}" in contents
     asset_api = (REPOSITORY / "apps/asset_api/Dockerfile").read_text(encoding="utf-8")
-    assert "ARG GPU_CONTROL_VERSION=1.6.24-retopo-build-completion-v1" in asset_api
+    assert "ARG GPU_CONTROL_VERSION=1.6.25-retopo-report-reconciliation-v1" in asset_api
 
     environment = (REPOSITORY / ".env.example").read_text(encoding="utf-8")
     assert f"APP_IMAGE_TAG={expected_version}" in environment
@@ -41,15 +41,15 @@ def test_control_plane_build_defaults_match_release_version() -> None:
     compose = (REPOSITORY / "deploy/control-plane/compose.yaml").read_text(encoding="utf-8")
     assert compose.count(f"GPU_CONTROL_VERSION: ${{GPU_CONTROL_VERSION:-{expected_version}}}") == 3
     assert compose.count(f"APP_IMAGE_TAG:-{expected_version}") == 2
-    assert "GPU_CONTROL_VERSION: ${ASSET_API_VERSION:-1.6.24-retopo-build-completion-v1}" in compose
-    assert "ASSET_API_IMAGE_TAG:-1.6.24-retopo-build-completion-v1" in compose
+    assert "GPU_CONTROL_VERSION: ${ASSET_API_VERSION:-1.6.25-retopo-report-reconciliation-v1}" in compose
+    assert "ASSET_API_IMAGE_TAG:-1.6.25-retopo-report-reconciliation-v1" in compose
     api_service = compose.split("\n  api:\n", 1)[1].split("\n  asset-api:\n", 1)[0]
     asset_api_service = compose.split("\n  asset-api:\n", 1)[1].split(
         "\n  asset-worker-control:\n", 1
     )[0]
     assert "ASSET_API_VERSION" not in api_service
     assert "GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.12}" in api_service
-    assert "ASSET_API_VERSION:-1.6.24-retopo-build-completion-v1" in asset_api_service
+    assert "ASSET_API_VERSION:-1.6.25-retopo-report-reconciliation-v1" in asset_api_service
 
 
 def test_worker_release_versions_and_evidence_contract_are_aligned() -> None:

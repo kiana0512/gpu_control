@@ -159,7 +159,7 @@ def test_generated_build_completion_rejects_ambiguous_or_symlinked_scripts(
     assert MODULE.generated_build_script(tmp_path) is None
 
 
-def test_generation_report_requires_nonempty_uv(tmp_path: Path) -> None:
+def test_generation_report_allows_blender_to_author_uv_metrics(tmp_path: Path) -> None:
     report = tmp_path / "generation_report.json"
     report.write_text(
         json.dumps(
@@ -171,7 +171,6 @@ def test_generation_report_requires_nonempty_uv(tmp_path: Path) -> None:
                         "low_object": "SOURCE_HIGH_LOW",
                         "faces": 10,
                         "triangles": 20,
-                        "uv_layers": 0,
                         "method_decision": "semantic_reconstruction",
                         "actual_plugin_use": [],
                         "coordinate_space": "source_high_local",
@@ -184,12 +183,67 @@ def test_generation_report_requires_nonempty_uv(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
+    parsed = MODULE.validate_generation_report(report, ["SOURCE_HIGH"])
+    assert "uv_layers" not in parsed["assets"][0]
+
+    reconciled = MODULE.reconcile_generation_report_mesh_metrics(
+        parsed,
+        {
+            "topology_validation": {
+                "generated_blend": {
+                    "pairs": [
+                        {
+                            "low": {
+                                "faces": 12,
+                                "triangles": 24,
+                                "uv_layers": 1,
+                            }
+                        }
+                    ]
+                }
+            }
+        },
+        report,
+    )
+    assert reconciled["assets"][0]["uv_layers"] == 1
+    assert reconciled["assets"][0]["faces"] == 12
+    assert reconciled["assets"][0]["mesh_metrics_authority"].startswith("blender_")
+
+
+def test_verified_blend_without_uv_still_fails_closed(tmp_path: Path) -> None:
+    report = {
+        "assets": [
+            {
+                "high_object": "SOURCE_HIGH",
+                "low_object": "SOURCE_HIGH_LOW",
+            }
+        ]
+    }
+
     try:
-        MODULE.validate_generation_report(report, ["SOURCE_HIGH"])
+        MODULE.reconcile_generation_report_mesh_metrics(
+            report,
+            {
+                "topology_validation": {
+                    "generated_blend": {
+                        "pairs": [
+                            {
+                                "low": {
+                                    "faces": 12,
+                                    "triangles": 24,
+                                    "uv_layers": 0,
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+            tmp_path / "generation_report.json",
+        )
     except RuntimeError as error:
         assert "RETOPOLOGY_TOPOLOGY_INVALID" in str(error)
     else:
-        raise AssertionError("missing UV must fail generation-report validation")
+        raise AssertionError("Blender-verified missing UV must fail")
 
 
 def test_one_click_prepares_every_supported_static_source_as_source_high() -> None:

@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-08-11 — Automatic retopology verified-report reconciliation v3.0.6
+
+- Treat agent-written face, triangle and UV counts as advisory; Blender now supplies the authoritative
+  generated-Blend, saved-Blend and FBX-readback metrics and writes them back to the report.
+- Preserve all topology, UV, coordinate and FBX hard gates while no longer discarding a valid Blend
+  merely because Codex omitted the textual `uv_layers` field.
+- Return the bounded build-script exit evidence and Blender log tails when server completion itself
+  fails, instead of masking that failure as an unexecuted script.
+- Release Asset API `1.6.25-retopo-report-reconciliation-v1` and Blender Worker
+  `1.4.27-retopo-report-reconciliation-v1`.
+
+## 2026-08-11 — Automatic retopology build completion v3.0.5
+
+- Execute exactly one bounded, regular, job-root `build_once.py`/`build.py` once when the completed
+  Codex turn authored it but omitted the final Blender invocation.
+- Reject missing, ambiguous, symlinked, empty or oversized scripts and retain fail-closed topology,
+  UV, coordinate and FBX readback gates after server completion.
+- Require `uv_layers >= 1` in the generation report before coordinate finalization.
+- Released Asset API `1.6.24-retopo-build-completion-v1` and Blender Worker
+  `1.4.26-retopo-build-completion-v1` with no ComfyUI restart.
+
+## 2026-08-11 — Automatic retopology static-source reliability v3.0.4
+
+- Unified FBX, GLB, GLTF and OBJ preparation behind one immutable `SOURCE_HIGH` manifest.
+- Rejected unexecuted generated build scripts with an explicit diagnostic.
+- Added an early UV hard gate and stage-specific topology evidence failures.
+- Released Asset API `1.6.23-retopo-static-input-v1` and Blender Worker
+  `1.4.25-retopo-static-input-v1` without restarting production ComfyUI services.
+
 ## 1.5.12（自动拓扑与原坐标对齐包 v3.0.0）— 2026-08-11
 
 - 完整替换为 `blender-auto-retopo-align-server-package-v3.0.0`，固定 ZIP SHA-256、24 文件清单和
