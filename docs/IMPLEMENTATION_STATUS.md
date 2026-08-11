@@ -2,8 +2,9 @@
 
 最后更新：2026-08-11
 版本：生产 API/Scheduler 1.5.12、Web 1.5.11-retopo-direct-v2 / Asset API
-1.6.21-retopo-topology-v302 / Worker 1.4.23-uv-source-units-v2 / DB 20260810_0013；源码审计、
-自动拓扑对齐包 v3.0.2 的高模坐标权威恢复、triangle-soup 安全工作副本、
+1.6.22-retopo-reliability-v1 / Worker 1.4.24-retopo-reliability-v1 / DB 20260810_0013；源码审计、
+自动拓扑对齐包 v3.0.3 的高模坐标权威恢复、输出契约恢复、认证刷新持久化、逐项失败诊断、
+triangle-soup 安全工作副本、
 低模拓扑/UV 指纹保护和高低模 FBX 重导验证已完成真实生产任务。v3 同任务生成按批准合同不执行旧版
 自动七方向复核，由用户检查最终外观。三台 Linux Worker 均为 `ONLINE`；各节点升级验证后均恢复过
 `ACTIVE`，3090-B 在真实 Substance 烘焙期间会由 Asset API 临时置为 `DRAINING`，这是物理 GPU 互斥
@@ -20,7 +21,8 @@ execute 前由用户取消，r7 为 0 请求、0 压测任务。综合发布见
 `108_2026-08-11_RETOPOLOGY_PROGRESS_AND_RETRY_HOTFIX.md`，v3.0.0 当前生产发布见
 `109_2026-08-11_AUTO_RETOPO_ALIGN_V3_RELEASE.md`，碎片高模/破面交付修复与 v3.0.2 发布见
 `110_2026-08-11_RETOPOLOGY_FRAGMENTED_SOURCE_TOPOLOGY_HOTFIX.md`，UV 输入单位继承修复见
-`111_2026-08-11_UV_SOURCE_UNIT_PRESERVATION_HOTFIX.md`。
+`111_2026-08-11_UV_SOURCE_UNIT_PRESERVATION_HOTFIX.md`，自动拓扑可靠性补丁见
+`112_2026-08-11_RETOPOLOGY_OUTPUT_CONTRACT_AND_AUTH_RELIABILITY.md`。
 
 ## 2026-08-11 UV 交付继承源 FBX 单位热修复
 

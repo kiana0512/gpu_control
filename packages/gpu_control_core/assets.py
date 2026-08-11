@@ -227,9 +227,9 @@ class RetopologyV6ProcessMetadata(BaseModel):
 
 
 RETOPOLOGY_V6_POLICY_SHA256 = "e7b24c93c11d550ac9fedd167ff23f9ddd70cba4db014caaf2e157cddeafb266"
-RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION = "3.0.2"
+RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION = "3.0.3"
 RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256 = (
-    "258c5b04686f938a6bbbe82f713701f5274b84ef56dda4b577105de4b7a1b542"
+    "6125113a5e703cd288a4265f381031baf125b262c9eddbddfa57cc05d9e36647"
 )
 RETOPOLOGY_DIRECT_V2_MAX_DIMENSION_RELATIVE_ERROR = 0.05
 RETOPOLOGY_FBX_UNIT_SCALE_FACTOR_CENTIMETERS = 100.0
@@ -571,6 +571,90 @@ def _retopology_v3_topology_evidence_valid(payload: object) -> bool:
     )
 
 
+def retopology_auto_align_v3_evidence_failures(payload: object) -> list[str]:
+    """Explain every failed v3 source-coordinate/readback predicate."""
+
+    failures: list[str] = []
+    if not isinstance(payload, dict):
+        return ["ALIGNMENT_REPORT_NOT_OBJECT"]
+    expected_fields = {
+        "schema": "li3d-auto-retopo-align-v1",
+        "pass": True,
+        "transform_only_alignment": True,
+        "alignment_mode": "source_matrix_restore",
+        "coordinate_authority": "high",
+        "icp_used": False,
+        "topology_or_uv_edited": False,
+        "low_display": "opaque_yellow",
+        "topology_uv_unchanged": True,
+    }
+    for field, expected in expected_fields.items():
+        if payload.get(field) != expected:
+            failures.append(f"ALIGNMENT_{field.upper()}_INVALID")
+    if not _retopology_v3_topology_evidence_valid(payload.get("topology_validation")):
+        failures.append("TOPOLOGY_VALIDATION_INVALID")
+
+    def finite_number(value: object) -> bool:
+        return (
+            isinstance(value, int | float)
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+        )
+
+    pairs = payload.get("pairs")
+    if not isinstance(pairs, list) or not pairs:
+        failures.append("ALIGNMENT_PAIRS_MISSING")
+        pairs = []
+    for index, pair in enumerate(pairs):
+        prefix = f"PAIR_{index}"
+        if not isinstance(pair, dict):
+            failures.append(f"{prefix}_NOT_OBJECT")
+            continue
+        matrix_error = pair.get("matrix_error_after")
+        center_error = pair.get("center_error_ratio")
+        size_error = pair.get("size_error_ratio")
+        if not finite_number(matrix_error) or float(matrix_error) > 1e-5:
+            failures.append(f"{prefix}_MATRIX_ERROR")
+        if not finite_number(center_error) or float(center_error) > 1e-5:
+            failures.append(f"{prefix}_CENTER_ERROR")
+        if not finite_number(size_error) or float(size_error) > 0.15:
+            failures.append(f"{prefix}_SIZE_ERROR")
+        if pair.get("high_determinant_sign") != pair.get("low_determinant_sign_after"):
+            failures.append(f"{prefix}_HANDEDNESS_MISMATCH")
+        if not isinstance(pair.get("delivered_high_name"), str) or not pair.get(
+            "delivered_high_name"
+        ):
+            failures.append(f"{prefix}_HIGH_NAME_MISSING")
+        if not isinstance(pair.get("delivered_low_name"), str) or not pair.get(
+            "delivered_low_name"
+        ):
+            failures.append(f"{prefix}_LOW_NAME_MISSING")
+
+    readback = payload.get("fbx_readback")
+    if not isinstance(readback, dict):
+        failures.append("FBX_READBACK_MISSING")
+        return failures
+    tolerance = readback.get("tolerance")
+    high_error = readback.get("high_center_size_error_ratio")
+    low_error = readback.get("low_center_size_error_ratio")
+    tolerance_valid = finite_number(tolerance) and math.isclose(
+        float(tolerance), 1e-5, rel_tol=0.0, abs_tol=1e-12
+    )
+    if readback.get("pass") is not True:
+        failures.append("FBX_READBACK_FAILED")
+    if readback.get("low_structure_match") is not True:
+        failures.append("FBX_LOW_STRUCTURE_MISMATCH")
+    if not tolerance_valid:
+        failures.append("FBX_TOLERANCE_INVALID")
+    if not finite_number(high_error) or float(high_error) > 1e-5:
+        failures.append("FBX_HIGH_BOUNDS_MISMATCH")
+    if not finite_number(low_error) or float(low_error) > 1e-5:
+        failures.append("FBX_LOW_BOUNDS_MISMATCH")
+    if readback.get("expected_low_structure") != readback.get("actual_low_structure"):
+        failures.append("FBX_LOW_STRUCTURE_EVIDENCE_MISMATCH")
+    return failures
+
+
 def retopology_auto_align_v3_evidence_valid(payload: object) -> bool:
     """Validate the v3 same-job source-coordinate finalization evidence.
 
@@ -580,76 +664,7 @@ def retopology_auto_align_v3_evidence_valid(payload: object) -> bool:
     import with the expected bounds and low-mesh structure.
     """
 
-    if not isinstance(payload, dict):
-        return False
-    if (
-        payload.get("schema") != "li3d-auto-retopo-align-v1"
-        or payload.get("pass") is not True
-        or payload.get("transform_only_alignment") is not True
-        or payload.get("alignment_mode") != "source_matrix_restore"
-        or payload.get("coordinate_authority") != "high"
-        or payload.get("icp_used") is not False
-        or payload.get("topology_or_uv_edited") is not False
-        or payload.get("low_display") != "opaque_yellow"
-        or payload.get("topology_uv_unchanged") is not True
-        or not _retopology_v3_topology_evidence_valid(
-            payload.get("topology_validation")
-        )
-    ):
-        return False
-    pairs = payload.get("pairs")
-    if not isinstance(pairs, list) or not pairs:
-        return False
-    for pair in pairs:
-        if not isinstance(pair, dict):
-            return False
-        matrix_error = pair.get("matrix_error_after")
-        center_error = pair.get("center_error_ratio")
-        size_error = pair.get("size_error_ratio")
-        if (
-            not isinstance(matrix_error, int | float)
-            or isinstance(matrix_error, bool)
-            or not math.isfinite(float(matrix_error))
-            or float(matrix_error) > 1e-5
-            or not isinstance(center_error, int | float)
-            or isinstance(center_error, bool)
-            or not math.isfinite(float(center_error))
-            or float(center_error) > 1e-5
-            or not isinstance(size_error, int | float)
-            or isinstance(size_error, bool)
-            or not math.isfinite(float(size_error))
-            or float(size_error) > 0.15
-            or pair.get("high_determinant_sign")
-            != pair.get("low_determinant_sign_after")
-            or not isinstance(pair.get("delivered_high_name"), str)
-            or not pair.get("delivered_high_name")
-            or not isinstance(pair.get("delivered_low_name"), str)
-            or not pair.get("delivered_low_name")
-        ):
-            return False
-    readback = payload.get("fbx_readback")
-    if not isinstance(readback, dict):
-        return False
-    tolerance = readback.get("tolerance")
-    high_error = readback.get("high_center_size_error_ratio")
-    low_error = readback.get("low_center_size_error_ratio")
-    return (
-        readback.get("pass") is True
-        and readback.get("low_structure_match") is True
-        and isinstance(tolerance, int | float)
-        and not isinstance(tolerance, bool)
-        and math.isclose(float(tolerance), 1e-5, rel_tol=0.0, abs_tol=1e-12)
-        and isinstance(high_error, int | float)
-        and not isinstance(high_error, bool)
-        and math.isfinite(float(high_error))
-        and float(high_error) <= float(tolerance)
-        and isinstance(low_error, int | float)
-        and not isinstance(low_error, bool)
-        and math.isfinite(float(low_error))
-        and float(low_error) <= float(tolerance)
-        and readback.get("expected_low_structure")
-        == readback.get("actual_low_structure")
-    )
+    return not retopology_auto_align_v3_evidence_failures(payload)
 
 
 _RETOPOLOGY_V5_IGNORED_OPTIONS = frozenset(

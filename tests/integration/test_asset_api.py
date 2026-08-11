@@ -81,9 +81,9 @@ async def test_asset_api_version_exposes_aligned_immutable_provenance(
             "source_revision": "a" * 40,
             "retopology": {
                 "engine_contract": "retopology-direct-v2",
-                "package_version": "3.0.2",
+                "package_version": "3.0.3",
                 "package_sha256": (
-                    "258c5b04686f938a6bbbe82f713701f5274b84ef56dda4b577105de4b7a1b542"
+                    "6125113a5e703cd288a4265f381031baf125b262c9eddbddfa57cc05d9e36647"
                 ),
                 "submission_mode": "one_file_per_job",
                 "recommended_upload_concurrency": 3,
@@ -549,7 +549,7 @@ def direct_v2_completion_files(
         "schema_version": schema_version,
         "job_id": context["job_id"],
         "engine_contract": "retopology-direct-v2",
-        "package_version": "3.0.2",
+        "package_version": "3.0.3",
         "package_sha256": context["package_sha256"],
         "source_sha256": context["project_sha256"],
         "adapter_input_sha256": context["adapter_input_sha"],
@@ -628,9 +628,9 @@ async def test_retopology_process_creates_v300_direct_contract(tmp_path: Path) -
         assert response.status_code == 202, response.text
         payload = response.json()
         assert payload["options"]["engine_contract"] == "retopology-direct-v2"
-        assert payload["options"]["package_version"] == "3.0.2"
+        assert payload["options"]["package_version"] == "3.0.3"
         assert payload["options"]["package_sha256"] == (
-            "258c5b04686f938a6bbbe82f713701f5274b84ef56dda4b577105de4b7a1b542"
+            "6125113a5e703cd288a4265f381031baf125b262c9eddbddfa57cc05d9e36647"
         )
 
         bundle = settings.asset_root / payload["job_id"] / "retopology_input.zip"
@@ -653,7 +653,7 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.2",
+            skill_version="asset-skills-auto-retopo-align-v3.0.3",
         )
         leased = await claim_asset_job(client, settings)
         assert leased["job_id"] == created_payload["job_id"]
@@ -798,7 +798,7 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
 
         completion_context = {
             "job_id": created_payload["job_id"],
-            "package_version": "3.0.2",
+            "package_version": "3.0.3",
             "package_sha256": created_payload["options"]["package_sha256"],
             "project_sha256": created_payload["options"]["project_sha256"],
             "adapter_input_sha": adapter_input_sha,
@@ -825,15 +825,13 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
 
         rejected_coordinate = copy.deepcopy(completion_context)
         rejected_coordinate["alignment_report"]["pairs"][0]["size_error_ratio"] = 0.2
-        rejected_coordinate["result"]["bake_files"]["bake_alignment_report.json"] = (
-            hashlib.sha256(json.dumps(rejected_coordinate["alignment_report"]).encode()).hexdigest()
-        )
+        rejected_coordinate["result"]["bake_files"]["bake_alignment_report.json"] = hashlib.sha256(
+            json.dumps(rejected_coordinate["alignment_report"]).encode()
+        ).hexdigest()
         rejected_coordinate_response = await client.post(
             endpoint,
             headers={"X-Asset-Lease": str(leased["lease_token"])},
-            files=direct_v2_completion_files(
-                "retopology_direct_delivery.v7", rejected_coordinate
-            ),
+            files=direct_v2_completion_files("retopology_direct_delivery.v7", rejected_coordinate),
         )
         assert rejected_coordinate_response.status_code == 422, rejected_coordinate_response.text
         assert (
@@ -2725,7 +2723,7 @@ async def test_retopology_retry_resets_active_attempt_progress(tmp_path: Path) -
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.2",
+            skill_version="asset-skills-auto-retopo-align-v3.0.3",
         )
         created = await post_retopology_process(
             client,
@@ -2808,7 +2806,7 @@ async def test_retopology_post_build_qa_failure_is_not_retried(tmp_path: Path) -
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.2",
+            skill_version="asset-skills-auto-retopo-align-v3.0.3",
         )
         created = await post_retopology_process(
             client,
@@ -2869,7 +2867,7 @@ async def test_busy_codex_slot_still_claims_blender_only_work(tmp_path: Path) ->
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.2",
+            skill_version="asset-skills-auto-retopo-align-v3.0.3",
         )
         retopology = await post_retopology_process(
             client,
@@ -3868,9 +3866,7 @@ async def test_uv_process_v2_preserves_stem_and_publishes_five_verified_artifact
                 ),
                 "report": (
                     "chair.source_PBR_UV_report.json",
-                    json.dumps(
-                        {"input": "chair.source.fbx", "algorithm": "legacy_pbr"}
-                    ).encode(),
+                    json.dumps({"input": "chair.source.fbx", "algorithm": "legacy_pbr"}).encode(),
                     "application/json",
                 ),
                 "qa": (

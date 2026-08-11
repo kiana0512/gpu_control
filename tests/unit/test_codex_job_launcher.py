@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from packages.asset_processing.codex_job_launcher import normalize_generation_report
+from packages.asset_processing.codex_job_launcher import (
+    normalize_generation_report,
+    persist_refreshed_auth,
+)
 
 
 def write_source_manifest(tmp_path: Path) -> None:
@@ -181,9 +184,7 @@ def test_reconstructs_assets_from_read_only_blend_inspection(tmp_path: Path) -> 
         json.dumps({"method_decision": "per_component_hybrid"}), encoding="utf-8"
     )
     path = tmp_path / "generation_report.json"
-    path.write_text(
-        json.dumps({"status": "generated_for_user_inspection"}), encoding="utf-8"
-    )
+    path.write_text(json.dumps({"status": "generated_for_user_inspection"}), encoding="utf-8")
 
     def inspect(_job_dir: Path, high_object: str) -> list[dict[str, object]]:
         assert high_object == "SOURCE_HIGH"
@@ -208,9 +209,7 @@ def test_direct_blend_reconstructs_assets_from_read_only_source_and_delivery(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "generation_report.json"
-    path.write_text(
-        json.dumps({"status": "generated_for_user_inspection"}), encoding="utf-8"
-    )
+    path.write_text(json.dumps({"status": "generated_for_user_inspection"}), encoding="utf-8")
     (tmp_path / "plans").mkdir()
     (tmp_path / "plans" / "plan.json").write_text(
         json.dumps({"method_decision": "semantic_reconstruction"}), encoding="utf-8"
@@ -231,11 +230,14 @@ def test_direct_blend_reconstructs_assets_from_read_only_source_and_delivery(
             }
         ]
 
-    assert normalize_generation_report(
-        tmp_path,
-        delivery_inspector=inspect_delivery,
-        source_inspector=inspect_source,
-    ) is True
+    assert (
+        normalize_generation_report(
+            tmp_path,
+            delivery_inspector=inspect_delivery,
+            source_inspector=inspect_source,
+        )
+        is True
+    )
     normalized = json.loads(path.read_text(encoding="utf-8"))
     assert normalized["assets"] == [
         {
@@ -248,3 +250,63 @@ def test_direct_blend_reconstructs_assets_from_read_only_source_and_delivery(
         }
     ]
     assert normalized["gpu_control_compatibility"]["blend_inspection_used"] is True
+
+
+def test_persists_rotated_task_auth_to_node_private_source(tmp_path: Path) -> None:
+    source = tmp_path / "persistent" / "auth.json"
+    source.parent.mkdir()
+    source.write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {"account_id": "account-1", "refresh_token": "old"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    source.chmod(0o600)
+    task = tmp_path / "task" / "auth.json"
+    task.parent.mkdir()
+    refreshed = {
+        "auth_mode": "chatgpt",
+        "tokens": {"account_id": "account-1", "refresh_token": "new"},
+    }
+    task.write_text(json.dumps(refreshed), encoding="utf-8")
+
+    from packages.asset_processing.codex_job_launcher import sha256
+
+    assert persist_refreshed_auth(source, task, sha256(source), source) == "updated"
+    assert json.loads(source.read_text(encoding="utf-8")) == refreshed
+    assert source.stat().st_mode & 0o777 == 0o600
+
+
+def test_auth_writeback_never_overwrites_concurrent_operator_update(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "auth.json"
+    source.write_text(json.dumps({"credential": "old"}), encoding="utf-8")
+    from packages.asset_processing.codex_job_launcher import sha256
+
+    original_sha256 = sha256(source)
+    task = tmp_path / "task-auth.json"
+    task.write_text(json.dumps({"credential": "refreshed"}), encoding="utf-8")
+    source.write_text(json.dumps({"credential": "operator-new"}), encoding="utf-8")
+
+    assert persist_refreshed_auth(source, task, original_sha256, source) == "source_changed"
+    assert json.loads(source.read_text(encoding="utf-8")) == {"credential": "operator-new"}
+
+
+def test_auth_writeback_rejects_account_identity_change(tmp_path: Path) -> None:
+    source = tmp_path / "auth.json"
+    source.write_text(
+        json.dumps({"auth_mode": "chatgpt", "tokens": {"account_id": "account-1"}}),
+        encoding="utf-8",
+    )
+    task = tmp_path / "task-auth.json"
+    task.write_text(
+        json.dumps({"auth_mode": "chatgpt", "tokens": {"account_id": "account-2"}}),
+        encoding="utf-8",
+    )
+    from packages.asset_processing.codex_job_launcher import sha256
+
+    assert persist_refreshed_auth(source, task, sha256(source), source) == "identity_mismatch"

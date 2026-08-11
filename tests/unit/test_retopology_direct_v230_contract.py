@@ -17,7 +17,7 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def test_approved_v302_package_is_complete() -> None:
+def test_approved_v303_package_is_complete() -> None:
     completed = subprocess.run(  # noqa: S603 - repository-owned verifier
         [sys.executable, str(ROOT / "server" / "verify_package.py")],
         capture_output=True,
@@ -30,34 +30,33 @@ def test_approved_v302_package_is_complete() -> None:
         file_sha256(ROOT / "blender-auto-retopo-align" / "SKILL.md")
         == "161382022a9d3abf62f2da098c06829d061a51c812f65426a9b74d9030588fcc"
     )
-    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.2"
+    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.3"
     assert (
         RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
-        == "258c5b04686f938a6bbbe82f713701f5274b84ef56dda4b577105de4b7a1b542"
+        == "6125113a5e703cd288a4265f381031baf125b262c9eddbddfa57cc05d9e36647"
     )
 
 
 def test_gpu_control_uses_scheduler_fanout_not_upstream_serial_batch() -> None:
-    worker = Path(
-        "apps/blender_worker/src/gpu_control_blender_worker/main.py"
-    ).read_text(encoding="utf-8")
+    worker = Path("apps/blender_worker/src/gpu_control_blender_worker/main.py").read_text(
+        encoding="utf-8"
+    )
     assert "one_click_retopology.py" in worker
     assert "batch_retopology.py" not in worker
     assert '"CODEX_BIN": "/app/packages/asset_processing/codex_job_launcher.py"' in worker
 
 
 def test_direct_v2_task_auth_uses_the_rotated_node_private_credential() -> None:
-    worker = Path(
-        "apps/blender_worker/src/gpu_control_blender_worker/main.py"
-    ).read_text(encoding="utf-8")
-    assert 'persistent_auth_source = Path(environment["CODEX_HOME"]) / "auth.json"' in worker
-    assert '"CODEX_AUTH_SOURCE": str(persistent_auth_source)' in worker
-
-
-def test_public_create_contract_selects_v302_without_changing_route() -> None:
-    api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text(
+    worker = Path("apps/blender_worker/src/gpu_control_blender_worker/main.py").read_text(
         encoding="utf-8"
     )
+    assert 'persistent_auth_source = Path(environment["CODEX_HOME"]) / "auth.json"' in worker
+    assert '"CODEX_AUTH_SOURCE": str(persistent_auth_source)' in worker
+    assert '"CODEX_AUTH_WRITEBACK_DESTINATION": str(persistent_auth_source)' in worker
+
+
+def test_public_create_contract_selects_v303_without_changing_route() -> None:
+    api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text(encoding="utf-8")
     assert '@app.post("/api/v1/assets/retopology/process")' in api
     assert '"schema_version": "retopology_input.direct-v2"' in api
     assert '"engine_contract": "retopology-direct-v2"' in api

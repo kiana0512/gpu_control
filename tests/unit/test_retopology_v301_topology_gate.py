@@ -3,27 +3,26 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
-from packages.gpu_control_core.assets import _retopology_v3_topology_evidence_valid
+from packages.gpu_control_core.assets import (
+    _retopology_v3_topology_evidence_valid,
+    retopology_auto_align_v3_evidence_failures,
+    retopology_auto_align_v3_evidence_valid,
+)
 
 GUARD_PATH = Path(
-    "resources/retopology-direct-v2/blender-auto-retopo-align/scripts/"
-    "guard_shape_authority_plan.py"
+    "resources/retopology-direct-v2/blender-auto-retopo-align/scripts/guard_shape_authority_plan.py"
 )
 
 
 def load_guard_module():
-    specification = importlib.util.spec_from_file_location(
-        "retopology_v302_guard", GUARD_PATH
-    )
+    specification = importlib.util.spec_from_file_location("retopology_v302_guard", GUARD_PATH)
     assert specification is not None and specification.loader is not None
     module = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(module)
     return module
 
 
-def direct_reduction_plan(
-    manifest_path: Path, *, use_normalized_work: bool = False
-) -> dict:
+def direct_reduction_plan(manifest_path: Path, *, use_normalized_work: bool = False) -> dict:
     plan = {
         "output_behavior": "save_and_stop",
         "user_inspects_result": True,
@@ -86,9 +85,7 @@ def direct_reduction_plan(
         },
     }
     if use_normalized_work:
-        plan["source_identity"]["normalized_work_object"] = (
-            "SOURCE_HIGH_NORMALIZED_WORK"
-        )
+        plan["source_identity"]["normalized_work_object"] = "SOURCE_HIGH_NORMALIZED_WORK"
     return plan
 
 
@@ -177,9 +174,7 @@ def test_exact_weld_work_copy_allows_safe_fragmented_source_reduction(
         normalized_work=True,
     )
 
-    errors, warnings = module.guard(
-        direct_reduction_plan(manifest, use_normalized_work=True)
-    )
+    errors, warnings = module.guard(direct_reduction_plan(manifest, use_normalized_work=True))
 
     assert warnings == []
     assert errors == []
@@ -229,3 +224,72 @@ def test_asset_api_rejects_any_open_boundary_in_delivery_evidence() -> None:
     invalid["fbx_readback"]["pairs"][0]["low"]["boundary_edges"] = 1
 
     assert _retopology_v3_topology_evidence_valid(invalid) is False
+
+
+def alignment_evidence() -> dict:
+    structure = {
+        "object_count": 1,
+        "meshes": [
+            {
+                "vertices": 80,
+                "polygons": 100,
+                "loops": 300,
+                "polygon_sizes": [3] * 100,
+                "uv_layer_count": 1,
+                "material_slot_count": 1,
+            }
+        ],
+    }
+    return {
+        "schema": "li3d-auto-retopo-align-v1",
+        "pass": True,
+        "transform_only_alignment": True,
+        "alignment_mode": "source_matrix_restore",
+        "coordinate_authority": "high",
+        "icp_used": False,
+        "topology_or_uv_edited": False,
+        "low_display": "opaque_yellow",
+        "topology_uv_unchanged": True,
+        "topology_validation": topology_evidence(),
+        "pairs": [
+            {
+                "matrix_error_after": 0.0,
+                "center_error_ratio": 0.0,
+                "size_error_ratio": 0.05,
+                "high_determinant_sign": 1,
+                "low_determinant_sign_after": 1,
+                "delivered_high_name": "ALIGN_HIGH_000",
+                "delivered_low_name": "ALIGN_LOW_000",
+            }
+        ],
+        "fbx_readback": {
+            "pass": True,
+            "high_center_size_error_ratio": 0.0,
+            "low_center_size_error_ratio": 0.0,
+            "tolerance": 1e-5,
+            "low_structure_match": True,
+            "expected_low_structure": structure,
+            "actual_low_structure": structure,
+        },
+    }
+
+
+def test_alignment_evidence_reports_no_failures_for_valid_contract() -> None:
+    evidence = alignment_evidence()
+
+    assert retopology_auto_align_v3_evidence_failures(evidence) == []
+    assert retopology_auto_align_v3_evidence_valid(evidence) is True
+
+
+def test_alignment_evidence_reports_every_actionable_failure() -> None:
+    evidence = alignment_evidence()
+    evidence["pairs"][0]["center_error_ratio"] = 0.02
+    evidence["fbx_readback"]["low_center_size_error_ratio"] = 0.03
+    evidence["topology_validation"]["fbx_readback"]["pairs"][0]["low"]["boundary_edges"] = 1
+
+    failures = retopology_auto_align_v3_evidence_failures(evidence)
+
+    assert "PAIR_0_CENTER_ERROR" in failures
+    assert "FBX_LOW_BOUNDS_MISMATCH" in failures
+    assert "TOPOLOGY_VALIDATION_INVALID" in failures
+    assert retopology_auto_align_v3_evidence_valid(evidence) is False

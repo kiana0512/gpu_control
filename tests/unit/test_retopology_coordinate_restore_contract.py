@@ -307,7 +307,7 @@ def test_direct_v2_delivery_requires_bake_alignment_evidence() -> None:
     assert 'manifest.get("schema_version") != "retopology_direct_delivery.v7"' in api
     assert 'staged_by_kind["blend"].filename = f"{stem}_GAME_LOW.blend"' in api
     assert 'staged_by_kind["fbx"].filename = f"{stem}_GAME_LOW.fbx"' in api
-    assert "retopology_auto_align_v3_evidence_valid" in worker
+    assert "retopology_auto_align_v3_evidence_failures" in worker
     assert "retopology_auto_align_v3_evidence_valid" in api
     run_direct = worker[worker.index("async def run_retopology_v6(") : worker.index("async def start_blender(")]
     assert "RETOPOLOGY_BAKE_POSTPROCESS" not in run_direct

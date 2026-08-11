@@ -137,7 +137,7 @@ SUBSTANCE_BAKE_COMMAND_COUNTS = {
     "li3d-pbr-full-v2": 10,
 }
 CODEX_REQUIRED_JOB_TYPES = frozenset({"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"})
-RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-auto-retopo-align-v3.0.2"
+RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-auto-retopo-align-v3.0.3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1077,6 +1077,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "RETOPOLOGY_COORDINATE_MISMATCH": (
                 "自动拓扑低模未通过高模原坐标或 FBX 回读门禁；系统未发布错位结果，"
                 "也不会自动再次建模，请检查本次任务诊断。"
+            ),
+            "RETOPOLOGY_OUTPUT_MISSING": (
+                "自动拓扑 Agent 已结束，但没有按交付契约生成有效低模 Blend；"
+                "源模型未被修改，服务端已保留结构化诊断。"
+            ),
+            "CODEX_AUTH_FAILED": (
+                "自动拓扑节点的 Codex 认证会话不可用；系统未发布任何结果，"
+                "节点需在认证探针恢复后再接收拓扑任务。"
             ),
             "BLENDER_EXECUTION_FAILED": (
                 "Blender 资产处理执行失败；系统已保留任务诊断，请联系服务端管理员处理后重试。"
@@ -2090,8 +2098,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raw_metadata = None
         raw_algorithm = (
             raw_metadata.get("options", {}).get("algorithm", "legacy_pbr")
-            if isinstance(raw_metadata, dict)
-            and isinstance(raw_metadata.get("options", {}), dict)
+            if isinstance(raw_metadata, dict) and isinstance(raw_metadata.get("options", {}), dict)
             else "legacy_pbr"
         )
         if raw_algorithm not in {"legacy_pbr", "mof_low_seam"}:
@@ -2796,9 +2803,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             claim_query = claim_query.where(
                 or_(
                     AssetJob.job_type != "UV_PROCESS_V2",
-                    func.coalesce(
-                        AssetJob.options["algorithm"].as_string(), "legacy_pbr"
-                    ).in_(body.uv_algorithms),
+                    func.coalesce(AssetJob.options["algorithm"].as_string(), "legacy_pbr").in_(
+                        body.uv_algorithms
+                    ),
                 )
             )
             if worker.skill_version == RETOPOLOGY_V6_SKILL_VERSION:
@@ -3875,9 +3882,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 alignment_report = json.loads(
                     (staging / "bake_alignment_report.json").read_text("utf-8")
                 )
-                source_manifest = json.loads(
-                    (staging / "source_manifest.json").read_text("utf-8")
-                )
+                source_manifest = json.loads((staging / "source_manifest.json").read_text("utf-8"))
             except (OSError, ValueError) as exc:
                 raise HTTPException(
                     422, detail={"code": "RETOPOLOGY_DIRECT_V2_JSON_INVALID"}
@@ -3911,10 +3916,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             alignment_pairs = alignment_report.get("pairs")
             bake_files = result.get("bake_files")
             if (
-                snapshot.options.get("package_version")
-                != RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION
-                or snapshot.options.get("package_sha256")
-                != RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
+                snapshot.options.get("package_version") != RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION
+                or snapshot.options.get("package_sha256") != RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
                 or manifest.get("schema_version") != "retopology_direct_delivery.v7"
                 or manifest.get("job_id") != snapshot.id
                 or manifest.get("engine_contract") != "retopology-direct-v2"
@@ -3926,8 +3929,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or manifest.get("delivery_blend_sha256") != staged_by_kind["blend"].sha256
                 or manifest.get("delivery_blend_size_bytes") != staged_by_kind["blend"].size_bytes
                 or manifest.get("bake_high_fbx_sha256") != staged_by_kind["high_fbx"].sha256
-                or manifest.get("bake_high_fbx_size_bytes")
-                != staged_by_kind["high_fbx"].size_bytes
+                or manifest.get("bake_high_fbx_size_bytes") != staged_by_kind["high_fbx"].size_bytes
                 or manifest.get("delivery_fbx_sha256") != staged_by_kind["fbx"].sha256
                 or manifest.get("delivery_fbx_size_bytes") != staged_by_kind["fbx"].size_bytes
                 or manifest.get("generation_report_sha256")
@@ -3947,8 +3949,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or not isinstance(alignment_pairs, list)
                 or len(alignment_pairs) != len(generation["assets"])
                 or not isinstance(bake_files, dict)
-                or bake_files.get("bake_alignment.blend")
-                != staged_by_kind["blend"].sha256
+                or bake_files.get("bake_alignment.blend") != staged_by_kind["blend"].sha256
                 or bake_files.get("bake_high.fbx") != staged_by_kind["high_fbx"].sha256
                 or bake_files.get("bake_low.fbx") != staged_by_kind["fbx"].sha256
                 or bake_files.get("bake_alignment_report.json")
@@ -3975,7 +3976,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.status = "SUCCEEDED"
             job.progress = 100
             job.stage = "SUCCEEDED"
-            job.stage_message = "v3 自动拓扑完成；已恢复高模原坐标并通过高低模 FBX 回读，等待用户检查"
+            job.stage_message = (
+                "v3 自动拓扑完成；已恢复高模原坐标并通过高低模 FBX 回读，等待用户检查"
+            )
             job.estimated_remaining_seconds = 0
             job.last_progress_at = datetime.now(UTC)
             job.finished_at = job.last_progress_at

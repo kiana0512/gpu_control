@@ -99,7 +99,11 @@ def render_prompt(template: str, values: dict[str, str]) -> str:
 def load_codex_args(job_dir: Path) -> list[str]:
     raw = os.environ.get("CODEX_EXEC_ARGS_JSON")
     values = json.loads(raw) if raw else DEFAULT_CODEX_ARGS
-    if not isinstance(values, list) or not values or not all(isinstance(item, str) for item in values):
+    if (
+        not isinstance(values, list)
+        or not values
+        or not all(isinstance(item, str) for item in values)
+    ):
         raise RuntimeError("CODEX_EXEC_ARGS_JSON must be a non-empty JSON string array")
     return [item.replace("{job_dir}", str(job_dir)) for item in values]
 
@@ -116,10 +120,144 @@ def valid_blend(path: Path) -> bool:
     )
 
 
-def run_logged(command: list[str], cwd: Path, stdout_path: Path, stderr_path: Path, timeout: int) -> tuple[int | None, bool]:
-    with stdout_path.open("w", encoding="utf-8", newline="\n") as stdout, stderr_path.open(
-        "w", encoding="utf-8", newline="\n"
-    ) as stderr:
+def _read_json_object(path: Path) -> dict | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def recover_declared_output_blend(job_dir: Path, generated_blend: Path) -> str | None:
+    """Recover a valid agent Blend saved under one approved legacy alias.
+
+    The model is still required to create the geometry and generation report.
+    This adapter only corrects an output filename mismatch inside the job's
+    artifact directory; it never accepts the source/work Blend or searches
+    outside the isolated job.
+    """
+
+    if valid_blend(generated_blend):
+        return None
+    report = _read_json_object(job_dir / "generation_report.json")
+    if report is None or report.get("status") != "generated_for_user_inspection":
+        return None
+    artifacts = (job_dir / "artifacts").resolve()
+    candidates: list[Path] = []
+    declared = report.get("output_blend")
+    if isinstance(declared, str) and declared:
+        declared_path = Path(declared)
+        candidates.append(declared_path if declared_path.is_absolute() else job_dir / declared_path)
+    candidates.append(artifacts / "result.blend")
+    candidates.extend(sorted(artifacts.glob("*.blend")))
+
+    valid_candidates: dict[Path, Path] = {}
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(artifacts)
+        except (OSError, ValueError):
+            continue
+        if resolved == generated_blend.resolve() or resolved.parent != artifacts:
+            continue
+        if valid_blend(resolved):
+            valid_candidates[resolved] = resolved
+    if len(valid_candidates) != 1:
+        return None
+    recovered = next(iter(valid_candidates))
+    temporary = generated_blend.with_name(f".{generated_blend.name}.recovered")
+    shutil.copy2(recovered, temporary)
+    temporary.replace(generated_blend)
+    if not valid_blend(generated_blend):
+        generated_blend.unlink(missing_ok=True)
+        return None
+    relative = recovered.relative_to(job_dir.resolve()).as_posix()
+    atomic_write(
+        job_dir / "output_contract_recovery.json",
+        json.dumps(
+            {
+                "schema": "li3d-retopology-output-recovery-v1",
+                "recovered_from": relative,
+                "recovered_to": generated_blend.relative_to(job_dir).as_posix(),
+                "sha256": sha256(generated_blend),
+                "geometry_modified": False,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+    )
+    return relative
+
+
+def codex_failure_diagnostic(job_dir: Path) -> dict[str, object]:
+    """Return bounded, secret-free execution evidence for a failed adapter."""
+
+    error_category = "OUTPUT_CONTRACT_MISSING"
+    last_event_type: str | None = None
+    events_path = job_dir / "agent_events.jsonl"
+    try:
+        for line in events_path.read_text(encoding="utf-8").splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict):
+                event_type = event.get("type")
+                if isinstance(event_type, str):
+                    last_event_type = event_type
+                message = event.get("message")
+                if not isinstance(message, str):
+                    nested = event.get("error")
+                    message = nested.get("message") if isinstance(nested, dict) else ""
+                diagnostic = message.lower() if isinstance(message, str) else ""
+                if "refresh token" in diagnostic or "token_expired" in diagnostic:
+                    error_category = "CODEX_AUTH_EXPIRED"
+                elif "401 unauthorized" in diagnostic:
+                    error_category = "CODEX_AUTH_UNAUTHORIZED"
+                elif "rate limit" in diagnostic or "429" in diagnostic:
+                    error_category = "CODEX_RATE_LIMITED"
+    except OSError:
+        pass
+    try:
+        stderr = (
+            (job_dir / "agent_stderr.log")
+            .read_text(encoding="utf-8", errors="replace")[-16000:]
+            .lower()
+        )
+    except OSError:
+        stderr = ""
+    if "refresh token" in stderr or "token_expired" in stderr:
+        error_category = "CODEX_AUTH_EXPIRED"
+    elif "401 unauthorized" in stderr:
+        error_category = "CODEX_AUTH_UNAUTHORIZED"
+    elif "rate limit" in stderr or " 429" in stderr:
+        error_category = "CODEX_RATE_LIMITED"
+
+    files: list[dict[str, object]] = []
+    for path in sorted(job_dir.rglob("*")):
+        if not path.is_file() or "codex-home" in path.parts:
+            continue
+        relative = path.relative_to(job_dir).as_posix()
+        if relative.startswith("input/") or relative.startswith("work/"):
+            continue
+        files.append({"path": relative, "size_bytes": path.stat().st_size})
+        if len(files) >= 80:
+            break
+    return {
+        "error_category": error_category,
+        "last_event_type": last_event_type,
+        "files": files,
+    }
+
+
+def run_logged(
+    command: list[str], cwd: Path, stdout_path: Path, stderr_path: Path, timeout: int
+) -> tuple[int | None, bool]:
+    with (
+        stdout_path.open("w", encoding="utf-8", newline="\n") as stdout,
+        stderr_path.open("w", encoding="utf-8", newline="\n") as stderr,
+    ):
         try:
             completed = subprocess.run(
                 command,
@@ -213,7 +351,9 @@ def validate_generation_report(path: Path, requested_highs: list[str]) -> dict:
         if item.get("coordinate_space") != "source_high_local":
             raise RuntimeError("RETOPOLOGY_COORDINATE_MISMATCH: low is not in source_high_local")
         if item.get("coordinate_authority") != "high_object_matrix_world":
-            raise RuntimeError("RETOPOLOGY_COORDINATE_MISMATCH: high matrix is not coordinate authority")
+            raise RuntimeError(
+                "RETOPOLOGY_COORDINATE_MISMATCH: high matrix is not coordinate authority"
+            )
         if item.get("presentation_offset_applied") is not False:
             raise RuntimeError("RETOPOLOGY_COORDINATE_MISMATCH: presentation offset is forbidden")
     return report
@@ -235,14 +375,26 @@ def validate_alignment_report(path: Path) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run one retopology job and restore source coordinates")
+    parser = argparse.ArgumentParser(
+        description="Run one retopology job and restore source coordinates"
+    )
     parser.add_argument("--input", type=Path, required=True, help="source .fbx or .blend")
     parser.add_argument("--output", type=Path, required=True, help="legacy aligned result .blend")
-    parser.add_argument("--high", action="append", default=[], help="Blend high object name; repeatable")
+    parser.add_argument(
+        "--high", action="append", default=[], help="Blend high object name; repeatable"
+    )
     parser.add_argument("--job-root", type=Path, default=Path(os.environ.get("JOB_ROOT", "jobs")))
     parser.add_argument("--job-id", default=None)
-    parser.add_argument("--timeout-seconds", type=int, default=int(os.environ.get("RETOPOLOGY_TIMEOUT_SECONDS", "7200")))
-    parser.add_argument("--finalize-timeout-seconds", type=int, default=int(os.environ.get("RETOPOLOGY_FINALIZE_TIMEOUT_SECONDS", "1800")))
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=int(os.environ.get("RETOPOLOGY_TIMEOUT_SECONDS", "7200")),
+    )
+    parser.add_argument(
+        "--finalize-timeout-seconds",
+        type=int,
+        default=int(os.environ.get("RETOPOLOGY_FINALIZE_TIMEOUT_SECONDS", "1800")),
+    )
     parser.add_argument("--package-root", type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args()
 
@@ -255,14 +407,19 @@ def main() -> int:
         raise SystemExit("output must use the .blend suffix")
     sidecar_destination = destination.parent / f"{destination.stem}.bake"
     if destination.exists() or sidecar_destination.exists():
-        raise SystemExit(f"refusing to overwrite existing output: {destination} or {sidecar_destination}")
+        raise SystemExit(
+            f"refusing to overwrite existing output: {destination} or {sidecar_destination}"
+        )
 
     package_root = args.package_root.resolve()
     bundled_skill = package_root / SKILL_ID
     prompt_template = package_root / "server" / "agent_prompt.md"
     source_inventory = skill_inventory(bundled_skill)
     if set(source_inventory) != EXPECTED_SKILL_FILES:
-        raise SystemExit("server package does not contain the exact merged skill: " + json.dumps(sorted(source_inventory), ensure_ascii=False))
+        raise SystemExit(
+            "server package does not contain the exact merged skill: "
+            + json.dumps(sorted(source_inventory), ensure_ascii=False)
+        )
 
     job_id = args.job_id or f"retopo-align-{int(time.time())}-{uuid.uuid4().hex[:8]}"
     job_dir = (args.job_root.resolve() / job_id).resolve()
@@ -276,17 +433,27 @@ def main() -> int:
     result_path = job_dir / "result.json"
     codex_home = job_dir / "codex-home"
     installed_skill = codex_home / "skills" / SKILL_ID
-    for directory in (input_copy.parent, working_blend.parent, generated_blend.parent, job_dir / "plans", installed_skill.parent):
+    for directory in (
+        input_copy.parent,
+        working_blend.parent,
+        generated_blend.parent,
+        job_dir / "plans",
+        installed_skill.parent,
+    ):
         directory.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, input_copy)
-    shutil.copytree(bundled_skill, installed_skill, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copytree(
+        bundled_skill, installed_skill, ignore=shutil.ignore_patterns("__pycache__", "*.pyc")
+    )
     if skill_inventory(installed_skill) != source_inventory:
         raise SystemExit("job-local skill installation failed hash verification")
 
     blender = os.environ.get("BLENDER_EXECUTABLE", "/opt/blender/blender")
     codex = os.environ.get("CODEX_BIN", "/usr/local/bin/codex")
     if input_suffix == ".fbx":
-        prepared, preparation_error = prepare_fbx(blender, installed_skill, input_copy, working_blend, source_manifest, job_dir)
+        prepared, preparation_error = prepare_fbx(
+            blender, installed_skill, input_copy, working_blend, source_manifest, job_dir
+        )
         if not prepared:
             write_result(
                 result_path,
@@ -314,7 +481,9 @@ def main() -> int:
             "WORKING_BLEND": str(working_blend),
             "SOURCE_MANIFEST": manifest_value,
             "OUTPUT_BLEND": str(generated_blend),
-            "HIGH_OBJECTS": json.dumps(requested_highs or ["ALL_HIGH_MESH_OBJECTS"], ensure_ascii=False),
+            "HIGH_OBJECTS": json.dumps(
+                requested_highs or ["ALL_HIGH_MESH_OBJECTS"], ensure_ascii=False
+            ),
             "BLENDER_EXECUTABLE": blender,
             "JOB_DIR": str(job_dir),
         },
@@ -332,9 +501,10 @@ def main() -> int:
         }
     )
     command = [codex, *load_codex_args(job_dir)]
-    with (job_dir / "agent_events.jsonl").open("w", encoding="utf-8", newline="\n") as events, (
-        job_dir / "agent_stderr.log"
-    ).open("w", encoding="utf-8", newline="\n") as errors:
+    with (
+        (job_dir / "agent_events.jsonl").open("w", encoding="utf-8", newline="\n") as events,
+        (job_dir / "agent_stderr.log").open("w", encoding="utf-8", newline="\n") as errors,
+    ):
         try:
             completed = subprocess.run(
                 command,
@@ -350,22 +520,55 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             completed = None
     if completed is None:
-        write_result(result_path, {"job_id": job_id, "status": "failed", "error": "codex_timeout", "automatic_retry": False})
-        return 124
-    if completed.returncode != 0:
         write_result(
             result_path,
             {
                 "job_id": job_id,
                 "status": "failed",
-                "error": "codex_runner_failed",
+                "error": "codex_timeout",
+                "automatic_retry": False,
+            },
+        )
+        return 124
+    if completed.returncode != 0:
+        diagnostic = codex_failure_diagnostic(job_dir)
+        error = (
+            "CODEX_AUTH_FAILED"
+            if str(diagnostic.get("error_category", "")).startswith("CODEX_AUTH_")
+            else "codex_runner_failed"
+        )
+        write_result(
+            result_path,
+            {
+                "job_id": job_id,
+                "status": "failed",
+                "error": error,
                 "returncode": completed.returncode,
+                "diagnostic": diagnostic,
                 "automatic_retry": False,
             },
         )
         return completed.returncode
+    recovered_from = recover_declared_output_blend(job_dir, generated_blend)
     if not valid_blend(generated_blend):
-        raise SystemExit("Codex completed but did not create a valid output Blend")
+        diagnostic = codex_failure_diagnostic(job_dir)
+        error = (
+            "CODEX_AUTH_FAILED"
+            if str(diagnostic.get("error_category", "")).startswith("CODEX_AUTH_")
+            else "RETOPOLOGY_OUTPUT_MISSING"
+        )
+        write_result(
+            result_path,
+            {
+                "job_id": job_id,
+                "status": "failed",
+                "error": error,
+                "detail": "Codex completed but did not create a valid output Blend",
+                "diagnostic": diagnostic,
+                "automatic_retry": False,
+            },
+        )
+        return 4
 
     generation_report_path = job_dir / "generation_report.json"
     try:
@@ -426,7 +629,9 @@ def main() -> int:
                 f"coordinate finalizer exited {finalize_code}: {finalize_diagnostic}"
             )
         alignment_report = validate_alignment_report(alignment_report_path)
-        missing = sorted(name for name in REQUIRED_BAKE_OUTPUTS if not (aligned_dir / name).is_file())
+        missing = sorted(
+            name for name in REQUIRED_BAKE_OUTPUTS if not (aligned_dir / name).is_file()
+        )
         if missing:
             raise RuntimeError("missing bake outputs: " + ",".join(missing))
     except (RuntimeError, OSError, json.JSONDecodeError) as error:
@@ -454,7 +659,9 @@ def main() -> int:
         raise SystemExit("uploaded source copy hash mismatch")
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary_output = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-    temporary_sidecar = sidecar_destination.with_name(f".{sidecar_destination.name}.{uuid.uuid4().hex}.tmp")
+    temporary_sidecar = sidecar_destination.with_name(
+        f".{sidecar_destination.name}.{uuid.uuid4().hex}.tmp"
+    )
     shutil.copy2(aligned_dir / "bake_alignment.blend", temporary_output)
     shutil.copytree(aligned_dir, temporary_sidecar)
     temporary_output.replace(destination)
@@ -485,6 +692,8 @@ def main() -> int:
         "automatic_post_generation_review": False,
         "automatic_retry": False,
     }
+    if recovered_from is not None:
+        result["output_contract_recovered_from"] = recovered_from
     write_result(result_path, result)
     return 0
 

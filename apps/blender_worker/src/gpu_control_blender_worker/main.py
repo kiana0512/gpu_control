@@ -26,7 +26,7 @@ from gpu_control_blender_worker.bootstrap import (
 from packages.gpu_control_core.assets import (
     RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
     RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION,
-    retopology_auto_align_v3_evidence_valid,
+    retopology_auto_align_v3_evidence_failures,
     retopology_bake_visual_qa_evidence_valid,
 )
 from packages.gpu_control_core.retopology_v6 import (
@@ -50,9 +50,7 @@ DIRECT_V2_ESTIMATED_STAGE_SECONDS = 720
 
 UV_UNWRAP_SCRIPT_SHA256 = "ebfa3546d61c548a11c0e7561c75f93b6ef93308d8da9f27788bf35643303758"
 UV_QA_SCRIPT_SHA256 = "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
-ALIGN_BAKE_MODELS_SCRIPT_SHA256 = (
-    "ea0588e81fa50772080bc19ff096ee29cb5b6dbc67cdb303b9d32cdbf6a99a78"
-)
+ALIGN_BAKE_MODELS_SCRIPT_SHA256 = "ea0588e81fa50772080bc19ff096ee29cb5b6dbc67cdb303b9d32cdbf6a99a78"
 UV_QA_ADAPTER_SHA256 = "8e6bc5dc20a49fac5be2e92accd518d9da9fa629e878f51dc151baa80ad3359a"
 UV_FBX_UNITS_SCRIPT_SHA256 = "67e98dc5db415a83736ee154856b2c3b54f057e69440d1edbc76e43873afa24e"
 RETOPOLOGY_BAKE_POSTPROCESS_SCRIPT_SHA256 = (
@@ -90,9 +88,7 @@ class WorkerSettings(BaseSettings):
     uv_skill_root: Path = Path("/opt/codex/skills/blender-pbr-uv")
     alignment_skill_root: Path = Path("/opt/codex/skills/blender-align-bake-models")
     uv_qa_adapter_script: Path = Path("/app/packages/asset_processing/blender_uv_qa_adapter.py")
-    uv_fbx_units_script: Path = Path(
-        "/app/packages/asset_processing/blender_uv_fbx_units.py"
-    )
+    uv_fbx_units_script: Path = Path("/app/packages/asset_processing/blender_uv_fbx_units.py")
     retopology_skill_root: Path = Path("/opt/codex/skills/blender-retopology-compare-iterate")
     retopology_v6_root: Path = Path("/opt/li3d/retopology-v6")
     retopology_direct_v2_root: Path = Path("/opt/li3d/retopology-direct-v2")
@@ -1790,6 +1786,61 @@ Fresh-scene FBX reimport report: {validation_report_path}
     return payload, result_path, events_path
 
 
+def retopology_v3_delivery_evidence_failures(
+    result: dict[str, Any],
+    generation: dict[str, Any],
+    bake_files: object,
+    expected_bake_files: dict[str, str],
+    alignment_report: object,
+) -> list[str]:
+    """Return stable, actionable codes for every rejected v3 artifact."""
+
+    failures: list[str] = []
+    expected_result_fields = {
+        "skill_id": "blender-auto-retopo-align",
+        "bake_alignment_status": "aligned",
+        "coordinate_authority": "high_object_matrix_world",
+        "alignment_mode": "source_matrix_restore",
+        "topology_uv_preserved": True,
+        "fbx_readback_passed": True,
+        "low_display": "opaque_yellow",
+    }
+    for field, expected in expected_result_fields.items():
+        if result.get(field) != expected:
+            failures.append(f"RESULT_{field.upper()}_INVALID")
+
+    generation_assets = generation.get("assets")
+    if result.get("assets") != generation_assets:
+        failures.append("RESULT_GENERATION_ASSET_MISMATCH")
+    if not isinstance(generation_assets, list) or not generation_assets:
+        failures.append("GENERATION_ASSETS_MISSING")
+        generation_assets = []
+    for index, item in enumerate(generation_assets):
+        if not isinstance(item, dict):
+            failures.append(f"GENERATION_ASSET_{index}_NOT_OBJECT")
+            continue
+        if item.get("coordinate_space") != "source_high_local":
+            failures.append(f"GENERATION_ASSET_{index}_COORDINATE_SPACE_INVALID")
+        if item.get("coordinate_authority") != "high_object_matrix_world":
+            failures.append(f"GENERATION_ASSET_{index}_COORDINATE_AUTHORITY_INVALID")
+        if item.get("presentation_offset_applied") is not False:
+            failures.append(f"GENERATION_ASSET_{index}_PRESENTATION_OFFSET_PRESENT")
+
+    if not isinstance(bake_files, dict):
+        failures.append("RESULT_BAKE_FILES_MISSING")
+    else:
+        for filename, expected_digest in expected_bake_files.items():
+            if bake_files.get(filename) != expected_digest:
+                failures.append(f"BAKE_DIGEST_MISMATCH:{filename}")
+
+    alignment_failures = retopology_auto_align_v3_evidence_failures(alignment_report)
+    failures.extend(alignment_failures)
+    reported_pairs = alignment_report.get("pairs") if isinstance(alignment_report, dict) else None
+    if not isinstance(reported_pairs, list) or len(reported_pairs) != len(generation_assets):
+        failures.append("ALIGNMENT_PAIR_COUNT_MISMATCH")
+    return failures
+
+
 async def run_retopology_v6(
     client: httpx.AsyncClient,
     settings: WorkerSettings,
@@ -1828,7 +1879,7 @@ async def run_retopology_v6(
     output_dir.mkdir(parents=True, exist_ok=False)
 
     direct_source_path = project_path
-    # The approved v3.0.2 package owns FBX preparation and its immutable
+    # The approved v3.0.3 package owns FBX preparation and its immutable
     # SOURCE_HIGH manifest. Other legacy upload formats retain the existing
     # GPU Control normalization path so the public single-file API stays
     # backward compatible.
@@ -1901,6 +1952,7 @@ async def run_retopology_v6(
             "CODEX_BIN": "/app/packages/asset_processing/codex_job_launcher.py",
             "GPU_CONTROL_REAL_CODEX_BIN": settings.codex_binary,
             "CODEX_AUTH_SOURCE": str(persistent_auth_source),
+            "CODEX_AUTH_WRITEBACK_DESTINATION": str(persistent_auth_source),
             "CODEX_EXEC_ARGS_JSON": json.dumps(
                 [
                     "exec",
@@ -1933,9 +1985,7 @@ async def run_retopology_v6(
             8,
             98,
             "RETOPOLOGY_DIRECT_V2_BUILD",
-            (
-                "v3 正在一次生成低模并恢复高模原坐标；随后写出高低模 FBX 与回读证据"
-            ),
+            ("v3 正在一次生成低模并恢复高模原坐标；随后写出高低模 FBX 与回读证据"),
             DIRECT_V2_ESTIMATED_STAGE_SECONDS,
             hard_timeout_seconds=settings.codex_job_timeout_seconds + 60,
         )
@@ -1996,35 +2046,21 @@ async def run_retopology_v6(
     bake_low_fbx = output_dir / "bake_low.fbx"
     alignment_report_path = output_dir / "bake_alignment_report.json"
     alignment_report = json.loads(alignment_report_path.read_text("utf-8"))
-    reported_pairs = alignment_report.get("pairs")
     bake_files = result.get("bake_files")
-    expected_bake_files = {
-        path.name: file_sha256(path) for path in required_sidecars.values()
-    }
-    generation_coordinate_contract = all(
-        isinstance(item, dict)
-        and item.get("coordinate_space") == "source_high_local"
-        and item.get("coordinate_authority") == "high_object_matrix_world"
-        and item.get("presentation_offset_applied") is False
-        for item in generation["assets"]
+    expected_bake_files = {path.name: file_sha256(path) for path in required_sidecars.values()}
+    evidence_failures = retopology_v3_delivery_evidence_failures(
+        result,
+        generation,
+        bake_files,
+        expected_bake_files,
+        alignment_report,
     )
-    if (
-        result.get("skill_id") != "blender-auto-retopo-align"
-        or result.get("bake_alignment_status") != "aligned"
-        or result.get("coordinate_authority") != "high_object_matrix_world"
-        or result.get("alignment_mode") != "source_matrix_restore"
-        or result.get("topology_uv_preserved") is not True
-        or result.get("fbx_readback_passed") is not True
-        or result.get("low_display") != "opaque_yellow"
-        or result.get("assets") != generation["assets"]
-        or not generation_coordinate_contract
-        or not isinstance(bake_files, dict)
-        or any(bake_files.get(name) != digest for name, digest in expected_bake_files.items())
-        or not retopology_auto_align_v3_evidence_valid(alignment_report)
-        or not isinstance(reported_pairs, list)
-        or len(reported_pairs) != len(generation["assets"])
-    ):
-        raise RuntimeError("Retopology v3 source-coordinate evidence gate failed")
+    if evidence_failures:
+        failure_payload = json.dumps(evidence_failures, ensure_ascii=False, separators=(",", ":"))
+        raise RuntimeError(
+            "RETOPOLOGY_COORDINATE_MISMATCH: source-coordinate evidence gate failed: "
+            + failure_payload[:3000]
+        )
 
     source_manifest_path = output_dir / "source_manifest.json"
     package_source_manifest = task_root / "source-manifest.json"
@@ -2429,9 +2465,7 @@ async def run_uv_skill(
         if not isinstance(qa_payload, dict):
             raise RuntimeError(f"UV {label} QA report is not a JSON object")
         qa_payload["algorithm"] = algorithm
-        qa_path.write_text(
-            json.dumps(qa_payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        qa_path.write_text(json.dumps(qa_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         qa_payloads[label] = qa_payload
     unit_report_path.unlink()
     if job_type == "UV_PROCESS_V2":
@@ -3071,6 +3105,18 @@ async def execute_job(
         ):
             error_code = "UV_QA_FAILED"
         elif job.get("job_type") == "RETOPOLOGY_PROCESS_V2" and (
+            "CODEX_AUTH_FAILED" in diagnostic
+            or "CODEX_AUTH_EXPIRED" in diagnostic
+            or "CODEX_AUTH_UNAUTHORIZED" in diagnostic
+        ):
+            error_code = "CODEX_AUTH_FAILED"
+        elif job.get("job_type") == "RETOPOLOGY_PROCESS_V2" and (
+            "RETOPOLOGY_OUTPUT_MISSING" in diagnostic
+            or "OUTPUT_CONTRACT_MISSING" in diagnostic
+            or "did not create the output Blend" in diagnostic
+        ):
+            error_code = "RETOPOLOGY_OUTPUT_MISSING"
+        elif job.get("job_type") == "RETOPOLOGY_PROCESS_V2" and (
             "RETOPOLOGY_COORDINATE_MISMATCH" in diagnostic
             or "source-coordinate evidence gate failed" in diagnostic
         ):
@@ -3099,7 +3145,12 @@ async def execute_job(
                     "code": error_code,
                     "message": diagnostic,
                     "retryable": error_code
-                    not in {"RETOPOLOGY_QA_FAILED", "RETOPOLOGY_COORDINATE_MISMATCH"},
+                    not in {
+                        "CODEX_AUTH_FAILED",
+                        "RETOPOLOGY_OUTPUT_MISSING",
+                        "RETOPOLOGY_QA_FAILED",
+                        "RETOPOLOGY_COORDINATE_MISMATCH",
+                    },
                 },
             )
             response.raise_for_status()

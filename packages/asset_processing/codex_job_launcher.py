@@ -33,6 +33,76 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _auth_identity(auth: dict[str, object]) -> tuple[object, object]:
+    """Return the stable account identity without exposing token material."""
+
+    tokens = auth.get("tokens")
+    account_id = tokens.get("account_id") if isinstance(tokens, dict) else None
+    return auth.get("auth_mode"), account_id
+
+
+def persist_refreshed_auth(
+    auth_source: Path,
+    task_auth: Path,
+    source_sha256: str,
+    destination: Path | None,
+) -> str:
+    """Persist a CLI-rotated credential back to the node-private runtime.
+
+    Direct V2 deliberately gives every task an isolated ``CODEX_HOME``.  The
+    source credential is the node-private, writable runtime credential, so a
+    successful OAuth refresh must be copied back before the task directory is
+    removed.  A compare-before-replace guard prevents an operator's newer
+    credential from being overwritten while a task is running.
+    """
+
+    if destination is None:
+        return "disabled"
+    source = auth_source.resolve()
+    target = destination.resolve()
+    if source != target:
+        return "destination_mismatch"
+    if auth_source.is_symlink() or destination.is_symlink():
+        return "symlink_rejected"
+    try:
+        if sha256(source) != source_sha256:
+            return "source_changed"
+        source_auth = json.loads(source.read_text(encoding="utf-8"))
+        refreshed_auth = json.loads(task_auth.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "invalid_auth_json"
+    if not isinstance(source_auth, dict) or not source_auth:
+        return "invalid_source_auth"
+    if not isinstance(refreshed_auth, dict) or not refreshed_auth:
+        return "invalid_task_auth"
+    source_identity = _auth_identity(source_auth)
+    refreshed_identity = _auth_identity(refreshed_auth)
+    if (
+        any(value is not None for value in source_identity)
+        and refreshed_identity != source_identity
+    ):
+        return "identity_mismatch"
+    refreshed_sha256 = sha256(task_auth)
+    if refreshed_sha256 == source_sha256:
+        return "unchanged"
+
+    temporary = target.with_name(f".{target.name}.refresh.{os.getpid()}")
+    try:
+        shutil.copyfile(task_auth, temporary)
+        temporary.chmod(0o600)
+        if sha256(source) != source_sha256:
+            return "source_changed"
+        os.replace(temporary, target)
+        target.chmod(0o600)
+        if sha256(target) != refreshed_sha256:
+            return "verification_failed"
+    except OSError:
+        return "write_failed"
+    finally:
+        temporary.unlink(missing_ok=True)
+    return "updated"
+
+
 def inspect_direct_blend_source(job_dir: Path) -> str | None:
     """Return the only source Mesh name from a direct Blend without saving it."""
 
@@ -186,9 +256,7 @@ def normalize_generation_report(
         objects = []
     planned_method = _planned_method(job_dir)
     top_level_method = report.get("method_decision")
-    fallback_method = (
-        top_level_method if top_level_method in ALLOWED_METHODS else planned_method
-    )
+    fallback_method = top_level_method if top_level_method in ALLOWED_METHODS else planned_method
     assets: list[dict[str, object]] = []
     missing_diagnostics: list[dict[str, object]] = []
     for item in objects:
@@ -224,9 +292,7 @@ def normalize_generation_report(
             if normalized[field] is None
         ]
         if missing:
-            missing_diagnostics.append(
-                {"low_object": low_object, "fields": missing}
-            )
+            missing_diagnostics.append({"low_object": low_object, "fields": missing})
         assets.append(normalized)
 
     inspection_used = False
@@ -273,9 +339,7 @@ def normalize_generation_report(
         "missing_diagnostics": missing_diagnostics,
     }
     temporary = job_dir / ".generation_report.json.tmp"
-    temporary.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(report_path)
     return True
 
@@ -300,10 +364,21 @@ def main() -> None:
     if sha256(auth_source) != sha256(auth_destination):
         raise SystemExit("Codex authentication copy failed hash verification")
 
+    source_auth_sha256 = sha256(auth_source)
+    writeback_value = os.environ.get("CODEX_AUTH_WRITEBACK_DESTINATION")
+    writeback_destination = Path(writeback_value).resolve() if writeback_value else None
+
     real_codex = os.environ.get("GPU_CONTROL_REAL_CODEX_BIN", "/usr/local/bin/codex")
     completed = subprocess.run(  # noqa: S603 - immutable Worker setting
         [real_codex, *sys.argv[1:]], check=False
     )
+    writeback_status = persist_refreshed_auth(
+        auth_source,
+        auth_destination,
+        source_auth_sha256,
+        writeback_destination,
+    )
+    print(f"CODEX_AUTH_WRITEBACK:{writeback_status}", file=sys.stderr)
     if completed.returncode == 0:
         normalize_generation_report(Path.cwd().resolve())
     raise SystemExit(completed.returncode)
