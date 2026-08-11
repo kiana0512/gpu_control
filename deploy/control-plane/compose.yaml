@@ -57,11 +57,11 @@ services:
       context: ../..
       dockerfile: apps/asset_api/Dockerfile
       args:
-        GPU_CONTROL_VERSION: ${ASSET_API_VERSION:-1.6.31-retopo-resilient-leases-v1}
+        GPU_CONTROL_VERSION: ${ASSET_API_VERSION:-1.6.32-retopo-closed-build-v1}
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
       sbom: true
       provenance: mode=max
-    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}unified-scheduler-asset-api:${ASSET_API_IMAGE_TAG:-1.6.31-retopo-resilient-leases-v1}
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}unified-scheduler-asset-api:${ASSET_API_IMAGE_TAG:-1.6.32-retopo-closed-build-v1}
     environment:
       TMPDIR: /srv/gpu-control/assets
       ASSET_ROOT: ${ASSET_ROOT:-/srv/gpu-control/assets}
@@ -80,9 +80,9 @@ services:
       dockerfile: apps/blender_worker/Dockerfile
       args:
         BLENDER_BASE_IMAGE: ${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}
-        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.31-retopo-resilient-leases-v1}
+        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.32-retopo-closed-build-v1}
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
-    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.31-retopo-resilient-leases-v1}
+    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.32-retopo-closed-build-v1}
     restart: unless-stopped
     # Codex workspace-write uses bubblewrap inside the already isolated Worker
     # container. SYS_ADMIN plus unconfined seccomp/AppArmor are required for
@@ -100,7 +100,7 @@ services:
       ASSET_WORKER_HMAC_SECRET: ${ASSET_WORKER_HMAC_SECRET}
       ASSET_WORKER_MAX_CONCURRENCY: ${ASSET_WORKER_MAX_CONCURRENCY_CONTROL:-2}
       BLENDER_VERSION: 5.1.2
-      BLENDER_SKILL_VERSION: ${BLENDER_SKILL_VERSION:-asset-skills-auto-retopo-align-v3.0.9}
+      BLENDER_SKILL_VERSION: ${BLENDER_SKILL_VERSION:-asset-skills-auto-retopo-align-v3.0.10}
       UV_SKILL_ROOT: /opt/codex/skills/blender-pbr-uv
       ALIGNMENT_SKILL_ROOT: /opt/codex/skills/blender-align-bake-models
       RETOPOLOGY_SKILL_ROOT: /opt/li3d/retopology-v6/skill/blender-retopology-compare-iterate

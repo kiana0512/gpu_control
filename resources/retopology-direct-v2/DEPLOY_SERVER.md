@@ -1,4 +1,4 @@
-# Blender 自动拓扑与原坐标对齐服务器包 v3.0.9
+# Blender 自动拓扑与原坐标对齐服务器包 v3.0.10
 
 本包合并两个正式技能：
 
@@ -6,6 +6,13 @@
 2. 烘焙前对齐：同任务低模按高模原矩阵恢复坐标，只做变换与导出校验，不改拓扑或 UV。
 
 它用于替换现有 `blender-retopology-compare-iterate-server-package-v2.5.0`。旧单文件调用参数和成功状态保持兼容；成功后额外输出烘焙高低模 FBX 与对齐报告。
+
+## v3.0.10 行为
+
+- 新生成低模在 UV 前必须修完本组件内的意外开放边界：实体端部封口、配对截面环 bridge，只有简单
+  闭合缺口环才允许 holes-fill，并仅三角化新填充面；真实开口必须保留内外壁和 rim。
+- 每次修复后重新实测，`boundary_edges == 0` 才能继续；高模、不同组件和计划中的负空间不允许参与
+  自动修复，最终拓扑、形体、七视图与 FBX 回读门禁均不放宽。
 
 ## v3.0.9 行为
 
@@ -66,8 +73,8 @@
 推荐把每个版本解压到独立 release 目录，再切换服务配置或符号链接，保留旧版用于回滚：
 
 ```bash
-unzip blender-auto-retopo-align-server-package-v3.0.9.zip -d /opt/li3d/releases/
-cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.9
+unzip blender-auto-retopo-align-server-package-v3.0.10.zip -d /opt/li3d/releases/
+cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.10
 python3 server/verify_package.py
 cp server/worker.env.example server/worker.env
 ```
@@ -184,7 +191,7 @@ python3 server/align_existing_low.py \
 docker build \
   --build-arg WORKER_IMAGE=现有Worker镜像@sha256:固定摘要 \
   -f Dockerfile.layer \
-  -t li3d/blender-auto-retopo-align:v3.0.9 .
+  -t li3d/blender-auto-retopo-align:v3.0.10 .
 ```
 
 本 Layer 不替换现有 HTTP、队列、存储、鉴权或 Worker entrypoint，只加入合并技能和兼容入口。

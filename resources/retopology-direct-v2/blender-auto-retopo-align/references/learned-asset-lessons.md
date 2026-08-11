@@ -285,6 +285,16 @@ Never let a source mesh-island count choose the production component count.
 - If a file is reopened by authorization, verify the exact version and visibility state before doing any new modeling.
 - Do not assume hidden or excluded lows are missing.
 
+## Closed generated components before UV
+
+Repeated builds of the same closed hard-surface FBX produced otherwise clean low candidates with 9
+or 15 boundary edges because manual strips/section rings were left unbridged. Detecting the boundary
+and exiting is safe but causes avoidable task failure. In the single generation build, close solid
+ends, bridge paired rings, and fill only simple component-local accidental gap cycles before UV
+creation. Triangulate only faces created by the gap fill, then re-measure. Never touch `SOURCE_HIGH`,
+never bridge separate components, and never cap a real cavity or through-opening; those require inner
+and outer walls joined at the rim. The final zero-boundary gate remains mandatory.
+
 ## Final direct-output rule
 
 Apply these lessons before and during the single construction pass. Once the expected low exists, arrange it, save it, report counts, and stop. The user performs all visual judgment. Do not start any automatic examination, score, comparison, correction, or second attempt.

@@ -227,9 +227,9 @@ class RetopologyV6ProcessMetadata(BaseModel):
 
 
 RETOPOLOGY_V6_POLICY_SHA256 = "e7b24c93c11d550ac9fedd167ff23f9ddd70cba4db014caaf2e157cddeafb266"
-RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION = "3.0.9"
+RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION = "3.0.10"
 RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256 = (
-    "bc0120433f98ad0115870ba760e663f75e515ce8e5b592e9d330af515c7ad232"
+    "9996f9fdbeafbcedcecbca74e58e29e1ffaaf8f03164ba672ea52d7297871e46"
 )
 RETOPOLOGY_DIRECT_V2_COMPLETION_IDENTITIES = frozenset(
     {
@@ -547,12 +547,12 @@ def retopology_direct_v2_shape_evidence_valid(payload: object) -> bool:
     ):
         return False
     center_error = comparison.get("center_error_ratio")
-    if not isinstance(center_error, (int, float)) or isinstance(center_error, bool):
+    if not isinstance(center_error, int | float) or isinstance(center_error, bool):
         return False
     if not 0 <= float(center_error) <= 0.01:
         return False
     return all(
-        isinstance(comparison.get(name), (int, float))
+        isinstance(comparison.get(name), int | float)
         and not isinstance(comparison.get(name), bool)
         and 0 <= float(comparison[name]) <= limit
         for name, limit in limits.items()

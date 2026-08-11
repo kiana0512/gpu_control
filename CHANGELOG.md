@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-08-11 — Automatic retopology closed generated components v3.0.10
+
+- Require every newly generated low component to close accidental boundary loops before UV creation:
+  cap solid ends, bridge paired section rings, or fill only a simple component-local gap and
+  triangulate only newly filled faces.
+- Preserve true cavities and through-openings with inner/outer walls joined by a rim; prohibit broad
+  caps across planned negative space, cross-component fills, or any repair to `SOURCE_HIGH`.
+- Re-measure after generated-low construction finish and retain the strict zero-boundary, topology,
+  shape, seven-view, UV and fresh-FBX gates.
+- Release Asset API `1.6.32-retopo-closed-build-v1`, Blender Worker
+  `1.4.32-retopo-closed-build-v1`, and retopology package v3.0.10.
+
 ## 2026-08-11 — Automatic retopology resilient live-process leases
 
 - Keep an already-running Codex/Blender topology subprocess alive across transient Asset API
