@@ -43,6 +43,13 @@ def test_control_plane_build_defaults_match_release_version() -> None:
     assert compose.count(f"APP_IMAGE_TAG:-{expected_version}") == 2
     assert "GPU_CONTROL_VERSION: ${ASSET_API_VERSION:-1.6.22-retopo-reliability-v1}" in compose
     assert "ASSET_API_IMAGE_TAG:-1.6.22-retopo-reliability-v1" in compose
+    api_service = compose.split("\n  api:\n", 1)[1].split("\n  asset-api:\n", 1)[0]
+    asset_api_service = compose.split("\n  asset-api:\n", 1)[1].split(
+        "\n  asset-worker-control:\n", 1
+    )[0]
+    assert "ASSET_API_VERSION" not in api_service
+    assert "GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.12}" in api_service
+    assert "ASSET_API_VERSION:-1.6.22-retopo-reliability-v1" in asset_api_service
 
 
 def test_worker_release_versions_and_evidence_contract_are_aligned() -> None:
