@@ -67,5 +67,39 @@
 
 ## 4. 生产滚动与真实回归
 
-本节在安全滚动和同一故障输入真实回归完成后回填。滚动必须逐节点排空，确认无运行中的资产任务，
-且不得停止、重启或清理任一 ComfyUI 实例。
+2026-08-11 已完成生产滚动。滚动顺序为 `worker-3090-b`、`control-4090`、`worker-3090-a`；
+每个节点均先进入 `DRAINING`，确认 GPU 任务、资产任务和活动租约均为 0 后，只重建对应 Blender
+Worker，再通过包完整性、心跳和 Codex 探针后恢复 `ACTIVE`。3090-A、3090-B 与 4090 的 ComfyUI
+实例均未停止、重启或清理，滚动前后的容器 ID 未变化，重启次数为 0。
+
+生产最终状态：
+
+- 三个 Linux Blender Worker 均为 `1.4.24-retopo-reliability-v1`，镜像
+  `sha256:bc6710503290552ee10a8aaa5bb35a3a9930a370d4d68d842c871dd49b28e7b1`；
+- 三个 Worker 的技能均为 `asset-skills-auto-retopo-align-v3.0.3`，状态均为 `ONLINE`，
+  `codex_auth_status=AUTHENTICATED`、`codex_probe_status=HEALTHY`；
+- Asset API 为 `1.6.22-retopo-reliability-v1`，镜像
+  `sha256:04c6f4d31c876f826fe8ff32c566f3c2584e01334f2c353e7733456b9aeb35be`，健康检查通过；
+- 三台 Worker 内执行 `verify_package.py` 均返回 `ok=true`、`package_version=3.0.3`，无缺失文件。
+
+随后通过生产公开入口重新提交原始故障模型，未使用隔离替代物：
+
+- 回归任务：`1ec9c3ad-b093-4002-80f3-7e41b13ca9a5`；
+- 原始项目 SHA-256：`b26f4303857a1cf24c810f4e6b53df4bd98de852870d770f2d4a1d898e08cb17`；
+- 执行节点：`asset-worker-3090-b`；
+- 执行时间：2026-08-11 11:32:52 UTC 至 11:38:13 UTC，约 5 分 21 秒；
+- 终态：`SUCCEEDED`，一次领取、无重试，10 项制品均已登记 SHA-256。
+
+真实交付证据：
+
+- 高模 149,999 面；低模 1,168 面、1,200 点、1 个 UV 层，低模面数严格少于高模；
+- 低模开边、非流形边、游离边、游离点、重复点、重复面、退化面、方向不一致边和微碎片均为 0；
+- 坐标恢复模式为 `source_matrix_restore`，高模为唯一坐标权威，未使用 ICP，未在对齐阶段编辑
+  拓扑或 UV；矩阵误差为 0、中心误差为 0、尺寸误差为 1.4345%，手性前后保持正向；
+- Blend 保存回读与高低模 FBX 新场景回读全部通过；低模 FBX 结构完全一致，低模中心/尺寸回读误差为 0；
+- 正式低模 FBX SHA-256 为
+  `ed0088a0771b45744a51e8317e6da5df5050cb367a29d938278ea7133cedf5db`，对齐 Blend SHA-256 为
+  `63197df8f31af9ea8d99a9b6890a85ae64f147a3b238151bc90b896892cde591`。
+
+因此，同一输入在旧 v3.0.2 上出现的笼统坐标门禁失败已不再复现；v3.0.3 已真实完成低模生成、
+源坐标恢复、UV/拓扑硬门禁、FBX 回读和最终制品发布。

@@ -116,6 +116,7 @@ UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重
 | 1.5.8 分阶段发布 | `80_2026-08-03_CONTROL_PLANE_1_5_8_CANDIDATE_AND_SAFE_ROLLOUT.md` | Asset API/DB/Worker/Agent 局部部署、ComfyUI 连续性、三 Worker 身份差异与剩余验收门禁 |
 | Asset V4 UV/自动拓扑最新合同 | `81_2026-08-03_ASSET_V4_UV_RETOPOLOGY_LATEST_HANDOFF.md` | 当前分组件基线：CA、幂等、仅 BLEND、UV/拓扑双 advisory、正式制品、SSE、SHA 和真实 canary |
 | Asset 失败修复与发布验收 | `82_2026-08-03_ASSET_FAILURES_UV_ADVISORY_AND_RELEASE_ACCEPTANCE.md` | PBR 假失败、UV advisory 五件套、Codex Skill 子链接与真实 canary；统一 OCI/SBOM、API 三重 SHA 与观察待回填 |
+| 自动拓扑 v3.0.3 可靠性发布 | `112_2026-08-11_RETOPOLOGY_OUTPUT_CONTRACT_AND_AUTH_RELIABILITY.md` | Agent 输出契约恢复、节点私有认证刷新、逐项坐标门禁、三节点滚动及同一故障 FBX 的生产成功回归 |
 | 1.5.9 统一发布与六 API 验收 | `83_2026-08-03_CONTROL_PLANE_1_5_9_RELEASE_AND_SIX_API_ACCEPTANCE.md` | 生产优先全局准入、精确 artifact 合同、五镜像身份、三节点灰度、浏览器 QA、120 用户压测及动画管家回执的唯一回填入口 |
 | 1.5.10 部分成功与失败帧补算 | `84_2026-08-05_PARTIAL_SUCCESS_AND_FAILED_FRAME_REPAIR_HANDOFF.md` | PARTIAL_SUCCESS、跨节点帧级重试、成功子集归档、failed_items、OOM 证据与动画管家补算合同 |
 | 分角色安装 | `03`—`11` | 网络、准备、4090、3090、镜像、模型、工作流、首次部署 |
