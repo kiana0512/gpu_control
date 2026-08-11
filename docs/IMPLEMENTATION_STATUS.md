@@ -4,7 +4,9 @@
 版本：生产 API/Scheduler 1.5.12、Web 1.5.11-retopo-direct-v2 / Asset API 1.6.19-retopo-align-v3 / Worker
 1.4.20-retopo-align-v3 / DB 20260810_0013；源码审计、自动拓扑对齐包 v3.0.0 的高模坐标权威恢复、
 低模拓扑/UV 指纹保护和高低模 FBX 重导验证已完成真实生产任务。v3 同任务生成按批准合同不执行旧版
-自动七方向复核，由用户检查最终外观。三节点均为 `ACTIVE / ONLINE`，
+自动七方向复核，由用户检查最终外观。三台 Linux Worker 均为 `ONLINE`；各节点升级验证后均恢复过
+`ACTIVE`，3090-B 在真实 Substance 烘焙期间会由 Asset API 临时置为 `DRAINING`，这是物理 GPU 互斥
+保护，不是 Worker 升级失败。
 真实抠图继续三卡并行，发布未重启三台 ComfyUI。第三次正式 100 VU 在
 execute 前由用户取消，r7 为 0 请求、0 压测任务。综合发布见
 `98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`，高低模对齐热修复见
@@ -32,6 +34,8 @@ execute 前由用户取消，r7 为 0 请求、0 压测任务。综合发布见
   或 UV，最终状态等待用户视觉检查。
 - 三台 ComfyUI 的容器 ID、镜像、启动时间和 `RestartCount=0` 均保持不变；真实 ImageClip 任务先
   自然结束再替换对应 Worker，没有中断业务任务，也没有执行用户已取消的压力测试。
+- 最终状态采集时 3090-B 正在执行一笔与本发布无关的真实 Substance 烘焙，节点按设计显示
+  Asset API 自有 `DRAINING`；Linux v3 Worker 仍为 `ONLINE / HEALTHY / 0 jobs`。
 
 ## 2026-08-11 Direct V2 进度、ETA 与重试热修复
 

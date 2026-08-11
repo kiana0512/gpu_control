@@ -111,7 +111,7 @@ Worker 必须一次上传以下 10 件制品，Asset API 对每件非空、文�
 - 严格按 `control-4090 -> worker-3090-a -> worker-3090-b` 顺序执行
   `DRAINING -> GPU/Asset current_jobs=0 -> 只替换 Blender Worker -> 包自检/探针 -> ACTIVE`。
 - 发布窗口内三台各有真实 ImageClip 工作；均等待自然完成后才替换对应 Worker，没有取消或中断。
-- 三台 Worker 最终均为 `ACTIVE / ONLINE`，Skill 身份精确为
+- 三台节点在各自升级验证后均恢复 `ACTIVE`；三台 Linux Worker 最终均为 `ONLINE`，Skill 身份精确为
   `asset-skills-auto-retopo-align-v3.0.0`，Codex 为 `AUTHENTICATED / HEALTHY`，RetopoFlow 为
   `HEALTHY`。
 - 三台 ComfyUI 运行 image ID 仍为
@@ -119,6 +119,9 @@ Worker 必须一次上传以下 10 件制品，Asset API 对每件非空、文�
   `RestartCount=0` 均未改变；没有执行 stop/restart/free，也没有修改外部工作流、模型或参数。
 - Asset API `/health/live` 返回 `{"status":"live"}`。仓库和三台运行 Worker 的
   `server/verify_package.py` 均返回 `ok=true / package_version=3.0.0 / skill_file_count=12`。
+- 发布证据回填时 3090-B 又收到一笔真实 Substance 烘焙，因此节点被 Asset API 自有物理 GPU fence
+  临时置为 `DRAINING`；Linux v3 Worker 仍 `ONLINE / HEALTHY / 0 jobs`。该动态 drain 不能由发布
+  脚本强行解除，烘焙结束后由 Asset API 自动恢复。
 
 ### 7.3 真实 v3 自动拓扑交付
 

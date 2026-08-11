@@ -59,7 +59,9 @@ flowchart LR
   A & B & G --> L["Alloy → Loki / Prometheus → Grafana"]
 ```
 
-当前生产拓扑为 3090-A、3090-B `ONLINE/ACTIVE`，4090 `ONLINE/OVERFLOW`，合计最多 3 个受控 GPU 执行槽位。4090 仅在队列阈值、等待时长、哨兵文件、利用率、显存和允许时段等 OVERFLOW Guard 全部通过时参与推理。每个 ComfyUI 只保留一个本系统任务。
+当前三台 GPU 节点均为 `ONLINE`，合计最多 3 个受控 GPU 执行槽位；节点 mode 会随运维排空和
+3090-B Substance 物理 GPU 互斥门禁在 `ACTIVE / OVERFLOW / DRAINING` 间受控变化，不能把一次快照写死
+为永久模式。每个 ComfyUI 只保留一个本系统任务。
 
 ## 组件
 
