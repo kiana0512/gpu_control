@@ -24,7 +24,7 @@ Blender 后处理均已运行，失败点是独立七视图 QA：第一次拒绝
 7. 新增轮廓叠加图：绿色为共同轮廓，蓝色为仅高模，橙色为仅低模。独立 reviewer 只接收最终七视图
    和叠加图；初始展示图继续留档，但明确禁止把预对齐位移作为最终失败。
 
-## 3. 同一失败样本复测
+## 3. 同一失败样本本地复测
 
 | 检查项 | 结果 |
 |---|---|
@@ -42,15 +42,36 @@ Blender 后处理均已运行，失败点是独立七视图 QA：第一次拒绝
 严格技能审计 `audit_pair.py --require-closed --strict` 通过。轮廓叠加显示前、后、左、右、顶、底和透视
 的主要轮廓、端点与手柄方向一致；小范围蓝/橙边缘来自低面数圆角近似，不是位置、轴向或镜像错误。
 
+### 3.1 同一输入生产 canary
+
+2026-08-11 使用与故障任务相同的 FBX 重新提交生产，canary 任务
+`1740ea22-53e3-4d9a-ac96-80427377295a` 由 `asset-worker-3090-a` 一次执行成功，未重试。
+
+| 生产检查项 | 结果 |
+|---|---|
+| 任务状态 | `SUCCEEDED / 100%` |
+| 角色识别 | 高模 100000 面；交付低模 288 面 |
+| 坐标恢复 | 源轴向候选被选中；旋转 `[0, 0, 0]°`；整体等比缩放 `1.009406579955` |
+| 对齐误差 | 中心误差 `0`；尺寸相对误差最大 `1.0976%`；表面误差比 `0.025739` |
+| 几何严格审计 | `audit_pair.py --require-closed --strict` 通过；0 N-gon、0 退化面、0 非流形边、0 松散边点、0 负体积闭合壳体 |
+| UV / FBX | 低模含 UV；高低模 FBX 在全新 Blender 5.1.2 场景重导通过 |
+| 七视图视觉 QA | `passed=true`；方向、镜像、手柄等非对称特征、主要轮廓和组件位置通过 |
+| 低模 FBX | SHA-256 `275957399326393003d9b28541a38d86db824770dad57c9cd79e354c4b32fa17` |
+| 对齐报告 | SHA-256 `d542ecbe675a4d248327312af49ff34c03096b7b82a92482a78c41ef6b2a0d27` |
+| 视觉 QA 报告 | SHA-256 `c159b519037e6ce36dcae049bf886a6ee89d210abf43a44bfcef7ef561c9fe20` |
+
 ## 4. 发布状态
 
 | 项目 | 结果 |
 |---|---|
 | Worker 版本 | `1.4.18-retopo-axis-visual-qa-v1` |
 | 后处理脚本 SHA-256 | `bc14804d9c0bde6610360aacc8de3d80cf6847368e26eff5c29abb0b0c0c6797` |
-| 镜像 | 构建与三节点滚动完成后回填 |
-| Git | 提交并推送后回填 |
-| 生产 canary | 同一失败输入重新提交并通过后回填 |
+| 镜像 | `li3d/blender-worker:1.4.18-retopo-axis-visual-qa-v1` |
+| 镜像 ID | `sha256:2429d2c24e7fa276e68e55c141de4241048a9cb0067387424e41d80f3fd6e857` |
+| 离线包 | `/srv/gpu-control/images/retopo-axis-visual-qa-v1-ce51ea1/blender-worker.tar.zst`；686467680 bytes；SHA-256 `c3940c79ef9be4fd01f3569eacf5c2f2553af9bb64f8e517c1e7e5684e336613` |
+| Git | `ce51ea1e2d4c73f8523c0f26b4c892239256afa6`，已推送 `origin/main` |
+| 三节点 | 4090、3090-A、3090-B 已按 `DRAINING -> 0 任务 -> 替换 -> 探针健康 -> ACTIVE` 逐台滚动；镜像 ID 一致 |
+| 生产 canary | `1740ea22-53e3-4d9a-ac96-80427377295a`，同一失败输入，`SUCCEEDED`，一次执行成功 |
 
 发布只滚动三台 Blender Worker。三台 ComfyUI、ImageClip、ModelViewCreator、外部工作流、模型、prompt、
 参数和图拓扑均不修改；节点必须逐台 `DRAINING -> 活跃任务为 0 -> 替换 Worker -> 探针健康 -> ACTIVE`。
