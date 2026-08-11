@@ -43,6 +43,7 @@ from packages.gpu_control_core.assets import (
     lease_token_hash,
     retopology_audit_request_hash,
     retopology_auto_align_v3_evidence_valid,
+    retopology_direct_v2_completion_identity_valid,
     retopology_v6_process_request_hash,
     substance_bake_request_hash,
     uv_process_request_hash,
@@ -3916,13 +3917,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             alignment_pairs = alignment_report.get("pairs")
             bake_files = result.get("bake_files")
             if (
-                snapshot.options.get("package_version") != RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION
-                or snapshot.options.get("package_sha256") != RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
+                not retopology_direct_v2_completion_identity_valid(snapshot.options, manifest)
                 or manifest.get("schema_version") != "retopology_direct_delivery.v7"
                 or manifest.get("job_id") != snapshot.id
                 or manifest.get("engine_contract") != "retopology-direct-v2"
-                or manifest.get("package_version") != RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION
-                or manifest.get("package_sha256") != RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
                 or manifest.get("source_sha256") != snapshot.options.get("project_sha256")
                 or result.get("input_sha256") != manifest.get("adapter_input_sha256")
                 or result.get("output_sha256") != staged_by_kind["blend"].sha256

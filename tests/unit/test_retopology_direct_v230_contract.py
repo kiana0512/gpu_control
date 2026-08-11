@@ -6,6 +6,7 @@ from pathlib import Path
 from packages.gpu_control_core.assets import (
     RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
     RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION,
+    retopology_direct_v2_completion_identity_valid,
 )
 
 ROOT = Path("resources/retopology-direct-v2")
@@ -53,6 +54,22 @@ def test_direct_v2_task_auth_uses_the_rotated_node_private_credential() -> None:
     assert 'persistent_auth_source = Path(environment["CODEX_HOME"]) / "auth.json"' in worker
     assert '"CODEX_AUTH_SOURCE": str(persistent_auth_source)' in worker
     assert '"CODEX_AUTH_WRITEBACK_DESTINATION": str(persistent_auth_source)' in worker
+
+
+def test_rolling_completion_accepts_only_matching_approved_package_identity() -> None:
+    current = {
+        "package_version": RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION,
+        "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
+    }
+    previous = {
+        "package_version": "3.0.2",
+        "package_sha256": ("258c5b04686f938a6bbbe82f713701f5274b84ef56dda4b577105de4b7a1b542"),
+    }
+    assert retopology_direct_v2_completion_identity_valid(current, current) is True
+    assert retopology_direct_v2_completion_identity_valid(previous, previous) is True
+    assert retopology_direct_v2_completion_identity_valid(current, previous) is False
+    unknown = {**current, "package_version": "3.0.1"}
+    assert retopology_direct_v2_completion_identity_valid(unknown, unknown) is False
 
 
 def test_public_create_contract_selects_v303_without_changing_route() -> None:

@@ -231,8 +231,38 @@ RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION = "3.0.3"
 RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256 = (
     "6125113a5e703cd288a4265f381031baf125b262c9eddbddfa57cc05d9e36647"
 )
+RETOPOLOGY_DIRECT_V2_COMPLETION_IDENTITIES = frozenset(
+    {
+        (
+            "3.0.2",
+            "258c5b04686f938a6bbbe82f713701f5274b84ef56dda4b577105de4b7a1b542",
+        ),
+        (RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION, RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256),
+    }
+)
 RETOPOLOGY_DIRECT_V2_MAX_DIMENSION_RELATIVE_ERROR = 0.05
 RETOPOLOGY_FBX_UNIT_SCALE_FACTOR_CENTIMETERS = 100.0
+
+
+def retopology_direct_v2_completion_identity_valid(
+    job_options: object, delivery_manifest: object
+) -> bool:
+    """Allow only the current package or an already-leased rolling predecessor."""
+
+    if not isinstance(job_options, dict) or not isinstance(delivery_manifest, dict):
+        return False
+    job_identity = (
+        job_options.get("package_version"),
+        job_options.get("package_sha256"),
+    )
+    manifest_identity = (
+        delivery_manifest.get("package_version"),
+        delivery_manifest.get("package_sha256"),
+    )
+    return (
+        job_identity == manifest_identity
+        and job_identity in RETOPOLOGY_DIRECT_V2_COMPLETION_IDENTITIES
+    )
 
 
 def retopology_coordinate_dimension_evidence_valid(payload: object) -> bool:
