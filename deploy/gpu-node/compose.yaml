@@ -55,9 +55,9 @@ services:
       dockerfile: apps/blender_worker/Dockerfile
       args:
         BLENDER_BASE_IMAGE: ${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}
-        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.27-retopo-report-reconciliation-v1}
+        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.28-retopo-build-context-v1}
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
-    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.27-retopo-report-reconciliation-v1}
+    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.28-retopo-build-context-v1}
     restart: unless-stopped
     # Required for Codex's nested bubblewrap workspace sandbox.
     cap_add: [SYS_ADMIN]
@@ -72,7 +72,7 @@ services:
       ASSET_WORKER_HMAC_SECRET: ${ASSET_WORKER_HMAC_SECRET}
       ASSET_WORKER_MAX_CONCURRENCY: ${ASSET_WORKER_MAX_CONCURRENCY:-2}
       BLENDER_VERSION: 5.1.2
-      BLENDER_SKILL_VERSION: ${BLENDER_SKILL_VERSION:-asset-skills-auto-retopo-align-v3.0.6}
+      BLENDER_SKILL_VERSION: ${BLENDER_SKILL_VERSION:-asset-skills-auto-retopo-align-v3.0.7}
       UV_SKILL_ROOT: /opt/codex/skills/blender-pbr-uv
       ALIGNMENT_SKILL_ROOT: /opt/codex/skills/blender-align-bake-models
       RETOPOLOGY_SKILL_ROOT: /opt/li3d/retopology-v6/skill/blender-retopology-compare-iterate

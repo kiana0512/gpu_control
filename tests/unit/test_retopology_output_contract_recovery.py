@@ -116,6 +116,8 @@ def test_completes_one_unexecuted_generated_build_script_once(
 ) -> None:
     script = tmp_path / "build_once.py"
     script.write_text("# generated build\n", encoding="utf-8")
+    working_blend = tmp_path / "work" / "source.blend"
+    write_blend(working_blend, b"source-high")
     output = tmp_path / "artifacts" / "generated.blend"
     observed: dict[str, object] = {}
 
@@ -130,7 +132,7 @@ def test_completes_one_unexecuted_generated_build_script_once(
     monkeypatch.setattr(MODULE, "run_logged", fake_run_logged)
 
     evidence = MODULE.complete_generated_build_script(
-        "/opt/blender/blender", tmp_path, output, 321
+        "/opt/blender/blender", tmp_path, working_blend, output, 321
     )
 
     assert evidence is not None
@@ -140,6 +142,8 @@ def test_completes_one_unexecuted_generated_build_script_once(
     assert evidence["generation_report_exists"] is True
     assert observed["cwd"] == tmp_path
     assert observed["timeout"] == 321
+    assert str(working_blend) in observed["command"]
+    assert evidence["working_blend_sha256"] == MODULE.sha256(working_blend)
     assert observed["command"][-2:] == ["--python", str(script)]
     assert (tmp_path / "build_script_execution.json").is_file()
 

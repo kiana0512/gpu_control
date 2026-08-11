@@ -278,6 +278,7 @@ def generated_build_script(job_dir: Path) -> Path | None:
 def complete_generated_build_script(
     blender: str,
     job_dir: Path,
+    working_blend: Path,
     generated_blend: Path,
     timeout: int,
 ) -> dict[str, object] | None:
@@ -298,6 +299,7 @@ def complete_generated_build_script(
         "--background",
         "--factory-startup",
         "--disable-autoexec",
+        str(working_blend),
         "--python-exit-code",
         "1",
         "--python",
@@ -316,6 +318,7 @@ def complete_generated_build_script(
         "schema": "li3d-retopology-build-completion-v1",
         "script": script.relative_to(job_dir).as_posix(),
         "script_sha256": sha256(script),
+        "working_blend_sha256": sha256(working_blend),
         "executed_once": True,
         "returncode": returncode,
         "timed_out": timed_out,
@@ -670,6 +673,7 @@ def main() -> int:
     build_completion = complete_generated_build_script(
         blender,
         job_dir,
+        working_blend,
         generated_blend,
         int(os.environ.get("RETOPOLOGY_GENERATED_BUILD_TIMEOUT_SECONDS", "1800")),
     )

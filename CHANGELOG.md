@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-11 — Automatic retopology build-context completion v3.0.7
+
+- Open the server-prepared, immutable working Blend before executing the one bounded generated build
+  script, so `SOURCE_HIGH` exists in Blender instead of an empty factory-startup scene.
+- Record the exact working-Blend SHA-256 in build-completion evidence and retain all existing output,
+  topology, UV, coordinate and FBX readback gates.
+- Release Asset API `1.6.26-retopo-build-context-v1` and Blender Worker
+  `1.4.28-retopo-build-context-v1`.
+
 ## 2026-08-11 — Automatic retopology verified-report reconciliation v3.0.6
 
 - Treat agent-written face, triangle and UV counts as advisory; Blender now supplies the authoritative
