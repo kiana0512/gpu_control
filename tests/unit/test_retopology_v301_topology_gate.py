@@ -292,4 +292,17 @@ def test_alignment_evidence_reports_every_actionable_failure() -> None:
     assert "PAIR_0_CENTER_ERROR" in failures
     assert "FBX_LOW_BOUNDS_MISMATCH" in failures
     assert "TOPOLOGY_VALIDATION_INVALID" in failures
+    assert "TOPOLOGY_FBX_READBACK_PAIR_0_BOUNDARY_EDGES" in failures
     assert retopology_auto_align_v3_evidence_valid(evidence) is False
+
+
+def test_alignment_evidence_identifies_missing_low_uv_at_each_stage() -> None:
+    evidence = alignment_evidence()
+    for stage in ("generated_blend", "blend_readback", "fbx_readback"):
+        evidence["topology_validation"][stage]["pairs"][0]["low"]["uv_layers"] = 0
+
+    failures = retopology_auto_align_v3_evidence_failures(evidence)
+
+    assert "TOPOLOGY_GENERATED_BLEND_PAIR_0_LOW_UV_MISSING" in failures
+    assert "TOPOLOGY_BLEND_READBACK_PAIR_0_LOW_UV_MISSING" in failures
+    assert "TOPOLOGY_FBX_READBACK_PAIR_0_LOW_UV_MISSING" in failures

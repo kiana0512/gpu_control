@@ -218,6 +218,8 @@ def topology_failures(
         failures.append("LOW_FACE_COUNT_NOT_BELOW_HIGH")
     if not low["finite_coordinates"]:
         failures.append("NON_FINITE_COORDINATES")
+    if low["uv_layers"] < 1:
+        failures.append("MISSING_UV")
     for field in (
         "boundary_edges",
         "multi_face_nonmanifold_edges",

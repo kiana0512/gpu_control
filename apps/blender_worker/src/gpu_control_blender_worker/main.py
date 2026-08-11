@@ -1879,13 +1879,13 @@ async def run_retopology_v6(
     output_dir.mkdir(parents=True, exist_ok=False)
 
     direct_source_path = project_path
-    # The approved v3.0.3 package owns FBX preparation and its immutable
-    # SOURCE_HIGH manifest. Other legacy upload formats retain the existing
-    # GPU Control normalization path so the public single-file API stays
-    # backward compatible.
+    # The approved package owns FBX/GLB/GLTF/OBJ preparation and creates the
+    # same immutable SOURCE_HIGH manifest for every static source.  The legacy
+    # normalizer is now needed only to re-save a compressed Blend with the raw
+    # signature required by the package input contract.
     project_suffix = project_path.suffix.lower()
-    normalization_required = project_suffix not in {".fbx", ".blend"} or (
-        project_suffix == ".blend" and not has_raw_blend_signature(project_path)
+    normalization_required = project_suffix == ".blend" and not has_raw_blend_signature(
+        project_path
     )
     if normalization_required:
         direct_source_path = workspace / "retopology-direct-v2-source.blend"

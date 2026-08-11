@@ -32,7 +32,7 @@ EXPECTED_SKILL_FILES = {
     "scripts/validate_bake_pair.py",
 }
 DEFAULT_CODEX_ARGS = ["exec", "--full-auto", "--json", "-C", "{job_dir}", "-"]
-SUPPORTED_INPUTS = {".fbx", ".blend"}
+SUPPORTED_INPUTS = {".fbx", ".glb", ".gltf", ".obj", ".blend"}
 ALLOWED_METHODS = {
     "controlled_direct_reduction",
     "semantic_reconstruction",
@@ -233,6 +233,10 @@ def codex_failure_diagnostic(job_dir: Path) -> dict[str, object]:
         error_category = "CODEX_AUTH_UNAUTHORIZED"
     elif "rate limit" in stderr or " 429" in stderr:
         error_category = "CODEX_RATE_LIMITED"
+    elif error_category == "OUTPUT_CONTRACT_MISSING" and any(
+        (job_dir / name).is_file() for name in ("build_once.py", "build.py")
+    ):
+        error_category = "BUILD_SCRIPT_NOT_EXECUTED"
 
     files: list[dict[str, object]] = []
     for path in sorted(job_dir.rglob("*")):
@@ -450,7 +454,7 @@ def main() -> int:
 
     blender = os.environ.get("BLENDER_EXECUTABLE", "/opt/blender/blender")
     codex = os.environ.get("CODEX_BIN", "/usr/local/bin/codex")
-    if input_suffix == ".fbx":
+    if input_suffix != ".blend":
         prepared, preparation_error = prepare_fbx(
             blender, installed_skill, input_copy, working_blend, source_manifest, job_dir
         )
@@ -461,7 +465,7 @@ def main() -> int:
                     "job_id": job_id,
                     "status": "failed_preparation",
                     "error": preparation_error,
-                    "input_format": "fbx",
+                    "input_format": input_suffix.removeprefix("."),
                     "automatic_retry": False,
                 },
             )

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import a static-mesh FBX into one task-local authoritative high object."""
+"""Import one static model into one task-local authoritative high object."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ NORMALIZED_WORK_OBJECT_NAME = "SOURCE_HIGH_NORMALIZED_WORK"
 NORMALIZED_WORK_MESH_NAME = "SOURCE_HIGH_NORMALIZED_WORK_MESH"
 DIRECT_REDUCTION_MAX_NORMALIZED_COMPONENTS = 512
 SAFE_AUXILIARY_TYPES = {"EMPTY", "CAMERA", "LIGHT"}
+SUPPORTED_SOURCE_EXTENSIONS = {".fbx", ".glb", ".gltf", ".obj"}
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -280,10 +281,11 @@ def main() -> None:
     input_path = os.path.abspath(arguments.input)
     output_path = os.path.abspath(arguments.output)
     manifest_path = os.path.abspath(arguments.manifest)
-    if os.path.splitext(input_path)[1].lower() != ".fbx":
-        raise RuntimeError("Input must be an FBX file.")
+    source_format = os.path.splitext(input_path)[1].lower()
+    if source_format not in SUPPORTED_SOURCE_EXTENSIONS:
+        raise RuntimeError("Input must be an FBX, GLB, GLTF, or OBJ file.")
     if not os.path.isfile(input_path) or os.path.getsize(input_path) == 0:
-        raise RuntimeError("Input FBX does not exist or is empty.")
+        raise RuntimeError("Input model does not exist or is empty.")
     if os.path.splitext(output_path)[1].lower() != ".blend":
         raise RuntimeError("Output must use the .blend suffix.")
     if os.path.exists(output_path):
@@ -296,15 +298,20 @@ def main() -> None:
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
     before_ids = {obj.as_pointer() for obj in bpy.context.scene.objects}
-    import_result = bpy.ops.import_scene.fbx(filepath=input_path)
+    if source_format == ".fbx":
+        import_result = bpy.ops.import_scene.fbx(filepath=input_path)
+    elif source_format in {".glb", ".gltf"}:
+        import_result = bpy.ops.import_scene.gltf(filepath=input_path)
+    else:
+        import_result = bpy.ops.wm.obj_import(filepath=input_path)
     if "FINISHED" not in import_result:
-        raise RuntimeError("Blender FBX importer did not finish.")
+        raise RuntimeError("Blender source importer did not finish.")
     imported = [
         obj for obj in bpy.context.scene.objects if obj.as_pointer() not in before_ids
     ]
     mesh_objects = [obj for obj in imported if obj.type == "MESH"]
     if not mesh_objects:
-        raise RuntimeError("FBX does not contain a Mesh object.")
+        raise RuntimeError("Source model does not contain a Mesh object.")
 
     unsafe_meshes = [
         obj.name
@@ -313,7 +320,7 @@ def main() -> None:
     ]
     if unsafe_meshes:
         raise RuntimeError(
-            "FBX contains modified, constrained, or shape-key Mesh objects that "
+            "Source model contains modified, constrained, or shape-key Mesh objects that "
             "cannot be joined safely: " + ", ".join(unsafe_meshes[:8])
         )
     auxiliary_objects = [obj for obj in imported if obj.type != "MESH"]
@@ -325,7 +332,7 @@ def main() -> None:
     ]
     if unsafe_auxiliary:
         raise RuntimeError(
-            "FBX contains armatures, instances, or unsupported non-Mesh objects: "
+            "Source model contains armatures, instances, or unsupported non-Mesh objects: "
             + ", ".join(unsafe_auxiliary[:8])
         )
 
@@ -360,17 +367,17 @@ def main() -> None:
     if len(mesh_objects) > 1:
         join_result = bpy.ops.object.join()
         if "FINISHED" not in join_result:
-            raise RuntimeError("Blender could not join the FBX Mesh parts.")
+            raise RuntimeError("Blender could not join the source Mesh parts.")
     for obj in auxiliary_objects:
         bpy.data.objects.remove(obj, do_unlink=True)
 
     if len(high_object.data.vertices) != vertex_count:
-        raise RuntimeError("Joining FBX Mesh parts changed the vertex count.")
+        raise RuntimeError("Joining source Mesh parts changed the vertex count.")
     if len(high_object.data.polygons) != polygon_count:
-        raise RuntimeError("Joining FBX Mesh parts changed the polygon count.")
+        raise RuntimeError("Joining source Mesh parts changed the polygon count.")
     after_bounds = world_bounds(high_object)
     if not bounds_match(before_bounds, after_bounds):
-        raise RuntimeError("Joining FBX Mesh parts changed their world-space bounds.")
+        raise RuntimeError("Joining source Mesh parts changed their world-space bounds.")
 
     high_object.name = HIGH_OBJECT_NAME
     high_object.data.name = HIGH_MESH_NAME
@@ -378,7 +385,8 @@ def main() -> None:
         raise RuntimeError(f"Could not assign the high object name {HIGH_OBJECT_NAME}.")
     input_sha256 = sha256_file(input_path)
     high_object["li3d_role"] = "high"
-    high_object["li3d_source_format"] = "fbx"
+    source_format_name = source_format.removeprefix(".")
+    high_object["li3d_source_format"] = source_format_name
     high_object["li3d_source_sha256"] = input_sha256
     high_object["li3d_source_mesh_names"] = json.dumps(
         [item["name"] for item in source_meshes], ensure_ascii=False
@@ -393,7 +401,7 @@ def main() -> None:
         raise RuntimeError("Creating the normalized work copy changed SOURCE_HIGH.")
 
     scene = bpy.context.scene
-    scene["li3d_retopology_source_format"] = "fbx"
+    scene["li3d_retopology_source_format"] = source_format_name
     scene["li3d_retopology_high_object"] = HIGH_OBJECT_NAME
     scene["li3d_retopology_source_sha256"] = input_sha256
     if normalized_work_object is not None:
@@ -405,9 +413,9 @@ def main() -> None:
     bpy.context.view_layer.objects.active = high_object
 
     manifest = {
-        "schema": "li3d-retopology-fbx-source-v3",
+        "schema": "li3d-retopology-static-source-v4",
         "blender_version": bpy.app.version_string,
-        "source_format": "fbx",
+        "source_format": source_format_name,
         "source_filepath": input_path,
         "source_sha256": input_sha256,
         "prepared_blend_filepath": output_path,

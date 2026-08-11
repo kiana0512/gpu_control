@@ -227,15 +227,15 @@ class RetopologyV6ProcessMetadata(BaseModel):
 
 
 RETOPOLOGY_V6_POLICY_SHA256 = "e7b24c93c11d550ac9fedd167ff23f9ddd70cba4db014caaf2e157cddeafb266"
-RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION = "3.0.3"
+RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION = "3.0.4"
 RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256 = (
-    "6125113a5e703cd288a4265f381031baf125b262c9eddbddfa57cc05d9e36647"
+    "a17c86ed58a052656846df77f80ef90aa7c18f4881913f18988cfecf15577188"
 )
 RETOPOLOGY_DIRECT_V2_COMPLETION_IDENTITIES = frozenset(
     {
         (
-            "3.0.2",
-            "258c5b04686f938a6bbbe82f713701f5274b84ef56dda4b577105de4b7a1b542",
+            "3.0.3",
+            "6125113a5e703cd288a4265f381031baf125b262c9eddbddfa57cc05d9e36647",
         ),
         (RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION, RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256),
     }
@@ -537,15 +537,35 @@ def _retopology_v3_topology_stage_valid(
     *,
     require_unique_vertex_positions: bool,
 ) -> bool:
-    if not isinstance(payload, dict) or payload.get("passed") is not True:
-        return False
+    return not _retopology_v3_topology_stage_failures(
+        payload,
+        stage="stage",
+        require_unique_vertex_positions=require_unique_vertex_positions,
+    )
+
+
+def _retopology_v3_topology_stage_failures(
+    payload: object,
+    *,
+    stage: str,
+    require_unique_vertex_positions: bool,
+) -> list[str]:
+    """Return stable defect codes for one generated/readback topology stage."""
+
+    prefix = f"TOPOLOGY_{stage.upper()}"
+    failures: list[str] = []
+    if not isinstance(payload, dict):
+        return [f"{prefix}_MISSING"]
+    if payload.get("passed") is not True:
+        failures.append(f"{prefix}_NOT_PASSED")
     if payload.get("require_unique_vertex_positions") is not require_unique_vertex_positions:
-        return False
+        failures.append(f"{prefix}_UNIQUE_VERTEX_POLICY_INVALID")
     if payload.get("failures") != []:
-        return False
+        failures.append(f"{prefix}_DECLARED_FAILURES")
     pairs = payload.get("pairs")
     if not isinstance(pairs, list) or not pairs:
-        return False
+        failures.append(f"{prefix}_PAIRS_MISSING")
+        return failures
     required_zero = (
         "boundary_edges",
         "multi_face_nonmanifold_edges",
@@ -555,50 +575,60 @@ def _retopology_v3_topology_stage_valid(
         "degenerate_faces",
         "inconsistent_orientation_edges",
     )
-    for pair in pairs:
+    for index, pair in enumerate(pairs):
+        pair_prefix = f"{prefix}_PAIR_{index}"
         if not isinstance(pair, dict) or pair.get("failures") != []:
-            return False
+            failures.append(f"{pair_prefix}_DECLARED_FAILURES")
+            continue
         high = pair.get("high")
         low = pair.get("low")
         if not isinstance(high, dict) or not isinstance(low, dict):
-            return False
+            failures.append(f"{pair_prefix}_METRICS_MISSING")
+            continue
         high_faces = high.get("faces")
         low_faces = low.get("faces")
-        if (
-            not isinstance(high_faces, int)
-            or not isinstance(low_faces, int)
-            or low_faces <= 0
-            or low_faces >= high_faces
-            or low.get("finite_coordinates") is not True
-            or not isinstance(low.get("uv_layers"), int)
-            or low["uv_layers"] < 1
-            or any(low.get(field) != 0 for field in required_zero)
-            or require_unique_vertex_positions
-            and low.get("duplicate_vertices") != 0
-        ):
-            return False
-    return True
+        if not isinstance(high_faces, int) or not isinstance(low_faces, int):
+            failures.append(f"{pair_prefix}_FACE_COUNTS_INVALID")
+        elif low_faces <= 0 or low_faces >= high_faces:
+            failures.append(f"{pair_prefix}_LOW_FACE_COUNT_INVALID")
+        if low.get("finite_coordinates") is not True:
+            failures.append(f"{pair_prefix}_NON_FINITE_COORDINATES")
+        uv_layers = low.get("uv_layers")
+        if not isinstance(uv_layers, int) or uv_layers < 1:
+            failures.append(f"{pair_prefix}_LOW_UV_MISSING")
+        for field in required_zero:
+            if low.get(field) != 0:
+                failures.append(f"{pair_prefix}_{field.upper()}")
+        if require_unique_vertex_positions and low.get("duplicate_vertices") != 0:
+            failures.append(f"{pair_prefix}_DUPLICATE_VERTICES")
+    return failures
 
 
 def _retopology_v3_topology_evidence_valid(payload: object) -> bool:
+    return not _retopology_v3_topology_evidence_failures(payload)
+
+
+def _retopology_v3_topology_evidence_failures(payload: object) -> list[str]:
     if not isinstance(payload, dict):
-        return False
-    return (
-        payload.get("schema") == "li3d-retopology-topology-v1"
-        and payload.get("passed") is True
-        and _retopology_v3_topology_stage_valid(
-            payload.get("generated_blend"),
-            require_unique_vertex_positions=True,
+        return ["TOPOLOGY_REPORT_NOT_OBJECT"]
+    failures: list[str] = []
+    if payload.get("schema") != "li3d-retopology-topology-v1":
+        failures.append("TOPOLOGY_SCHEMA_INVALID")
+    if payload.get("passed") is not True:
+        failures.append("TOPOLOGY_REPORT_NOT_PASSED")
+    for stage, unique_positions in (
+        ("generated_blend", True),
+        ("blend_readback", True),
+        ("fbx_readback", False),
+    ):
+        failures.extend(
+            _retopology_v3_topology_stage_failures(
+                payload.get(stage),
+                stage=stage,
+                require_unique_vertex_positions=unique_positions,
+            )
         )
-        and _retopology_v3_topology_stage_valid(
-            payload.get("blend_readback"),
-            require_unique_vertex_positions=True,
-        )
-        and _retopology_v3_topology_stage_valid(
-            payload.get("fbx_readback"),
-            require_unique_vertex_positions=False,
-        )
-    )
+    return failures
 
 
 def retopology_auto_align_v3_evidence_failures(payload: object) -> list[str]:
@@ -621,8 +651,12 @@ def retopology_auto_align_v3_evidence_failures(payload: object) -> list[str]:
     for field, expected in expected_fields.items():
         if payload.get(field) != expected:
             failures.append(f"ALIGNMENT_{field.upper()}_INVALID")
-    if not _retopology_v3_topology_evidence_valid(payload.get("topology_validation")):
+    topology_failures = _retopology_v3_topology_evidence_failures(
+        payload.get("topology_validation")
+    )
+    if topology_failures:
         failures.append("TOPOLOGY_VALIDATION_INVALID")
+        failures.extend(topology_failures)
 
     def finite_number(value: object) -> bool:
         return (

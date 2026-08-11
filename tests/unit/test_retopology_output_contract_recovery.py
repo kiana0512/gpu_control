@@ -96,3 +96,35 @@ def test_failure_diagnostic_classifies_auth_without_returning_secret_text(
     assert diagnostic["error_category"] == "CODEX_AUTH_EXPIRED"
     assert diagnostic["last_event_type"] == "turn.failed"
     assert "secret-do-not-copy" not in json.dumps(diagnostic)
+
+
+def test_failure_diagnostic_identifies_an_unexecuted_build_script(tmp_path: Path) -> None:
+    (tmp_path / "agent_events.jsonl").write_text(
+        json.dumps({"type": "turn.completed"}) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "agent_stderr.log").write_text("", encoding="utf-8")
+    (tmp_path / "build_once.py").write_text("# generated but not executed\n", encoding="utf-8")
+
+    diagnostic = MODULE.codex_failure_diagnostic(tmp_path)
+
+    assert diagnostic["error_category"] == "BUILD_SCRIPT_NOT_EXECUTED"
+
+
+def test_one_click_prepares_every_supported_static_source_as_source_high() -> None:
+    assert {".fbx", ".glb", ".gltf", ".obj"}.issubset(MODULE.SUPPORTED_INPUTS)
+    source = Path(
+        "resources/retopology-direct-v2/blender-auto-retopo-align/scripts/prepare_fbx_source.py"
+    ).read_text(encoding="utf-8")
+    assert 'SUPPORTED_SOURCE_EXTENSIONS = {".fbx", ".glb", ".gltf", ".obj"}' in source
+    assert 'bpy.ops.import_scene.gltf(filepath=input_path)' in source
+    assert 'bpy.ops.wm.obj_import(filepath=input_path)' in source
+    assert '"schema": "li3d-retopology-static-source-v4"' in source
+
+
+def test_worker_does_not_flatten_glb_to_an_unqualified_direct_blend() -> None:
+    worker = Path("apps/blender_worker/src/gpu_control_blender_worker/main.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'normalization_required = project_suffix == ".blend"' in worker
+    assert "project_suffix not in" not in worker

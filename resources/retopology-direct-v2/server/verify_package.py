@@ -236,7 +236,7 @@ def main() -> int:
 
     payload = {
         "ok": not errors,
-        "package_version": "3.0.3",
+        "package_version": "3.0.4",
         "skill_id": SKILL_ID,
         "skill_file_count": len(actual_skill),
         "one_click_entrypoint": str(ROOT / "server" / "one_click_retopology.py"),

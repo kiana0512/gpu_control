@@ -1,6 +1,6 @@
 ---
 name: blender-auto-retopo-align
-description: Generate one sparse next-generation Blender low-poly model from a high-poly FBX or Blend source, then restore the generated low to the high model's original position, rotation, axis orientation, and scale and export bake-ready high/low FBX files with topology, UV, and readback validation. Use for 服务器自动拓扑替换、一键拓扑后高低模不重合、自动拓扑后恢复原坐标、拓扑完成后强制对齐、批量高模生成低模并输出烘焙文件。Also supports transform-only alignment of an externally supplied existing low model. Never use the alignment stage to retopologize, remesh, decimate, triangulate, edit UVs, or repair geometry.
+description: Generate one sparse next-generation Blender low-poly model from a high-poly FBX, GLB, GLTF, OBJ, or Blend source, then restore the generated low to the high model's original position, rotation, axis orientation, and scale and export bake-ready high/low FBX files with topology, UV, and readback validation. Use for 服务器自动拓扑替换、一键拓扑后高低模不重合、自动拓扑后恢复原坐标、拓扑完成后强制对齐、批量高模生成低模并输出烘焙文件。Also supports transform-only alignment of an externally supplied existing low model. Never use the alignment stage to retopologize, remesh, decimate, triangulate, edit UVs, or replace the user's low model as part of transform-only alignment.
 ---
 
 # Blender Auto Retopo Align
@@ -45,7 +45,7 @@ Use this mode only when the user supplies a separately created low whose coordin
 ### 1. Preserve the source
 
 - Work on a duplicate or task-local copy.
-- For FBX input, run `scripts/prepare_fbx_source.py`; use its `SOURCE_HIGH` and source manifest.
+- For FBX/GLB/GLTF/OBJ input, run `scripts/prepare_fbx_source.py`; use its single joined `SOURCE_HIGH` and source manifest.
 - Before normalization, record the high `matrix_world`, unit scale, axis convention, and world bounds.
 - If a work-space transform is needed, record the full 4x4 `work_to_world` matrix. Bounds alone are not a coordinate contract.
 
@@ -64,10 +64,12 @@ Use this mode only when the user supplies a separately created low whose coordin
 - Produce exactly one low object for each requested high.
 - Spend polygons on silhouette, openings, section changes, negative space, and key connections; keep flat non-silhouette regions sparse.
 - Create the low in `source_high_local` coordinates and assign the same `matrix_world` as its high.
+- Create at least one non-empty UV layer during this single generation build. A low with no UV is a failed generation and must never be reported as deliverable.
 - Give the low an opaque yellow/orange display material or object color. Do not use transparency.
 - Do not add a presentation offset in unattended/server mode.
 - Before reporting success, require a closed manifold: zero boundary/open edges, loose edges/vertices, duplicate geometry, degenerate faces, multi-face non-manifold edges, and inconsistent orientation. This is a deterministic delivery gate, not a second modeling pass.
-- Write `generation_report.json` with the normal generation fields plus:
+- Execute the Blender build; writing a plan or build script without producing the requested Blend is a failed generation.
+- Write `generation_report.json` with the normal generation fields, including `uv_layers >= 1`, plus:
   - `coordinate_space: source_high_local`
   - `coordinate_authority: high_object_matrix_world`
   - `presentation_offset_applied: false`
