@@ -13,7 +13,7 @@ GUARD_PATH = Path(
 
 def load_guard_module():
     specification = importlib.util.spec_from_file_location(
-        "retopology_v301_guard", GUARD_PATH
+        "retopology_v302_guard", GUARD_PATH
     )
     assert specification is not None and specification.loader is not None
     module = importlib.util.module_from_spec(specification)
@@ -21,8 +21,10 @@ def load_guard_module():
     return module
 
 
-def direct_reduction_plan(manifest_path: Path) -> dict:
-    return {
+def direct_reduction_plan(
+    manifest_path: Path, *, use_normalized_work: bool = False
+) -> dict:
+    plan = {
         "output_behavior": "save_and_stop",
         "user_inspects_result": True,
         "automatic_post_generation_actions": [],
@@ -80,20 +82,58 @@ def direct_reduction_plan(manifest_path: Path) -> dict:
             "exceptionally_complex_asset": True,
             "semantic_or_hybrid_would_lose_identity": True,
             "direct_reduction_reason": "complex scanned assembly",
+            "uses_normalized_work_source": use_normalized_work,
         },
     }
+    if use_normalized_work:
+        plan["source_identity"]["normalized_work_object"] = (
+            "SOURCE_HIGH_NORMALIZED_WORK"
+        )
+    return plan
 
 
-def write_manifest(tmp_path: Path, *, components: int, duplicate_ratio: float) -> Path:
+def write_manifest(
+    tmp_path: Path,
+    *,
+    components: int,
+    duplicate_ratio: float,
+    normalized_work: bool = False,
+) -> Path:
     path = tmp_path / "source-manifest.json"
     path.write_text(
         json.dumps(
             {
-                "schema": "li3d-retopology-fbx-source-v2",
+                "schema": "li3d-retopology-fbx-source-v3",
                 "source_topology": {
                     "face_components": components,
                     "duplicate_vertex_ratio": duplicate_ratio,
                 },
+                **(
+                    {
+                        "normalized_work_source": {
+                            "created": True,
+                            "qualified": True,
+                            "object_name": "SOURCE_HIGH_NORMALIZED_WORK",
+                            "method": "exact_position_weld_on_work_copy",
+                            "source_high_unchanged": True,
+                            "polygon_count_preserved": True,
+                            "world_bounds_preserved": True,
+                            "topology": {
+                                "finite_coordinates": True,
+                                "face_components": 1,
+                                "boundary_edges": 0,
+                                "multi_face_nonmanifold_edges": 0,
+                                "loose_edges": 0,
+                                "loose_vertices": 0,
+                                "duplicate_vertices": 0,
+                                "zero_area_faces": 0,
+                                "inconsistent_orientation_edges": 0,
+                            },
+                        }
+                    }
+                    if normalized_work
+                    else {}
+                ),
             }
         ),
         encoding="utf-8",
@@ -121,6 +161,25 @@ def test_clean_integrated_source_remains_eligible_for_direct_reduction(
     manifest = write_manifest(tmp_path, components=1, duplicate_ratio=0.0)
 
     errors, warnings = module.guard(direct_reduction_plan(manifest))
+
+    assert warnings == []
+    assert errors == []
+
+
+def test_exact_weld_work_copy_allows_safe_fragmented_source_reduction(
+    tmp_path: Path,
+) -> None:
+    module = load_guard_module()
+    manifest = write_manifest(
+        tmp_path,
+        components=38_697,
+        duplicate_ratio=0.5159,
+        normalized_work=True,
+    )
+
+    errors, warnings = module.guard(
+        direct_reduction_plan(manifest, use_normalized_work=True)
+    )
 
     assert warnings == []
     assert errors == []

@@ -35,7 +35,7 @@ def nonempty_list(value: object) -> bool:
     return isinstance(value, list) and bool(value)
 
 
-def source_topology_from_manifest(plan: dict) -> tuple[dict | None, str | None]:
+def source_manifest_from_plan(plan: dict) -> tuple[dict | None, str | None]:
     source = plan.get("source_identity")
     if not isinstance(source, dict):
         return None, "source_identity is unavailable"
@@ -49,10 +49,9 @@ def source_topology_from_manifest(plan: dict) -> tuple[dict | None, str | None]:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         return None, f"source manifest is unreadable: {error}"
-    topology = manifest.get("source_topology")
-    if not isinstance(topology, dict):
-        return None, "source manifest has no source_topology"
-    return topology, None
+    if not isinstance(manifest, dict):
+        return None, "source manifest is not a JSON object"
+    return manifest, None
 
 
 def guard(plan: object) -> tuple[list[str], list[str]]:
@@ -220,36 +219,112 @@ def guard(plan: object) -> tuple[list[str], list[str]]:
                 errors.append(f"count_evidence_policy.{key} must be false")
 
     if method == "controlled_direct_reduction":
-        source_topology, source_topology_error = source_topology_from_manifest(plan)
+        source_manifest, source_manifest_error = source_manifest_from_plan(plan)
+        source_topology_value = (
+            source_manifest.get("source_topology")
+            if isinstance(source_manifest, dict)
+            else None
+        )
+        source_topology = (
+            source_topology_value if isinstance(source_topology_value, dict) else None
+        )
         original_format = (
             source.get("original_source_format") if isinstance(source, dict) else None
         )
         if original_format == "fbx" and source_topology is None:
             errors.append(
                 "FBX direct reduction requires measured source_topology: "
-                + str(source_topology_error)
+                + str(source_manifest_error or "source manifest has no source_topology")
+            )
+        evidence = plan.get("direct_reduction_evidence")
+        uses_normalized_work = bool(
+            isinstance(evidence, dict)
+            and evidence.get("uses_normalized_work_source") is True
+        )
+        normalized_work = (
+            source_manifest.get("normalized_work_source")
+            if isinstance(source_manifest, dict)
+            else None
+        )
+        normalized_topology = (
+            normalized_work.get("topology")
+            if isinstance(normalized_work, dict)
+            and isinstance(normalized_work.get("topology"), dict)
+            else None
+        )
+        normalized_work_qualified = bool(
+            isinstance(normalized_work, dict)
+            and normalized_work.get("created") is True
+            and normalized_work.get("qualified") is True
+            and normalized_work.get("source_high_unchanged") is True
+            and normalized_work.get("polygon_count_preserved") is True
+            and normalized_work.get("world_bounds_preserved") is True
+            and normalized_work.get("method")
+            == "exact_position_weld_on_work_copy"
+            and isinstance(normalized_work.get("object_name"), str)
+            and normalized_work["object_name"]
+            and isinstance(normalized_topology, dict)
+            and normalized_topology.get("finite_coordinates") is True
+            and isinstance(normalized_topology.get("face_components"), int)
+            and 0 < normalized_topology["face_components"]
+            <= DIRECT_REDUCTION_MAX_SOURCE_COMPONENTS
+            and all(
+                normalized_topology.get(field) == 0
+                for field in (
+                    "boundary_edges",
+                    "multi_face_nonmanifold_edges",
+                    "loose_edges",
+                    "loose_vertices",
+                    "duplicate_vertices",
+                    "zero_area_faces",
+                    "inconsistent_orientation_edges",
+                )
+            )
+        )
+        if uses_normalized_work and not normalized_work_qualified:
+            errors.append(
+                "uses_normalized_work_source requires a qualified immutable-manifest "
+                "normalized work copy"
+            )
+        if (
+            uses_normalized_work
+            and normalized_work_qualified
+            and isinstance(source, dict)
+            and source.get("normalized_work_object")
+            != normalized_work.get("object_name")
+        ):
+            errors.append(
+                "source_identity.normalized_work_object must match the qualified "
+                "manifest work object"
             )
         if source_topology is not None:
             components = source_topology.get("face_components")
             duplicate_ratio = source_topology.get("duplicate_vertex_ratio")
             if not isinstance(components, int) or components < 1:
                 errors.append("source_topology.face_components must be a positive integer")
-            elif components > DIRECT_REDUCTION_MAX_SOURCE_COMPONENTS:
+            elif (
+                components > DIRECT_REDUCTION_MAX_SOURCE_COMPONENTS
+                and not (uses_normalized_work and normalized_work_qualified)
+            ):
                 errors.append(
                     "whole-object direct reduction is forbidden for fragmented source topology: "
                     f"face_components={components} > {DIRECT_REDUCTION_MAX_SOURCE_COMPONENTS}; "
-                    "use semantic_reconstruction or per_component_hybrid"
+                    "use the qualified normalized work copy, semantic_reconstruction, "
+                    "or per_component_hybrid"
                 )
             if not isinstance(duplicate_ratio, (int, float)):
                 errors.append("source_topology.duplicate_vertex_ratio must be numeric")
-            elif float(duplicate_ratio) > DIRECT_REDUCTION_MAX_DUPLICATE_VERTEX_RATIO:
+            elif (
+                float(duplicate_ratio) > DIRECT_REDUCTION_MAX_DUPLICATE_VERTEX_RATIO
+                and not (uses_normalized_work and normalized_work_qualified)
+            ):
                 errors.append(
                     "whole-object direct reduction is forbidden for triangle-soup source topology: "
                     f"duplicate_vertex_ratio={float(duplicate_ratio):.6f} > "
                     f"{DIRECT_REDUCTION_MAX_DUPLICATE_VERTEX_RATIO:.2f}; "
-                    "use semantic_reconstruction or per_component_hybrid"
+                    "use the qualified normalized work copy, semantic_reconstruction, "
+                    "or per_component_hybrid"
                 )
-        evidence = plan.get("direct_reduction_evidence")
         if not isinstance(evidence, dict):
             errors.append("direct_reduction_evidence is required")
         else:
@@ -260,6 +335,8 @@ def guard(plan: object) -> tuple[list[str], list[str]]:
                 errors.append("integrated_continuous_object must be boolean")
             if evidence.get("fresh_high_duplicate") is not True:
                 errors.append("direct reduction must start from a fresh high duplicate")
+            if not isinstance(evidence.get("uses_normalized_work_source"), bool):
+                errors.append("uses_normalized_work_source must be boolean")
             if evidence.get("structural_subregions_checked") is not True:
                 errors.append("direct reduction requires structural_subregions_checked=true")
             if not isinstance(evidence.get("structured_shell_or_assembly_absent"), bool):

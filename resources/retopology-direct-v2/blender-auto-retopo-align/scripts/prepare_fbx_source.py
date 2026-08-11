@@ -11,12 +11,16 @@ import os
 import sys
 import traceback
 
+import bmesh
 import bpy
 import mathutils
 
 
 HIGH_OBJECT_NAME = "SOURCE_HIGH"
 HIGH_MESH_NAME = "SOURCE_HIGH_MESH"
+NORMALIZED_WORK_OBJECT_NAME = "SOURCE_HIGH_NORMALIZED_WORK"
+NORMALIZED_WORK_MESH_NAME = "SOURCE_HIGH_NORMALIZED_WORK_MESH"
+DIRECT_REDUCTION_MAX_NORMALIZED_COMPONENTS = 512
 SAFE_AUXILIARY_TYPES = {"EMPTY", "CAMERA", "LIGHT"}
 
 
@@ -129,6 +133,14 @@ def source_topology(mesh_object: bpy.types.Object) -> dict[str, int | float | bo
     used_vertices = polygon_vertices | edge_vertices
     components = len({find(index) for index in used_vertices}) if used_vertices else 0
     duplicate_vertices = len(mesh.vertices) - len(coordinate_keys)
+    editable = bmesh.new()
+    try:
+        editable.from_mesh(mesh)
+        inconsistent_orientation_edges = sum(
+            edge.is_manifold and not edge.is_contiguous for edge in editable.edges
+        )
+    finally:
+        editable.free()
     return {
         "finite_coordinates": finite_coordinates,
         "vertices": len(mesh.vertices),
@@ -152,7 +164,93 @@ def source_topology(mesh_object: bpy.types.Object) -> dict[str, int | float | bo
             else 0.0
         ),
         "zero_area_faces": zero_area_faces,
+        "inconsistent_orientation_edges": inconsistent_orientation_edges,
     }
+
+
+def build_normalized_work_copy(
+    high_object: bpy.types.Object,
+    original_topology: dict[str, int | float | bool],
+    original_bounds: dict[str, list[float]],
+) -> tuple[bpy.types.Object | None, dict]:
+    """Build a qualified exact-weld work copy while preserving SOURCE_HIGH."""
+
+    duplicate_vertices = int(original_topology["duplicate_vertices"])
+    if duplicate_vertices <= 0:
+        return None, {
+            "created": False,
+            "qualified": False,
+            "reason": "source has no duplicate-position vertices",
+        }
+
+    work_object = high_object.copy()
+    work_object.data = high_object.data.copy()
+    work_object.name = NORMALIZED_WORK_OBJECT_NAME
+    work_object.data.name = NORMALIZED_WORK_MESH_NAME
+    work_object.parent = None
+    work_object.matrix_world = high_object.matrix_world.copy()
+    bpy.context.collection.objects.link(work_object)
+
+    diagonal = max(float(work_object.dimensions.length), 1.0e-9)
+    weld_tolerance = max(diagonal * 1.0e-8, 1.0e-10)
+    editable = bmesh.new()
+    try:
+        editable.from_mesh(work_object.data)
+        bmesh.ops.remove_doubles(
+            editable,
+            verts=list(editable.verts),
+            dist=weld_tolerance,
+        )
+        editable.to_mesh(work_object.data)
+    finally:
+        editable.free()
+    work_object.data.update()
+
+    normalized_topology = source_topology(work_object)
+    normalized_bounds = world_bounds(work_object)
+    polygon_count_preserved = (
+        normalized_topology["polygons"] == original_topology["polygons"]
+    )
+    world_bounds_preserved = bounds_match(original_bounds, normalized_bounds)
+    qualified = bool(
+        normalized_topology["finite_coordinates"]
+        and polygon_count_preserved
+        and world_bounds_preserved
+        and normalized_topology["face_components"]
+        <= DIRECT_REDUCTION_MAX_NORMALIZED_COMPONENTS
+        and normalized_topology["boundary_edges"] == 0
+        and normalized_topology["multi_face_nonmanifold_edges"] == 0
+        and normalized_topology["loose_edges"] == 0
+        and normalized_topology["loose_vertices"] == 0
+        and normalized_topology["duplicate_vertices"] == 0
+        and normalized_topology["zero_area_faces"] == 0
+        and normalized_topology["inconsistent_orientation_edges"] == 0
+    )
+    evidence = {
+        "created": True,
+        "qualified": qualified,
+        "object_name": NORMALIZED_WORK_OBJECT_NAME,
+        "mesh_data_name": NORMALIZED_WORK_MESH_NAME,
+        "method": "exact_position_weld_on_work_copy",
+        "weld_tolerance": weld_tolerance,
+        "source_high_unchanged": True,
+        "polygon_count_preserved": polygon_count_preserved,
+        "world_bounds_preserved": world_bounds_preserved,
+        "vertices_removed": int(original_topology["vertices"])
+        - int(normalized_topology["vertices"]),
+        "topology": normalized_topology,
+        "world_bounds": normalized_bounds,
+    }
+    if not qualified:
+        bpy.data.objects.remove(work_object, do_unlink=True)
+        return None, evidence
+
+    work_object["li3d_role"] = "retopology_normalized_work"
+    work_object["li3d_source_high"] = HIGH_OBJECT_NAME
+    work_object.hide_set(True)
+    work_object.hide_viewport = True
+    work_object.hide_render = True
+    return work_object, evidence
 
 
 def write_json_atomic(file_path: str, payload: dict) -> None:
@@ -285,17 +383,29 @@ def main() -> None:
     high_object["li3d_source_mesh_names"] = json.dumps(
         [item["name"] for item in source_meshes], ensure_ascii=False
     )
+    original_topology = source_topology(high_object)
+    normalized_work_object, normalized_work_source = build_normalized_work_copy(
+        high_object,
+        original_topology,
+        after_bounds,
+    )
+    if source_topology(high_object) != original_topology:
+        raise RuntimeError("Creating the normalized work copy changed SOURCE_HIGH.")
 
     scene = bpy.context.scene
     scene["li3d_retopology_source_format"] = "fbx"
     scene["li3d_retopology_high_object"] = HIGH_OBJECT_NAME
     scene["li3d_retopology_source_sha256"] = input_sha256
+    if normalized_work_object is not None:
+        scene["li3d_retopology_normalized_work_object"] = (
+            NORMALIZED_WORK_OBJECT_NAME
+        )
     bpy.ops.object.select_all(action="DESELECT")
     high_object.select_set(True)
     bpy.context.view_layer.objects.active = high_object
 
     manifest = {
-        "schema": "li3d-retopology-fbx-source-v2",
+        "schema": "li3d-retopology-fbx-source-v3",
         "blender_version": bpy.app.version_string,
         "source_format": "fbx",
         "source_filepath": input_path,
@@ -311,7 +421,8 @@ def main() -> None:
         "joined_meshes": len(source_meshes) > 1,
         "vertices": len(high_object.data.vertices),
         "polygons": len(high_object.data.polygons),
-        "source_topology": source_topology(high_object),
+        "source_topology": original_topology,
+        "normalized_work_source": normalized_work_source,
         "world_matrix": matrix_rows(high_object.matrix_world),
         "world_bounds": after_bounds,
     }

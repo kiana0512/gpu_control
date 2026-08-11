@@ -16,12 +16,16 @@
 `0.621915`，以及数千个微小面分量。截图中的黑缝、长刺和破面来自这个降面结果，不是显示材质、
 坐标对齐或 Substance Baker 导致。
 
-## 2. v3.0.1 修复
+## 2. v3.0.2 修复
 
 - FBX 源准备阶段只读记录顶点、边、面、连通分量、边界、重复点、松散几何、非流形边和零面积面；
   原高模字节和场景几何不修改。
-- `controlled_direct_reduction` 新增碎片硬门禁：超过 `512` 个面分量或重复位置顶点比例超过 `25%`
-  时，禁止整物体直接降面，必须使用语义重建或逐组件混合策略。“异常复杂”不再绕过该门禁。
+- 源准备器在不修改 `SOURCE_HIGH` 的前提下，可创建 `SOURCE_HIGH_NORMALIZED_WORK`：只在工作副本上
+  以模型对角线 `1e-8` 的严格容差焊接同位置顶点，并要求面数和世界包围盒完全保持。工作副本只有在
+  变成闭合流形、0 重复点、0 游离几何、0 退化面且分量数不超过 `512` 时才标记为 qualified。
+- `controlled_direct_reduction` 新增碎片硬门禁：原高模超过 `512` 个面分量或重复位置顶点比例超过
+  `25%` 时，禁止直接降 `SOURCE_HIGH`；只有不可篡改源清单中的 normalized work 已 qualified 且计划
+  明确使用它时才允许降工作副本，否则必须使用语义重建或逐组件混合。“异常复杂”不再绕过该门禁。
 - finalizer 在生成 Blend、保存后 Blend 回读、全新场景 FBX 回读三个阶段执行拓扑硬门禁；禁止空低模、
   低模面数不低于高模、非有限坐标、松散边点、重复面、退化面、多面非流形边和错误面朝向。
 - Blend 阶段还禁止重复位置顶点；FBX 因 UV/法线接缝可能合法拆点，不按坐标重复判错，但仍禁止未使用
@@ -33,13 +37,17 @@
 - 拓扑失败使用明确的 `RETOPOLOGY_TOPOLOGY_INVALID`，Worker 映射为非自动重试的
   `RETOPOLOGY_QA_FAILED`，避免相同坏策略重复消耗 Codex 和 Blender 时间。
 
-这次修复不清理、补洞或覆盖已经生成的坏低模，也不修改高模；它阻止错误策略并要求生成端交付真正
-可烘焙的低模。坐标恢复、UV 保护、FBX 米制合同和原子交付合同保持不变。
+这次修复不清理、补洞或覆盖已经生成的坏低模，也不修改高模；只对服务器创建的临时工作副本恢复
+原 FBX 被拆掉的网格邻接。坐标恢复、UV 保护、FBX 米制合同和原子交付合同保持不变。
 
 ## 3. 验证证据
 
-- 对精确问题高模运行新版只读检查，得到 `38697` 个面分量和 `0.515926` 重复顶点比例；整物体直接
-  降面计划被 guard 拒绝。
+- 对精确问题高模运行新版只读检查，得到 `38697` 个面分量和 `0.515926` 重复顶点比例；原高模直接
+  降面计划被 guard 拒绝。严格焊接工作副本移除 `159802` 个重复点后变为 1 个闭合流形，同时保持
+  `300000` 面和原世界包围盒，因此被标记为 qualified。
+- 对该 qualified 工作副本执行与原故障相同的 5% Collapse Decimate，结果为 `15000` 面、`7436`
+  顶点、1 个闭合分量、1 个 UV 层，开边/游离边点/重复点面/退化面/多面非流形边/错误朝向全部为 0；
+  随后的 Blend 保存回读和高低模 FBX 全新场景回读全部通过。
 - 把精确问题低模送入新版 finalizer，交付在写出正式文件前被拒绝，并报告
   `BOUNDARY_EDGES=20308`、`LOOSE_EDGES=41436`、`DUPLICATE_VERTICES=6058`。
 - 干净合成高低模成功通过生成 Blend、保存回读和高低模 FBX 全新场景回读，且 Asset API 拓扑证据
@@ -48,14 +56,14 @@
 
 ## 4. 发布与回滚
 
-候选身份：自动拓扑包 `3.0.1`，包清单 SHA-256
-`99d2f99f3b0d1732730edc9edf6e68f1a4deadcf80009d88248b891ce8a0e22c`；Asset API
-`1.6.20-retopo-topology-v301`；Blender Worker `1.4.21-retopo-topology-v301`；Worker skill
-`asset-skills-auto-retopo-align-v3.0.1`。
+候选身份：自动拓扑包 `3.0.2`，包清单 SHA-256
+`258c5b04686f938a6bbbe82f713701f5274b84ef56dda4b577105de4b7a1b542`；Asset API
+`1.6.21-retopo-topology-v302`；Blender Worker `1.4.22-retopo-topology-v302`；Worker skill
+`asset-skills-auto-retopo-align-v3.0.2`。
 
 生产滚动必须先确认无活动 Asset 任务，再按节点执行 `DRAINING -> current_jobs=0 -> 替换 Worker ->
 包自检/健康检查 -> ACTIVE`。不得重启 ComfyUI，不得修改 ImageClip、ModelViewCreator 或其工作流。
 
-回滚时必须同时恢复 Asset API `1.6.19-retopo-align-v3`、Worker
-`1.4.20-retopo-align-v3`、skill `asset-skills-auto-retopo-align-v3.0.0` 和 v3.0.0 包；不能只回滚一侧，
+回滚时必须同时恢复 Asset API `1.6.20-retopo-topology-v301`、Worker
+`1.4.21-retopo-topology-v301`、skill `asset-skills-auto-retopo-align-v3.0.1` 和 v3.0.1 包；不能只回滚一侧，
 否则精确包身份门禁会合理拒绝接单。

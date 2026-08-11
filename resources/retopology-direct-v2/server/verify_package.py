@@ -138,6 +138,7 @@ def main() -> int:
             "不得给低模保留展示平移",
             "source_topology",
             "RETOPOLOGY_TOPOLOGY_INVALID",
+            "SOURCE_HIGH_NORMALIZED_WORK",
         ),
         "agent prompt",
         errors,
@@ -169,6 +170,17 @@ def main() -> int:
         errors,
     )
     require_tokens(
+        SKILL / "scripts" / "prepare_fbx_source.py",
+        (
+            "SOURCE_HIGH_NORMALIZED_WORK",
+            "exact_position_weld_on_work_copy",
+            "source_high_unchanged",
+            "normalized_work_source",
+        ),
+        "FBX source preparation",
+        errors,
+    )
+    require_tokens(
         SKILL / "scripts" / "guard_shape_authority_plan.py",
         (
             "component_method_map",
@@ -177,6 +189,8 @@ def main() -> int:
             "direct_reduction_reason",
             "DIRECT_REDUCTION_MAX_SOURCE_COMPONENTS",
             "DIRECT_REDUCTION_MAX_DUPLICATE_VERTEX_RATIO",
+            "uses_normalized_work_source",
+            "normalized_work_qualified",
         ),
         "method-routing guard",
         errors,
@@ -222,7 +236,7 @@ def main() -> int:
 
     payload = {
         "ok": not errors,
-        "package_version": "3.0.1",
+        "package_version": "3.0.2",
         "skill_id": SKILL_ID,
         "skill_file_count": len(actual_skill),
         "one_click_entrypoint": str(ROOT / "server" / "one_click_retopology.py"),

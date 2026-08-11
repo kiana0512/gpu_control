@@ -18,11 +18,11 @@ FBX 输入已经由技能的 `prepare_fbx_source.py` 导入为 `SOURCE_HIGH`。�
 
 1. 只读打开工作 Blend；指定高模是唯一形状依据，也是唯一坐标依据。
 2. 在创建几何前完成测量、方法选择和 shape-authority plan；写入 `{{JOB_DIR}}/plans/` 并运行 `guard_shape_authority_plan.py`。
-3. 每个指定高模只生成一个低模。方法只能是 `semantic_reconstruction`、`controlled_direct_reduction` 或 `per_component_hybrid`。普通硬表面优先结构重建/组件混合；不要用全物体 Decimate 或 remesh 代替分析。必须读取源清单的 `source_topology`；当其碎片或重复顶点超过 guard 安全范围时，禁止整模 Decimate，即使资产被判断为“极复杂”也不例外。
+3. 每个指定高模只生成一个低模。方法只能是 `semantic_reconstruction`、`controlled_direct_reduction` 或 `per_component_hybrid`。普通硬表面优先结构重建/组件混合；不要用全物体 Decimate 或 remesh 代替分析。必须读取源清单的 `source_topology` 和 `normalized_work_source`。当原高模是重复顶点 triangle soup 时，只有清单明确 `normalized_work_source.qualified=true` 才能对 `SOURCE_HIGH_NORMALIZED_WORK` 做 controlled direct reduction；计划中同时写 `source_identity.normalized_work_object` 和 `direct_reduction_evidence.uses_normalized_work_source=true`。禁止焊接、降面或替换 `SOURCE_HIGH`。没有合格工作副本时改用语义重建/组件混合。
 4. 低模必须直接建立在高模本地坐标系：所有构建点使用 `source_high_local`，低模 `matrix_world` 必须等于对应高模的源矩阵。不要归零高模，不要只靠包围盒恢复坐标。
 5. 无人值守任务不做左右分开展示；不得给低模保留展示平移。低模使用不透明黄色/橙色材质或对象色，保持可见，不用半透明或 X-ray。
 6. 若构建时临时归一化，保存完整 4x4 `work_to_world`，并在保存前按技能的坐标恢复公式回到高模本地坐标。
-7. 低模创建后只允许运行一次确定性的拓扑可交付性检查、设置显示、保存和记录数量；不得自动渲染、评分、修正、重开、重试或生成第二版。若存在游离边/顶点、重合几何、退化面、多面非流形边或不连续法线，必须以 `RETOPOLOGY_TOPOLOGY_INVALID` 让本次生成失败，禁止写成功报告。
+7. 低模创建后只允许运行一次确定性的拓扑可交付性检查、设置显示、保存和记录数量；不得自动渲染、评分、修正、重开、重试或生成第二版。低模必须为闭合流形；若存在边界/开边、游离边/顶点、重合几何、退化面、多面非流形边或不连续法线，必须以 `RETOPOLOGY_TOPOLOGY_INVALID` 让本次生成失败，禁止写成功报告。
 8. 高模保持不变并可见，把生成阶段场景保存到 `{{OUTPUT_BLEND}}`。
 9. 同一次构建结束前写 `{{JOB_DIR}}/generation_report.json`，状态为 `generated_for_user_inspection`。每个 asset 必须包含：
    - `high_object`

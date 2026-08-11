@@ -99,11 +99,12 @@ For a direct-reduction asset, set `method_decision` to `controlled_direct_reduct
   "joined_source_state_used_as_integration_evidence": false,
   "exceptionally_complex_asset": false,
   "semantic_or_hybrid_would_lose_identity": false,
+  "uses_normalized_work_source": false,
   "direct_reduction_reason": "integrated irregular surface is the asset identity"
 }
 ```
 
-For the user's exceptionally-complex fallback, `integrated_continuous_object` and `structured_shell_or_assembly_absent` may be `false`, but set `exceptionally_complex_asset` and `semantic_or_hybrid_would_lose_identity` to `true` and record a non-empty current-high `direct_reduction_reason`. This fallback is still rejected when the immutable FBX source manifest reports fragmentation or duplicate-triangle-soup topology outside the server safety envelope. That limit is a corruption-prevention gate, not shape evidence.
+For the user's exceptionally-complex fallback, `integrated_continuous_object` and `structured_shell_or_assembly_absent` may be `false`, but set `exceptionally_complex_asset` and `semantic_or_hybrid_would_lose_identity` to `true` and record a non-empty current-high `direct_reduction_reason`. If the immutable FBX source manifest reports fragmentation or duplicate-triangle-soup topology outside the normal safety envelope, direct reduction is allowed only when `normalized_work_source.qualified` is true. In that case add `source_identity.normalized_work_object` with the exact manifest object name and set `uses_normalized_work_source` to true; reduce only that work copy. Otherwise the fallback remains rejected.
 
 `SOURCE_HIGH` is joined by the FBX preparation step, so its object count cannot satisfy direct-reduction evidence. A vessel/container plus irregular contents must use `per_component_hybrid`; record separate component decisions for the structured shell and content region, including the measured rim/cavity or contact/occlusion boundary that routes each component.
 
