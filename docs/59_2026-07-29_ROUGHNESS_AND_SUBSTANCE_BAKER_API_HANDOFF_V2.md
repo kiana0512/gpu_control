@@ -130,13 +130,17 @@ Content-Type: multipart/form-data
 
 | Form 字段 | 必填 | 用途 |
 |---|---:|---|
-| `low_mesh` | 是 | 已有有效 UV 的最终低模，FBX/OBJ |
-| `high_mesh` | 是 | 对应高模，FBX/OBJ |
+| `low_mesh` | 是 | 已有有效 UV 的最终低模，FBX/OBJ/GLB |
+| `high_mesh` | 是 | 对应高模，FBX/OBJ/GLB |
 | `base_color_texture` | 是 | 高模对应 Base Color，PNG/JPG/TIFF/TGA/EXR |
 | `roughness_texture` | 是 | 高模对应 Roughness |
 | `metallic_texture` | 是 | 高模对应 Metallic |
-| `cage_mesh` | 否 | 可选 Cage，FBX/OBJ |
+| `cage_mesh` | 否 | 可选 Cage，FBX/OBJ/GLB |
 | `metadata` | 是 | 上述 JSON 字符串 |
+
+这里的 GLB 是单文件二进制 glTF。生产 `substance3d_baker.exe 15.1.0` 已通过真实 GLB
+`info --list-all` 原生解析验证；接口只透传场景，不转换几何，也不改坐标、拓扑、UV 或材质。
+依赖外部文件的 `.gltf` 和 Blender 工程 `.blend` 不属于该合同。
 
 其他兼容 profile：
 

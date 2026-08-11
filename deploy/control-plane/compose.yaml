@@ -61,7 +61,7 @@ services:
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
       sbom: true
       provenance: mode=max
-    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}unified-scheduler-asset-api:${ASSET_API_IMAGE_TAG:-1.6.16-retopology-v6-client-filename-v1}
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}unified-scheduler-asset-api:${ASSET_API_IMAGE_TAG:-1.6.17-substance-glb-input-v1}
     environment:
       TMPDIR: /srv/gpu-control/assets
       ASSET_ROOT: ${ASSET_ROOT:-/srv/gpu-control/assets}

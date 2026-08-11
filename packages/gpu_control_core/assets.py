@@ -9,7 +9,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SUPPORTED_ASSET_EXTENSIONS = frozenset({".fbx", ".obj", ".glb", ".gltf", ".blend"})
 SUPPORTED_REFERENCE_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp"})
-SUPPORTED_BAKER_EXTENSIONS = frozenset({".fbx", ".obj"})
+# Substance 3D Baker 15.1.0 on the production Windows host natively reads
+# binary glTF scenes.  Li3D's project/high-poly artifacts are commonly GLB,
+# while retopology/UV deliveries are FBX, so the bake boundary must accept
+# both sides of that real hand-off without rewriting model geometry.
+SUPPORTED_BAKER_EXTENSIONS = frozenset({".fbx", ".obj", ".glb"})
 SUPPORTED_BAKER_TEXTURE_EXTENSIONS = frozenset(
     {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".tga", ".exr"}
 )
@@ -607,10 +611,10 @@ def validate_reference_image_filename(filename: str) -> str:
 
 
 def validate_baker_filename(filename: str) -> str:
-    """Return a safe FBX/OBJ basename accepted by the fixed Baker profiles."""
+    """Return a safe FBX/OBJ/GLB basename accepted by the fixed Baker profiles."""
     filename = validate_asset_filename(filename)
     if Path(filename).suffix.lower() not in SUPPORTED_BAKER_EXTENSIONS:
-        raise ValueError("Substance Baker inputs must be FBX or OBJ")
+        raise ValueError("Substance Baker inputs must be FBX, OBJ or GLB")
     return filename
 
 

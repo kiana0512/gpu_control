@@ -1,7 +1,7 @@
 # 实施状态
 
 最后更新：2026-08-11
-版本：生产 API/Scheduler 1.5.12、Web 1.5.11-retopo-direct-v2 / Asset API 1.6.16-retopology-v6-client-filename-v1 / Worker
+版本：生产 API/Scheduler 1.5.12、Web 1.5.11-retopo-direct-v2 / Asset API 1.6.17-substance-glb-input-v1 / Worker
 1.4.17-uv-fbx-meter-contract-v1 / DB 20260810_0013；源码审计、Direct V2 拓扑后纯变换高低模对齐、
 独立 UV、七方向视觉门禁和米制 FBX 重导验证已完成真实生产 canary。三节点均为 `ACTIVE / ONLINE`，
 真实抠图继续三卡并行，发布未重启三台 ComfyUI。第三次正式 100 VU 在

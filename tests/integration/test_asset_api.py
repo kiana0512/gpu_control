@@ -420,6 +420,61 @@ async def create_minimal_substance_job(
     )
 
 
+async def test_substance_baker_accepts_native_glb_mesh_inputs(tmp_path: Path) -> None:
+    metadata = {
+        "external_asset_id": "bake:glb-native:normal:g1",
+        "options": {
+            "profile": "pbr-core-v1",
+            "resolution": 256,
+            "texture_cache_mb": 8192,
+        },
+    }
+    async for _settings, client in prepared_asset_app(tmp_path):
+        created = await client.post(
+            "/api/v1/assets/bake/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "bake:glb-native:normal:g1",
+            },
+            files={
+                "low_mesh": ("chair_low.glb", b"low-glb", "model/gltf-binary"),
+                "high_mesh": ("chair_high.glb", b"high-glb", "model/gltf-binary"),
+                "metadata": (None, json.dumps(metadata)),
+            },
+        )
+        assert created.status_code == 202, created.text
+        assert created.json()["job_type"] == "SUBSTANCE_BAKE_V1"
+
+        rejected = await client.post(
+            "/api/v1/assets/bake/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "bake:blend-rejected:g1",
+            },
+            files={
+                "low_mesh": ("chair_low.blend", b"blend", "application/octet-stream"),
+                "metadata": (
+                    None,
+                    json.dumps(
+                        {
+                            "external_asset_id": "bake:blend-rejected:g1",
+                            "options": {
+                                "profile": "ao-self-v1",
+                                "resolution": 256,
+                                "texture_cache_mb": 8192,
+                            },
+                        }
+                    ),
+                ),
+            },
+        )
+        assert rejected.status_code == 422, rejected.text
+        assert rejected.json()["detail"] == {
+            "code": "BAKE_INPUT_INVALID",
+            "message": "Substance Baker inputs must be FBX, OBJ or GLB",
+        }
+
+
 async def expire_asset_idempotency_key(app: Any, key: str) -> None:
     database = app.state.db
     async with database.session() as db:
