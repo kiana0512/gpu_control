@@ -545,6 +545,41 @@ def direct_v2_completion_files(
     result_bytes = json.dumps(context["result"]).encode()
     alignment_bytes = json.dumps(alignment_report).encode()
     source_manifest_bytes = json.dumps(context["source_manifest"]).encode()
+    shape_validation = {
+        "pass": True,
+        "fbx_readback": True,
+        "gate": {
+            "max_dimension_error_ratio": 0.03,
+            "max_low_to_high_p95_ratio": 0.04,
+            "max_high_to_low_p95_ratio": 0.04,
+        },
+        "high": {"triangles": 200, "uv_layers": 1},
+        "low": {
+            "triangles": 100,
+            "uv_layers": 1,
+            "topology": {
+                "components": 1,
+                "degenerate_faces": 0,
+                "boundary_edges": 0,
+                "nonmanifold_edges": 0,
+            },
+        },
+        "comparison": {
+            "center_error_ratio": 0.0,
+            "dimension_error_ratio_max": 0.01,
+            "low_to_high_p95_ratio": 0.02,
+            "high_to_low_p95_ratio": 0.02,
+        },
+    }
+    shape_validation_bytes = json.dumps(shape_validation).encode()
+    alignment_views_buffer = io.BytesIO()
+    with zipfile.ZipFile(alignment_views_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for view in ("front", "back", "left", "right", "top", "bottom", "perspective"):
+            image_buffer = io.BytesIO()
+            Image.new("RGB", (8, 8), (255, 128, 0)).save(image_buffer, format="PNG")
+            archive.writestr(f"{view}.png", image_buffer.getvalue())
+        archive.writestr("views.json", json.dumps({"views": {}}).encode())
+    alignment_views_bytes = alignment_views_buffer.getvalue()
     manifest = {
         "schema_version": schema_version,
         "job_id": context["job_id"],
@@ -563,6 +598,9 @@ def direct_v2_completion_files(
         "generation_report_sha256": hashlib.sha256(generation_bytes).hexdigest(),
         "result_sha256": hashlib.sha256(result_bytes).hexdigest(),
         "source_manifest_sha256": hashlib.sha256(source_manifest_bytes).hexdigest(),
+        "shape_validation": shape_validation,
+        "shape_validation_sha256": hashlib.sha256(shape_validation_bytes).hexdigest(),
+        "alignment_views_sha256": hashlib.sha256(alignment_views_bytes).hexdigest(),
         "status": "generated_for_user_inspection_aligned",
         "coordinate_authority": "high_object_matrix_world",
         "alignment_mode": "source_matrix_restore",
@@ -584,6 +622,16 @@ def direct_v2_completion_files(
             "bake_alignment_report.json",
             alignment_bytes,
             "application/json",
+        ),
+        "shape_validation": (
+            "bake_pair_validation.json",
+            shape_validation_bytes,
+            "application/json",
+        ),
+        "alignment_views": (
+            "alignment_views.zip",
+            alignment_views_bytes,
+            "application/zip",
         ),
         "generation_report": (
             "generation_report.json",

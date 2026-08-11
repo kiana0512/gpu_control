@@ -2,13 +2,16 @@
 
 ## 2026-08-11 — Automatic retopology shape and seven-view gate v3.0.9
 
+- Hotfix Asset API `1.6.29-retopo-shape-artifacts-v1` to atomically accept, hash-bind, validate,
+  and publish the new shape report and seven-view ZIP; unknown or malformed evidence remains a hard
+  422 rejection.
 - Validate every freshly exported high/low FBX pair with a 3% maximum-axis dimension gate and 4%
   bidirectional P95 surface-distance gates before publication.
 - Generate and retain front, back, left, right, top, bottom, and perspective opaque-orange wireframe
   evidence for every accepted delivery; reject missing or failed evidence.
 - Classify shape/visual mismatch as a bounded generated-candidate QA failure so one fresh retry may
   replace the rejected candidate without weakening coordinate, topology, UV, or FBX integrity gates.
-- Release Asset API `1.6.28-retopo-shape-view-gate-v1` and Blender Worker
+- Release Asset API `1.6.29-retopo-shape-artifacts-v1` and Blender Worker
   `1.4.30-retopo-shape-view-gate-v1`.
 
 ## 2026-08-11 — Automatic retopology generated-low cleanup v3.0.8

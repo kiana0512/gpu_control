@@ -43,6 +43,7 @@ from packages.gpu_control_core.assets import (
     lease_token_hash,
     retopology_audit_request_hash,
     retopology_auto_align_v3_evidence_valid,
+    retopology_direct_v2_shape_evidence_valid,
     retopology_direct_v2_completion_identity_valid,
     retopology_v6_process_request_hash,
     substance_bake_request_hash,
@@ -282,6 +283,8 @@ RETOPOLOGY_DIRECT_V2_ARTIFACTS = {
     "fbx": ("bake_low.fbx", "application/octet-stream"),
     "high_fbx": ("bake_high.fbx", "application/octet-stream"),
     "alignment_report": ("bake_alignment_report.json", "application/json"),
+    "shape_validation": ("bake_pair_validation.json", "application/json"),
+    "alignment_views": ("alignment_views.zip", "application/zip"),
     "generation_report": ("generation_report.json", "application/json"),
     "delivery_manifest": ("delivery_manifest.json", "application/json"),
     "result": ("result.json", "application/json"),
@@ -3883,6 +3886,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 alignment_report = json.loads(
                     (staging / "bake_alignment_report.json").read_text("utf-8")
                 )
+                shape_validation = json.loads(
+                    (staging / "bake_pair_validation.json").read_text("utf-8")
+                )
                 source_manifest = json.loads((staging / "source_manifest.json").read_text("utf-8"))
             except (OSError, ValueError) as exc:
                 raise HTTPException(
@@ -3935,6 +3941,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or manifest.get("result_sha256") != staged_by_kind["result"].sha256
                 or manifest.get("source_manifest_sha256")
                 != staged_by_kind["source_manifest"].sha256
+                or manifest.get("shape_validation_sha256")
+                != staged_by_kind["shape_validation"].sha256
+                or manifest.get("alignment_views_sha256")
+                != staged_by_kind["alignment_views"].sha256
+                or manifest.get("shape_validation") != shape_validation
+                or not retopology_direct_v2_shape_evidence_valid(shape_validation)
                 or manifest.get("status") != "generated_for_user_inspection_aligned"
                 or manifest.get("coordinate_authority") != "high_object_matrix_world"
                 or manifest.get("alignment_mode") != "source_matrix_restore"
@@ -3955,6 +3967,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or not isinstance(source_manifest, dict)
             ):
                 raise HTTPException(422, detail={"code": "RETOPOLOGY_DIRECT_V2_IDENTITY_MISMATCH"})
+
+            required_view_files = {
+                "front.png",
+                "back.png",
+                "left.png",
+                "right.png",
+                "top.png",
+                "bottom.png",
+                "perspective.png",
+                "views.json",
+            }
+            try:
+                with zipfile.ZipFile(staging / "alignment_views.zip") as archive:
+                    if set(archive.namelist()) != required_view_files or archive.testzip() is not None:
+                        raise ValueError("alignment view member mismatch")
+                    for name in required_view_files - {"views.json"}:
+                        info = archive.getinfo(name)
+                        if info.file_size <= 0 or info.file_size > 16 * 1024 * 1024:
+                            raise ValueError("alignment view size invalid")
+                        with archive.open(name) as source, Image.open(source) as image:
+                            if image.width * image.height > cfg.max_image_pixels:
+                                raise ValueError("alignment view dimensions invalid")
+                            image.verify()
+                    views_payload = json.loads(archive.read("views.json"))
+                    if not isinstance(views_payload, dict):
+                        raise ValueError("alignment views manifest invalid")
+            except (OSError, ValueError, zipfile.BadZipFile, UnidentifiedImageError) as exc:
+                raise HTTPException(
+                    422, detail={"code": "RETOPOLOGY_ALIGNMENT_VIEWS_INVALID"}
+                ) from exc
 
             fsync_completion_staging(staging)
             job = await lock_asset_completion_for_publish(snapshot, lease, db)

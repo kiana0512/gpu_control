@@ -513,6 +513,52 @@ def retopology_bake_pair_validation_evidence_valid(payload: object) -> bool:
     )
 
 
+def retopology_direct_v2_shape_evidence_valid(payload: object) -> bool:
+    """Validate the independent fresh-FBX shape gate emitted by Direct V2."""
+
+    if not isinstance(payload, dict):
+        return False
+    gate = payload.get("gate")
+    high = payload.get("high")
+    low = payload.get("low")
+    comparison = payload.get("comparison")
+    topology = low.get("topology") if isinstance(low, dict) else None
+    if not all(isinstance(item, dict) for item in (gate, high, low, comparison, topology)):
+        return False
+
+    limits = {
+        "dimension_error_ratio_max": 0.03,
+        "low_to_high_p95_ratio": 0.04,
+        "high_to_low_p95_ratio": 0.04,
+    }
+    if (
+        payload.get("pass") is not True
+        or payload.get("fbx_readback") is not True
+        or gate.get("max_dimension_error_ratio") != limits["dimension_error_ratio_max"]
+        or gate.get("max_low_to_high_p95_ratio") != limits["low_to_high_p95_ratio"]
+        or gate.get("max_high_to_low_p95_ratio") != limits["high_to_low_p95_ratio"]
+        or not isinstance(high.get("triangles"), int)
+        or not isinstance(low.get("triangles"), int)
+        or low["triangles"] >= high["triangles"]
+        or not isinstance(low.get("uv_layers"), int)
+        or low["uv_layers"] < 1
+        or topology.get("degenerate_faces") != 0
+        or topology.get("nonmanifold_edges") != 0
+    ):
+        return False
+    center_error = comparison.get("center_error_ratio")
+    if not isinstance(center_error, (int, float)) or isinstance(center_error, bool):
+        return False
+    if not 0 <= float(center_error) <= 0.01:
+        return False
+    return all(
+        isinstance(comparison.get(name), (int, float))
+        and not isinstance(comparison.get(name), bool)
+        and 0 <= float(comparison[name]) <= limit
+        for name, limit in limits.items()
+    )
+
+
 def retopology_bake_visual_qa_evidence_valid(payload: object) -> bool:
     required_views = {"front", "back", "left", "right", "top", "bottom", "perspective"}
     if not isinstance(payload, dict):
