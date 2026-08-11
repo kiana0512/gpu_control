@@ -7,7 +7,7 @@
 
 当前生产基线为 GPU Control API/Scheduler `1.5.12`、Web `1.5.11-retopo-direct-v2`、Asset API
 `1.6.16-retopology-v6-client-filename-v1`、三台 Linux Blender Worker
-`1.4.15-retopology-uniform-scale-search-v2`、数据库 `20260810_0013`。当前总状态为
+`1.4.16-retopology-degenerate-cleanup-v1`、数据库 `20260810_0013`。当前总状态为
 `DEPLOYED_NOT_ACCEPTED`：第三次正式 100 VU、registry digest/SBOM、固定基准、完整故障矩阵和
 连续七天观察尚未闭环，禁止标记 `FROZEN` 或 `PRODUCTION_ACCEPTED`。
 
@@ -24,7 +24,8 @@
 外部 ImageClip/ModelViewCreator 工作流、模型或参数。当前 1.5.11 审计、3090-B WSL 探针、压测保护和
 待回填结果统一见 `docs/98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`；局部重绘
 交互式优先级与 1.5.12 发布见
-`docs/103_2026-08-10_MODELVIEW_INPAINT_INTERACTIVE_PRIORITY.md`。
+`docs/103_2026-08-10_MODELVIEW_INPAINT_INTERACTIVE_PRIORITY.md`；自动拓扑交付副本退化面修复见
+`docs/104_2026-08-11_RETOPOLOGY_DEGENERATE_DELIVERY_HOTFIX.md`。
 
 六 API、120 VU 的独立 R8 有界压力已以退出码 0 完成：`39,778` 个 HTTP 请求、0 失败，六 API、
 七项阈值、`120/120` 清场、三 GPU 饱和和 379 个连续遥测样本全部通过。该结果只验收综合有界压力，

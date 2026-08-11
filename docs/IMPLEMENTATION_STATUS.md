@@ -1,8 +1,8 @@
 # 实施状态
 
-最后更新：2026-08-10
+最后更新：2026-08-11
 版本：生产 API/Scheduler 1.5.12、Web 1.5.11-retopo-direct-v2 / Asset API 1.6.16-retopology-v6-client-filename-v1 / Worker
-1.4.15-retopology-uniform-scale-search-v2 / DB 20260810_0013；源码审计、Direct V2 拓扑后纯变换高低模对齐、
+1.4.16-retopology-degenerate-cleanup-v1 / DB 20260810_0013；源码审计、Direct V2 拓扑后纯变换高低模对齐、
 独立 UV、七方向视觉门禁和米制 FBX 重导验证已完成真实生产 canary。三节点均为 `ACTIVE / ONLINE`，
 真实抠图继续三卡并行，发布未重启三台 ComfyUI。第三次正式 100 VU 在
 execute 前由用户取消，r7 为 0 请求、0 压测任务。综合发布见
@@ -11,6 +11,27 @@ execute 前由用户取消，r7 为 0 请求、0 压测任务。综合发布见
 `100_2026-08-10_RETOPOLOGY_FBX_BROWSER_METER_HOTFIX.md`，最终包围盒恢复 V2 与真实失败任务重试见
 `101_2026-08-10_RETOPOLOGY_ENVELOPE_V2_HOTFIX.md`，最终纯变换交付和生产证据见
 `102_2026-08-10_RETOPOLOGY_TRANSFORM_ALIGNMENT_AND_UV_DUAL_MODE.md`。
+
+## 2026-08-11 自动拓扑交付退化几何热修复
+
+- 失败任务 `437c4d37-047d-4963-a1cf-fa24926dbca5` 已定位为 98% 拓扑后处理门禁
+  `UV-prepared low has invalid geometry`；拓扑生成、Codex 认证和 Worker 心跳均正常。
+- `1.4.16` 只在保留源低模之外的 `BAKE_LOW` 交付副本存在零面积面时执行有界清理：先消解零长度边，
+  再删除仍为零面积的面及由此产生的悬空边点；不合并邻近点、不重网格、不减面、不重建。
+- 清理在 UV 前执行，UV 步骤若引入退化面则再执行一次有界清理；正常模型为严格 no-op，原始高模、
+  原始低模、正常拓扑、已有有效 UV 和材质均保持不变。之后仍必须通过低模面数、UV、纯变换对齐、
+  七方向视觉检查和 FBX 全新场景回读，未放宽任何门禁。
+- 功能提交 `98b66d957536f0215d631377da3920c4b5c6409f` 已推送；三台 Worker 已滚动到相同镜像
+  `sha256:dd9cff402f5d13d26ab6829e9bc74269a791850b55d12555e330b5e672835b50`，脚本 SHA-256 为
+  `917ca181f7239dc82c24b205bdb68d7babd223daa621b550f41340a55c8f680b`，均为
+  `ACTIVE / ONLINE / AUTHENTICATED / HEALTHY`。滚动期间未重启三台 ComfyUI。
+- Python 3.11 契约专项 `23 passed, 3 skipped`，Ruff 通过；Blender 5.1.2 实测验证退化面被清理、
+  正常面与有效 UV 保留、正常模型几何/UV 指纹不变。完整发布证据见
+  `104_2026-08-11_RETOPOLOGY_DEGENERATE_DELIVERY_HOTFIX.md`。
+- 原失败任务 `437c4d37-047d-4963-a1cf-fa24926dbca5` 已在输入 SHA 不变、历史事件保留的条件下执行
+  一次管理员确认重试。原退化几何错误不再出现，证明本热修复覆盖了原故障点；新生成低模随后因
+  `surface_error_ratio=0.0831222 > 0.070` 被纯变换对齐门禁拒绝，未发布错误制品。该剩余问题属于
+  拓扑生成形状差异，不能靠坐标变换或放宽门禁伪装为成功。
 
 ## 2026-08-10 ModelView 局部重绘交互式优先级
 
