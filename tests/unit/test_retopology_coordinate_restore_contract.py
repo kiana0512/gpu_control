@@ -300,25 +300,19 @@ def test_direct_v2_delivery_requires_bake_alignment_evidence() -> None:
     worker = Path("apps/blender_worker/src/gpu_control_blender_worker/main.py").read_text("utf-8")
     api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text("utf-8")
 
-    assert f'"{EXPECTED_SHA256}"' in worker
-    assert '"schema_version": "retopology_direct_delivery.v6"' in worker
+    assert '"schema_version": "retopology_direct_delivery.v7"' in worker
     assert '"bake_alignment": alignment_report' in worker
-    assert '"bake_pair_validation": validation_report' in worker
-    assert '"visual_qa": visual_qa' in worker
-    assert '"uniqueItems"' not in worker
-    assert 'manifest.get("schema_version") != "retopology_direct_delivery.v6"' in api
+    assert '"coordinate_authority": "high_object_matrix_world"' in worker
+    assert '"automatic_post_generation_review": False' in worker
+    assert 'manifest.get("schema_version") != "retopology_direct_delivery.v7"' in api
     assert 'staged_by_kind["blend"].filename = f"{stem}_GAME_LOW.blend"' in api
     assert 'staged_by_kind["fbx"].filename = f"{stem}_GAME_LOW.fbx"' in api
-    assert "retopology_bake_alignment_evidence_valid" in worker
-    assert "retopology_bake_alignment_evidence_valid" in api
-    assert "retopology_bake_pair_validation_evidence_valid" in worker
-    assert "retopology_bake_pair_validation_evidence_valid" in api
-    assert "retopology_bake_visual_qa_evidence_valid" in worker
-    assert "retopology_bake_visual_qa_evidence_valid" in api
-    assert "silhouette_overlay_sheet" in worker
-    assert 'views_dir / "final_silhouette_overlay.png"' in worker
-    assert "reference_images=[final_contact_sheet, final_overlay_sheet]" in worker
-    assert "expected pre-alignment displacement must never be reported" in worker
+    assert "retopology_auto_align_v3_evidence_valid" in worker
+    assert "retopology_auto_align_v3_evidence_valid" in api
+    run_direct = worker[worker.index("async def run_retopology_v6(") : worker.index("async def start_blender(")]
+    assert "RETOPOLOGY_BAKE_POSTPROCESS" not in run_direct
+    assert "run_retopology_bake_visual_qa" not in run_direct
+    assert 'sidecar = output_dir / "final_low.bake"' in run_direct
 
 
 def test_alignment_is_post_topology_and_has_no_frontend_mutation_surface() -> None:
@@ -333,5 +327,4 @@ def test_alignment_is_post_topology_and_has_no_frontend_mutation_surface() -> No
 
     assert "alignment_manifest" not in combined
     assert not Path("resources/bake-coordinate-alignment").exists()
-    assert "RETOPOLOGY_BAKE_POSTPROCESS" in combined
     assert "automatic_post_generation_review" in combined

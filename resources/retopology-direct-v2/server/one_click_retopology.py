@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-click FBX/Blend server adapter for the complete retopology skill."""
+"""Backward-compatible one-click retopology plus source-coordinate finalization."""
 
 from __future__ import annotations
 
@@ -16,15 +16,20 @@ import uuid
 from pathlib import Path
 
 
-SKILL_ID = "blender-retopology-compare-iterate"
+SKILL_ID = "blender-auto-retopo-align"
 EXPECTED_SKILL_FILES = {
     "SKILL.md",
     "agents/openai.yaml",
+    "references/coordinate-restoration-contract.md",
     "references/direct-output-construction-rules.md",
     "references/execution-plan-schema.md",
     "references/learned-asset-lessons.md",
+    "scripts/align_bake_models.py",
+    "scripts/finalize_generated_pair.py",
     "scripts/guard_shape_authority_plan.py",
     "scripts/prepare_fbx_source.py",
+    "scripts/render_alignment_views.py",
+    "scripts/validate_bake_pair.py",
 }
 DEFAULT_CODEX_ARGS = ["exec", "--full-auto", "--json", "-C", "{job_dir}", "-"]
 SUPPORTED_INPUTS = {".fbx", ".blend"}
@@ -32,6 +37,12 @@ ALLOWED_METHODS = {
     "controlled_direct_reduction",
     "semantic_reconstruction",
     "per_component_hybrid",
+}
+REQUIRED_BAKE_OUTPUTS = {
+    "bake_alignment.blend",
+    "bake_alignment_report.json",
+    "bake_high.fbx",
+    "bake_low.fbx",
 }
 
 
@@ -48,6 +59,14 @@ def skill_inventory(root: Path) -> dict[str, str]:
         path.relative_to(root).as_posix(): sha256(path)
         for path in sorted(root.rglob("*"))
         if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+    }
+
+
+def file_inventory(root: Path) -> dict[str, str]:
+    return {
+        path.relative_to(root).as_posix(): sha256(path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
     }
 
 
@@ -72,8 +91,8 @@ def render_prompt(template: str, values: dict[str, str]) -> str:
         rendered = rendered.replace("{{" + key + "}}", value)
     if "{{" in rendered or "}}" in rendered:
         raise RuntimeError("agent prompt contains unresolved placeholders")
-    if "$blender-retopology-compare-iterate" not in rendered:
-        raise RuntimeError("agent prompt does not invoke the required skill")
+    if "$blender-auto-retopo-align" not in rendered:
+        raise RuntimeError("agent prompt does not invoke the merged skill")
     return rendered
 
 
@@ -89,7 +108,31 @@ def valid_blend(path: Path) -> bool:
     if not path.is_file() or path.stat().st_size < 7:
         return False
     with path.open("rb") as handle:
-        return handle.read(7) == b"BLENDER"
+        header = handle.read(7)
+    return (
+        header == b"BLENDER"
+        or header.startswith(b"\x28\xb5\x2f\xfd")  # Zstandard-compressed Blend
+        or header.startswith(b"\x1f\x8b")  # legacy gzip-compressed Blend
+    )
+
+
+def run_logged(command: list[str], cwd: Path, stdout_path: Path, stderr_path: Path, timeout: int) -> tuple[int | None, bool]:
+    with stdout_path.open("w", encoding="utf-8", newline="\n") as stdout, stderr_path.open(
+        "w", encoding="utf-8", newline="\n"
+    ) as stderr:
+        try:
+            completed = subprocess.run(
+                command,
+                stdout=stdout,
+                stderr=stderr,
+                cwd=cwd,
+                timeout=timeout,
+                check=False,
+                env={**os.environ, "PYTHONNOUSERSITE": "1"},
+            )
+        except subprocess.TimeoutExpired:
+            return None, True
+    return completed.returncode, False
 
 
 def prepare_fbx(
@@ -100,8 +143,6 @@ def prepare_fbx(
     manifest_path: Path,
     job_dir: Path,
 ) -> tuple[bool, str | None]:
-    stdout_path = job_dir / "fbx_import_stdout.log"
-    stderr_path = job_dir / "fbx_import_stderr.log"
     command = [
         blender,
         "--background",
@@ -119,23 +160,16 @@ def prepare_fbx(
         "--manifest",
         str(manifest_path),
     ]
-    timeout = int(os.environ.get("RETOPOLOGY_FBX_IMPORT_TIMEOUT_SECONDS", "600"))
-    with stdout_path.open("w", encoding="utf-8", newline="\n") as stdout, stderr_path.open(
-        "w", encoding="utf-8", newline="\n"
-    ) as stderr:
-        try:
-            completed = subprocess.run(
-                command,
-                stdout=stdout,
-                stderr=stderr,
-                cwd=job_dir,
-                timeout=timeout,
-                check=False,
-                env={**os.environ, "PYTHONNOUSERSITE": "1"},
-            )
-        except subprocess.TimeoutExpired:
-            return False, "fbx_import_timeout"
-    if completed.returncode != 0:
+    returncode, timed_out = run_logged(
+        command,
+        job_dir,
+        job_dir / "fbx_import_stdout.log",
+        job_dir / "fbx_import_stderr.log",
+        int(os.environ.get("RETOPOLOGY_FBX_IMPORT_TIMEOUT_SECONDS", "600")),
+    )
+    if timed_out:
+        return False, "fbx_import_timeout"
+    if returncode != 0:
         return False, "fbx_import_failed"
     if not valid_blend(working_blend) or not manifest_path.is_file():
         return False, "fbx_import_missing_artifact"
@@ -168,24 +202,47 @@ def validate_generation_report(path: Path, requested_highs: list[str]) -> dict:
             "triangles",
             "method_decision",
             "actual_plugin_use",
+            "coordinate_space",
+            "coordinate_authority",
+            "presentation_offset_applied",
         ):
             if field not in item:
                 raise RuntimeError(f"generation report asset {index} misses {field}")
         if item.get("method_decision") not in ALLOWED_METHODS:
-            raise RuntimeError(
-                f"generation report asset {index} has unsupported method_decision"
-            )
+            raise RuntimeError(f"generation report asset {index} has unsupported method_decision")
+        if item.get("coordinate_space") != "source_high_local":
+            raise RuntimeError("RETOPOLOGY_COORDINATE_MISMATCH: low is not in source_high_local")
+        if item.get("coordinate_authority") != "high_object_matrix_world":
+            raise RuntimeError("RETOPOLOGY_COORDINATE_MISMATCH: high matrix is not coordinate authority")
+        if item.get("presentation_offset_applied") is not False:
+            raise RuntimeError("RETOPOLOGY_COORDINATE_MISMATCH: presentation offset is forbidden")
+    return report
+
+
+def validate_alignment_report(path: Path) -> dict:
+    if not path.is_file():
+        raise RuntimeError("bake_alignment_report.json was not created")
+    report = json.loads(path.read_text(encoding="utf-8"))
+    if not (
+        report.get("pass") is True
+        and report.get("transform_only_alignment") is True
+        and report.get("icp_used") is False
+        and report.get("topology_uv_unchanged") is True
+        and report.get("fbx_readback", {}).get("pass") is True
+    ):
+        raise RuntimeError("RETOPOLOGY_COORDINATE_MISMATCH: finalization invariants failed")
     return report
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run one complete FBX/Blend retopology job")
+    parser = argparse.ArgumentParser(description="Run one retopology job and restore source coordinates")
     parser.add_argument("--input", type=Path, required=True, help="source .fbx or .blend")
-    parser.add_argument("--output", type=Path, required=True, help="new result .blend")
+    parser.add_argument("--output", type=Path, required=True, help="legacy aligned result .blend")
     parser.add_argument("--high", action="append", default=[], help="Blend high object name; repeatable")
     parser.add_argument("--job-root", type=Path, default=Path(os.environ.get("JOB_ROOT", "jobs")))
     parser.add_argument("--job-id", default=None)
     parser.add_argument("--timeout-seconds", type=int, default=int(os.environ.get("RETOPOLOGY_TIMEOUT_SECONDS", "7200")))
+    parser.add_argument("--finalize-timeout-seconds", type=int, default=int(os.environ.get("RETOPOLOGY_FINALIZE_TIMEOUT_SECONDS", "1800")))
     parser.add_argument("--package-root", type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args()
 
@@ -196,64 +253,51 @@ def main() -> int:
         raise SystemExit(f"input must be a non-empty FBX or Blend file: {source}")
     if destination.suffix.lower() != ".blend":
         raise SystemExit("output must use the .blend suffix")
-    if destination.exists():
-        raise SystemExit(f"refusing to overwrite existing output: {destination}")
+    sidecar_destination = destination.parent / f"{destination.stem}.bake"
+    if destination.exists() or sidecar_destination.exists():
+        raise SystemExit(f"refusing to overwrite existing output: {destination} or {sidecar_destination}")
 
     package_root = args.package_root.resolve()
     bundled_skill = package_root / SKILL_ID
     prompt_template = package_root / "server" / "agent_prompt.md"
     source_inventory = skill_inventory(bundled_skill)
     if set(source_inventory) != EXPECTED_SKILL_FILES:
-        raise SystemExit(
-            "server package does not contain the exact complete skill: "
-            + json.dumps(sorted(source_inventory), ensure_ascii=False)
-        )
+        raise SystemExit("server package does not contain the exact merged skill: " + json.dumps(sorted(source_inventory), ensure_ascii=False))
 
-    job_id = args.job_id or f"retopo-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+    job_id = args.job_id or f"retopo-align-{int(time.time())}-{uuid.uuid4().hex[:8]}"
     job_dir = (args.job_root.resolve() / job_id).resolve()
     if job_dir.exists():
         raise SystemExit(f"job directory already exists: {job_dir}")
     input_copy = job_dir / "input" / f"source{input_suffix}"
     working_blend = input_copy if input_suffix == ".blend" else job_dir / "work" / "source.blend"
     source_manifest = job_dir / "source-manifest.json"
-    job_output = job_dir / "artifacts" / "result.blend"
+    generated_blend = job_dir / "artifacts" / "generated.blend"
+    aligned_dir = job_dir / "artifacts" / "aligned"
     result_path = job_dir / "result.json"
     codex_home = job_dir / "codex-home"
     installed_skill = codex_home / "skills" / SKILL_ID
-    for directory in (
-        input_copy.parent,
-        working_blend.parent,
-        job_output.parent,
-        job_dir / "plans",
-        installed_skill.parent,
-    ):
+    for directory in (input_copy.parent, working_blend.parent, generated_blend.parent, job_dir / "plans", installed_skill.parent):
         directory.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, input_copy)
-    shutil.copytree(bundled_skill, installed_skill)
+    shutil.copytree(bundled_skill, installed_skill, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     if skill_inventory(installed_skill) != source_inventory:
         raise SystemExit("job-local skill installation failed hash verification")
 
     blender = os.environ.get("BLENDER_EXECUTABLE", "/opt/blender/blender")
     codex = os.environ.get("CODEX_BIN", "/usr/local/bin/codex")
     if input_suffix == ".fbx":
-        prepared, preparation_error = prepare_fbx(
-            blender,
-            installed_skill,
-            input_copy,
-            working_blend,
-            source_manifest,
-            job_dir,
-        )
+        prepared, preparation_error = prepare_fbx(blender, installed_skill, input_copy, working_blend, source_manifest, job_dir)
         if not prepared:
-            result = {
-                "job_id": job_id,
-                "status": "failed_preparation",
-                "error": preparation_error,
-                "input_format": "fbx",
-                "stderr_log": str(job_dir / "fbx_import_stderr.log"),
-                "automatic_retry": False,
-            }
-            write_result(result_path, result)
+            write_result(
+                result_path,
+                {
+                    "job_id": job_id,
+                    "status": "failed_preparation",
+                    "error": preparation_error,
+                    "input_format": "fbx",
+                    "automatic_retry": False,
+                },
+            )
             return 2
         requested_highs = ["SOURCE_HIGH"]
         manifest_value = str(source_manifest)
@@ -269,15 +313,13 @@ def main() -> int:
             "INPUT_SOURCE": str(input_copy),
             "WORKING_BLEND": str(working_blend),
             "SOURCE_MANIFEST": manifest_value,
-            "OUTPUT_BLEND": str(job_output),
+            "OUTPUT_BLEND": str(generated_blend),
             "HIGH_OBJECTS": json.dumps(requested_highs or ["ALL_HIGH_MESH_OBJECTS"], ensure_ascii=False),
             "BLENDER_EXECUTABLE": blender,
             "JOB_DIR": str(job_dir),
         },
     )
-    prompt_path = job_dir / "agent_prompt.md"
-    atomic_write(prompt_path, prompt)
-
+    atomic_write(job_dir / "agent_prompt.md", prompt)
     environment = os.environ.copy()
     environment.update(
         {
@@ -286,15 +328,13 @@ def main() -> int:
             "RETOPOLOGY_SKILL_ROOT": str(installed_skill),
             "RETOPOLOGY_INPUT_SOURCE": str(input_copy),
             "RETOPOLOGY_INPUT_BLEND": str(working_blend),
-            "RETOPOLOGY_OUTPUT_BLEND": str(job_output),
+            "RETOPOLOGY_OUTPUT_BLEND": str(generated_blend),
         }
     )
     command = [codex, *load_codex_args(job_dir)]
-    events_path = job_dir / "agent_events.jsonl"
-    stderr_path = job_dir / "agent_stderr.log"
-    with events_path.open("w", encoding="utf-8", newline="\n") as events, stderr_path.open(
-        "w", encoding="utf-8", newline="\n"
-    ) as errors:
+    with (job_dir / "agent_events.jsonl").open("w", encoding="utf-8", newline="\n") as events, (
+        job_dir / "agent_stderr.log"
+    ).open("w", encoding="utf-8", newline="\n") as errors:
         try:
             completed = subprocess.run(
                 command,
@@ -309,52 +349,121 @@ def main() -> int:
             )
         except subprocess.TimeoutExpired:
             completed = None
-
     if completed is None:
-        result = {
-            "job_id": job_id,
-            "status": "failed",
-            "error": "codex_timeout",
-            "automatic_retry": False,
-        }
-        write_result(result_path, result)
+        write_result(result_path, {"job_id": job_id, "status": "failed", "error": "codex_timeout", "automatic_retry": False})
         return 124
     if completed.returncode != 0:
-        result = {
-            "job_id": job_id,
-            "status": "failed",
-            "error": "codex_runner_failed",
-            "returncode": completed.returncode,
-            "automatic_retry": False,
-            "stderr_log": str(stderr_path),
-        }
-        write_result(result_path, result)
+        write_result(
+            result_path,
+            {
+                "job_id": job_id,
+                "status": "failed",
+                "error": "codex_runner_failed",
+                "returncode": completed.returncode,
+                "automatic_retry": False,
+            },
+        )
         return completed.returncode
-    if not valid_blend(job_output):
+    if not valid_blend(generated_blend):
         raise SystemExit("Codex completed but did not create a valid output Blend")
 
-    report_path = job_dir / "generation_report.json"
-    report = validate_generation_report(report_path, requested_highs)
+    generation_report_path = job_dir / "generation_report.json"
+    try:
+        generation_report = validate_generation_report(generation_report_path, requested_highs)
+    except (RuntimeError, OSError, json.JSONDecodeError) as error:
+        write_result(
+            result_path,
+            {
+                "job_id": job_id,
+                "status": "failed",
+                "error": "RETOPOLOGY_COORDINATE_MISMATCH",
+                "detail": str(error),
+                "automatic_retry": False,
+            },
+        )
+        return 3
+
+    finalize_command = [
+        blender,
+        "--background",
+        "--factory-startup",
+        "--disable-autoexec",
+        "--python-exit-code",
+        "1",
+        "--python",
+        str(installed_skill / "scripts" / "finalize_generated_pair.py"),
+        "--",
+        "--input-blend",
+        str(generated_blend),
+        "--generation-report",
+        str(generation_report_path),
+        "--output-dir",
+        str(aligned_dir),
+    ]
+    finalize_code, finalize_timed_out = run_logged(
+        finalize_command,
+        job_dir,
+        job_dir / "finalize_stdout.log",
+        job_dir / "finalize_stderr.log",
+        args.finalize_timeout_seconds,
+    )
+    alignment_report_path = aligned_dir / "bake_alignment_report.json"
+    try:
+        if finalize_timed_out:
+            raise RuntimeError("coordinate finalization timed out")
+        if finalize_code != 0:
+            raise RuntimeError(f"coordinate finalizer exited {finalize_code}")
+        alignment_report = validate_alignment_report(alignment_report_path)
+        missing = sorted(name for name in REQUIRED_BAKE_OUTPUTS if not (aligned_dir / name).is_file())
+        if missing:
+            raise RuntimeError("missing bake outputs: " + ",".join(missing))
+    except (RuntimeError, OSError, json.JSONDecodeError) as error:
+        write_result(
+            result_path,
+            {
+                "job_id": job_id,
+                "status": "failed",
+                "error": "RETOPOLOGY_COORDINATE_MISMATCH",
+                "detail": str(error),
+                "alignment_report": str(alignment_report_path),
+                "finalize_stderr_log": str(job_dir / "finalize_stderr.log"),
+                "automatic_retry": False,
+            },
+        )
+        return 3
+
     if sha256(source) != sha256(input_copy):
         raise SystemExit("uploaded source copy hash mismatch")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary_output = destination.with_suffix(destination.suffix + ".tmp")
-    shutil.copy2(job_output, temporary_output)
+    temporary_output = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    temporary_sidecar = sidecar_destination.with_name(f".{sidecar_destination.name}.{uuid.uuid4().hex}.tmp")
+    shutil.copy2(aligned_dir / "bake_alignment.blend", temporary_output)
+    shutil.copytree(aligned_dir, temporary_sidecar)
     temporary_output.replace(destination)
+    temporary_sidecar.replace(sidecar_destination)
 
     result = {
         "job_id": job_id,
         "status": "generated_for_user_inspection",
+        "bake_alignment_status": "aligned",
         "input_format": input_suffix.removeprefix("."),
         "input_sha256": sha256(source),
         "prepared_blend": str(working_blend),
         "source_manifest": manifest_value,
         "output": str(destination),
         "output_sha256": sha256(destination),
-        "generation_report": str(report_path),
-        "assets": report["assets"],
+        "bake_output_dir": str(sidecar_destination),
+        "bake_files": file_inventory(sidecar_destination),
+        "generation_report": str(generation_report_path),
+        "alignment_report": str(sidecar_destination / "bake_alignment_report.json"),
+        "assets": generation_report["assets"],
         "skill_id": SKILL_ID,
         "skill_sha256": source_inventory,
+        "coordinate_authority": "high_object_matrix_world",
+        "alignment_mode": alignment_report["alignment_mode"],
+        "topology_uv_preserved": True,
+        "fbx_readback_passed": True,
+        "low_display": "opaque_yellow",
         "automatic_post_generation_review": False,
         "automatic_retry": False,
     }

@@ -1,106 +1,142 @@
-# 批量 FBX 一键拓扑服务器接入
+# Blender 自动拓扑与原坐标对齐服务器包 v3.0.0
 
-本包用于一次上传一个或多个静态高模 `.fbx`。每个 FBX 独立准备、独立完整调用
-`blender-retopology-compare-iterate`，最后返回各自的低模 `.blend` 和统一结果 ZIP。
+本包合并两个正式技能：
 
-一份 FBX 代表一个独立资产。FBX 内的桶身、把手、扣件等多个 Mesh 会作为同一高模的组件保留；
-不同道具必须分别上传为多个 FBX，批量入口不会把它们合并成一个 `SOURCE_HIGH`。
+1. 自动拓扑：读取新鲜高模、只生成一个低模候选。
+2. 烘焙前对齐：同任务低模按高模原矩阵恢复坐标，只做变换与导出校验，不改拓扑或 UV。
+
+它用于替换现有 `blender-retopology-compare-iterate-server-package-v2.5.0`。旧单文件调用参数和成功状态保持兼容；成功后额外输出烘焙高低模 FBX 与对齐报告。
+
+## v3.0.0 行为
+
+- 高模同时是形状依据和坐标依据。
+- 低模必须在 `source_high_local` 坐标生成。
+- 同任务低模不运行 ICP；语义低模和高模表面差异不再触发错误的 ICP 修正。
+- 自动移除纯展示平移，使高低模中心和矩阵回到原坐标。
+- 对齐阶段禁止 Decimate、remesh、重建、三角化、UV 修改和几何修复。
+- 对低模执行拓扑/UV 指纹、Blend 回读、FBX 新导入回读。
+- 低模使用不透明黄色/橙色显示，不隐藏，不用半透明或 X-ray。
+- 坐标异常返回 `RETOPOLOGY_COORDINATE_MISMATCH`，不自动重跑建模。
 
 ## 运行条件
 
-- Python 3.10+。
-- Blender 5.1.x；已用 Blender 5.1.2 实测。
-- 已认证且可执行的 Codex CLI。
-- Worker 能读写独立任务目录并执行 Blender headless。
+- Python 3.10+
+- Blender 5.1.x（已用 5.1.2 实测）
+- 已认证可执行的 Codex CLI
+- Worker 能读写独立任务目录并运行 Blender headless
 
-## 安装
+## 安装与替换
+
+推荐把每个版本解压到独立 release 目录，再切换服务配置或符号链接，保留旧版用于回滚：
 
 ```bash
-unzip blender-retopology-compare-iterate-server-package-v2.3.0.zip -d /opt/li3d/
-cd /opt/li3d/blender-retopology-compare-iterate-server-package-v2.3.0
+unzip blender-auto-retopo-align-server-package-v3.0.0.zip -d /opt/li3d/releases/
+cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.0
 python3 server/verify_package.py
 cp server/worker.env.example server/worker.env
 ```
 
-在 `server/worker.env` 配置真实路径：
+在 `server/worker.env` 设置真实路径：
 
 ```dotenv
 BLENDER_EXECUTABLE=/opt/blender/blender
 CODEX_BIN=/usr/local/bin/codex
 ```
 
-## 批量调用
+验证成功后，把原自动拓扑 Worker 的 package root 切换到本目录。不要同时运行旧包和新包处理同一个 job id。
+
+## 单文件兼容调用
+
+原来的主要参数不变：
 
 ```bash
 set -a
 . server/worker.env
 set +a
 
-python3 server/batch_retopology.py \
-  --input /jobs/batch-001/chair.fbx \
-  --input /jobs/batch-001/bucket.fbx \
-  --input /jobs/batch-001/toolbox.fbx \
-  --output-dir /jobs/batch-001/output \
-  --job-root /jobs/runtime \
-  --batch-id batch-001
-```
-
-批量入口按上传顺序逐个调用 `server/one_click_retopology.py`。每个 FBX 都会：
-
-1. 复制到独立任务目录，原 FBX 不修改。
-2. 用技能内的 `prepare_fbx_source.py` 创建独立 `SOURCE_HIGH` 和工作 Blend。
-3. 把完整技能安装到该任务独立的 `CODEX_HOME/skills/`。
-4. 以 `$blender-retopology-compare-iterate` 调用 Codex，只生成一个低模候选。
-5. 保存后立即停止，不自动复查、修正或重试建模。
-
-方法路由不会把直接减面整条能力删除：一体有机区域仍可受控直接减面；但预处理后的
-`SOURCE_HIGH` 是 joined 对象不能作为选择依据。容器外壳加不规则内容物会按组件混合处理，
-避免服务器把整个资产统一减成随机三角面。
-
-一个文件失败不会阻止后续文件执行。批量终态为：
-
-- 全部成功：`generated_for_user_inspection`
-- 部分失败：`partial_failure`
-- 全部失败：`failed`
-
-输出目录包含：
-
-```text
-output/
-├── batch-results.zip
-├── batch_report.json
-├── results/
-│   ├── 001_chair_retopology.blend
-│   ├── 002_bucket_retopology.blend
-│   └── 003_toolbox_retopology.blend
-└── logs/
-```
-
-`batch-results.zip` 包含批量报告和全部成功低模；失败项目的日志也会放入 ZIP。
-
-## 单文件调用
-
-原来的单 FBX 入口继续保留：
-
-```bash
 python3 server/one_click_retopology.py \
   --input /jobs/asset-001/model.fbx \
   --output /jobs/asset-001/model_retopology.blend \
   --job-root /jobs/runtime
 ```
 
-## HTTP 接口映射
+成功后产生：
 
-上传接口接收可重复的 multipart 字段 `assets`：
+```text
+/jobs/asset-001/
+├── model_retopology.blend
+└── model_retopology.bake/
+    ├── bake_alignment.blend
+    ├── bake_alignment_report.json
+    ├── bake_high.fbx
+    └── bake_low.fbx
+```
 
-| 请求字段 | 批量 Worker 参数 |
-|---|---|
-| 每个上传后的 FBX 路径 | 重复一个 `--input` |
-| 批量输出目录 | `--output-dir` |
-| 任务工作根目录 | `--job-root` |
-| 父任务 ID | `--batch-id` |
+`model_retopology.blend` 是兼容旧接口的已对齐 Blend；`.bake/` 是新增烘焙侧文件。
 
-必须以参数数组启动进程，不要用 shell 拼接用户文件名。
+成功 `result.json` 继续返回：
+
+```json
+{
+  "status": "generated_for_user_inspection",
+  "bake_alignment_status": "aligned",
+  "alignment_mode": "source_matrix_restore",
+  "topology_uv_preserved": true,
+  "fbx_readback_passed": true,
+  "low_display": "opaque_yellow"
+}
+```
+
+## 批量调用
+
+每个 FBX 是独立资产，互不合并：
+
+```bash
+python3 server/batch_retopology.py \
+  --input /jobs/batch-001/chair.fbx \
+  --input /jobs/batch-001/toolbox.fbx \
+  --output-dir /jobs/batch-001/output \
+  --job-root /jobs/runtime \
+  --batch-id batch-001
+```
+
+批量 ZIP 同时包含兼容 Blend 和每个资产的 `.bake/` 目录。单个失败不会阻止后续文件；失败项不自动重试。
+
+## 外部旧低模对齐
+
+只有低模不是本任务生成、坐标关系未知时，才使用 ICP 安全门：
+
+```bash
+python3 server/align_existing_low.py \
+  --high /jobs/external/high.fbx \
+  --low /jobs/external/low.fbx \
+  --output-dir /jobs/external/aligned \
+  --job-root /jobs/runtime
+```
+
+该入口保留镜像、朝向、中心、尺寸和表面误差门，并输出七视图。门失败时不写最终结果，也不会改低模拓扑。
+
+## HTTP/队列映射
+
+现有上传层仍把每个资产路径作为一个 `--input` 参数，把任务输出 Blend 作为 `--output`。Worker 必须使用参数数组启动进程，不要用 shell 拼接用户文件名。
+
+后端可以继续以 `status == generated_for_user_inspection` 判断生成完成，同时增加：
+
+- 必须检查 `bake_alignment_status == aligned` 才允许进入烘焙。
+- 必须把 `bake_high.fbx` 和 `bake_low.fbx` 成对传给烘焙器。
+- 前端或上传器不得再次居中、归零或覆盖返回模型的矩阵、位置、旋转、缩放、单位或轴向。
+- 如果下游烘焙器自动归一化导入，必须关闭，或对高低模应用完全相同的变换。
+
+## 错误处理
+
+`RETOPOLOGY_COORDINATE_MISMATCH` 表示以下任一问题：坐标声明缺失、高低模解析不唯一、矩阵/中心/尺寸门失败、拓扑或 UV 指纹改变、手性改变、FBX 回读不一致。
+
+此错误不触发自动建模重试。检查任务目录中的：
+
+- `generation_report.json`
+- `finalize_stdout.log`
+- `finalize_stderr.log`
+- `artifacts/aligned/bake_alignment_report.json`（如果已生成）
 
 ## Docker Layer
 
@@ -108,8 +144,18 @@ python3 server/one_click_retopology.py \
 docker build \
   --build-arg WORKER_IMAGE=现有Worker镜像@sha256:固定摘要 \
   -f Dockerfile.layer \
-  -t li3d/blender-retopology-skill:v2.3.0 .
+  -t li3d/blender-auto-retopo-align:v3.0.0 .
 ```
 
-本 Layer 不替换现有 HTTP、队列、存储或鉴权，只加入完整技能、FBX 预处理、单文件入口和
-批量入口。
+本 Layer 不替换现有 HTTP、队列、存储、鉴权或 Worker entrypoint，只加入合并技能和兼容入口。
+
+## 上线前检查
+
+1. `python3 server/verify_package.py` 必须通过。
+2. 用一个已知 FBX 跑单文件 smoke test。
+3. 确认输出 Blend 中高低模重合，低模为不透明黄色/橙色。
+4. 确认 `bake_alignment_report.json` 中 `pass`、`topology_uv_unchanged` 和 `fbx_readback.pass` 全为 `true`。
+5. 确认前端没有二次归零或居中。
+6. 再把新 package root 切到生产 Worker。
+
+回滚时只把 package root 切回 v2.5.0；不要删除失败任务目录，保留日志用于比较。

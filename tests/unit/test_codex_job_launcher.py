@@ -146,6 +146,34 @@ def test_canonicalizes_existing_asset_high_to_prepared_source(tmp_path: Path) ->
     assert normalized["assets"][0]["high_object"] == "SOURCE_HIGH"
 
 
+def test_v300_coordinate_authority_fields_survive_normalization(tmp_path: Path) -> None:
+    write_source_manifest(tmp_path)
+    report = {
+        "status": "generated_for_user_inspection",
+        "assets": [
+            {
+                "high_object": "SOURCE_HIGH",
+                "low_object": "SOURCE_LOW",
+                "faces": 100,
+                "triangles": 200,
+                "method_decision": "semantic_reconstruction",
+                "actual_plugin_use": "none",
+                "coordinate_space": "source_high_local",
+                "coordinate_authority": "high_object_matrix_world",
+                "presentation_offset_applied": False,
+            }
+        ],
+    }
+    path = tmp_path / "generation_report.json"
+    path.write_text(json.dumps(report), encoding="utf-8")
+
+    assert normalize_generation_report(tmp_path) is True
+    normalized = json.loads(path.read_text(encoding="utf-8"))
+    assert normalized["assets"][0]["coordinate_space"] == "source_high_local"
+    assert normalized["assets"][0]["coordinate_authority"] == "high_object_matrix_world"
+    assert normalized["assets"][0]["presentation_offset_applied"] is False
+
+
 def test_reconstructs_assets_from_read_only_blend_inspection(tmp_path: Path) -> None:
     write_source_manifest(tmp_path)
     (tmp_path / "plans").mkdir()

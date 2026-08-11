@@ -7,7 +7,7 @@ from gpu_control_blender_worker.main import (
 
 
 def test_direct_v2_eta_is_distinct_from_hard_timeout() -> None:
-    assert DIRECT_V2_ESTIMATED_STAGE_SECONDS == 600
+    assert DIRECT_V2_ESTIMATED_STAGE_SECONDS == 720
 
 
 def test_stage_progress_does_not_reach_completion_boundary_while_running() -> None:

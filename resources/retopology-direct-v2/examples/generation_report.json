@@ -7,7 +7,10 @@
       "faces": 860,
       "triangles": 1712,
       "method_decision": "semantic_reconstruction",
-      "actual_plugin_use": false
+      "actual_plugin_use": "none",
+      "coordinate_space": "source_high_local",
+      "coordinate_authority": "high_object_matrix_world",
+      "presentation_offset_applied": false
     }
   ]
 }

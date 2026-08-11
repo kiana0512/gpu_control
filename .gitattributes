@@ -23,3 +23,6 @@ artifacts/control-plane/1.5.6/release-parts/*.part-* filter=lfs diff=lfs merge=l
 artifacts/control-plane/1.5.8/release-parts/*.part-* filter=lfs diff=lfs merge=lfs -text
 artifacts/asset-worker/1.2.2/*.part-* filter=lfs diff=lfs merge=lfs -text
 artifacts/load-tests/sixapi-20260730-r8/*.tar.gz filter=lfs diff=lfs merge=lfs -text
+# Approved upstream retopology releases are checksum-verified byte-for-byte.
+# Do not normalize their original line endings when storing or checking out.
+resources/retopology-direct-v2/** -text !eol

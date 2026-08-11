@@ -96,9 +96,14 @@ For a direct-reduction asset, set `method_decision` to `controlled_direct_reduct
   "fresh_high_duplicate": true,
   "structural_subregions_checked": true,
   "structured_shell_or_assembly_absent": true,
-  "joined_source_state_used_as_integration_evidence": false
+  "joined_source_state_used_as_integration_evidence": false,
+  "exceptionally_complex_asset": false,
+  "semantic_or_hybrid_would_lose_identity": false,
+  "direct_reduction_reason": "integrated irregular surface is the asset identity"
 }
 ```
+
+For the user's exceptionally-complex fallback, `integrated_continuous_object` and `structured_shell_or_assembly_absent` may be `false`, but set `exceptionally_complex_asset` and `semantic_or_hybrid_would_lose_identity` to `true` and record a non-empty current-high `direct_reduction_reason`. Complexity is qualitative shape evidence, not a fixed polygon-count threshold.
 
 `SOURCE_HIGH` is joined by the FBX preparation step, so its object count cannot satisfy direct-reduction evidence. A vessel/container plus irregular contents must use `per_component_hybrid`; record separate component decisions for the structured shell and content region, including the measured rim/cavity or contact/occlusion boundary that routes each component.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Batch multiple independent FBX uploads through the one-click skill adapter."""
+"""Batch independent FBX uploads through retopology and coordinate restoration."""
 
 from __future__ import annotations
 
@@ -104,6 +104,7 @@ def main() -> int:
 
         job_id = f"{batch_id}-{index:03d}"
         output = result_dir / f"{index:03d}_{stem}_retopology.blend"
+        bake_output_dir = result_dir / f"{output.stem}.bake"
         stdout_log = log_dir / f"{index:03d}_{stem}.stdout.log"
         stderr_log = log_dir / f"{index:03d}_{stem}.stderr.log"
         command = [
@@ -132,7 +133,9 @@ def main() -> int:
         succeeded = (
             completed.returncode == 0
             and child_result.get("status") == "generated_for_user_inspection"
+            and child_result.get("bake_alignment_status") == "aligned"
             and output.is_file()
+            and bake_output_dir.is_dir()
         )
         item = {
             "index": index,
@@ -147,6 +150,8 @@ def main() -> int:
                 {
                     "output": output.relative_to(output_dir).as_posix(),
                     "output_sha256": sha256(output),
+                    "bake_output_dir": bake_output_dir.relative_to(output_dir).as_posix(),
+                    "bake_alignment_status": "aligned",
                     "assets": child_result.get("assets", []),
                 }
             )
@@ -178,6 +183,7 @@ def main() -> int:
         "failure_count": len(items) - success_count,
         "archive": archive_path.name,
         "automatic_post_generation_review": False,
+        "coordinate_restoration": "source_matrix_restore",
         "automatic_retry": False,
         "items": items,
     }
@@ -189,6 +195,10 @@ def main() -> int:
             if item["status"] == "generated_for_user_inspection":
                 output = output_dir / item["output"]
                 archive.write(output, item["output"])
+                bake_dir = output_dir / item["bake_output_dir"]
+                for bake_file in sorted(bake_dir.rglob("*")):
+                    if bake_file.is_file():
+                        archive.write(bake_file, bake_file.relative_to(output_dir).as_posix())
             else:
                 for field in ("stdout_log", "stderr_log"):
                     log_path = output_dir / item[field]

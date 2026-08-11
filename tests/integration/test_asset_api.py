@@ -81,9 +81,9 @@ async def test_asset_api_version_exposes_aligned_immutable_provenance(
             "source_revision": "a" * 40,
             "retopology": {
                 "engine_contract": "retopology-direct-v2",
-                "package_version": "2.3.0",
+                "package_version": "3.0.0",
                 "package_sha256": (
-                    "d86f218d2194bd6260a491da66f89b8954a72ef8e5309c0ff1062c639d8f6ec4"
+                    "0a6e539a03e6dcecd9518c6fa592c112892f829717d2c768721463796a604138"
                 ),
                 "submission_mode": "one_file_per_job",
                 "recommended_upload_concurrency": 3,
@@ -541,31 +541,36 @@ def direct_v2_completion_files(
     context: dict[str, Any],
 ) -> dict[str, tuple[str, bytes, str]]:
     alignment_report = context["alignment_report"]
-    pair_validation = context["pair_validation"]
-    visual_qa = context["visual_qa"]
+    generation_bytes = json.dumps(context["generation"]).encode()
+    result_bytes = json.dumps(context["result"]).encode()
+    alignment_bytes = json.dumps(alignment_report).encode()
+    source_manifest_bytes = json.dumps(context["source_manifest"]).encode()
     manifest = {
         "schema_version": schema_version,
         "job_id": context["job_id"],
         "engine_contract": "retopology-direct-v2",
+        "package_version": "3.0.0",
         "package_sha256": context["package_sha256"],
         "source_sha256": context["project_sha256"],
-        "agent_blend_sha256": context["agent_sha"],
+        "adapter_input_sha256": context["adapter_input_sha"],
+        "normalized_blend_sha256": context["adapter_input_sha"],
         "delivery_blend_sha256": context["blend_sha"],
         "delivery_blend_size_bytes": len(context["delivery_blend"]),
         "bake_high_fbx_sha256": context["high_fbx_sha"],
         "bake_high_fbx_size_bytes": len(context["high_fbx"]),
         "delivery_fbx_sha256": context["fbx_sha"],
         "delivery_fbx_size_bytes": len(context["delivery_fbx"]),
-        "alignment_views_zip_sha256": context["views_zip_sha"],
-        "alignment_views_zip_size_bytes": len(context["views_zip"]),
-        "initial_contact_sheet_sha256": context["initial_contact_sha"],
-        "final_contact_sheet_sha256": context["final_contact_sha"],
-        "status": "bake_ready_validated",
-        "automatic_post_generation_review": True,
+        "generation_report_sha256": hashlib.sha256(generation_bytes).hexdigest(),
+        "result_sha256": hashlib.sha256(result_bytes).hexdigest(),
+        "source_manifest_sha256": hashlib.sha256(source_manifest_bytes).hexdigest(),
+        "status": "generated_for_user_inspection_aligned",
+        "coordinate_authority": "high_object_matrix_world",
+        "alignment_mode": "source_matrix_restore",
+        "topology_uv_preserved": True,
+        "fbx_reimport_passed": True,
+        "automatic_post_generation_review": False,
         "automatic_retry": False,
         "bake_alignment": alignment_report,
-        "bake_pair_validation": pair_validation,
-        "visual_qa": visual_qa,
     }
     return {
         "blend": (
@@ -577,42 +582,12 @@ def direct_v2_completion_files(
         "high_fbx": ("bake_high.fbx", context["high_fbx"], "application/octet-stream"),
         "alignment_report": (
             "bake_alignment_report.json",
-            json.dumps(alignment_report).encode(),
+            alignment_bytes,
             "application/json",
-        ),
-        "pair_validation": (
-            "bake_pair_validation.json",
-            json.dumps(pair_validation).encode(),
-            "application/json",
-        ),
-        "alignment_views_zip": (
-            "alignment_views.zip",
-            context["views_zip"],
-            "application/zip",
-        ),
-        "initial_contact_sheet": (
-            "alignment_initial_contact_sheet.png",
-            context["initial_contact"],
-            "image/png",
-        ),
-        "final_contact_sheet": (
-            "alignment_final_contact_sheet.png",
-            context["final_contact"],
-            "image/png",
-        ),
-        "visual_qa": (
-            "bake_visual_qa.json",
-            json.dumps(visual_qa).encode(),
-            "application/json",
-        ),
-        "visual_qa_events": (
-            "bake_visual_qa_events.jsonl",
-            b'{"event":"done"}\n',
-            "application/x-ndjson",
         ),
         "generation_report": (
             "generation_report.json",
-            json.dumps(context["generation"]).encode(),
+            generation_bytes,
             "application/json",
         ),
         "delivery_manifest": (
@@ -622,7 +597,12 @@ def direct_v2_completion_files(
         ),
         "result": (
             "result.json",
-            json.dumps(context["result"]).encode(),
+            result_bytes,
+            "application/json",
+        ),
+        "source_manifest": (
+            "source_manifest.json",
+            source_manifest_bytes,
             "application/json",
         ),
         "agent_events": (
@@ -638,19 +618,19 @@ def direct_v2_completion_files(
     }
 
 
-async def test_retopology_process_creates_v230_direct_contract(tmp_path: Path) -> None:
+async def test_retopology_process_creates_v300_direct_contract(tmp_path: Path) -> None:
     async for settings, client in prepared_asset_app(tmp_path):
         response = await post_retopology_process(
             client,
-            "asset:retopo:v230:create",
-            "asset:retopo:v230:create",
+            "asset:retopo:v300:create",
+            "asset:retopo:v300:create",
         )
         assert response.status_code == 202, response.text
         payload = response.json()
         assert payload["options"]["engine_contract"] == "retopology-direct-v2"
-        assert payload["options"]["package_version"] == "2.3.0"
+        assert payload["options"]["package_version"] == "3.0.0"
         assert payload["options"]["package_sha256"] == (
-            "d86f218d2194bd6260a491da66f89b8954a72ef8e5309c0ff1062c639d8f6ec4"
+            "0a6e539a03e6dcecd9518c6fa592c112892f829717d2c768721463796a604138"
         )
 
         bundle = settings.asset_root / payload["job_id"] / "retopology_input.zip"
@@ -661,7 +641,7 @@ async def test_retopology_process_creates_v230_direct_contract(tmp_path: Path) -
         assert manifest["package_sha256"] == payload["options"]["package_sha256"]
 
 
-async def test_direct_v2_completion_requires_bake_pair_and_visual_qa(tmp_path: Path) -> None:
+async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_path: Path) -> None:
     async for settings, client in prepared_asset_app(tmp_path):
         created = await post_retopology_process(
             client,
@@ -673,25 +653,18 @@ async def test_direct_v2_completion_requires_bake_pair_and_visual_qa(tmp_path: P
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-retopology-v2.3.0",
+            skill_version="asset-skills-auto-retopo-align-v3.0.0",
         )
         leased = await claim_asset_job(client, settings)
         assert leased["job_id"] == created_payload["job_id"]
 
-        agent_blend = b"agent-presentation-blend"
         delivery_blend = b"bake-alignment-blend"
         delivery_fbx = b"bake-low-fbx"
         high_fbx = b"bake-high-fbx"
-        views_zip = b"alignment-views-zip"
-        initial_contact = b"initial-contact-sheet"
-        final_contact = b"final-contact-sheet"
-        agent_sha = hashlib.sha256(agent_blend).hexdigest()
         blend_sha = hashlib.sha256(delivery_blend).hexdigest()
         fbx_sha = hashlib.sha256(delivery_fbx).hexdigest()
         high_fbx_sha = hashlib.sha256(high_fbx).hexdigest()
-        views_zip_sha = hashlib.sha256(views_zip).hexdigest()
-        initial_contact_sha = hashlib.sha256(initial_contact).hexdigest()
-        final_contact_sha = hashlib.sha256(final_contact).hexdigest()
+        adapter_input_sha = created_payload["options"]["project_sha256"]
         generation = {
             "status": "generated_for_user_inspection",
             "assets": [
@@ -701,191 +674,135 @@ async def test_direct_v2_completion_requires_bake_pair_and_visual_qa(tmp_path: P
                     "faces": 100,
                     "triangles": 200,
                     "method_decision": "semantic_reconstruction",
-                    "actual_plugin_use": False,
+                    "actual_plugin_use": "none",
+                    "coordinate_space": "source_high_local",
+                    "coordinate_authority": "high_object_matrix_world",
+                    "presentation_offset_applied": False,
                 }
             ],
+        }
+        source_manifest = {
+            "schema_version": "gpu_control_retopology_source.v1",
+            "source_sha256": created_payload["options"]["project_sha256"],
         }
         result = {
             "status": "generated_for_user_inspection",
-            "output_sha256": agent_sha,
+            "skill_id": "blender-auto-retopo-align",
+            "bake_alignment_status": "aligned",
+            "input_sha256": adapter_input_sha,
+            "output_sha256": blend_sha,
+            "bake_files": {
+                "bake_alignment.blend": blend_sha,
+                "bake_high.fbx": high_fbx_sha,
+                "bake_low.fbx": fbx_sha,
+            },
+            "assets": generation["assets"],
+            "coordinate_authority": "high_object_matrix_world",
+            "alignment_mode": "source_matrix_restore",
+            "topology_uv_preserved": True,
+            "fbx_readback_passed": True,
+            "low_display": "opaque_yellow",
             "automatic_post_generation_review": False,
             "automatic_retry": False,
         }
-        unit_contract = {
-            "schema_version": "retopology_fbx_units.v1",
-            "passed": True,
-            "coordinate_unit": "meter",
-            "unit_scale_factor_centimeters": 100.0,
-            "original_unit_scale_factor_centimeters": 100.0,
-            "raw_coordinates_are_meters": True,
-            "global_scale": 1.0,
-            "apply_unit_scale": True,
-            "apply_scale_options": "FBX_SCALE_UNITS",
-            "axis_forward": "-Z",
-            "axis_up": "Y",
-        }
-        clean_topology = {
-            "vertices": 80,
-            "edges": 180,
-            "faces": 100,
-            "triangles": 200,
-            "ngons": 0,
-            "finite_coordinates": True,
-            "degenerate_faces": 0,
-            "nonmanifold_edges": 0,
-            "loose_edges": 0,
-            "loose_vertices": 0,
-            "duplicate_vertices": 0,
-            "duplicate_faces": 0,
-            "inconsistent_orientation_edges": 0,
-            "self_intersections": {"intersecting_triangle_pairs": 0},
-        }
-        views = {
-            "views": ["front", "back", "left", "right", "top", "bottom", "perspective"],
-            "low_display": "opaque_bright_orange_solid_with_dark_wire",
-            "low_transparency": False,
-            "xray": False,
-            "numeric_silhouette_pass": True,
-        }
-        alignment_report = {
-            "schema_version": "retopology_bake_alignment.v2",
-            "mode": "transform_only_alignment_then_separate_uv",
-            "passed": True,
-            "input_blend_sha256": agent_sha,
-            "output_blend_sha256": blend_sha,
-            "source_high_is_sole_coordinate_authority": True,
-            "direct_object_transform_copy_used": False,
-            "uniform_scale_only": True,
-            "mirror_candidates_allowed": False,
-            "topology_rebuild_allowed": False,
-            "alignment_changes_topology_or_uv": False,
-            "uv_is_a_separate_pre_alignment_stage": True,
-            "alignment_skill": "blender-align-bake-models",
-            "uv_algorithm": "legacy_pbr",
-            "automatic_visual_review_required": True,
-            "pairs": [
+        structure = {
+            "object_count": 1,
+            "meshes": [
                 {
-                    "role_identification": {
-                        "method": "higher_face_count_is_high",
-                        "reported_high": "SOURCE_HIGH",
-                        "reported_low": "SOURCE_LOW",
-                        "high_faces": 1000,
-                        "original_low_faces": 100,
-                    },
-                    "transform_application": {
-                        "copied_high_object_transform": False,
-                        "geometry_registration_used": True,
-                        "applied_exactly_once_to_duplicate_mesh": True,
-                        "mirror_introduced": False,
-                    },
-                    "alignment_scope": "transform_only",
-                    "rebuild_allowed": False,
-                    "fallback": None,
-                    "registration": {
-                        "skill": "blender-align-bake-models",
-                        "transform_only": True,
-                        "axis_scale_used": False,
-                        "mirror_allowed": False,
-                        "topology_uv_preserved_during_alignment": True,
-                    },
-                    "final_high_topology": {"faces": 1000},
-                    "final_low_topology": clean_topology,
-                    "uv": {"algorithm": "legacy_pbr"},
-                    "final_views": views,
-                    "original_high_preserved": True,
-                    "original_low_preserved": True,
-                    "originals_hidden": True,
+                    "vertices": 80,
+                    "polygons": 100,
+                    "loops": 300,
+                    "polygon_sizes": [3] * 100,
+                    "uv_layer_count": 1,
+                    "material_slot_count": 1,
                 }
             ],
-            "bake_high_fbx": {"sha256": high_fbx_sha, "unit_contract": unit_contract},
-            "bake_low_fbx": {"sha256": fbx_sha, "unit_contract": unit_contract},
         }
-        pair_validation = {
-            "schema_version": "retopology_bake_pair_validation.v2",
-            "passed": True,
-            "fresh_blender_scene_reimport": True,
-            "low_faces_less_than_high": True,
-            "low_has_uv": True,
-            "low_structure_match": True,
-            "high": {
-                "passed": True,
-                "faces": 1000,
-                "sha256": high_fbx_sha,
-                "unit_contract": unit_contract,
+        alignment_report = {
+            "schema": "li3d-auto-retopo-align-v1",
+            "pass": True,
+            "transform_only_alignment": True,
+            "alignment_mode": "source_matrix_restore",
+            "coordinate_authority": "high",
+            "icp_used": False,
+            "topology_or_uv_edited": False,
+            "low_display": "opaque_yellow",
+            "topology_uv_unchanged": True,
+            "pairs": [
+                {
+                    "matrix_error_after": 0.0,
+                    "center_error_ratio": 0.0,
+                    "size_error_ratio": 0.05,
+                    "high_determinant_sign": 1,
+                    "low_determinant_sign_after": 1,
+                    "delivered_high_name": "ALIGN_HIGH_000",
+                    "delivered_low_name": "ALIGN_LOW_000",
+                }
+            ],
+            "fbx_readback": {
+                "pass": True,
+                "high_center_size_error_ratio": 0.0,
+                "low_center_size_error_ratio": 0.0,
+                "tolerance": 1e-5,
+                "low_structure_match": True,
+                "expected_low_structure": structure,
+                "actual_low_structure": structure,
             },
-            "low": {
-                "passed": True,
-                "faces": 100,
-                "sha256": fbx_sha,
-                "uv_passed": True,
-                "unit_contract": unit_contract,
-            },
         }
-        visual_qa = {
-            "schema_version": "retopology_bake_visual_qa.v1",
-            "passed": True,
-            "visual_match": True,
-            "correct_orientation": True,
-            "no_wrong_mirror": True,
-            "no_long_spikes": True,
-            "no_visible_intersections": True,
-            "views_checked": ["front", "back", "left", "right", "top", "bottom", "perspective"],
-            "failure_codes": [],
-            "summary": "all views pass",
-        }
+        alignment_report_bytes = json.dumps(alignment_report).encode()
+        result["bake_files"]["bake_alignment_report.json"] = hashlib.sha256(
+            alignment_report_bytes
+        ).hexdigest()
 
         completion_context = {
             "job_id": created_payload["job_id"],
+            "package_version": "3.0.0",
             "package_sha256": created_payload["options"]["package_sha256"],
             "project_sha256": created_payload["options"]["project_sha256"],
-            "agent_sha": agent_sha,
+            "adapter_input_sha": adapter_input_sha,
             "blend_sha": blend_sha,
             "fbx_sha": fbx_sha,
             "high_fbx_sha": high_fbx_sha,
-            "views_zip_sha": views_zip_sha,
-            "initial_contact_sha": initial_contact_sha,
-            "final_contact_sha": final_contact_sha,
             "delivery_blend": delivery_blend,
             "delivery_fbx": delivery_fbx,
             "high_fbx": high_fbx,
-            "views_zip": views_zip,
-            "initial_contact": initial_contact,
-            "final_contact": final_contact,
             "generation": generation,
             "result": result,
+            "source_manifest": source_manifest,
             "alignment_report": alignment_report,
-            "pair_validation": pair_validation,
-            "visual_qa": visual_qa,
         }
 
         endpoint = f"/internal/v1/assets/jobs/{created_payload['job_id']}/retopology-v6-complete"
         legacy = await client.post(
             endpoint,
             headers={"X-Asset-Lease": str(leased["lease_token"])},
-            files=direct_v2_completion_files("retopology_direct_delivery.v5", completion_context),
+            files=direct_v2_completion_files("retopology_direct_delivery.v6", completion_context),
         )
         assert legacy.status_code == 422, legacy.text
         assert legacy.json()["detail"]["code"] == "RETOPOLOGY_DIRECT_V2_IDENTITY_MISMATCH"
 
-        rejected_visual = copy.deepcopy(completion_context)
-        rejected_visual["visual_qa"]["passed"] = False
-        rejected_visual["visual_qa"]["visual_match"] = False
-        rejected_visual["visual_qa"]["failure_codes"] = ["VISUAL_MISMATCH"]
-        rejected_visual_response = await client.post(
+        rejected_coordinate = copy.deepcopy(completion_context)
+        rejected_coordinate["alignment_report"]["pairs"][0]["size_error_ratio"] = 0.2
+        rejected_coordinate["result"]["bake_files"]["bake_alignment_report.json"] = (
+            hashlib.sha256(json.dumps(rejected_coordinate["alignment_report"]).encode()).hexdigest()
+        )
+        rejected_coordinate_response = await client.post(
             endpoint,
             headers={"X-Asset-Lease": str(leased["lease_token"])},
-            files=direct_v2_completion_files("retopology_direct_delivery.v6", rejected_visual),
+            files=direct_v2_completion_files(
+                "retopology_direct_delivery.v7", rejected_coordinate
+            ),
         )
-        assert rejected_visual_response.status_code == 422, rejected_visual_response.text
+        assert rejected_coordinate_response.status_code == 422, rejected_coordinate_response.text
         assert (
-            rejected_visual_response.json()["detail"]["code"]
+            rejected_coordinate_response.json()["detail"]["code"]
             == "RETOPOLOGY_DIRECT_V2_IDENTITY_MISMATCH"
         )
 
         completed = await client.post(
             endpoint,
             headers={"X-Asset-Lease": str(leased["lease_token"])},
-            files=direct_v2_completion_files("retopology_direct_delivery.v6", completion_context),
+            files=direct_v2_completion_files("retopology_direct_delivery.v7", completion_context),
         )
         assert completed.status_code == 200, completed.text
         status = await client.get(
@@ -905,12 +822,13 @@ async def test_direct_v2_completion_requires_bake_pair_and_visual_qa(tmp_path: P
             ("fbx", "crate_GAME_LOW.fbx"),
         }
         assert payload["options"]["direct_v2_result"]["bake_alignment"] == {
-            "mode": "transform_only_alignment_then_separate_uv",
+            "mode": "source_matrix_restore",
             "passed": True,
-            "visual_qa_passed": True,
+            "coordinate_authority": "high_object_matrix_world",
+            "icp_used": False,
+            "topology_uv_preserved": True,
             "fbx_reimport_passed": True,
-            "low_faces_less_than_high": True,
-            "low_has_uv": True,
+            "user_visual_inspection_required": True,
         }
 
 
@@ -2765,7 +2683,7 @@ async def test_retopology_retry_resets_active_attempt_progress(tmp_path: Path) -
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-retopology-v2.3.0",
+            skill_version="asset-skills-auto-retopo-align-v3.0.0",
         )
         created = await post_retopology_process(
             client,
@@ -2848,7 +2766,7 @@ async def test_retopology_post_build_qa_failure_is_not_retried(tmp_path: Path) -
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-retopology-v2.3.0",
+            skill_version="asset-skills-auto-retopo-align-v3.0.0",
         )
         created = await post_retopology_process(
             client,
@@ -2909,7 +2827,7 @@ async def test_busy_codex_slot_still_claims_blender_only_work(tmp_path: Path) ->
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-retopology-v2.3.0",
+            skill_version="asset-skills-auto-retopo-align-v3.0.0",
         )
         retopology = await post_retopology_process(
             client,

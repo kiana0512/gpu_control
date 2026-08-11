@@ -34,6 +34,7 @@ from packages.gpu_control_core.admission import (
 )
 from packages.gpu_control_core.assets import (
     RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
+    RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION,
     AssetCreateMetadata,
     RetopologyAuditMetadata,
     SubstanceBakeMetadata,
@@ -41,9 +42,7 @@ from packages.gpu_control_core.assets import (
     asset_request_hash,
     lease_token_hash,
     retopology_audit_request_hash,
-    retopology_bake_alignment_evidence_valid,
-    retopology_bake_pair_validation_evidence_valid,
-    retopology_bake_visual_qa_evidence_valid,
+    retopology_auto_align_v3_evidence_valid,
     retopology_v6_process_request_hash,
     substance_bake_request_hash,
     uv_process_request_hash,
@@ -138,7 +137,7 @@ SUBSTANCE_BAKE_COMMAND_COUNTS = {
     "li3d-pbr-full-v2": 10,
 }
 CODEX_REQUIRED_JOB_TYPES = frozenset({"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"})
-RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-retopology-v2.3.0"
+RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-auto-retopo-align-v3.0.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,15 +281,10 @@ RETOPOLOGY_DIRECT_V2_ARTIFACTS = {
     "fbx": ("bake_low.fbx", "application/octet-stream"),
     "high_fbx": ("bake_high.fbx", "application/octet-stream"),
     "alignment_report": ("bake_alignment_report.json", "application/json"),
-    "pair_validation": ("bake_pair_validation.json", "application/json"),
-    "alignment_views_zip": ("alignment_views.zip", "application/zip"),
-    "initial_contact_sheet": ("alignment_initial_contact_sheet.png", "image/png"),
-    "final_contact_sheet": ("alignment_final_contact_sheet.png", "image/png"),
-    "visual_qa": ("bake_visual_qa.json", "application/json"),
-    "visual_qa_events": ("bake_visual_qa_events.jsonl", "application/x-ndjson"),
     "generation_report": ("generation_report.json", "application/json"),
     "delivery_manifest": ("delivery_manifest.json", "application/json"),
     "result": ("result.json", "application/json"),
+    "source_manifest": ("source_manifest.json", "application/json"),
     "agent_events": ("agent_events.jsonl", "application/x-ndjson"),
     "wrapper_events": ("wrapper_events.jsonl", "application/x-ndjson"),
 }
@@ -938,7 +932,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "source_revision": source_revision,
             "retopology": {
                 "engine_contract": "retopology-direct-v2",
-                "package_version": "2.3.0",
+                "package_version": RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION,
                 "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
                 "submission_mode": "one_file_per_job",
                 "recommended_upload_concurrency": 3,
@@ -1079,6 +1073,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ),
             "RETOPOLOGY_QUALITY_GATE_FAILED": (
                 "自动重拓扑候选未通过严格交付 QA；诊断制品已保留，未发布为最终结果。"
+            ),
+            "RETOPOLOGY_COORDINATE_MISMATCH": (
+                "自动拓扑低模未通过高模原坐标或 FBX 回读门禁；系统未发布错位结果，"
+                "也不会自动再次建模，请检查本次任务诊断。"
             ),
             "BLENDER_EXECUTION_FAILED": (
                 "Blender 资产处理执行失败；系统已保留任务诊断，请联系服务端管理员处理后重试。"
@@ -2018,7 +2016,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             options.update(
                 {
                     "engine_contract": "retopology-direct-v2",
-                    "package_version": "2.3.0",
+                    "package_version": RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION,
                     "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
                     "deprecated_fields_ignored": compatibility_warnings,
                     "project_filename": project_filename,
@@ -3824,7 +3822,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Annotated[AsyncSession, Depends(session)],
         lease: Annotated[str, Header(alias="X-Asset-Lease")],
     ) -> dict[str, Any]:
-        """Publish only a post-topology bake pair that passed geometry, UV, visual and FBX QA."""
+        """Publish only a v3 source-aligned pair with verified Blend/FBX readback evidence."""
 
         snapshot = await prepare_asset_completion(job_id, lease, db, "RETOPOLOGY_PROCESS_V2")
         form = await request.form()
@@ -3877,10 +3875,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 alignment_report = json.loads(
                     (staging / "bake_alignment_report.json").read_text("utf-8")
                 )
-                pair_validation = json.loads(
-                    (staging / "bake_pair_validation.json").read_text("utf-8")
+                source_manifest = json.loads(
+                    (staging / "source_manifest.json").read_text("utf-8")
                 )
-                visual_qa = json.loads((staging / "bake_visual_qa.json").read_text("utf-8"))
             except (OSError, ValueError) as exc:
                 raise HTTPException(
                     422, detail={"code": "RETOPOLOGY_DIRECT_V2_JSON_INVALID"}
@@ -3891,32 +3888,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or not isinstance(generation.get("assets"), list)
                 or not generation["assets"]
                 or result.get("status") != "generated_for_user_inspection"
+                or result.get("skill_id") != "blender-auto-retopo-align"
+                or result.get("bake_alignment_status") != "aligned"
+                or result.get("coordinate_authority") != "high_object_matrix_world"
+                or result.get("alignment_mode") != "source_matrix_restore"
+                or result.get("topology_uv_preserved") is not True
+                or result.get("fbx_readback_passed") is not True
+                or result.get("low_display") != "opaque_yellow"
                 or result.get("automatic_post_generation_review") is not False
                 or result.get("automatic_retry") is not False
+                or result.get("assets") != generation["assets"]
+                or not all(
+                    isinstance(item, dict)
+                    and item.get("coordinate_space") == "source_high_local"
+                    and item.get("coordinate_authority") == "high_object_matrix_world"
+                    and item.get("presentation_offset_applied") is False
+                    for item in generation["assets"]
+                )
             ):
                 raise HTTPException(422, detail={"code": "RETOPOLOGY_DIRECT_V2_RESULT_INVALID"})
             staged_by_kind = {item.kind: item for item in created}
             alignment_pairs = alignment_report.get("pairs")
-            expected_pairs = {
-                (item.get("high_object"), item.get("low_object"))
-                for item in generation["assets"]
-                if isinstance(item, dict)
-            }
-            actual_pairs = {
-                (
-                    item.get("role_identification", {}).get("reported_high"),
-                    item.get("role_identification", {}).get("reported_low"),
-                )
-                for item in alignment_pairs or []
-                if isinstance(item, dict)
-            }
+            bake_files = result.get("bake_files")
             if (
-                manifest.get("schema_version") != "retopology_direct_delivery.v6"
+                snapshot.options.get("package_version")
+                != RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION
+                or snapshot.options.get("package_sha256")
+                != RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
+                or manifest.get("schema_version") != "retopology_direct_delivery.v7"
                 or manifest.get("job_id") != snapshot.id
                 or manifest.get("engine_contract") != "retopology-direct-v2"
-                or manifest.get("package_sha256") != snapshot.options.get("package_sha256")
+                or manifest.get("package_version") != RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION
+                or manifest.get("package_sha256") != RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
                 or manifest.get("source_sha256") != snapshot.options.get("project_sha256")
-                or manifest.get("agent_blend_sha256") != result.get("output_sha256")
+                or result.get("input_sha256") != manifest.get("adapter_input_sha256")
+                or result.get("output_sha256") != staged_by_kind["blend"].sha256
                 or manifest.get("delivery_blend_sha256") != staged_by_kind["blend"].sha256
                 or manifest.get("delivery_blend_size_bytes") != staged_by_kind["blend"].size_bytes
                 or manifest.get("bake_high_fbx_sha256") != staged_by_kind["high_fbx"].sha256
@@ -3924,38 +3930,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 != staged_by_kind["high_fbx"].size_bytes
                 or manifest.get("delivery_fbx_sha256") != staged_by_kind["fbx"].sha256
                 or manifest.get("delivery_fbx_size_bytes") != staged_by_kind["fbx"].size_bytes
-                or manifest.get("alignment_views_zip_sha256")
-                != staged_by_kind["alignment_views_zip"].sha256
-                or manifest.get("alignment_views_zip_size_bytes")
-                != staged_by_kind["alignment_views_zip"].size_bytes
-                or manifest.get("initial_contact_sheet_sha256")
-                != staged_by_kind["initial_contact_sheet"].sha256
-                or manifest.get("final_contact_sheet_sha256")
-                != staged_by_kind["final_contact_sheet"].sha256
-                or manifest.get("status") != "bake_ready_validated"
-                or manifest.get("automatic_post_generation_review") is not True
+                or manifest.get("generation_report_sha256")
+                != staged_by_kind["generation_report"].sha256
+                or manifest.get("result_sha256") != staged_by_kind["result"].sha256
+                or manifest.get("source_manifest_sha256")
+                != staged_by_kind["source_manifest"].sha256
+                or manifest.get("status") != "generated_for_user_inspection_aligned"
+                or manifest.get("coordinate_authority") != "high_object_matrix_world"
+                or manifest.get("alignment_mode") != "source_matrix_restore"
+                or manifest.get("topology_uv_preserved") is not True
+                or manifest.get("fbx_reimport_passed") is not True
+                or manifest.get("automatic_post_generation_review") is not False
                 or manifest.get("automatic_retry") is not False
                 or manifest.get("bake_alignment") != alignment_report
-                or manifest.get("bake_pair_validation") != pair_validation
-                or manifest.get("visual_qa") != visual_qa
-                or not retopology_bake_alignment_evidence_valid(alignment_report)
-                or not retopology_bake_pair_validation_evidence_valid(pair_validation)
-                or not retopology_bake_visual_qa_evidence_valid(visual_qa)
-                or alignment_report.get("input_blend_sha256")
-                != manifest.get("agent_blend_sha256")
-                or alignment_report.get("output_blend_sha256")
-                != manifest.get("delivery_blend_sha256")
-                or alignment_report.get("bake_high_fbx", {}).get("sha256")
-                != manifest.get("bake_high_fbx_sha256")
-                or alignment_report.get("bake_low_fbx", {}).get("sha256")
-                != manifest.get("delivery_fbx_sha256")
-                or pair_validation.get("high", {}).get("sha256")
-                != manifest.get("bake_high_fbx_sha256")
-                or pair_validation.get("low", {}).get("sha256")
-                != manifest.get("delivery_fbx_sha256")
+                or not retopology_auto_align_v3_evidence_valid(alignment_report)
                 or not isinstance(alignment_pairs, list)
-                or not alignment_pairs
-                or actual_pairs != expected_pairs
+                or len(alignment_pairs) != len(generation["assets"])
+                or not isinstance(bake_files, dict)
+                or bake_files.get("bake_alignment.blend")
+                != staged_by_kind["blend"].sha256
+                or bake_files.get("bake_high.fbx") != staged_by_kind["high_fbx"].sha256
+                or bake_files.get("bake_low.fbx") != staged_by_kind["fbx"].sha256
+                or bake_files.get("bake_alignment_report.json")
+                != staged_by_kind["alignment_report"].sha256
+                or not isinstance(source_manifest, dict)
             ):
                 raise HTTPException(422, detail={"code": "RETOPOLOGY_DIRECT_V2_IDENTITY_MISMATCH"})
 
@@ -3977,7 +3975,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.status = "SUCCEEDED"
             job.progress = 100
             job.stage = "SUCCEEDED"
-            job.stage_message = "Direct V2 拓扑后高低模已对齐，UV、七方向视觉与 FBX 回读均通过"
+            job.stage_message = "v3 自动拓扑完成；已恢复高模原坐标并通过高低模 FBX 回读，等待用户检查"
             job.estimated_remaining_seconds = 0
             job.last_progress_at = datetime.now(UTC)
             job.finished_at = job.last_progress_at
@@ -3986,23 +3984,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.options = {
                 **job.options,
                 "direct_v2_result": {
-                    "status": "bake_ready_validated",
+                    "status": "generated_for_user_inspection_aligned",
                     "delivery_format": "bake_alignment+high_fbx+low_fbx+evidence",
                     "delivery_formats": [
                         "blend",
                         "high_fbx",
                         "low_fbx",
-                        "alignment_views_zip",
+                        "alignment_report",
+                        "source_manifest",
                     ],
-                    "automatic_post_generation_review": True,
+                    "automatic_post_generation_review": False,
                     "automatic_retry": False,
                     "bake_alignment": {
-                        "mode": "transform_only_alignment_then_separate_uv",
+                        "mode": "source_matrix_restore",
                         "passed": True,
-                        "visual_qa_passed": True,
+                        "coordinate_authority": "high_object_matrix_world",
+                        "icp_used": False,
+                        "topology_uv_preserved": True,
                         "fbx_reimport_passed": True,
-                        "low_faces_less_than_high": True,
-                        "low_has_uv": True,
+                        "user_visual_inspection_required": True,
                     },
                     "assets": generation["assets"],
                 },
@@ -4018,10 +4018,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "engine_contract": "retopology-direct-v2",
                     "delivery_format": "bake_alignment+high_fbx+low_fbx+evidence",
                     "bake_alignment": "passed",
-                    "visual_qa": "passed",
                     "fbx_reimport": "passed",
-                    "fbx_coordinate_unit": "meter",
-                    "automatic_post_generation_review": True,
+                    "coordinate_authority": "high_object_matrix_world",
+                    "automatic_post_generation_review": False,
                 },
             )
             await db.commit()
@@ -4030,7 +4029,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "accepted": True,
                 "status": job.status,
                 "delivery_format": "bake_alignment+high_fbx+low_fbx+evidence",
-                "bake_ready_validated": True,
+                "generated_for_user_inspection_aligned": True,
             }
         finally:
             if not committed:
@@ -4430,6 +4429,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             in {
                 "BLENDER_EXECUTION_FAILED",
                 "RETOPOLOGY_QA_FAILED",
+                "RETOPOLOGY_COORDINATE_MISMATCH",
             }
         )
         effective_retryable = (

@@ -202,18 +202,32 @@ def guard(plan: object) -> tuple[list[str], list[str]]:
         if not isinstance(evidence, dict):
             errors.append("direct_reduction_evidence is required")
         else:
+            exceptional = evidence.get("exceptionally_complex_asset") is True
             if evidence.get("structurally_complex") is not True:
                 errors.append("direct reduction requires structurally_complex=true")
-            if evidence.get("integrated_continuous_object") is not True:
-                errors.append("direct reduction requires integrated_continuous_object=true")
+            if not isinstance(evidence.get("integrated_continuous_object"), bool):
+                errors.append("integrated_continuous_object must be boolean")
             if evidence.get("fresh_high_duplicate") is not True:
                 errors.append("direct reduction must start from a fresh high duplicate")
             if evidence.get("structural_subregions_checked") is not True:
                 errors.append("direct reduction requires structural_subregions_checked=true")
-            if evidence.get("structured_shell_or_assembly_absent") is not True:
-                errors.append("direct reduction cannot cover a structured shell or assembly")
+            if not isinstance(evidence.get("structured_shell_or_assembly_absent"), bool):
+                errors.append("structured_shell_or_assembly_absent must be boolean")
             if evidence.get("joined_source_state_used_as_integration_evidence") is not False:
                 errors.append("joined SOURCE_HIGH state cannot be used as integration evidence")
+            reason = evidence.get("direct_reduction_reason")
+            if not isinstance(reason, str) or not reason.strip():
+                errors.append("direct reduction requires a non-empty direct_reduction_reason")
+            if exceptional:
+                if evidence.get("semantic_or_hybrid_would_lose_identity") is not True:
+                    errors.append(
+                        "exceptionally complex direct reduction requires semantic_or_hybrid_would_lose_identity=true"
+                    )
+            else:
+                if evidence.get("integrated_continuous_object") is not True:
+                    errors.append("ordinary direct reduction requires integrated_continuous_object=true")
+                if evidence.get("structured_shell_or_assembly_absent") is not True:
+                    errors.append("ordinary direct reduction cannot cover a structured shell or assembly")
 
     if method == "per_component_hybrid":
         method_map = plan.get("component_method_map")

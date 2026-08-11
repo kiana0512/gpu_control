@@ -158,7 +158,7 @@ def normalize_generation_report(
     delivery_inspector: Callable[[Path, str], list[dict[str, object]]] | None = None,
     source_inspector: Callable[[Path], str | None] | None = None,
 ) -> bool:
-    """Normalize known v2.3 report aliases without touching geometry.
+    """Normalize known report aliases without touching geometry.
 
     The approved upstream verifier requires ``assets`` records, while an
     otherwise successful agent may emit the same facts under ``objects`` with
@@ -208,6 +208,16 @@ def normalize_generation_report(
             "method_decision": method_decision,
             "actual_plugin_use": item.get("actual_plugin_use"),
         }
+        # The v3 package requires these source-coordinate declarations and
+        # validates them fail-closed before Blender finalization.  Preserve
+        # agent evidence verbatim; never infer or fabricate it here.
+        for field in (
+            "coordinate_space",
+            "coordinate_authority",
+            "presentation_offset_applied",
+        ):
+            if field in item:
+                normalized[field] = item[field]
         missing = [
             field
             for field in ("faces", "triangles", "actual_plugin_use")

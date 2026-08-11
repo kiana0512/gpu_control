@@ -1,0 +1,4 @@
+interface:
+  display_name: "Blender 自动拓扑与对齐"
+  short_description: "高模一键生成低模，强制恢复原始坐标并输出烘焙就绪文件"
+  default_prompt: "使用 $blender-auto-retopo-align 将当前高模生成低模，恢复原始坐标并输出服务器烘焙文件。"

@@ -12,8 +12,10 @@ This file preserves construction knowledge from earlier H01-H15 and N01-N08 work
 | Small protrusions, handles, fingers, straps, or openings do not match | Main body was built first and feature geometry was guessed | Record feature roots, path/axis, section, opening boundary, and maximum extent from the current high |
 | A continuous product was fragmented or a mechanical assembly was fused | Source islands, materials, or category labels decided component count | Split only from real gaps, motion, overlap, occlusion, or independent construction evidence |
 | Flat regions contain uniform grids, bevel stacks, or center fans | Face count was distributed uniformly or all-quads were treated as the goal | Use broad faces on planes and spend topology only on silhouette, profile events, openings, and junctions |
-| Direct reduction produced noisy hard-surface topology | Direct reduction was applied by batch or source-object count | Restrict it to genuinely integrated complex objects such as boots, gloves, or irregular organic props |
+| Direct reduction produced noisy hard-surface topology | Direct reduction was applied by batch or source-object count | Restrict it to genuinely integrated complex objects or the evidence-backed exceptionally-complex identity-loss fallback |
 | A vessel and its contents became one uniformly decimated triangle field | FBX preparation joined the source and the joined state was mistaken for one integrated organic form | Reconstruct the vessel structure and limit organic reduction/cage work to the proven content region |
+| Correcting one handle or attachment makes an already approved body worse | The whole asset was rebuilt instead of isolating the rejected feature | Treat explicit user approval as a scope lock; preserve approved components unchanged and replace only the responsible independent component |
+| A handle aligns in one overlay but misses in depth or on the opposite side | One projected offset or a symmetric template was used as a 3D path | Measure both roots, grip axis/endpoints, tube section, and multiple high-local centerline stations from front, side, and top evidence |
 | The result is hard to inspect | Transparency, high wire, or display changes obscured shape | Keep the high solid with wire off and the low opaque yellow with wire on |
 | Production time is lost to repeated reviews and rebuilds | Training-style iteration leaked into formal execution | Make all decisions before geometry, generate once, arrange/save/report, and stop for user inspection |
 
@@ -41,9 +43,11 @@ Historical face counts can suggest scale but never define geometry. Do not prese
 
 Use one continuous envelope for molded, cast, pressed, wrapped, anatomical, or blended surfaces. Keep real moving pieces, true gaps, independent overlaps, and mechanically separate hardware distinct. A seam or source island alone does not justify splitting.
 
-### Direct reduction has a narrow role
+### Direct reduction has a narrow role and a complex-asset fallback
 
 Direct reduction worked best for integrated, irregular, one-piece objects where semantic reconstruction destroyed identity. It failed when used as a blanket solution for mechanical or repeated hard-surface assets.
+
+User preference adds one fallback: when the whole asset is exceptionally complex and component separation, semantic reconstruction, or a hybrid build would be unreliable or lose identity, use one whole-asset controlled reduction from a fresh high duplicate. This preference can override the normal structured-asset route, but it must be based on current-high complexity evidence rather than source object count or a fixed triangle threshold.
 
 ### Presentation must not change geometry
 
@@ -83,6 +87,8 @@ Correct the method before the next build:
 - Bound controlled reduction, qualified remeshing, or a high-derived cage to only the irregular content region when that surface affects silhouette.
 - Preserve the high-derived contact and occlusion boundary between shell and contents.
 - Do not try to fix this routing error by raising or lowering one global target face count.
+
+If the vessel-plus-contents asset is exceptionally complex and the responsibility boundary itself cannot be established reliably, stop trying to reconstruct guessed regions and use the exceptional whole-asset controlled-reduction fallback.
 
 ### H03-style pump or handled container failure
 
@@ -148,6 +154,16 @@ Do not interpret lower grooves as feet.
 - Derive the bail path, roots, and grip from the high.
 - Use radial density for the round silhouette and very few wall rings on straight spans.
 - Do not model every shallow circumferential mark.
+
+Correction lessons from the user-reviewed bucket:
+
+- Do not rebuild the shell, rim, cavity, or wall topology merely to fix the bail. Rebuilding the whole bucket distorted an already preferred body, over-expanded the upper wall, added unnecessary rings, and narrowed the lower body.
+- Do not repair a three-dimensional bail by widening only its projected X position. That can improve one overlay while leaving both side spans wrong in Y/Z and making the path turn toward the grip too early.
+- On explicit user feedback that the previous body was better, preserve that approved body as a correction-scope lock. The current high remains the only authority for every changed bail vertex.
+- Before the correction build, measure the current high in high-local coordinates from front, side, and top views: both roots, tube section, grip axis and endpoints, and multiple intermediate centerline stations on each side.
+- When the high is one fused mesh and the bail lies outside a rotational shell, sample the left and right outer radial surfaces in narrow height bands. Average each tube cross-section to estimate its centerline; do not mistake the outermost surface point for the center.
+- Measure both sides independently unless the current high proves symmetry. Never store the resulting coordinates as reusable bucket constants.
+- Replace only the independent bail sweep when the shell, grip, and pivot housings are already approved. Keep the approved components vertex-for-vertex unchanged and preserve rejected versions as hidden backups.
 
 ### H10-style rotational bottle
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.12（自动拓扑与原坐标对齐包 v3.0.0）— 2026-08-11
+
+- 完整替换为 `blender-auto-retopo-align-server-package-v3.0.0`，固定 ZIP SHA-256、24 文件清单和
+  `server/verify_package.py` 自检，并把 package/skill 身份绑定到 API、队列与三台 Worker。
+- 同任务低模改由新包一次生成并恢复高模原矩阵；不再进入旧 ICP、二次 UV、七视图 Agent 复核或
+  自动第二次建模，避免服务器适配层再次改变新低模。
+- 原子交付对齐 Blend、高/低模 FBX、generation/result/source manifest、对齐报告和事件日志；Asset
+  API 对坐标声明、矩阵/中心/尺寸、手性、拓扑/UV 指纹和 FBX 新导入证据执行 fail-closed 校验。
+- 坐标异常使用不可重试的 `RETOPOLOGY_COORDINATE_MISMATCH`；成功只表示源坐标恢复与回读通过，
+  保留 `generated_for_user_inspection` 语义，不伪造自动视觉验收。
+
 ## 1.5.12（Direct V2 进度与重试热修复）— 2026-08-11
 
 - Direct V2 将 10 分钟正常估算与 2 小时硬超时安全上限分离；进度按阶段经过时间增长，不再在

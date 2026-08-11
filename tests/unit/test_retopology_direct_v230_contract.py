@@ -3,7 +3,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from packages.gpu_control_core.assets import RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
+from packages.gpu_control_core.assets import (
+    RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
+    RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION,
+)
 
 ROOT = Path("resources/retopology-direct-v2")
 
@@ -14,7 +17,7 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def test_approved_v230_package_is_complete() -> None:
+def test_approved_v300_package_is_complete() -> None:
     completed = subprocess.run(  # noqa: S603 - repository-owned verifier
         [sys.executable, str(ROOT / "server" / "verify_package.py")],
         capture_output=True,
@@ -24,12 +27,13 @@ def test_approved_v230_package_is_complete() -> None:
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert (ROOT / "server" / "batch_retopology.py").is_file()
     assert (
-        file_sha256(ROOT / "blender-retopology-compare-iterate" / "SKILL.md")
-        == "03dff7efe9ffac9a365a0b81637bc3065fd4fe7259c67a9d2eb4ebf697e450aa"
+        file_sha256(ROOT / "blender-auto-retopo-align" / "SKILL.md")
+        == "655e240ca63a2d7ca745397404853bce379c4c6dc2de5c7285f4d8d1bacd6557"
     )
+    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.0"
     assert (
         RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
-        == "d86f218d2194bd6260a491da66f89b8954a72ef8e5309c0ff1062c639d8f6ec4"
+        == "0a6e539a03e6dcecd9518c6fa592c112892f829717d2c768721463796a604138"
     )
 
 
@@ -50,11 +54,14 @@ def test_direct_v2_task_auth_uses_the_rotated_node_private_credential() -> None:
     assert '"CODEX_AUTH_SOURCE": str(persistent_auth_source)' in worker
 
 
-def test_public_create_contract_selects_v230_without_changing_route() -> None:
+def test_public_create_contract_selects_v300_without_changing_route() -> None:
     api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text(
         encoding="utf-8"
     )
     assert '@app.post("/api/v1/assets/retopology/process")' in api
     assert '"schema_version": "retopology_input.direct-v2"' in api
     assert '"engine_contract": "retopology-direct-v2"' in api
-    assert '"package_version": "2.3.0"' in api
+    assert "RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION" in api
+    assert '"schema_version": "retopology_direct_delivery.v7"' in Path(
+        "apps/blender_worker/src/gpu_control_blender_worker/main.py"
+    ).read_text("utf-8")

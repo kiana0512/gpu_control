@@ -6,6 +6,7 @@
   "failure_count": 0,
   "archive": "batch-results.zip",
   "automatic_post_generation_review": false,
+  "coordinate_restoration": "source_matrix_restore",
   "automatic_retry": false,
   "items": [
     {
@@ -13,14 +14,18 @@
       "source_filename": "chair.fbx",
       "job_id": "batch-001-001",
       "status": "generated_for_user_inspection",
-      "output": "results/001_chair_retopology.blend"
+      "bake_alignment_status": "aligned",
+      "output": "results/001_chair_retopology.blend",
+      "bake_output_dir": "results/001_chair_retopology.bake"
     },
     {
       "index": 2,
       "source_filename": "bucket.fbx",
       "job_id": "batch-001-002",
       "status": "generated_for_user_inspection",
-      "output": "results/002_bucket_retopology.blend"
+      "bake_alignment_status": "aligned",
+      "output": "results/002_bucket_retopology.blend",
+      "bake_output_dir": "results/002_bucket_retopology.bake"
     }
   ]
 }

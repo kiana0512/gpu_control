@@ -1,44 +1,39 @@
-# Blender FBX 一键拓扑服务器任务
+# Blender 自动拓扑并恢复原坐标
 
-使用 `$blender-retopology-compare-iterate` 完成任务。必须读取任务 `CODEX_HOME` 中该技能的
-完整 `SKILL.md`，并按技能要求读取 references；不要用简化提示词代替技能。
+使用 `$blender-auto-retopo-align` 完成任务。必须完整读取任务 `CODEX_HOME` 中该技能的 `SKILL.md`，并按技能路由读取四份 references；不要用简化提示词替代技能。
 
 任务参数：
 
 - 用户上传源文件：`{{INPUT_SOURCE}}`
 - 已准备的拓扑工作 Blend：`{{WORKING_BLEND}}`
 - FBX 源清单：`{{SOURCE_MANIFEST}}`
-- 输出 Blend：`{{OUTPUT_BLEND}}`
+- 生成阶段输出 Blend：`{{OUTPUT_BLEND}}`
 - 高模对象：`{{HIGH_OBJECTS}}`
 - Blender：`{{BLENDER_EXECUTABLE}}`
 - 任务目录：`{{JOB_DIR}}`
 
-FBX 输入已经由技能自带的 `prepare_fbx_source.py` 导入为工作 Blend，并固定为
-`SOURCE_HIGH`。不要重新导入 FBX，不要创建参考低模、当前低模、Decimate bootstrap 或
-通用代理。
+FBX 输入已经由技能的 `prepare_fbx_source.py` 导入为 `SOURCE_HIGH`。不要重新导入 FBX。`SOURCE_HIGH` 的 joined 状态不是“一体有机模型”的证据；选择方法前检查断开的网格岛、截面系统、开口、遮挡关系和机械组件。
 
-`SOURCE_HIGH` 的 joined 状态不能作为“一体有机模型”的证据，因为 FBX 预处理会主动合并
-导入的 Mesh。选择方法前必须检查断开的网格岛、截面系统、开口、遮挡关系和结构区域。受控
-直接减面仍然保留，但只允许用于证据充分的一体有机区域；若高模包含碗、桶、托盘、箱体等
-结构外壳和不规则内容物，必须采用组件混合：外壳按高模截面结构重建，只在内容物区域使用
-受控直接减面、合格重网格或高模派生笼，禁止把两者作为整个 `SOURCE_HIGH` 一次性减面。
+必须真实执行 Blender 并生成输出文件：
 
-必须真正执行 Blender 并生成输出文件，不能只给方案、代码或文字说明：
+1. 只读打开工作 Blend；指定高模是唯一形状依据，也是唯一坐标依据。
+2. 在创建几何前完成测量、方法选择和 shape-authority plan；写入 `{{JOB_DIR}}/plans/` 并运行 `guard_shape_authority_plan.py`。
+3. 每个指定高模只生成一个低模。方法只能是 `semantic_reconstruction`、`controlled_direct_reduction` 或 `per_component_hybrid`。普通硬表面优先结构重建/组件混合；不要用全物体 Decimate 或 remesh 代替分析。
+4. 低模必须直接建立在高模本地坐标系：所有构建点使用 `source_high_local`，低模 `matrix_world` 必须等于对应高模的源矩阵。不要归零高模，不要只靠包围盒恢复坐标。
+5. 无人值守任务不做左右分开展示；不得给低模保留展示平移。低模使用不透明黄色/橙色材质或对象色，保持可见，不用半透明或 X-ray。
+6. 若构建时临时归一化，保存完整 4x4 `work_to_world`，并在保存前按技能的坐标恢复公式回到高模本地坐标。
+7. 低模创建后只允许设置显示、保存和记录数量；不得自动复查、渲染、评分、修正、重开、重试或生成第二版。
+8. 高模保持不变并可见，把生成阶段场景保存到 `{{OUTPUT_BLEND}}`。
+9. 同一次构建结束前写 `{{JOB_DIR}}/generation_report.json`，状态为 `generated_for_user_inspection`。每个 asset 必须包含：
+   - `high_object`
+   - `low_object`
+   - `faces`
+   - `triangles`
+   - `method_decision`
+   - `actual_plugin_use`
+   - `coordinate_space: source_high_local`
+   - `coordinate_authority: high_object_matrix_world`
+   - `presentation_offset_applied: false`
+10. 保存后立即停止。不要在本次 Codex 生成阶段调用 ICP 或对齐脚本；服务器包装器会单独运行纯坐标恢复、拓扑/UV 指纹和 FBX 回读。
 
-1. 只读打开工作 Blend；其中指定高模是唯一形状依据。
-2. 创建低模前完成测量、方法选择和 shape-authority plan；写入 `{{JOB_DIR}}/plans/`，并运行
-   技能的 `guard_shape_authority_plan.py`。FBX 计划需记录原始 FBX、工作 Blend 和源清单。
-3. 每个指定高模只生成一个低模；按技能规则决定结构重建、受控直接减面或组件混合。不得因
-   `SOURCE_HIGH` 只有一个对象就选择整物体直接减面。组件混合计划必须写
-   `component_method_map`，分别记录结构区域和不规则区域的方法及高模边界证据。
-4. 大平面和非轮廓区保持极简，把面数用于轮廓、截面变化、开口、负空间和关键连接。
-5. 低模一旦创建，只设置黄色实体/wire、平移摆排、保存并记录创建时已有数量；不得自动
-   复查、渲染、评分、重开、修正、重试或生成第二版。
-6. 高模保持不变且可见，把场景保存到 `{{OUTPUT_BLEND}}`。
-7. 同一次 Blender 构建结束前写 `{{JOB_DIR}}/generation_report.json`，包含每个高模和低模
-   名称、faces、triangles、method_decision、actual_plugin_use，以及
-   `status: generated_for_user_inspection`。
-8. 保存成功后立即停止，不宣称 accepted、final_pass、validated 或 game_ready。
-
-服务器无交互窗口时使用给定 Blender 执行 headless Python。允许在创建几何前测量；正式
-builder 对每个高模只运行一次，生成后不得重新读取网格做质量审查。
+不得宣称 accepted、final_pass、validated 或 game_ready。最终状态仍是交给用户检查，但服务器会附加坐标对齐校验。

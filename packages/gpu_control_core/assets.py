@@ -227,8 +227,9 @@ class RetopologyV6ProcessMetadata(BaseModel):
 
 
 RETOPOLOGY_V6_POLICY_SHA256 = "e7b24c93c11d550ac9fedd167ff23f9ddd70cba4db014caaf2e157cddeafb266"
+RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION = "3.0.0"
 RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256 = (
-    "d86f218d2194bd6260a491da66f89b8954a72ef8e5309c0ff1062c639d8f6ec4"
+    "0a6e539a03e6dcecd9518c6fa592c112892f829717d2c768721463796a604138"
 )
 RETOPOLOGY_DIRECT_V2_MAX_DIMENSION_RELATIVE_ERROR = 0.05
 RETOPOLOGY_FBX_UNIT_SCALE_FACTOR_CENTIMETERS = 100.0
@@ -498,6 +499,84 @@ def retopology_bake_visual_qa_evidence_valid(payload: object) -> bool:
         and isinstance(checked, list)
         and set(checked) == required_views
         and payload.get("failure_codes") == []
+    )
+
+
+def retopology_auto_align_v3_evidence_valid(payload: object) -> bool:
+    """Validate the v3 same-job source-coordinate finalization evidence.
+
+    v3 deliberately performs no ICP, topology/UV editing, automatic visual
+    review, or second modeling pass.  The generated low must be restored to
+    the source high's coordinate frame and both FBX files must survive a fresh
+    import with the expected bounds and low-mesh structure.
+    """
+
+    if not isinstance(payload, dict):
+        return False
+    if (
+        payload.get("schema") != "li3d-auto-retopo-align-v1"
+        or payload.get("pass") is not True
+        or payload.get("transform_only_alignment") is not True
+        or payload.get("alignment_mode") != "source_matrix_restore"
+        or payload.get("coordinate_authority") != "high"
+        or payload.get("icp_used") is not False
+        or payload.get("topology_or_uv_edited") is not False
+        or payload.get("low_display") != "opaque_yellow"
+        or payload.get("topology_uv_unchanged") is not True
+    ):
+        return False
+    pairs = payload.get("pairs")
+    if not isinstance(pairs, list) or not pairs:
+        return False
+    for pair in pairs:
+        if not isinstance(pair, dict):
+            return False
+        matrix_error = pair.get("matrix_error_after")
+        center_error = pair.get("center_error_ratio")
+        size_error = pair.get("size_error_ratio")
+        if (
+            not isinstance(matrix_error, int | float)
+            or isinstance(matrix_error, bool)
+            or not math.isfinite(float(matrix_error))
+            or float(matrix_error) > 1e-5
+            or not isinstance(center_error, int | float)
+            or isinstance(center_error, bool)
+            or not math.isfinite(float(center_error))
+            or float(center_error) > 1e-5
+            or not isinstance(size_error, int | float)
+            or isinstance(size_error, bool)
+            or not math.isfinite(float(size_error))
+            or float(size_error) > 0.15
+            or pair.get("high_determinant_sign")
+            != pair.get("low_determinant_sign_after")
+            or not isinstance(pair.get("delivered_high_name"), str)
+            or not pair.get("delivered_high_name")
+            or not isinstance(pair.get("delivered_low_name"), str)
+            or not pair.get("delivered_low_name")
+        ):
+            return False
+    readback = payload.get("fbx_readback")
+    if not isinstance(readback, dict):
+        return False
+    tolerance = readback.get("tolerance")
+    high_error = readback.get("high_center_size_error_ratio")
+    low_error = readback.get("low_center_size_error_ratio")
+    return (
+        readback.get("pass") is True
+        and readback.get("low_structure_match") is True
+        and isinstance(tolerance, int | float)
+        and not isinstance(tolerance, bool)
+        and math.isclose(float(tolerance), 1e-5, rel_tol=0.0, abs_tol=1e-12)
+        and isinstance(high_error, int | float)
+        and not isinstance(high_error, bool)
+        and math.isfinite(float(high_error))
+        and float(high_error) <= float(tolerance)
+        and isinstance(low_error, int | float)
+        and not isinstance(low_error, bool)
+        and math.isfinite(float(low_error))
+        and float(low_error) <= float(tolerance)
+        and readback.get("expected_low_structure")
+        == readback.get("actual_low_structure")
     )
 
 
