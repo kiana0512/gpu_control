@@ -20,7 +20,7 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def test_approved_v323_package_is_complete() -> None:
+def test_approved_v324_package_is_complete() -> None:
     completed = subprocess.run(  # noqa: S603 - repository-owned verifier
         [sys.executable, str(ROOT / "server" / "verify_package.py")],
         capture_output=True,
@@ -31,12 +31,12 @@ def test_approved_v323_package_is_complete() -> None:
     assert (ROOT / "server" / "batch_retopology.py").is_file()
     assert (
         file_sha256(ROOT / "blender-auto-retopo-align" / "SKILL.md")
-        == "9b195bc41bf50a516794ac728d8c3b4bc7cca2e27bb2fb21704fb3b0bb860bff"
+        == "54ea80372beb6ec8de97f816cd4f32d1140f3e409fbcfbeb90d1a826ed3a4b3c"
     )
-    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.23"
+    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.24"
     assert (
         RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
-        == "6e8c50706003edcb0a8dea1ed81bb598f483514ea237fa843f818c80ed5a267f"
+        == "000f65c541f103d4f5cea84d6814d17174899d2eb518eed170e8de8ed677dec3"
     )
 
 
@@ -64,8 +64,8 @@ def test_rolling_completion_accepts_only_matching_approved_package_identity() ->
         "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
     }
     previous = {
-        "package_version": "3.0.14",
-        "package_sha256": ("4cd05689d1171e8d75a4546ccc737d3ba82fb31d90971758671802fe5ef0c5e9"),
+        "package_version": "3.0.23",
+        "package_sha256": ("6e8c50706003edcb0a8dea1ed81bb598f483514ea237fa843f818c80ed5a267f"),
     }
     assert retopology_direct_v2_completion_identity_valid(current, current) is True
     assert retopology_direct_v2_completion_identity_valid(previous, previous) is True
@@ -74,7 +74,7 @@ def test_rolling_completion_accepts_only_matching_approved_package_identity() ->
     assert retopology_direct_v2_completion_identity_valid(unknown, unknown) is False
 
 
-def test_public_create_contract_selects_v323_without_changing_route() -> None:
+def test_public_create_contract_selects_v324_without_changing_route() -> None:
     api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text(encoding="utf-8")
     assert '@app.post("/api/v1/assets/retopology/process")' in api
     assert '"schema_version": "retopology_input.direct-v2"' in api
@@ -85,7 +85,7 @@ def test_public_create_contract_selects_v323_without_changing_route() -> None:
     ).read_text("utf-8")
 
 
-def test_v323_region_method_routing_and_fast_delivery_contract_are_wired() -> None:
+def test_v324_region_method_routing_and_fast_delivery_contract_are_wired() -> None:
     entrypoint = (ROOT / "server" / "one_click_retopology.py").read_text("utf-8")
     worker = Path("apps/blender_worker/src/gpu_control_blender_worker/main.py").read_text(
         "utf-8"
@@ -133,6 +133,15 @@ def test_v323_region_method_routing_and_fast_delivery_contract_are_wired() -> No
     assert "USER_TOPOLOGY_REQUEST_JSON" in prompt
     assert "最高优先级的建形约束" in prompt
     assert "不得再以“缝隙真实存在”为理由改回逐件语义重建" in prompt
+    assert "controlled_reduction_fallback.py" in prompt
+    assert "不要传 `--prefer-normalized-work`" in prompt
+    fallback = (
+        ROOT
+        / "blender-auto-retopo-align/scripts/controlled_reduction_fallback.py"
+    ).read_text("utf-8")
+    assert 'modifier.ratio = args.ratio' in fallback
+    assert '"--prefer-normalized-work"' in fallback
+    assert '"uv_policy": "no_uv_generation_or_modification"' in fallback
     assert "guard_shape_authority_plan.py" not in prompt
     assert '"timing_seconds"' in entrypoint
     prepare = (

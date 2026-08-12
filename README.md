@@ -6,8 +6,8 @@
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
 当前生产基线为 GPU Control API/Scheduler `1.5.12`、Web `1.5.11-retopo-direct-v2`、Asset API
-`1.6.45-retopo-fragment-adjacency-v1`、三台 Linux Blender Worker
-`1.4.45-retopo-fragment-adjacency-v1`、数据库 `20260810_0013`。当前总状态为
+`1.6.46-retopo-fused-fallback-v1`、三台 Linux Blender Worker
+`1.4.46-retopo-fused-fallback-v1`、数据库 `20260810_0013`。当前总状态为
 `DEPLOYED_NOT_ACCEPTED`：第三次正式 100 VU、registry digest/SBOM、固定基准、完整故障矩阵和
 连续七天观察尚未闭环，禁止标记 `FROZEN` 或 `PRODUCTION_ACCEPTED`。
 
@@ -21,10 +21,12 @@ v3 同任务生成路径保留坐标恢复、保存后 Blend 拓扑指纹、身�
 `substance-baker-2026.08.03-v6`，均为 `ONLINE/HEALTHY`，用 PBR 成功 marker、逐命令证据和制品完整性
 消除 PowerShell 空 `ExitCode` 假失败，但不放行真实非零退出或缺少 marker。三节点 ComfyUI 仍是同一
 `projects-0.2.3` 镜像，健康、`RestartCount=0`；本轮未停止/重启 ComfyUI，也未调用 `/free` 或
-清理模型缓存。自动拓扑对齐包 v3.0.23 统一 FBX/GLB/GLTF/OBJ 的只读高模准备入口，并把 API 中
+清理模型缓存。自动拓扑对齐包 v3.0.24 统一 FBX/GLB/GLTF/OBJ 的只读高模准备入口，并把 API 中
 用户明确指定的分区建形意图传入生成器；布料覆盖木堆等分层资产先用只读的同坐标邻接恢复被
-法线/UV 导出缝拆开的完整几何表面，再进行区域分类，禁止把导出碎片误当语义组件；布料首轮
-保留深褶密度，木堆使用非圆形轮廓环挤出，禁止圆柱/椭圆/AABB 通用代理；正式加载训练
+法线/UV 导出缝拆开的完整几何表面，再进行区域分类，禁止把导出碎片误当语义组件；当导入资产
+实际融合成一张无法安全分区的表面时，直接使用打包好的单次 50% 高模副本受控减面，保留导出缝
+避免跨越木条、硬边和布料边界，不再强拆出碎布和通用包体；可可靠分区时布料保留深褶密度、
+木堆使用非圆形轮廓环挤出，禁止圆柱/椭圆/AABB 通用代理；正式加载训练
 拓扑技能按高模区域路由：复杂连续面受控减面、结构件语义重建、密集堆叠区按整体外轮廓重建，
 并由独立对齐技能恢复坐标；仍不增加方向审查、
 FBX 回读或 UV 门禁。准备阶段继续预计算文本化

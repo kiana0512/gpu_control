@@ -1,4 +1,4 @@
-# Blender 自动拓扑与原坐标对齐服务器包 v3.0.23
+# Blender 自动拓扑与原坐标对齐服务器包 v3.0.24
 
 本包合并两个正式技能：
 
@@ -7,8 +7,13 @@
 
 它用于替换现有 `blender-retopology-compare-iterate-server-package-v2.5.0`。旧单文件调用参数和成功状态保持兼容；成功后额外输出烘焙高低模 FBX 与对齐报告。
 
-## v3.0.23 行为
+## v3.0.24 行为
 
+- classification-only 邻接若把布料和木堆恢复为同一张融合表面，禁止按法线、坐标范围或逐面
+  条件继续强拆。系统直接调用包内 `controlled_reduction_fallback.py`，对新的高模副本执行一次
+  50% 受控减面并立即进入坐标恢复；保留导出缝，避免减面跨越木条、硬边和布料边界。
+- 代表性 99,992 面 GLB 的确定性 Blender 建形耗时约 1 秒，得到 49,996 面低模；布料连续、木条
+  结构完整，没有旧版的长刺、碎片或通用实心包体。
 - GLB/FBX 因法线、UV 或导出切缝产生同坐标重复点时，只在分类分析中恢复几何邻接，避免把
   数千个导出碎片误判为语义组件；不焊接、不修改高模或最终低模。
 - 深褶布料首轮保留更高密度并使用平滑着色；木堆、石堆等聚合区改用真实点集提取的非圆形
@@ -135,8 +140,8 @@
 推荐把每个版本解压到独立 release 目录，再切换服务配置或符号链接，保留旧版用于回滚：
 
 ```bash
-unzip blender-auto-retopo-align-server-package-v3.0.23.zip -d /opt/li3d/releases/
-cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.23
+unzip blender-auto-retopo-align-server-package-v3.0.24.zip -d /opt/li3d/releases/
+cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.24
 python3 server/verify_package.py
 cp server/worker.env.example server/worker.env
 ```
@@ -256,7 +261,7 @@ python3 server/align_existing_low.py \
 docker build \
   --build-arg WORKER_IMAGE=现有Worker镜像@sha256:固定摘要 \
   -f Dockerfile.layer \
-  -t li3d/blender-auto-retopo-align:v3.0.23 .
+  -t li3d/blender-auto-retopo-align:v3.0.24 .
 ```
 
 本 Layer 不替换现有 HTTP、队列、存储、鉴权或 Worker entrypoint，只加入合并技能和兼容入口。

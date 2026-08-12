@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-08-12 — Automatic retopology fused-surface fallback v3.0.24
+
+- Detect the real cloth-over-wood failure mode where classification-only adjacency recovers one
+  fused surface spanning both layers; stop unsafe normal/coordinate face clipping instead of
+  producing torn cloth and an oversized aggregate proxy.
+- Add a packaged deterministic one-pass 50-percent controlled-reduction fallback on a fresh
+  `SOURCE_HIGH` copy. It retains export seams so reduction cannot cross fused hard/soft boundaries,
+  leaves the authoritative high unchanged, and generates no UV.
+- Keep publication policy unchanged: no new review, direction render, FBX reimport, automatic
+  retry, visual score, or delivery gate. The fallback Blender build itself completed in 1 second on
+  the representative 99,992-face GLB and produced a visually intact 49,996-face low.
+
 ## 2026-08-12 — Automatic retopology export-fragment recovery v3.0.23
 
 - Treat GLB/FBX duplicate vertices caused by normals, UV seams and export splits as

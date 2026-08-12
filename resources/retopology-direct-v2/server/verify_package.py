@@ -22,6 +22,7 @@ EXPECTED_SKILL_FILES = {
     "references/execution-plan-schema.md",
     "references/learned-asset-lessons.md",
     "scripts/align_bake_models.py",
+    "scripts/controlled_reduction_fallback.py",
     "scripts/finalize_generated_pair.py",
     "scripts/guard_shape_authority_plan.py",
     "scripts/prepare_fbx_source.py",
@@ -176,6 +177,8 @@ def main() -> int:
             "USER_TOPOLOGY_REQUEST_JSON",
             "最高优先级的建形约束",
             "不得再以“缝隙真实存在”为理由改回逐件语义重建",
+            "controlled_reduction_fallback.py",
+            "不要传 `--prefer-normalized-work`",
         ),
         "agent prompt",
         errors,
@@ -194,6 +197,18 @@ def main() -> int:
             '"automatic_retry": False',
         ),
         "one-click entrypoint",
+        errors,
+    )
+    require_tokens(
+        SKILL / "scripts" / "controlled_reduction_fallback.py",
+        (
+            "CONTROLLED_REDUCTION_FALLBACK",
+            "SOURCE_HIGH_NORMALIZED_WORK",
+            "--prefer-normalized-work",
+            "RETOPOLOGY_SOURCE_MUTATED",
+            "no_uv_generation_or_modification",
+        ),
+        "controlled-reduction fallback",
         errors,
     )
     require_tokens(
@@ -283,7 +298,7 @@ def main() -> int:
 
     payload = {
         "ok": not errors,
-        "package_version": "3.0.23",
+        "package_version": "3.0.24",
         "skill_id": SKILL_ID,
         "skill_file_count": len(actual_skill),
         "topology_skill_id": TOPOLOGY_SKILL_ID,
