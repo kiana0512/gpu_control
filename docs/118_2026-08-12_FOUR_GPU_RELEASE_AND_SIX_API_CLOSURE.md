@@ -238,8 +238,8 @@ config 全部逐项一致，OCI revision label 全部绑定上述代码提交；
 
 六 API 负载运行器的公开集合修正发生在正式运行镜像构建之后。该模块仅由离线压测脚本和测试导入，
 生产 API、Scheduler、Asset API、Web、Worker 与 Node Agent 均不导入它，因此不重启或重打生产镜像；
-压测执行时必须同时记录运行镜像 revision `94022a6…` 与后续负载运行器 Git revision，不能混写为同一
-制品身份。
+负载运行器修正 revision 为 `b26381d714123c64b6738c3bf539b8db543dc471`。压测执行时必须同时记录运行
+镜像 revision `94022a6…` 与该运行器 revision，不能混写为同一制品身份。
 
 零活动任务门禁确认后，API、Scheduler、Asset API、Web 和本机 Worker 已滚动到正式 tag；三台远端
 Blender Worker 的运行 image ID 也全部等于 `c3e20f…`。4070Ti Node Agent 已滚动到 `1.5.13`，
