@@ -6,8 +6,8 @@
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
 当前生产基线为 GPU Control API/Scheduler `1.5.12`、Web `1.5.11-retopo-direct-v2`、Asset API
-`1.6.46-retopo-fused-fallback-v1`、三台 Linux Blender Worker
-`1.4.46-retopo-fused-fallback-v1`、数据库 `20260810_0013`。当前总状态为
+`1.6.48-retopo-adaptive-density-v1`、Blender Worker
+`1.4.47-retopo-adaptive-density-v1`、数据库 `20260810_0013`。当前总状态为
 `DEPLOYED_NOT_ACCEPTED`：第三次正式 100 VU、registry digest/SBOM、固定基准、完整故障矩阵和
 连续七天观察尚未闭环，禁止标记 `FROZEN` 或 `PRODUCTION_ACCEPTED`。
 
