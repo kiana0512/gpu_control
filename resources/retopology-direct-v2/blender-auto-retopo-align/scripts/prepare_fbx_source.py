@@ -169,6 +169,118 @@ def source_topology(mesh_object: bpy.types.Object) -> dict[str, int | float | bo
     }
 
 
+def semantic_component_measurements(
+    mesh_object: bpy.types.Object, maximum_components: int = 20
+) -> dict[str, object]:
+    """Precompute text-only component measurements for the Codex fast path.
+
+    The generated-low agent previously started Blender again, rebuilt this same
+    connectivity map, and rendered measurement images that its text-only runtime
+    never consumed.  Computing the bounded component table while preparing the
+    immutable source removes that redundant process without changing SOURCE_HIGH.
+    """
+
+    mesh = mesh_object.data
+    parent = list(range(len(mesh.vertices)))
+    used_by_face = bytearray(len(mesh.vertices))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(first: int, second: int) -> None:
+        left = find(first)
+        right = find(second)
+        if left != right:
+            parent[right] = left
+
+    for polygon in mesh.polygons:
+        indices = [int(index) for index in polygon.vertices]
+        if not indices:
+            continue
+        anchor = indices[0]
+        for index in indices:
+            used_by_face[index] = 1
+        for index in indices[1:]:
+            union(anchor, index)
+
+    face_counts: dict[int, int] = {}
+    for polygon in mesh.polygons:
+        if polygon.vertices:
+            root = find(int(polygon.vertices[0]))
+            face_counts[root] = face_counts.get(root, 0) + 1
+
+    groups: dict[int, dict[str, object]] = {}
+    for index, vertex in enumerate(mesh.vertices):
+        if not used_by_face[index]:
+            continue
+        root = find(index)
+        coordinate = [float(value) for value in vertex.co]
+        group = groups.get(root)
+        if group is None:
+            group = {
+                "faces": face_counts.get(root, 0),
+                "vertices": 0,
+                "min": coordinate.copy(),
+                "max": coordinate.copy(),
+            }
+            groups[root] = group
+        group["vertices"] = int(group["vertices"]) + 1
+        minimum = group["min"]
+        maximum = group["max"]
+        assert isinstance(minimum, list) and isinstance(maximum, list)
+        for axis in range(3):
+            minimum[axis] = min(float(minimum[axis]), coordinate[axis])
+            maximum[axis] = max(float(maximum[axis]), coordinate[axis])
+
+    largest: list[dict[str, object]] = []
+    for _, group in sorted(
+        groups.items(), key=lambda item: (-int(item[1]["faces"]), item[0])
+    )[:maximum_components]:
+        minimum = group["min"]
+        maximum = group["max"]
+        assert isinstance(minimum, list) and isinstance(maximum, list)
+        largest.append(
+            {
+                **group,
+                "size": [maximum[axis] - minimum[axis] for axis in range(3)],
+                "center": [
+                    (maximum[axis] + minimum[axis]) * 0.5 for axis in range(3)
+                ],
+            }
+        )
+    local_coordinates = [vertex.co for vertex in mesh.vertices]
+    if local_coordinates:
+        local_minimum = [
+            min(float(coordinate[axis]) for coordinate in local_coordinates)
+            for axis in range(3)
+        ]
+        local_maximum = [
+            max(float(coordinate[axis]) for coordinate in local_coordinates)
+            for axis in range(3)
+        ]
+    else:
+        local_minimum = [0.0, 0.0, 0.0]
+        local_maximum = [0.0, 0.0, 0.0]
+    bounds = {
+        "min": local_minimum,
+        "max": local_maximum,
+        "size": [
+            local_maximum[axis] - local_minimum[axis] for axis in range(3)
+        ],
+    }
+    return {
+        "coordinate_space": "high_local",
+        "component_count": len(groups),
+        "bounds": bounds,
+        "largest_components": largest,
+        "maximum_components": maximum_components,
+        "render_measurements_required": False,
+    }
+
+
 def build_normalized_work_copy(
     high_object: bpy.types.Object,
     original_topology: dict[str, int | float | bool],
@@ -392,6 +504,7 @@ def main() -> None:
         [item["name"] for item in source_meshes], ensure_ascii=False
     )
     original_topology = source_topology(high_object)
+    semantic_measurements = semantic_component_measurements(high_object)
     normalized_work_object, normalized_work_source = build_normalized_work_copy(
         high_object,
         original_topology,
@@ -430,6 +543,7 @@ def main() -> None:
         "vertices": len(high_object.data.vertices),
         "polygons": len(high_object.data.polygons),
         "source_topology": original_topology,
+        "semantic_measurements": semantic_measurements,
         "normalized_work_source": normalized_work_source,
         "world_matrix": matrix_rows(high_object.matrix_world),
         "world_bounds": after_bounds,

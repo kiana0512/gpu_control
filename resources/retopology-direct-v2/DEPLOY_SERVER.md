@@ -1,4 +1,4 @@
-# Blender 自动拓扑与原坐标对齐服务器包 v3.0.13
+# Blender 自动拓扑与原坐标对齐服务器包 v3.0.14
 
 本包合并两个正式技能：
 
@@ -7,7 +7,13 @@
 
 它用于替换现有 `blender-retopology-compare-iterate-server-package-v2.5.0`。旧单文件调用参数和成功状态保持兼容；成功后额外输出烘焙高低模 FBX 与对齐报告。
 
-## v3.0.13 行为
+## v3.0.14 行为
+
+- 标准 generated-low 任务只读取一次完整 `SKILL.md`，不再重复展开四份长参考资料；
+  参考资料仍完整保留并参与包哈希校验。
+- FBX/OBJ/GLB/GLTF 准备阶段预先写入文本化 `semantic_measurements`，Codex 不再重复
+  启动 Blender 测量，也不再生成无人消费的测量/方向图片。
+- `result.json.timing_seconds` 记录准备、Codex、坐标恢复与发布分段耗时。
 
 - 自动拓扑交付取消前后左右顶底透视方向渲染，不再生成 `alignment_views.zip`。
 - 高低模 FBX 仍正常导出并绑定 SHA-256，但不再重新导入 FBX 验证。
@@ -94,8 +100,8 @@
 推荐把每个版本解压到独立 release 目录，再切换服务配置或符号链接，保留旧版用于回滚：
 
 ```bash
-unzip blender-auto-retopo-align-server-package-v3.0.13.zip -d /opt/li3d/releases/
-cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.13
+unzip blender-auto-retopo-align-server-package-v3.0.14.zip -d /opt/li3d/releases/
+cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.14
 python3 server/verify_package.py
 cp server/worker.env.example server/worker.env
 ```
@@ -215,7 +221,7 @@ python3 server/align_existing_low.py \
 docker build \
   --build-arg WORKER_IMAGE=现有Worker镜像@sha256:固定摘要 \
   -f Dockerfile.layer \
-  -t li3d/blender-auto-retopo-align:v3.0.13 .
+  -t li3d/blender-auto-retopo-align:v3.0.14 .
 ```
 
 本 Layer 不替换现有 HTTP、队列、存储、鉴权或 Worker entrypoint，只加入合并技能和兼容入口。

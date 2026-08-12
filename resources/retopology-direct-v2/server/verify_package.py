@@ -143,6 +143,8 @@ def main() -> int:
             "不执行 FBX 重新导入验证",
             "开放边、非流形边、游离点边、重复点面和面朝向仅记录为诊断",
             "ATTEMPT_GUIDANCE",
+            "semantic_measurements",
+            "禁止创建 `render_measurement_views.py`",
         ),
         "agent prompt",
         errors,
@@ -187,6 +189,8 @@ def main() -> int:
             "exact_position_weld_on_work_copy",
             "source_high_unchanged",
             "normalized_work_source",
+            "semantic_component_measurements",
+            '"render_measurements_required": False',
         ),
         "FBX source preparation",
         errors,
@@ -248,7 +252,7 @@ def main() -> int:
 
     payload = {
         "ok": not errors,
-        "package_version": "3.0.13",
+        "package_version": "3.0.14",
         "skill_id": SKILL_ID,
         "skill_file_count": len(actual_skill),
         "one_click_entrypoint": str(ROOT / "server" / "one_click_retopology.py"),

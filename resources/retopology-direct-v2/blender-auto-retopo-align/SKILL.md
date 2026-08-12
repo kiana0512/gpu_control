@@ -11,13 +11,23 @@ Run one controlled retopology build and one coordinate-restoration/export stage 
 
 ## Read Before Building
 
-For every retopology job, read:
+For the routine server **generated-low** path, this `SKILL.md`, the server task prompt, and
+the immutable source manifest form the complete fast-path instructions. Read this file once,
+then act on those task-local inputs. Do not reopen all four long references, inspect the guard
+script source, or rediscover package rules unless the task evidence is missing or contradictory.
+The references remain bundled, hash-verified, and authoritative for exceptional diagnosis and
+the external-low mode:
 
 - `references/direct-output-construction-rules.md`
 - `references/learned-asset-lessons.md`
 - `references/execution-plan-schema.md`
+- `references/coordinate-restoration-contract.md`
 
-For coordinate behavior, server integration, or any normalization step, also read `references/coordinate-restoration-contract.md`.
+For a prepared FBX/OBJ/GLB/GLTF source, consume `semantic_measurements` from the immutable
+source manifest. Do not launch another Blender measurement pass or render measurement/direction
+images when those measurements are present. Direction rendering is disabled for generated-low
+server jobs. A direct Blend input without a source manifest may run one bounded text-only
+measurement pass, but still must not render direction images.
 
 ## Choose the Mode
 

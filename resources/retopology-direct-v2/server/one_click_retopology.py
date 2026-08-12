@@ -539,6 +539,8 @@ def main() -> int:
     parser.add_argument("--package-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--attempt-number", type=int, choices=(1, 2), default=1)
     args = parser.parse_args()
+    workflow_started = time.monotonic()
+    timing_seconds: dict[str, float] = {}
 
     source = args.input.resolve()
     destination = args.output.resolve()
@@ -589,9 +591,11 @@ def main() -> int:
     )
     if skill_inventory(installed_skill) != source_inventory:
         raise SystemExit("job-local skill installation failed hash verification")
+    timing_seconds["job_setup"] = time.monotonic() - workflow_started
 
     blender = os.environ.get("BLENDER_EXECUTABLE", "/opt/blender/blender")
     codex = os.environ.get("CODEX_BIN", "/usr/local/bin/codex")
+    preparation_started = time.monotonic()
     if input_suffix != ".blend":
         prepared, preparation_error = prepare_fbx(
             blender, installed_skill, input_copy, working_blend, source_manifest, job_dir
@@ -615,6 +619,7 @@ def main() -> int:
             raise SystemExit("input does not have a valid Blend signature")
         requested_highs = args.high
         manifest_value = "not_applicable_direct_blend_input"
+    timing_seconds["source_preparation"] = time.monotonic() - preparation_started
 
     prompt = render_prompt(
         prompt_template.read_text(encoding="utf-8"),
@@ -644,6 +649,7 @@ def main() -> int:
         }
     )
     command = [codex, *load_codex_args(job_dir)]
+    codex_started = time.monotonic()
     with (
         (job_dir / "agent_events.jsonl").open("w", encoding="utf-8", newline="\n") as events,
         (job_dir / "agent_stderr.log").open("w", encoding="utf-8", newline="\n") as errors,
@@ -662,6 +668,7 @@ def main() -> int:
             )
         except subprocess.TimeoutExpired:
             completed = None
+    timing_seconds["codex_generation"] = time.monotonic() - codex_started
     if completed is None:
         write_result(
             result_path,
@@ -692,6 +699,7 @@ def main() -> int:
             },
         )
         return completed.returncode
+    build_completion_started = time.monotonic()
     recovered_from = recover_declared_output_blend(job_dir, generated_blend)
     build_completion = complete_generated_build_script(
         blender,
@@ -735,6 +743,9 @@ def main() -> int:
             },
         )
         return 4
+    timing_seconds["output_contract_completion"] = (
+        time.monotonic() - build_completion_started
+    )
 
     generation_report_path = job_dir / "generation_report.json"
     try:
@@ -775,6 +786,7 @@ def main() -> int:
         "--output-dir",
         str(aligned_dir),
     ]
+    finalize_started = time.monotonic()
     finalize_code, finalize_timed_out = run_logged(
         finalize_command,
         job_dir,
@@ -829,7 +841,11 @@ def main() -> int:
             },
         )
         return 3
+    timing_seconds["coordinate_finalize_and_export"] = (
+        time.monotonic() - finalize_started
+    )
 
+    publication_started = time.monotonic()
     if sha256(source) != sha256(input_copy):
         raise SystemExit("uploaded source copy hash mismatch")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -841,6 +857,8 @@ def main() -> int:
     shutil.copytree(aligned_dir, temporary_sidecar)
     temporary_output.replace(destination)
     temporary_sidecar.replace(sidecar_destination)
+    timing_seconds["atomic_publication"] = time.monotonic() - publication_started
+    timing_seconds["total"] = time.monotonic() - workflow_started
 
     result = {
         "job_id": job_id,
@@ -870,6 +888,9 @@ def main() -> int:
         "low_display": "opaque_yellow",
         "automatic_post_generation_review": False,
         "automatic_retry": False,
+        "timing_seconds": {
+            key: round(value, 3) for key, value in timing_seconds.items()
+        },
     }
     if recovered_from is not None:
         result["output_contract_recovered_from"] = recovered_from

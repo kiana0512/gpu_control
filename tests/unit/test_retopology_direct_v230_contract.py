@@ -18,7 +18,7 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def test_approved_v313_package_is_complete() -> None:
+def test_approved_v314_package_is_complete() -> None:
     completed = subprocess.run(  # noqa: S603 - repository-owned verifier
         [sys.executable, str(ROOT / "server" / "verify_package.py")],
         capture_output=True,
@@ -29,12 +29,12 @@ def test_approved_v313_package_is_complete() -> None:
     assert (ROOT / "server" / "batch_retopology.py").is_file()
     assert (
         file_sha256(ROOT / "blender-auto-retopo-align" / "SKILL.md")
-        == "30c20960842b91c1ebefff7a35a3bbc0b79191265e9a573cac2aab4b8bbf054b"
+        == "74841ba3ca4af64ed23ede79663e2cd8c129f1c5765744560a1b4653c8e7e501"
     )
-    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.13"
+    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.14"
     assert (
         RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
-        == "b5f96ee6f0201fe31eaa5018dd341dc924d458f88027f9c5fcd631b5c8dbcfe7"
+        == "4cd05689d1171e8d75a4546ccc737d3ba82fb31d90971758671802fe5ef0c5e9"
     )
 
 
@@ -62,8 +62,8 @@ def test_rolling_completion_accepts_only_matching_approved_package_identity() ->
         "package_sha256": RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256,
     }
     previous = {
-        "package_version": "3.0.11",
-        "package_sha256": ("8140b5b2359e4ea5542b533fe697992668b45b10a2496d9084c8e52a2e398f2c"),
+        "package_version": "3.0.13",
+        "package_sha256": ("b5f96ee6f0201fe31eaa5018dd341dc924d458f88027f9c5fcd631b5c8dbcfe7"),
     }
     assert retopology_direct_v2_completion_identity_valid(current, current) is True
     assert retopology_direct_v2_completion_identity_valid(previous, previous) is True
@@ -72,7 +72,7 @@ def test_rolling_completion_accepts_only_matching_approved_package_identity() ->
     assert retopology_direct_v2_completion_identity_valid(unknown, unknown) is False
 
 
-def test_public_create_contract_selects_v313_without_changing_route() -> None:
+def test_public_create_contract_selects_v314_without_changing_route() -> None:
     api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text(encoding="utf-8")
     assert '@app.post("/api/v1/assets/retopology/process")' in api
     assert '"schema_version": "retopology_input.direct-v2"' in api
@@ -83,7 +83,7 @@ def test_public_create_contract_selects_v313_without_changing_route() -> None:
     ).read_text("utf-8")
 
 
-def test_v313_no_broken_face_no_uv_fast_delivery_contract_is_wired() -> None:
+def test_v314_no_broken_face_no_uv_fast_delivery_contract_is_wired() -> None:
     entrypoint = (ROOT / "server" / "one_click_retopology.py").read_text("utf-8")
     worker = Path("apps/blender_worker/src/gpu_control_blender_worker/main.py").read_text(
         "utf-8"
@@ -99,4 +99,12 @@ def test_v313_no_broken_face_no_uv_fast_delivery_contract_is_wired() -> None:
     assert "不执行 FBX 重新导入验证" in prompt
     assert "开放边、非流形边、游离点边、重复点面和面朝向仅记录为诊断" in prompt
     assert "ATTEMPT_GUIDANCE" in prompt
+    assert "semantic_measurements" in prompt
+    assert "禁止创建 `render_measurement_views.py`" in prompt
+    assert '"timing_seconds"' in entrypoint
+    prepare = (
+        ROOT / "blender-auto-retopo-align/scripts/prepare_fbx_source.py"
+    ).read_text("utf-8")
+    assert "semantic_component_measurements" in prepare
+    assert '"render_measurements_required": False' in prepare
     assert '"--attempt-number"' in worker

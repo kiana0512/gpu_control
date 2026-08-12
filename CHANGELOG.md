@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-08-12 — Automatic retopology Codex fast path v3.0.14
+
+- Keep the full trained skill package and all reference files hash-verified, while routing routine
+  generated-low jobs through one complete SKILL read instead of repeatedly expanding four long
+  reference documents and the guard implementation.
+- Precompute bounded text-only component measurements during immutable FBX/OBJ/GLB/GLTF source
+  preparation. Codex consumes those measurements directly and no longer starts an extra Blender
+  measurement run or renders unused measurement/direction images.
+- Preserve the same Codex model, topology construction methods, source-coordinate restoration,
+  no-broken-face gate, optional preserved UV policy, artifact set, and source immutability checks.
+- Add `result.json.timing_seconds` for source preparation, Codex generation, coordinate finalization,
+  atomic publication, and total workflow timing.
+- Release Asset API `1.6.36-retopo-fast-agent-v1`, Blender Worker
+  `1.4.36-retopo-fast-agent-v1`, and retopology package v3.0.14.
+
 ## 2026-08-12 — Automatic retopology streamlined delivery v3.0.13
 
 - Remove generated-low direction rendering and the seven-view ZIP from Direct V2 publication.

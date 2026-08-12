@@ -1,6 +1,10 @@
 # Blender 自动拓扑并恢复原坐标
 
-使用 `$blender-auto-retopo-align` 完成任务。必须完整读取任务 `CODEX_HOME` 中该技能的 `SKILL.md`，并按技能路由读取四份 references；不要用简化提示词替代技能。
+使用 `$blender-auto-retopo-align` 完成任务。完整读取任务 `CODEX_HOME` 中该技能的
+`SKILL.md` **一次**。本任务是标准 generated-low 服务器快速路径：`SKILL.md`、本提示和
+不可变源清单已经包含全部适用规则；四份长 references 仍完整安装并经过哈希校验，但本任务
+不要重复打开，除非源清单缺失或规则互相矛盾。不要读取 `guard_shape_authority_plan.py` 源码；
+直接按下面的计划合同写 JSON 并运行它。Worker 不保证安装 `rg`，不要调用 `rg`。
 
 任务参数：
 
@@ -17,7 +21,8 @@ FBX/GLB/GLTF/OBJ 输入已经由技能的 `prepare_fbx_source.py` 导入为唯�
 必须真实执行 Blender 并生成输出文件：
 
 1. 只读打开工作 Blend；指定高模是唯一形状依据，也是唯一坐标依据。
-2. 在创建几何前完成测量、方法选择和 shape-authority plan；写入 `{{JOB_DIR}}/plans/` 并运行 `guard_shape_authority_plan.py`。
+2. 在创建几何前完成测量、方法选择和 shape-authority plan；写入 `{{JOB_DIR}}/plans/` 并运行 `guard_shape_authority_plan.py`。若源清单包含 `semantic_measurements`，直接使用其中的局部坐标包围盒、最大组件及面数，不得另写或运行 `measure_source.py`。只有没有源清单的直接 Blend 输入才允许一次文本测量。禁止创建 `render_measurement_views.py`，禁止输出任何测量图或方向图。
+   计划至少包含：`output_behavior=save_and_stop`、`user_inspects_result=true`、空的 `automatic_post_generation_actions`、完整 `source_identity`（`blend_filepath/object_name/mesh_data_name/measurement_space=high_local/matrix_world[16]`）、一种 `method_decision`、`shape_authority` 的 `authority/global_registration_inputs/local_profile_sections/feature_controls/openings/component_evidence/surface_correspondence_method/template_constants/uses_only_global_bounds=false/fixed_geometry_proportions_from_template=false`、至少一个 `component_decisions`，以及三个值均为 false 的 `count_evidence_policy`。局部截面和特征数值必须来自源清单或本次高模文本测量。
 3. 每个指定高模只生成一个低模。方法只能是 `semantic_reconstruction`、`controlled_direct_reduction` 或 `per_component_hybrid`。普通硬表面优先结构重建/组件混合；不要用全物体 Decimate 或 remesh 代替分析。必须读取源清单的 `source_topology` 和 `normalized_work_source`。当原高模是重复顶点 triangle soup 时，只有清单明确 `normalized_work_source.qualified=true` 才能对 `SOURCE_HIGH_NORMALIZED_WORK` 做 controlled direct reduction；计划中同时写 `source_identity.normalized_work_object` 和 `direct_reduction_evidence.uses_normalized_work_source=true`。禁止焊接、降面或替换 `SOURCE_HIGH`。没有合格工作副本时改用语义重建/组件混合。
    - 本次尝试指令：{{ATTEMPT_GUIDANCE}}
 4. 低模必须直接建立在高模本地坐标系：所有构建点使用 `source_high_local`，低模 `matrix_world` 必须等于对应高模的源矩阵。不要归零高模，不要只靠包围盒恢复坐标。
@@ -31,7 +36,7 @@ FBX/GLB/GLTF/OBJ 输入已经由技能的 `prepare_fbx_source.py` 导入为唯�
    - `low_object`
    - `faces`
    - `triangles`
-   - `uv_layers`（必须为整数 0）
+   - `uv_layers`（必须为大于等于 0 的整数；已有 UV 原样保留）
    - `method_decision`
    - `actual_plugin_use`
    - `coordinate_space: source_high_local`
