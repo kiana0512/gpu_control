@@ -18,7 +18,7 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def test_approved_v315_package_is_complete() -> None:
+def test_approved_v316_package_is_complete() -> None:
     completed = subprocess.run(  # noqa: S603 - repository-owned verifier
         [sys.executable, str(ROOT / "server" / "verify_package.py")],
         capture_output=True,
@@ -29,12 +29,12 @@ def test_approved_v315_package_is_complete() -> None:
     assert (ROOT / "server" / "batch_retopology.py").is_file()
     assert (
         file_sha256(ROOT / "blender-auto-retopo-align" / "SKILL.md")
-        == "74841ba3ca4af64ed23ede79663e2cd8c129f1c5765744560a1b4653c8e7e501"
+        == "d2bcdb1dede2e5bddeb10a913cede28e3496e4bbfeb413b0bf6355248ec4376b"
     )
-    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.15"
+    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.16"
     assert (
         RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
-        == "f5fba2d971d66412f41c60e15d8da3e84f4862dde735bbac1c5e2e9a73b1313e"
+        == "ffcd85c61fc0d99e07fa5b670572fc036fd4568468e1a211331ea51ab6a01d26"
     )
 
 
@@ -72,7 +72,7 @@ def test_rolling_completion_accepts_only_matching_approved_package_identity() ->
     assert retopology_direct_v2_completion_identity_valid(unknown, unknown) is False
 
 
-def test_public_create_contract_selects_v315_without_changing_route() -> None:
+def test_public_create_contract_selects_v316_without_changing_route() -> None:
     api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text(encoding="utf-8")
     assert '@app.post("/api/v1/assets/retopology/process")' in api
     assert '"schema_version": "retopology_input.direct-v2"' in api
@@ -83,7 +83,7 @@ def test_public_create_contract_selects_v315_without_changing_route() -> None:
     ).read_text("utf-8")
 
 
-def test_v315_no_broken_face_no_uv_fast_delivery_contract_is_wired() -> None:
+def test_v316_no_broken_face_no_uv_fast_delivery_contract_is_wired() -> None:
     entrypoint = (ROOT / "server" / "one_click_retopology.py").read_text("utf-8")
     worker = Path("apps/blender_worker/src/gpu_control_blender_worker/main.py").read_text(
         "utf-8"
@@ -101,10 +101,9 @@ def test_v315_no_broken_face_no_uv_fast_delivery_contract_is_wired() -> None:
     assert "ATTEMPT_GUIDANCE" in prompt
     assert "semantic_measurements" in prompt
     assert "禁止创建 `render_measurement_views.py`" in prompt
-    assert "并且只运行一次计划守卫" in prompt
-    assert 'authority: "high_measurement"' in prompt
-    assert 'surface_correspondence_method` 只能是 `measured_local_sections`' in prompt
-    assert "不得猜测守卫源码或连续改写重试" in prompt
+    assert "不得运行计划守卫" in prompt
+    assert "最终有效 Blend 和无破面结果才是交付门禁" in prompt
+    assert "guard_shape_authority_plan.py" not in prompt
     assert '"timing_seconds"' in entrypoint
     prepare = (
         ROOT / "blender-auto-retopo-align/scripts/prepare_fbx_source.py"

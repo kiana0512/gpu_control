@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-12 — Automatic retopology build-first hotfix v3.0.16
+
+- Remove the shape-authority plan guard from the generated-low critical path after a real task
+  stopped at 7% with `RETOPOLOGY_OUTPUT_MISSING` despite a healthy Codex and Blender runtime.
+- Keep source-manifest measurements, high-coordinate restoration, topology/UV preservation and the
+  final `no_broken_faces` gate; diagnostic plan fields can no longer prevent Blend generation.
+- Release Asset API `1.6.38-retopo-build-first-v1`, Blender Worker
+  `1.4.38-retopo-build-first-v1`, and retopology package v3.0.16.
+
 ## 2026-08-12 — Automatic retopology one-pass plan guard v3.0.15
 
 - Keep the v3.0.14 Codex generated-low fast path and correct its remaining live bottleneck: the

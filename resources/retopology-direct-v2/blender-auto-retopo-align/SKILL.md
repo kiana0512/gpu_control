@@ -60,11 +60,12 @@ Use this mode only when the user supplies a separately created low whose coordin
 - Before normalization, record the high `matrix_world`, unit scale, axis convention, and world bounds.
 - If a work-space transform is needed, record the full 4x4 `work_to_world` matrix. Bounds alone are not a coordinate contract.
 
-### 2. Plan before geometry
+### 2. Choose the build before geometry
 
 - Measure disconnected islands, silhouettes, openings, negative spaces, section changes, and mechanical component boundaries.
-- Write one shape-authority plan per high using `references/execution-plan-schema.md`.
-- Run `scripts/guard_shape_authority_plan.py` before creating geometry.
+- A concise shape-authority plan may be written as diagnostic evidence, but the generated-low
+  server path must not run a plan-schema guard or stop before geometry because a diagnostic plan
+  field is absent. The saved Blend and final no-broken-faces checks are the delivery gates.
 - Select exactly one method: `semantic_reconstruction`, `controlled_direct_reduction`, or `per_component_hybrid`.
 - Use semantic reconstruction or per-component hybrid for normal hard-surface props. Do not use blanket whole-object Decimate or remesh as a generic answer. The source manifest's measured fragmentation gate is authoritative. A triangle-soup FBX may use direct reduction only from the server-created `SOURCE_HIGH_NORMALIZED_WORK` exact-weld copy when `normalized_work_source.qualified=true`; never weld, replace, or reduce `SOURCE_HIGH` itself.
 
@@ -139,7 +140,7 @@ Return `RETOPOLOGY_COORDINATE_MISMATCH` and publish no final result if any of th
 
 Never retry modeling automatically after a coordinate or saved-Blend topology-preservation failure. An early empty, non-finite, or degenerate-face rejection may use the server's single bounded fresh attempt; preserve both attempts' logs and never publish the rejected candidate.
 
-On that single bounded fresh attempt, do not repeat the same low-detail semantic proxy. Re-read the immutable source topology. When the plan guard permits whole-object controlled reduction, prefer a fresh `SOURCE_HIGH` duplicate with enough retained density to inherit the measured high silhouette and dimensions. Otherwise change to measured per-component hybrid construction. The retry never modifies `SOURCE_HIGH` and still requires the `no_broken_faces` gate.
+On that single bounded fresh attempt, do not repeat the same low-detail semantic proxy. Re-read the immutable source topology. When the immutable source manifest qualifies whole-object controlled reduction, prefer a fresh `SOURCE_HIGH` duplicate with enough retained density to inherit the measured high silhouette and dimensions. Otherwise change to measured per-component hybrid construction. The retry never modifies `SOURCE_HIGH` and still requires the `no_broken_faces` gate.
 
 ## Server Compatibility
 

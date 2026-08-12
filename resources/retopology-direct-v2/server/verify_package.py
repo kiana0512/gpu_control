@@ -131,7 +131,8 @@ def main() -> int:
         ROOT / "server" / "agent_prompt.md",
         (
             "$blender-auto-retopo-align",
-            "guard_shape_authority_plan.py",
+            "不得运行计划守卫",
+            "最终有效 Blend 和无破面结果才是交付门禁",
             "source_high_local",
             "high_object_matrix_world",
             "presentation_offset_applied: false",
@@ -252,7 +253,7 @@ def main() -> int:
 
     payload = {
         "ok": not errors,
-        "package_version": "3.0.15",
+        "package_version": "3.0.16",
         "skill_id": SKILL_ID,
         "skill_file_count": len(actual_skill),
         "one_click_entrypoint": str(ROOT / "server" / "one_click_retopology.py"),
