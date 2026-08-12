@@ -83,7 +83,7 @@ async def test_asset_api_version_exposes_aligned_immutable_provenance(
                 "engine_contract": "retopology-direct-v2",
                 "package_version": "3.0.24",
                 "package_sha256": (
-                    "000f65c541f103d4f5cea84d6814d17174899d2eb518eed170e8de8ed677dec3"
+                    "e6bdc11ded860cfc71381af3eed16b2db2df424393779e84b1da7c548672d169"
                 ),
                 "submission_mode": "one_file_per_job",
                 "recommended_upload_concurrency": 3,
@@ -635,7 +635,7 @@ async def test_retopology_process_creates_v300_direct_contract(tmp_path: Path) -
         assert payload["options"]["engine_contract"] == "retopology-direct-v2"
         assert payload["options"]["package_version"] == "3.0.24"
         assert payload["options"]["package_sha256"] == (
-            "000f65c541f103d4f5cea84d6814d17174899d2eb518eed170e8de8ed677dec3"
+            "e6bdc11ded860cfc71381af3eed16b2db2df424393779e84b1da7c548672d169"
         )
 
         bundle = settings.asset_root / payload["job_id"] / "retopology_input.zip"

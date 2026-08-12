@@ -36,7 +36,7 @@ def test_approved_v324_package_is_complete() -> None:
     assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.24"
     assert (
         RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
-        == "000f65c541f103d4f5cea84d6814d17174899d2eb518eed170e8de8ed677dec3"
+        == "e6bdc11ded860cfc71381af3eed16b2db2df424393779e84b1da7c548672d169"
     )
 
 

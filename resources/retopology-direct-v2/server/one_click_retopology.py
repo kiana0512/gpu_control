@@ -27,6 +27,7 @@ EXPECTED_SKILL_FILES = {
     "references/execution-plan-schema.md",
     "references/learned-asset-lessons.md",
     "scripts/align_bake_models.py",
+    "scripts/controlled_reduction_fallback.py",
     "scripts/finalize_generated_pair.py",
     "scripts/guard_shape_authority_plan.py",
     "scripts/prepare_fbx_source.py",
