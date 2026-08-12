@@ -46,6 +46,7 @@ EXPECTED_TOPOLOGY_SKILL_FILES = {
 DEFAULT_CODEX_ARGS = ["exec", "--full-auto", "--json", "-C", "{job_dir}", "-"]
 SUPPORTED_INPUTS = {".fbx", ".glb", ".gltf", ".obj", ".blend"}
 ALLOWED_METHODS = {
+    "controlled_direct_reduction",
     "semantic_reconstruction",
     "hybrid_per_component",
 }
@@ -120,8 +121,9 @@ def attempt_guidance(attempt_number: int) -> str:
     return (
         "这是唯一一次有界重试；前一次没有产生有效、有限且无退化面的 Blend。重新直接检查"
         "SOURCE_HIGH 的真实网格后，继续修正同一个正式低模的构建脚本。只能使用"
-        "semantic_reconstruction 或 hybrid_per_component；禁止使用通用基础体、全物体 Decimate"
-        "或 remesh，也不得直接修改 SOURCE_HIGH。"
+        "controlled_direct_reduction、semantic_reconstruction 或 hybrid_per_component；"
+        "复杂连续区域可减面新副本，混合资产必须按区域路由；禁止通用基础体、全物体无差别"
+        "remesh，也不得直接修改 SOURCE_HIGH。"
     )
 
 

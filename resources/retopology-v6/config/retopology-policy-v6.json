@@ -1,12 +1,13 @@
 {
   "policy_id": "li3d-retopology-v6",
-  "policy_version": "6.0.1",
+  "policy_version": "6.0.2",
   "budget_mode": "automatic",
   "user_target_faces_allowed": false,
   "source_authority": "high_poly_only",
   "formal_candidate_count": 1,
   "internal_correction_rounds_max": 2,
   "methods": [
+    "controlled_direct_reduction",
     "semantic_reconstruction",
     "hybrid_per_component"
   ],
@@ -24,12 +25,15 @@
     "notes": "This is an internal adaptive range, not a requested target. Quality gates override budget estimates."
   },
   "method_selection": {
-    "controlled_direct_reduction_allowed_for": [],
-    "controlled_direct_reduction_forbidden_for": ["all_production_assets"],
-    "automatic_decimate_or_remesh_output_publish_allowed": false,
-    "organic_integrated_default": "semantic_reconstruction",
+    "controlled_direct_reduction_allowed_for": ["complex_integrated", "complex_soft_region", "identity_loss_under_proxy_reconstruction"],
+    "controlled_direct_reduction_forbidden_for": ["simple_mechanical_whole_asset", "generic_proxy_substitution"],
+    "automatic_decimate_output_publish_allowed": true,
+    "automatic_remesh_output_publish_allowed": false,
+    "organic_integrated_default": "controlled_direct_reduction",
     "mechanical_default": "semantic_reconstruction",
-    "mixed_asset_default": "hybrid_per_component"
+    "mixed_asset_default": "hybrid_per_component",
+    "mixed_asset_region_map_required": true,
+    "aggregate_repeated_region_default": "silhouette_envelope_reconstruction"
   },
   "comparison_views": [
     "front_ortho",

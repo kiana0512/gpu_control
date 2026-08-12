@@ -1,4 +1,4 @@
-# Blender 自动拓扑与原坐标对齐服务器包 v3.0.18
+# Blender 自动拓扑与原坐标对齐服务器包 v3.0.19
 
 本包合并两个正式技能：
 
@@ -7,12 +7,18 @@
 
 它用于替换现有 `blender-retopology-compare-iterate-server-package-v2.5.0`。旧单文件调用参数和成功状态保持兼容；成功后额外输出烘焙高低模 FBX 与对齐报告。
 
-## v3.0.18 行为
+## v3.0.19 行为
 
 - generated-low 任务同时安装两个职责分离的技能：`blender-retopology-compare-iterate`
   按训练规则负责结构分析和建形，`blender-auto-retopo-align` 只负责坐标恢复和服务器输出。
 - 禁止再根据对象名或整体包围盒把任意模型猜成圆角盒、球、柱等通用代理；构建前必须直接读取
   `SOURCE_HIGH` 的真实轮廓、截面、开口、负空间、组件和附件结构。
+- 生成前只渲染一张不超过 512×512 的高模 Workbench 三分之四观察图，用于资产/区域分类，
+  不渲染低模、不评分、不等待确认，也不作为交付门禁。
+- 方法按区域路由：复杂连续模型或软表面从只读高模的新副本受控减面；机械/硬表面语义重建；
+  混合资产把软区域受控减面、结构件语义重建、密集木堆/石堆等聚合区按整体外轮廓重建。
+- disconnected mesh island 和面数阈值仅是测量，不能直接决定语义组件；混合资产记录
+  `region_method_map`，不再把布料褶皱碎片误判为原木或把每个碎片逐件输出。
 - 用户取消的交付门禁保持取消：不执行低模方向审查、拓扑流审查、轮廓评分、FBX 回读或 UV
   生成。一次有界高模只读分析只作为建形输入，不评分、不等待确认、不阻塞快速交付。
 - FBX/OBJ/GLB/GLTF 准备阶段预先写入文本化 `semantic_measurements`，Codex 不再重复
@@ -106,8 +112,8 @@
 推荐把每个版本解压到独立 release 目录，再切换服务配置或符号链接，保留旧版用于回滚：
 
 ```bash
-unzip blender-auto-retopo-align-server-package-v3.0.18.zip -d /opt/li3d/releases/
-cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.18
+unzip blender-auto-retopo-align-server-package-v3.0.19.zip -d /opt/li3d/releases/
+cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.19
 python3 server/verify_package.py
 cp server/worker.env.example server/worker.env
 ```
@@ -227,7 +233,7 @@ python3 server/align_existing_low.py \
 docker build \
   --build-arg WORKER_IMAGE=现有Worker镜像@sha256:固定摘要 \
   -f Dockerfile.layer \
-  -t li3d/blender-auto-retopo-align:v3.0.18 .
+  -t li3d/blender-auto-retopo-align:v3.0.19 .
 ```
 
 本 Layer 不替换现有 HTTP、队列、存储、鉴权或 Worker entrypoint，只加入合并技能和兼容入口。

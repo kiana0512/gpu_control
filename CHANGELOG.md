@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-08-12 — Automatic retopology region-method routing v3.0.19
+
+- Restore controlled direct reduction for complex continuous assets and regions whose identity is lost
+  by primitive or sparse-cage proxy reconstruction, while keeping the authoritative high read-only.
+- Require mixed assets to route by region: reduce complex soft surfaces, semantically reconstruct
+  structured parts, and represent dense aggregate piles with sparse high-derived silhouette envelopes.
+- Treat disconnected high-model islands and face-count thresholds as measurements, never as semantic
+  component identity; use one bounded high-only planning preview before the single build.
+- Keep the fast publication policy unchanged: no direction review, visual score, topology-flow audit,
+  FBX reimport, UV generation or additional pre-delivery gate was added.
+- Release Asset API `1.6.41-retopo-region-routing-v1`, Blender Worker
+  `1.4.41-retopo-region-routing-v1`, Retopology V6 policy 6.0.2, and package v3.0.19.
+
 ## 2026-08-12 — Automatic retopology repeated-component fidelity v3.0.18
 
 - Lock every repeated or slender high-model component to its measured count, center, endpoints,

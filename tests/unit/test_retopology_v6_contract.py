@@ -57,18 +57,21 @@ def test_v6_runtime_resources_match_frozen_manifest() -> None:
     assert "skill/blender-retopology-compare-iterate/scripts/audit_topology_flow.py" in verified
 
 
-def test_v6_rejects_direct_reduction_plan_and_agent_script(tmp_path: Path) -> None:
+def test_v6_accepts_controlled_reduction_and_rejects_remesh(tmp_path: Path) -> None:
     direct_plan = {
         "method": "controlled_direct_reduction",
         "component_decisions": [{"component_id": "body", "method": "controlled_direct_reduction"}],
     }
-    with pytest.raises(RetopologyV6ResourceError, match="DIRECT_REDUCTION_FORBIDDEN"):
-        assert_structured_retopology_plan(direct_plan)
+    assert_structured_retopology_plan(direct_plan)
 
     (tmp_path / "build_low.py").write_text(
         "modifier = obj.modifiers.new('reduce', 'DECIMATE')\n", "utf-8"
     )
-    with pytest.raises(RetopologyV6ResourceError, match="DIRECT_REDUCTION_FORBIDDEN"):
+    assert_no_forbidden_generator_scripts(tmp_path)
+    (tmp_path / "bad_remesh.py").write_text(
+        "modifier = obj.modifiers.new('replace', 'REMESH')\n", "utf-8"
+    )
+    with pytest.raises(RetopologyV6ResourceError, match="REMESH_FORBIDDEN"):
         assert_no_forbidden_generator_scripts(tmp_path)
 
 
@@ -171,5 +174,5 @@ def test_v6_idempotency_binds_policy_and_canonical_options() -> None:
 
     assert len(digest) == 64
     assert RETOPOLOGY_V6_POLICY_SHA256 == (
-        "e7b24c93c11d550ac9fedd167ff23f9ddd70cba4db014caaf2e157cddeafb266"
+        "d7e3b0be13a7a9daf5f9452b6429edc5b161a16ce3b43871864680dc7333eef0"
     )

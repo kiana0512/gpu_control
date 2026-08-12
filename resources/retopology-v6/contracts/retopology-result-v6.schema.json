@@ -15,7 +15,7 @@
       "required": ["id", "version", "sha256"],
       "properties": {
         "id": { "const": "li3d-retopology-v6" },
-        "version": { "const": "6.0.1" },
+        "version": { "const": "6.0.2" },
         "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" }
       }
     },

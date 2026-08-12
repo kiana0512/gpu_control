@@ -30,15 +30,16 @@ For each asset, write a compact plan containing:
 
 Do not run a remesher before this plan exists.
 
-## Select the structured reconstruction strategy before building a cage
+## Select the region strategy before building
 
-All production assets use structured reconstruction. There is no direct-reduction exception for boots, cloth, leather, scanned meshes, generated meshes, or other integrated organic forms.
+Classify the complete asset and each visually distinct responsibility region before creating geometry.
 
-- Use semantic multipart reconstruction for mechanical, hard-surface, planar, repeated, and assembled assets.
-- Use RetopoFlow-assisted surface drawing, deliberate local cages/patches, contour rings, and bounded Shrinkwrap fitting for integrated organic or soft assets.
-- Inventory source components, boundaries, openings, thin layers, silhouette controls, attachment roots, deformation zones, and highlight flow before building.
-- A high duplicate processed by Decimate, voxel remesh, QuadriFlow, automatic remesh, or equivalent collapse may be inspected only as a disposable density-floor diagnostic. Never export it, clean it into the result, or use it as the authoritative low.
-- If a coarse cage loses identity, add high-derived contour events and local patches. Do not fall back to direct reduction.
+- Use semantic multipart reconstruction for mechanical, hard-surface, planar, repeated, and assembled regions.
+- Use controlled direct reduction on a fresh high-derived copy for complex integrated or soft regions—such as a saddle body, cloth, or leather—when a coarse semantic proxy would visibly lose identity. Preserve the original high, openings, boundaries, silhouette and major folds.
+- Use RetopoFlow-assisted surface drawing, deliberate local cages/patches, contour rings, and bounded Shrinkwrap fitting when a stable structured flow can be established efficiently.
+- Use a sparse silhouette envelope for a dense aggregate region such as stacked wood, rocks, or debris when individual members do not control the primary outline or required negative space.
+- Inventory source components, boundaries, openings, thin layers, silhouette controls, attachment roots, deformation zones, and highlight flow before building. A disconnected island is evidence only, never a semantic region by itself.
+- Voxel remesh, QuadriFlow output, automatic remesh, and undifferentiated whole-asset collapse remain diagnostics, not formal output.
 - Compare the authoritative reconstruction against the untouched high in six orthographic views and perspective; rebuild any region that damages a controlling outline, opening, attachment, or construction relationship.
 
 ## Start with a face band, not a fixed target
@@ -189,7 +190,7 @@ Prefer a center quad with corner transitions, or several small local fans, when 
 
 - QuadriFlow may be used only as a disposable diagnostic for continuous organic or rounded forms; its generated mesh and cleaned derivatives cannot become the formal low.
 - Use RetopoFlow for deliberate surface drawing and cleanup. Record whether it was used interactively or only for mesh cleanup.
-- Treat AutoRemesher, voxel remesh, QuadriFlow, and Decimate as disposable diagnostics. Their generated meshes and cleaned derivatives are forbidden as formal output.
+- Treat AutoRemesher, voxel remesh, and QuadriFlow as disposable diagnostics. Decimate may be formal output only for a classified complex continuous region, from a fresh high-derived copy, with the selected region and source-preservation evidence recorded.
 - Never describe a scripted or automatic candidate as hand-retopologized.
 - Do not count an add-on as used merely because it is installed, enabled, or reported during Blender startup. Background mode may explicitly skip initialization.
 

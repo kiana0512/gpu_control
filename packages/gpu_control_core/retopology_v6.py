@@ -11,25 +11,30 @@ from typing import Any
 import jsonschema
 
 POLICY_ID = "li3d-retopology-v6"
-POLICY_VERSION = "6.0.1"
+POLICY_VERSION = "6.0.2"
 # Updated together with resources/retopology-v6/RUNTIME_FILES.sha256.
-POLICY_SHA256 = "e7b24c93c11d550ac9fedd167ff23f9ddd70cba4db014caaf2e157cddeafb266"
+POLICY_SHA256 = "d7e3b0be13a7a9daf5f9452b6429edc5b161a16ce3b43871864680dc7333eef0"
 RUNTIME_MANIFEST = "RUNTIME_FILES.sha256"
 
 ALLOWED_PRODUCTION_METHODS = frozenset(
-    {"semantic_reconstruction", "hybrid_per_component"}
+    {
+        "controlled_direct_reduction",
+        "semantic_reconstruction",
+        "hybrid_per_component",
+    }
 )
 ALLOWED_COMPONENT_METHODS = frozenset(
     {
+        "controlled_direct_reduction",
         "semantic_reconstruction",
+        "silhouette_envelope_reconstruction",
         "reuse_clean_source_component",
         "normal_map_only",
         "omit_noncritical_micro_detail",
     }
 )
 FORBIDDEN_GENERATOR_PATTERN = re.compile(
-    r"(?i)(?:[\"'](?:DECIMATE|REMESH)[\"']|"
-    r"decimate_collapse|quadriflow_remesh|voxel_remesh|remesh_voxel_size)"
+    r"(?i)(?:[\"']REMESH[\"']|quadriflow_remesh|voxel_remesh|remesh_voxel_size)"
 )
 
 
@@ -119,12 +124,12 @@ def validate_contract_payload(root: Path, filename: str, payload: dict[str, Any]
 
 
 def assert_structured_retopology_plan(payload: dict[str, Any]) -> None:
-    """Reject any production plan that selects direct reduction or an unapproved method."""
+    """Reject a production plan that selects an unapproved whole-asset or region method."""
 
     method = payload.get("method")
     if method not in ALLOWED_PRODUCTION_METHODS:
         raise RetopologyV6ResourceError(
-            f"RETOPOLOGY_V6_DIRECT_REDUCTION_FORBIDDEN: plan method {method!r}"
+            f"RETOPOLOGY_V6_METHOD_UNSUPPORTED: plan method {method!r}"
         )
     component_decisions = payload.get("component_decisions")
     if not isinstance(component_decisions, list):
@@ -133,13 +138,13 @@ def assert_structured_retopology_plan(payload: dict[str, Any]) -> None:
         component_method = component.get("method") if isinstance(component, dict) else None
         if component_method not in ALLOWED_COMPONENT_METHODS:
             raise RetopologyV6ResourceError(
-                "RETOPOLOGY_V6_DIRECT_REDUCTION_FORBIDDEN: "
+                "RETOPOLOGY_V6_METHOD_UNSUPPORTED: "
                 f"component {index} method {component_method!r}"
             )
 
 
 def assert_no_forbidden_generator_scripts(workspace: Path) -> None:
-    """Fail closed when Agent-authored Blender scripts use reduction/remesh generators."""
+    """Allow controlled Decimate but reject unapproved remesh generators."""
 
     for script_path in sorted(workspace.glob("*.py")):
         if not script_path.is_file() or script_path.is_symlink():
@@ -148,6 +153,6 @@ def assert_no_forbidden_generator_scripts(workspace: Path) -> None:
         match = FORBIDDEN_GENERATOR_PATTERN.search(source)
         if match is not None:
             raise RetopologyV6ResourceError(
-                "RETOPOLOGY_V6_DIRECT_REDUCTION_FORBIDDEN: "
+                "RETOPOLOGY_V6_REMESH_FORBIDDEN: "
                 f"{script_path.name} contains {match.group(0)!r}"
             )

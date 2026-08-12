@@ -84,7 +84,7 @@ The manifest must be machine-verifiable and contain the expected ordered `asset_
 
 For each asset, write:
 
-- `method_decision`: `semantic_reconstruction` or `hybrid_per_component`, with the selected cage/patch strategy and any user-approved method instruction. Direct reduction is not a production method.
+- `method_decision`: `controlled_direct_reduction`, `semantic_reconstruction`, or `hybrid_per_component`, with the selected region strategy and any user-approved method instruction. Mixed assets also record a `region_method_map` with high-derived boundaries.
 
 - Primary silhouette volumes.
 - True openings and negative spaces.
@@ -99,18 +99,19 @@ For each asset, write:
 
 Do this before running a plugin or creating dense geometry.
 
-### 3. Build the semantic cage
+### 3. Build by the region map
 
 Choose the method by construction:
 
-- For a structurally complex, genuinely integrated continuous object whose original high already has the correct macro surface, silhouette, openings, and attachment placement, duplicate the untouched high and run controlled asset-specific reduction. An integrated complex boot is the reference case; organic, cloth, leather, scanned, or generated appearance alone is not eligibility. Generate at least two density candidates independently from the high, including one genuinely aggressive very-low stress test; do not rebuild a guessed primitive shell, reuse a rejected low, or decimate one reduced candidate again to make the next.
+- For a structurally complex, genuinely integrated continuous object whose original high already has the correct macro surface, silhouette, openings, and attachment placement, duplicate the untouched high and run one controlled asset-specific reduction. Saddles, complex boots, cloth and leather regions are eligible when a coarse proxy would visibly lose identity. Do not rebuild a guessed primitive shell, reuse a rejected low, or decimate one reduced candidate again.
+- For dense aggregate regions such as stacked wood, rocks or debris, build a sparse polygon envelope from the high-derived outer contour when individual members and gaps do not control the primary read. Do not treat every disconnected island as an object.
 - Manual primitives, profile rings, patches, and separate closed shells for box-like, rotational, and multipart props.
 - RetopoFlow surface drawing for shapes that genuinely benefit from interactive strips or contours.
 - QuadriFlow only as an initial continuous cage for suitable organic or rounded forms.
 
 Create large forms first. Build openings, handle gaps, attachment roots, and rim thickness before decoration. Keep logical mechanical parts separate when that gives cleaner construction and baking.
 
-Automatic reduction is a disposable diagnostic only. A Decimate, remesh, or QuadriFlow-derived mesh cannot be promoted, cleaned, renamed, or exported as the formal low. When a density-floor diagnostic shows that a coarse cage loses identity, retain the high-derived contour evidence and rebuild the responsible flow using RetopoFlow-assisted drawing or deliberate local cages/patches.
+Voxel remesh and raw QuadriFlow remain disposable diagnostics. Controlled Decimate may be promoted only for the classified complex continuous region from a fresh high-derived copy; record its responsibility boundary and reduction settings, preserve the source, and clean zero-area faces. Structured and aggregate regions must still follow their own methods.
 
 ### 4. Fit globally before fitting locally
 
@@ -446,7 +447,7 @@ Reject or repair these patterns:
 - Recreating a support or other component after a user-approved omission.
 - Interpreting shallow molded bottom grooves as independent feet.
 - Keeping a uniform organic grid across broad non-silhouette torso regions.
-- Accepting raw Decimate output because silhouette IoU and manifold checks pass while visible slivers, radial fans, high-valence poles, or abrupt density changes remain.
+- Applying Decimate outside the classified complex region, changing the source, or using one whole-asset collapse across otherwise distinguishable mixed regions.
 - Welding a technically multi-shell/open source into one closed component without an explicit construction reason and opening review.
 - Starting the rest of a batch before the first representative asset has passed close wire review and received user confirmation.
 

@@ -22,6 +22,7 @@ ALLOWED_METHODS = {
     "controlled_direct_reduction",
     "semantic_reconstruction",
     "per_component_hybrid",
+    "hybrid_per_component",
 }
 
 

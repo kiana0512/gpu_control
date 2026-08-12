@@ -22,8 +22,8 @@
 4. 不追求全四边面。允许有意图明确的三角面和四边面混合，但禁止随机三角化、碎面、面挤在一起和均匀高密网格。
 5. 平面和不影响剪影的区域极限减面；外轮廓、圆弧、转折、开口、承重结构、负空间和关键突出件保留必要边。
 6. 小凹凸、刻纹、微小缝线和非剪影细节优先交给法线贴图，不用几何复制噪声。
-7. 所有资产都必须按结构语义重建；禁止整件 voxel/remesh、QuadriFlow 原始输出或 Decimate 冒充成品。
-8. 鞋靴、软袋等复杂一体资产也必须使用 RetopoFlow 辅助绘制、局部 cage/patch 重建或其他结构化重拓扑；不存在“受控直接减面”的生产例外。
+7. 所有资产都必须先按区域选择方法；禁止整件 voxel/remesh、QuadriFlow 原始输出或不分区域的全物体 Decimate 冒充成品。
+8. 鞋靴、马鞍、软袋、布料等复杂一体资产/区域在基础体代理会丢失身份时，允许从只读高模的新副本做一次受控减面；结构化区域仍需语义重建，密集堆叠区域按整体外轮廓重建。
 
 ## 2. 先分析，后生成
 
@@ -33,7 +33,7 @@
 - 生成前/后/左/右/上/下正交图和三分之四透视图，所有视图使用相同的固定相机规则；
 - 建立关键结构清单：主体、支撑、卡扣、把手、薄片、细杆、开口、负空间、非对称附件和所有影响剪影的小突出件；
 - 分类为 `mechanical`、`organic_integrated` 或 `mixed`；
-- 对每个组件选择 `semantic_reconstruction`、`reuse_clean_source_component`、`normal_map_only` 或 `omit_noncritical_micro_detail`；禁止选择或变相执行 `controlled_direct_reduction`；
+- 对每个区域选择 `controlled_direct_reduction`、`semantic_reconstruction`、`silhouette_envelope_reconstruction`、`reuse_clean_source_component`、`normal_map_only` 或 `omit_noncritical_micro_detail`；混合资产必须记录区域边界与证据；
 - 根据轮廓曲率、结构复杂度、负空间、细件、变形需要和预期屏幕尺寸估计内部三角面范围。该范围是风险边界，不是必须追逐的面数目标。
 
 把分析写入符合 `retopology-plan-v6.schema.json` 的 `execution_plan.json`。如果计划未通过 Schema，先修正计划，不能进入 Blender 生成阶段。
@@ -52,13 +52,13 @@
 ### 3.2 复杂一体/有机件
 
 - 先用轮廓环、结构环、开口边和附件根部建立稀疏 cage，再用 RetopoFlow 辅助绘制、局部 patch 或受控 Shrinkwrap 拟合高模。
-- 拓扑必须体现主要体块、方向流和变形/高光需要；不得复制高模后用 Decimate、voxel remesh、QuadriFlow 或同类自动减面结果作为正式低模。
+- 拓扑必须体现主要体块、方向流和变形/高光需要；复杂连续区域可对高模新副本做受控 Decimate，禁止直接修改高模、voxel remesh、QuadriFlow 或跨越已区分区域的整体减面。
 - 清理细长三角集中、无意义三角扇、重叠和碎片；允许保留能稳定轮廓且有明确意图的三角网。
 - 不把高模皱褶噪声逐面复制到低模；这些细节进入法线贴图。
 
 ### 3.3 混合资产
 
-- 对硬表面组件和一体软组件都执行结构化语义重建；不同组件可采用不同 cage/patch 方法，但都禁止直接减面交付。
+- 先建立 `region_method_map`：复杂软区域允许受控减面，硬表面组件语义重建，密集木堆/石堆等聚合区域用少量多边形重建整体外轮廓；不同区域不得互相吞并。
 - 组件间相对比例、位置和接触关系来自高模，不允许分别建对但装配错位。
 
 ## 4. Blender 执行边界
@@ -118,7 +118,7 @@
 1. 高模是否从未被覆盖，SHA 是否一致？
 2. 是否只生成一个正式低模？
 3. 每个影响剪影或结构的组件是否存在、对齐且比例正确？
-4. 是否有任何组件被整件 Decimate/voxel/remesh/QuadriFlow 原始输出冒充？
+4. Decimate 是否只用于已分类的复杂连续区域且来自高模新副本；是否仍存在任何 voxel/remesh/QuadriFlow 原始输出或跨区域整体减面？
 5. 平面是否稀疏，曲线/开口/转折是否有足够支撑？
 6. 是否存在随机三角扇、碎面、挤压面或整体均匀高密？
 7. 高低模七视角对比是否使用相同相机且全部可见？

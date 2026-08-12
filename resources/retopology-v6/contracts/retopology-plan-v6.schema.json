@@ -23,7 +23,7 @@
     "shape_authority": { "const": "high_poly_only" },
     "method": {
       "type": "string",
-      "enum": ["semantic_reconstruction", "hybrid_per_component"]
+      "enum": ["controlled_direct_reduction", "semantic_reconstruction", "hybrid_per_component"]
     },
     "automatic_budget": {
       "type": "object",
@@ -78,7 +78,7 @@
           "construction_role": { "type": "string", "minLength": 1 },
           "method": {
             "type": "string",
-            "enum": ["semantic_reconstruction", "reuse_clean_source_component", "normal_map_only", "omit_noncritical_micro_detail"]
+            "enum": ["controlled_direct_reduction", "semantic_reconstruction", "silhouette_envelope_reconstruction", "reuse_clean_source_component", "normal_map_only", "omit_noncritical_micro_detail"]
           },
           "density_reason": { "type": "string", "minLength": 1 },
           "must_remain_separate": { "type": "boolean", "default": false }

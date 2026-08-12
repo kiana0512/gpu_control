@@ -86,7 +86,7 @@ Reusable lesson:
 
 The first N06 boot attempts used a clean semantic proxy. They were structurally tidy but read as a different object. This violated the top acceptance priority and should have been rejected immediately from the first perspective comparison.
 
-The historical method briefly allowed controlled direct reduction for a complex integrated boot because a coarse proxy lost identity. Production policy 6.0.1 revokes that permission: the lesson is to derive better contour rings and local patches from the high, not to collapse the high.
+The historical method showed why a coarse proxy loses the identity of a complex integrated boot. Production policy 6.0.2 restores a bounded controlled-reduction route for this class: reduce only a fresh high-derived copy or classified complex region, preserve the source and critical openings, and never extend that permission to an undifferentiated mixed asset.
 
 The second N06 failure was subtler. Fresh-high Decimate candidates at 6,000, 4,000, and 1,000 triangles matched the high silhouette extremely well. The 1,000-triangle candidate reached worst-view IoU about 0.9902 and mean IoU about 0.9911. It was also closed and manifold. Nevertheless, its visible wire distribution was unacceptable.
 
@@ -108,7 +108,7 @@ The source boot also contained 77 mesh components and 12,306 boundary edges, whi
 Reusable lesson:
 
 - High silhouette IoU plus manifold status does not prove usable topology.
-- A raw Decimate collapse is a disposable density stress test, never a candidate or accepted final topology.
+- An unclassified raw Decimate collapse is only a density stress test. A classified complex continuous asset/region may use one controlled reduction as the user-authorized final topology when the source is preserved and zero-area faces are removed.
 - If reduction preserves identity but fails wire quality, preserve only the measured contour evidence and rebuild deliberate local flow. Do not retain the reduced mesh.
 - Never weld across source shells or close source boundaries without an explicit construction reason and visual verification of every opening.
 
@@ -164,7 +164,7 @@ For a complex integrated object:
 
 ## Mandatory method decision
 
-Choose `semantic_reconstruction` or `hybrid_per_component`. For integrated complex forms, record the RetopoFlow-assisted, contour-ring, cage, or patch strategy that will preserve identity. Never choose `controlled_direct_reduction`; the historical boot trial is evidence that silhouette fidelity alone cannot make collapsed topology production-ready.
+Choose `controlled_direct_reduction`, `semantic_reconstruction`, or `hybrid_per_component`. For integrated complex forms, use a fresh-high controlled reduction when proxy reconstruction would lose identity, or record the RetopoFlow-assisted/cage strategy when deliberate flow is required. For mixed assets, record a region map and never let the complex-region reduction consume structured or aggregate regions.
 
 ## Mandatory representative-asset stop gate
 

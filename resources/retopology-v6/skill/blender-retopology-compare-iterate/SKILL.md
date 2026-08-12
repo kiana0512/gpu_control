@@ -11,7 +11,7 @@ Read [references/high-only-game-topology.md](references/high-only-game-topology.
 
 For batch assets, plugin-assisted work, a live Blender session, comparison-row assembly, or final delivery, also read [references/production-runbook.md](references/production-runbook.md) completely before acting.
 
-Before starting a new batch or accepting automatic topology, also read [references/validated-batch-retrospective.md](references/validated-batch-retrospective.md) completely. It contains the verified H01-H15 production history and the N06 case proving that excellent silhouette IoU cannot make direct reduction or poor wire quality production-ready.
+Before starting a new batch or accepting automatic topology, also read [references/validated-batch-retrospective.md](references/validated-batch-retrospective.md) completely. It contains the verified H01-H15 production history and the N06 case proving that silhouette IoU alone cannot validate an unconstrained reduction, plus the user-approved controlled-reduction route for complex identity-critical surfaces.
 
 Before training on rejected candidates or starting a formal batch after training, also read [references/n01-n08-training-lessons.md](references/n01-n08-training-lessons.md) completely. It separates training trials from formal production and defines the N01-N08 first-candidate method, fixed-view comparison, feature controls, and freeze/recovery safeguards.
 
@@ -20,7 +20,7 @@ Before training on rejected candidates or starting a formal batch after training
 - Treat repeated training trials as method calibration only. Never convert their count into a formal multi-pass requirement.
 - Before formal geometry, finish the asset classification, method decision, high-derived measurements, feature-control table, component plan, profile events, radial/axial counts, topology-flow plan, face band, and geometry-versus-bake split.
 - Create one authoritative formal low per high. Do not use the user's formal file as a seed/ratio experiment and do not manufacture several colored alternatives.
-- Apply structured reconstruction from the first modeling operation for every asset class. Use semantic multipart reconstruction for mechanical assets and deliberate cage/patch or RetopoFlow-assisted reconstruction for integrated organic assets. Direct reduction is never a formal production method.
+- Route by asset region before the first modeling operation. Use semantic multipart reconstruction for mechanical regions, sparse silhouette envelopes for dense aggregate regions, and controlled reduction from a fresh high-derived copy for complex continuous surfaces whose identity would be lost by proxy reconstruction.
 - Validate the one authoritative result in aligned fixed orthographic views, canonical perspective, and close wire review. Validation proves that the first-pass plan worked; it is not a strategy of producing many candidates until one happens to pass.
 - If an unexpected miss remains, correct the same unfinished authoritative object and add the cause to the training knowledge. Do not call the miss a completed pass or resume blind variant generation.
 - Treat automated green flags as invalid when their evidence does not cover the claimed gate. Object existence, successful rendering, AABB equality, topology integrity, low face count, and wire-audit success cannot independently prove silhouette or construction.
@@ -85,13 +85,14 @@ Never regenerate a `user_approved` omission in a later automatic pass. Keep an u
 Make and record this method decision before creating a candidate:
 
 - Use **semantic reconstruction** for mechanical and hard-surface multipart assets, broad planar forms, repeated construction, and assets assembled from distinct parts.
-- Use **structured organic reconstruction** for integrated soft or organic assets: establish primary silhouette rings and structural flow, then use RetopoFlow-assisted drawing, deliberate local cages/patches, and bounded Shrinkwrap fitting.
-- A duplicate of the high followed by Decimate, voxel remesh, QuadriFlow, automatic remesh, or equivalent density collapse is never a formal low, even if it matches the silhouette or passes a face budget.
-- Automatic reduction may be used only as a disposable diagnostic to estimate a density floor. It must not be exported, renamed, cleaned up into, or substituted for the authoritative low.
+- Use **controlled direct reduction** for complex integrated or soft assets and regions when a deliberate coarse proxy would visibly change identity. Duplicate or isolate from the untouched high, apply asset-specific Decimate only to the fresh copy, preserve openings/boundaries/silhouette, clean zero-area faces, and record the source and ratio. Never run it on `SOURCE_HIGH`.
+- Use **structured organic reconstruction** when a stable cage/patch plan can preserve the form better than reduction: establish primary silhouette rings and structural flow, then use RetopoFlow-assisted drawing, deliberate local cages/patches, and bounded Shrinkwrap fitting.
+- Use **silhouette envelope reconstruction** for dense aggregate regions such as stacked wood, rocks, debris, or folded small pieces when individual members do not control the primary outline or required negative space. Preserve the aggregate outer contour with a small polygon layout instead of copying every island.
+- Voxel remesh, automatic remesh, or an undifferentiated whole-asset collapse remains forbidden. Decimate is authorized only for the complex region proven by the classification and region map.
 - Inventory source connected components, boundaries, openings, thin layers, construction breaks, and deformation/highlight flow before reconstruction. Preserve those relationships in the deliberate low.
 - If the first perspective or primary-view comparison clearly reads as a different object, reject it immediately and rebuild the relevant cage or patch. Do not polish a clean but wrong proxy.
 
-Record `method_decision` as `semantic_reconstruction` or `hybrid_per_component`; every component that contributes geometry must be deliberately reconstructed or be an already production-clean reusable component. Never select direct reduction by category.
+Record `method_decision` as `controlled_direct_reduction`, `semantic_reconstruction`, or `hybrid_per_component`. A mixed asset must also record a `region_method_map` whose boundaries come from the high and whose methods distinguish complex soft surfaces, structured parts, and aggregate envelopes. Never infer a region from disconnected-island count or a face-count threshold alone.
 
 ## Build deliberately
 
@@ -99,7 +100,7 @@ Record `method_decision` as `semantic_reconstruction` or `hybrid_per_component`;
 - State truthfully whether RetopoFlow was used. Never describe scripted primitives, copied meshes, or automatic output as RetopoFlow hand drawing.
 - Use manual cages, PolyStrips, Contours, patches, or deliberate primitive reconstruction as appropriate.
 - Use temporary Shrinkwrap only as a fitting aid; inspect every region for collapse onto the wrong body part.
-- Treat QuadriFlow, AutoRemesher, voxel remesh, and Decimate as disposable diagnostics only. Never use their generated mesh, or a cleaned derivative of it, as the formal low.
+- Treat QuadriFlow, AutoRemesher, and voxel remesh as disposable diagnostics only. A Decimate result may become the formal low only for a classified complex continuous asset/region, from a fresh high-derived copy, with source preservation and zero-area cleanup recorded.
 - Run `scripts/audit_topology_flow.py` on every review-ready automatic or mixed-triangle candidate. A manifold mesh with high silhouette IoU still fails when explicit triangle flow, poles, or density distribution are unusable.
 - Record a plugin as used only when its operator actually generated or modified the accepted candidate. Installed, enabled, or background-skipped initialization is not plugin use.
 - Do not add blanket Bevel modifiers.
