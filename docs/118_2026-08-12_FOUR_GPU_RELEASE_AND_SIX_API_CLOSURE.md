@@ -178,6 +178,10 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
 候选已复制到该目录；候选 Agent SHA-256 为 `91f83e0b…`。升级后必须看到 `-01`～`-04` 四个实例均为
 `ONLINE`、`skill_version=substance-baker-2026.08.12-v7`，再提交真实烘焙 canary 并校验全部制品 SHA。
 
+最终只读审计时，用户烘焙任务 `867d53b9-cfb6-49d5-b1d2-0007777e8072` 仍为 `QUEUED / UNASSIGNED`。
+该任务未被取消、重写或绕过版本门禁；IT 完成 v7 后应先观察它被唯一 3090-B Baker 正常领取并交付。
+在它结束且全局活动任务归零前，正式 100 VU 场景也会被清场门禁拒绝。
+
 ## 7. WebUI 与 Codex 探针
 
 WebUI 已包含：
