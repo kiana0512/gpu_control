@@ -1909,6 +1909,22 @@ async def run_retopology_v6(
     project_path.chmod(0o444)
     output_dir.mkdir(parents=True, exist_ok=False)
 
+    user_request = input_manifest.get("user_request")
+    if user_request is not None and not isinstance(user_request, str):
+        raise RuntimeError("Retopology Direct V2 user_request has the wrong contract")
+    user_request_envelope = workspace / "retopology-user-topology-request.json"
+    user_request_envelope.write_text(
+        json.dumps(
+            {
+                "schema_version": "retopology_user_topology_request.v1",
+                "request": user_request or "",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    user_request_envelope.chmod(0o444)
+
     direct_source_path = project_path
     # The approved package owns FBX/GLB/GLTF/OBJ preparation and creates the
     # same immutable SOURCE_HIGH manifest for every static source.  The legacy
@@ -1967,6 +1983,8 @@ async def run_retopology_v6(
         str(settings.codex_job_timeout_seconds),
         "--package-root",
         str(settings.retopology_direct_v2_root),
+        "--user-request-file",
+        str(user_request_envelope),
         "--attempt-number",
         str(attempt_count),
     ]

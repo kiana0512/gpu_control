@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-12 — Automatic retopology user-intent routing v3.0.20
+
+- Forward the bounded `user_request` from the immutable Direct V2 input bundle into the task-local
+  topology prompt; v3.0.19 packaged it but the Worker did not pass it to the generator.
+- Make explicit region/method intent authoritative for modeling while keeping it unable to alter
+  commands, paths, source preservation, or delivery gates.
+- Prevent a requested aggregate envelope from being changed back to per-piece semantic
+  reconstruction merely because individual gaps exist in the high mesh.
+- Preserve the existing fast-delivery contract: no direction review, FBX reimport, UV generation,
+  visual score, or additional topology gate.
+
 ## 2026-08-12 — Automatic retopology region-method routing v3.0.19
 
 - Restore controlled direct reduction for complex continuous assets and regions whose identity is lost

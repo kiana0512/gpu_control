@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -103,13 +104,38 @@ def render_prompt(template: str, values: dict[str, str]) -> str:
     rendered = template
     for key, value in values.items():
         rendered = rendered.replace("{{" + key + "}}", value)
-    if "{{" in rendered or "}}" in rendered:
+    if re.search(r"\{\{[A-Z0-9_]+\}\}", rendered):
         raise RuntimeError("agent prompt contains unresolved placeholders")
     if "$blender-retopology-compare-iterate" not in rendered:
         raise RuntimeError("agent prompt does not invoke the trained topology skill")
     if "$blender-auto-retopo-align" not in rendered:
         raise RuntimeError("agent prompt does not retain the coordinate/output skill")
     return rendered
+
+
+def load_user_topology_request(path: Path | None) -> str:
+    """Read the API-owned request envelope without treating its path as user input."""
+
+    if path is None:
+        return ""
+    if path.is_symlink():
+        raise RuntimeError("user topology request must be a regular file")
+    resolved = path.resolve(strict=True)
+    if not resolved.is_file():
+        raise RuntimeError("user topology request must be a regular file")
+    if resolved.stat().st_size > 16 * 1024:
+        raise RuntimeError("user topology request envelope is too large")
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("schema_version") != (
+        "retopology_user_topology_request.v1"
+    ):
+        raise RuntimeError("user topology request envelope has the wrong contract")
+    request = payload.get("request")
+    if request is None:
+        return ""
+    if not isinstance(request, str) or len(request) > 4000 or "\x00" in request:
+        raise RuntimeError("user topology request is invalid")
+    return request.strip()
 
 
 def attempt_guidance(attempt_number: int) -> str:
@@ -550,6 +576,12 @@ def main() -> int:
         default=int(os.environ.get("RETOPOLOGY_FINALIZE_TIMEOUT_SECONDS", "1800")),
     )
     parser.add_argument("--package-root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument(
+        "--user-request-file",
+        type=Path,
+        default=None,
+        help="API-owned JSON envelope containing bounded topology intent",
+    )
     parser.add_argument("--attempt-number", type=int, choices=(1, 2), default=1)
     args = parser.parse_args()
     workflow_started = time.monotonic()
@@ -662,6 +694,8 @@ def main() -> int:
         manifest_value = "not_applicable_direct_blend_input"
     timing_seconds["source_preparation"] = time.monotonic() - preparation_started
 
+    user_topology_request = load_user_topology_request(args.user_request_file)
+
     prompt = render_prompt(
         prompt_template.read_text(encoding="utf-8"),
         {
@@ -674,6 +708,13 @@ def main() -> int:
             ),
             "BLENDER_EXECUTABLE": blender,
             "JOB_DIR": str(job_dir),
+            "USER_TOPOLOGY_REQUEST_JSON": json.dumps(
+                {
+                    "provided": bool(user_topology_request),
+                    "topology_intent": user_topology_request,
+                },
+                ensure_ascii=False,
+            ),
             "ATTEMPT_GUIDANCE": attempt_guidance(args.attempt_number),
         },
     )

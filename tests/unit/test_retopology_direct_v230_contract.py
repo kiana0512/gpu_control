@@ -1,4 +1,6 @@
 import hashlib
+import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -18,7 +20,7 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def test_approved_v319_package_is_complete() -> None:
+def test_approved_v320_package_is_complete() -> None:
     completed = subprocess.run(  # noqa: S603 - repository-owned verifier
         [sys.executable, str(ROOT / "server" / "verify_package.py")],
         capture_output=True,
@@ -31,10 +33,10 @@ def test_approved_v319_package_is_complete() -> None:
         file_sha256(ROOT / "blender-auto-retopo-align" / "SKILL.md")
         == "d2bcdb1dede2e5bddeb10a913cede28e3496e4bbfeb413b0bf6355248ec4376b"
     )
-    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.19"
+    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.20"
     assert (
         RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
-        == "72d2216590c79b436f9e0125e3c2074ec6d576db9f80a15e49d9a88561c550dd"
+        == "961f55bc459ecff20e2b4f46a507ce7efd4948eb610e8675bc09f511759e7a9c"
     )
 
 
@@ -72,7 +74,7 @@ def test_rolling_completion_accepts_only_matching_approved_package_identity() ->
     assert retopology_direct_v2_completion_identity_valid(unknown, unknown) is False
 
 
-def test_public_create_contract_selects_v319_without_changing_route() -> None:
+def test_public_create_contract_selects_v320_without_changing_route() -> None:
     api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text(encoding="utf-8")
     assert '@app.post("/api/v1/assets/retopology/process")' in api
     assert '"schema_version": "retopology_input.direct-v2"' in api
@@ -83,7 +85,7 @@ def test_public_create_contract_selects_v319_without_changing_route() -> None:
     ).read_text("utf-8")
 
 
-def test_v319_region_method_routing_and_fast_delivery_contract_are_wired() -> None:
+def test_v320_region_method_routing_and_fast_delivery_contract_are_wired() -> None:
     entrypoint = (ROOT / "server" / "one_click_retopology.py").read_text("utf-8")
     worker = Path("apps/blender_worker/src/gpu_control_blender_worker/main.py").read_text(
         "utf-8"
@@ -119,6 +121,9 @@ def test_v319_region_method_routing_and_fast_delivery_contract_are_wired() -> No
     assert "禁止用面数阈值" in prompt
     assert "一次且仅一次有界高模只读分析" in prompt
     assert "512×512" in prompt
+    assert "USER_TOPOLOGY_REQUEST_JSON" in prompt
+    assert "最高优先级的建形约束" in prompt
+    assert "不得再以“缝隙真实存在”为理由改回逐件语义重建" in prompt
     assert "guard_shape_authority_plan.py" not in prompt
     assert '"timing_seconds"' in entrypoint
     prepare = (
@@ -127,3 +132,26 @@ def test_v319_region_method_routing_and_fast_delivery_contract_are_wired() -> No
     assert "semantic_component_measurements" in prepare
     assert '"render_measurements_required": False' in prepare
     assert '"--attempt-number"' in worker
+    assert '"--user-request-file"' in worker
+    assert '"retopology_user_topology_request.v1"' in worker
+
+
+def test_v320_user_topology_request_envelope_is_bounded_and_preserved(tmp_path: Path) -> None:
+    module_path = ROOT / "server" / "one_click_retopology.py"
+    spec = importlib.util.spec_from_file_location("retopology_one_click", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    request_path = tmp_path / "request.json"
+    intent = "布料受控减面；木堆只做整体外轮廓包络，不逐根重建。"
+    request_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "retopology_user_topology_request.v1",
+                "request": intent,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    assert module.load_user_topology_request(request_path) == intent

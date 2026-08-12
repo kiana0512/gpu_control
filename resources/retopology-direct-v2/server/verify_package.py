@@ -173,6 +173,9 @@ def main() -> int:
             "hybrid_per_component",
             "region_method_map",
             "512×512",
+            "USER_TOPOLOGY_REQUEST_JSON",
+            "最高优先级的建形约束",
+            "不得再以“缝隙真实存在”为理由改回逐件语义重建",
         ),
         "agent prompt",
         errors,
@@ -280,7 +283,7 @@ def main() -> int:
 
     payload = {
         "ok": not errors,
-        "package_version": "3.0.19",
+        "package_version": "3.0.20",
         "skill_id": SKILL_ID,
         "skill_file_count": len(actual_skill),
         "topology_skill_id": TOPOLOGY_SKILL_ID,
