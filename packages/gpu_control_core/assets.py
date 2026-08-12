@@ -227,15 +227,15 @@ class RetopologyV6ProcessMetadata(BaseModel):
 
 
 RETOPOLOGY_V6_POLICY_SHA256 = "e7b24c93c11d550ac9fedd167ff23f9ddd70cba4db014caaf2e157cddeafb266"
-RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION = "3.0.11"
+RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION = "3.0.13"
 RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256 = (
-    "8140b5b2359e4ea5542b533fe697992668b45b10a2496d9084c8e52a2e398f2c"
+    "b5f96ee6f0201fe31eaa5018dd341dc924d458f88027f9c5fcd631b5c8dbcfe7"
 )
 RETOPOLOGY_DIRECT_V2_COMPLETION_IDENTITIES = frozenset(
     {
         (
-            "3.0.8",
-            "5211a7e772d8a2944bf42ea81c498a8f0414d7f8a5a3f9352a09785808624424",
+            "3.0.11",
+            "8140b5b2359e4ea5542b533fe697992668b45b10a2496d9084c8e52a2e398f2c",
         ),
         (RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION, RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256),
     }
@@ -595,6 +595,8 @@ def _retopology_v3_topology_stage_failures(
     *,
     stage: str,
     require_unique_vertex_positions: bool,
+    require_uv: bool = True,
+    strict_geometry: bool = True,
 ) -> list[str]:
     """Return stable defect codes for one generated/readback topology stage."""
 
@@ -613,13 +615,17 @@ def _retopology_v3_topology_stage_failures(
         failures.append(f"{prefix}_PAIRS_MISSING")
         return failures
     required_zero = (
-        "boundary_edges",
-        "multi_face_nonmanifold_edges",
-        "loose_edges",
-        "loose_vertices",
-        "duplicate_faces",
-        "degenerate_faces",
-        "inconsistent_orientation_edges",
+        (
+            "boundary_edges",
+            "multi_face_nonmanifold_edges",
+            "loose_edges",
+            "loose_vertices",
+            "duplicate_faces",
+            "degenerate_faces",
+            "inconsistent_orientation_edges",
+        )
+        if strict_geometry
+        else ("degenerate_faces",)
     )
     for index, pair in enumerate(pairs):
         pair_prefix = f"{prefix}_PAIR_{index}"
@@ -640,7 +646,9 @@ def _retopology_v3_topology_stage_failures(
         if low.get("finite_coordinates") is not True:
             failures.append(f"{pair_prefix}_NON_FINITE_COORDINATES")
         uv_layers = low.get("uv_layers")
-        if not isinstance(uv_layers, int) or uv_layers < 1:
+        if not isinstance(uv_layers, int) or uv_layers < 0:
+            failures.append(f"{pair_prefix}_LOW_UV_COUNT_INVALID")
+        elif require_uv and uv_layers < 1:
             failures.append(f"{pair_prefix}_LOW_UV_MISSING")
         for field in required_zero:
             if low.get(field) != 0:
@@ -654,7 +662,13 @@ def _retopology_v3_topology_evidence_valid(payload: object) -> bool:
     return not _retopology_v3_topology_evidence_failures(payload)
 
 
-def _retopology_v3_topology_evidence_failures(payload: object) -> list[str]:
+def _retopology_v3_topology_evidence_failures(
+    payload: object,
+    *,
+    require_fbx_readback: bool = True,
+    require_uv: bool = True,
+    strict_geometry: bool = True,
+) -> list[str]:
     if not isinstance(payload, dict):
         return ["TOPOLOGY_REPORT_NOT_OBJECT"]
     failures: list[str] = []
@@ -662,22 +676,36 @@ def _retopology_v3_topology_evidence_failures(payload: object) -> list[str]:
         failures.append("TOPOLOGY_SCHEMA_INVALID")
     if payload.get("passed") is not True:
         failures.append("TOPOLOGY_REPORT_NOT_PASSED")
-    for stage, unique_positions in (
-        ("generated_blend", True),
-        ("blend_readback", True),
-        ("fbx_readback", False),
-    ):
+    if not strict_geometry and payload.get("gate") != "no_broken_faces":
+        failures.append("TOPOLOGY_GATE_INVALID")
+    if not require_uv and payload.get("uv_policy") != "preserve_optional":
+        failures.append("TOPOLOGY_UV_POLICY_INVALID")
+    stages = [
+        ("generated_blend", strict_geometry),
+        ("blend_readback", strict_geometry),
+    ]
+    if require_fbx_readback:
+        stages.append(("fbx_readback", False))
+    for stage, unique_positions in stages:
         failures.extend(
             _retopology_v3_topology_stage_failures(
                 payload.get(stage),
                 stage=stage,
                 require_unique_vertex_positions=unique_positions,
+                require_uv=require_uv,
+                strict_geometry=strict_geometry,
             )
         )
     return failures
 
 
-def retopology_auto_align_v3_evidence_failures(payload: object) -> list[str]:
+def retopology_auto_align_v3_evidence_failures(
+    payload: object,
+    *,
+    require_fbx_readback: bool = True,
+    require_uv: bool = True,
+    strict_geometry: bool = True,
+) -> list[str]:
     """Explain every failed v3 source-coordinate/readback predicate."""
 
     failures: list[str] = []
@@ -698,7 +726,10 @@ def retopology_auto_align_v3_evidence_failures(payload: object) -> list[str]:
         if payload.get(field) != expected:
             failures.append(f"ALIGNMENT_{field.upper()}_INVALID")
     topology_failures = _retopology_v3_topology_evidence_failures(
-        payload.get("topology_validation")
+        payload.get("topology_validation"),
+        require_fbx_readback=require_fbx_readback,
+        require_uv=require_uv,
+        strict_geometry=strict_geometry,
     )
     if topology_failures:
         failures.append("TOPOLOGY_VALIDATION_INVALID")
@@ -744,6 +775,22 @@ def retopology_auto_align_v3_evidence_failures(payload: object) -> list[str]:
     if not isinstance(readback, dict):
         failures.append("FBX_READBACK_MISSING")
         return failures
+    if not require_fbx_readback:
+        if readback.get("performed") is not False:
+            failures.append("FBX_READBACK_POLICY_INVALID")
+        if readback.get("status") != "skipped_by_user_policy":
+            failures.append("FBX_READBACK_STATUS_INVALID")
+        if payload.get("uv_policy") != "preserve_optional":
+            failures.append("ALIGNMENT_UV_POLICY_INVALID")
+        direction_review = payload.get("direction_review")
+        if not isinstance(direction_review, dict):
+            failures.append("DIRECTION_REVIEW_MISSING")
+        elif (
+            direction_review.get("performed") is not False
+            or direction_review.get("status") != "skipped_by_user_policy"
+        ):
+            failures.append("DIRECTION_REVIEW_POLICY_INVALID")
+        return failures
     tolerance = readback.get("tolerance")
     high_error = readback.get("high_center_size_error_ratio")
     low_error = readback.get("low_center_size_error_ratio")
@@ -765,16 +812,28 @@ def retopology_auto_align_v3_evidence_failures(payload: object) -> list[str]:
     return failures
 
 
-def retopology_auto_align_v3_evidence_valid(payload: object) -> bool:
+def retopology_auto_align_v3_evidence_valid(
+    payload: object,
+    *,
+    require_fbx_readback: bool = True,
+    require_uv: bool = True,
+    strict_geometry: bool = True,
+) -> bool:
     """Validate the v3 same-job source-coordinate finalization evidence.
 
-    v3 deliberately performs no ICP, topology/UV editing, automatic visual
-    review, or second modeling pass.  The generated low must be restored to
-    the source high's coordinate frame and both FBX files must survive a fresh
-    import with the expected bounds and low-mesh structure.
+    The default validates the historical strict contract.  Direct V2 callers
+    may select the current generated-low policy: do not create or modify UVs,
+    accept either UV0 or preserved existing UV layers, keep non-degenerate
+    topology diagnostics advisory, and skip direction/FBX reimport.  In both
+    modes the generated low must be restored to the source high's frame.
     """
 
-    return not retopology_auto_align_v3_evidence_failures(payload)
+    return not retopology_auto_align_v3_evidence_failures(
+        payload,
+        require_fbx_readback=require_fbx_readback,
+        require_uv=require_uv,
+        strict_geometry=strict_geometry,
+    )
 
 
 _RETOPOLOGY_V5_IGNORED_OPTIONS = frozenset(

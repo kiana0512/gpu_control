@@ -81,9 +81,9 @@ async def test_asset_api_version_exposes_aligned_immutable_provenance(
             "source_revision": "a" * 40,
             "retopology": {
                 "engine_contract": "retopology-direct-v2",
-                "package_version": "3.0.11",
+                "package_version": "3.0.13",
                 "package_sha256": (
-                    "8140b5b2359e4ea5542b533fe697992668b45b10a2496d9084c8e52a2e398f2c"
+                    "b5f96ee6f0201fe31eaa5018dd341dc924d458f88027f9c5fcd631b5c8dbcfe7"
                 ),
                 "submission_mode": "one_file_per_job",
                 "recommended_upload_concurrency": 3,
@@ -545,46 +545,11 @@ def direct_v2_completion_files(
     result_bytes = json.dumps(context["result"]).encode()
     alignment_bytes = json.dumps(alignment_report).encode()
     source_manifest_bytes = json.dumps(context["source_manifest"]).encode()
-    shape_validation = {
-        "pass": True,
-        "fbx_readback": True,
-        "gate": {
-            "max_dimension_error_ratio": 0.03,
-            "max_low_to_high_p95_ratio": 0.04,
-            "max_high_to_low_p95_ratio": 0.04,
-        },
-        "high": {"triangles": 200, "uv_layers": 1},
-        "low": {
-            "triangles": 100,
-            "uv_layers": 1,
-            "topology": {
-                "components": 1,
-                "degenerate_faces": 0,
-                "boundary_edges": 0,
-                "nonmanifold_edges": 0,
-            },
-        },
-        "comparison": {
-            "center_error_ratio": 0.0,
-            "dimension_error_ratio_max": 0.01,
-            "low_to_high_p95_ratio": 0.02,
-            "high_to_low_p95_ratio": 0.02,
-        },
-    }
-    shape_validation_bytes = json.dumps(shape_validation).encode()
-    alignment_views_buffer = io.BytesIO()
-    with zipfile.ZipFile(alignment_views_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for view in ("front", "back", "left", "right", "top", "bottom", "perspective"):
-            image_buffer = io.BytesIO()
-            Image.new("RGB", (8, 8), (255, 128, 0)).save(image_buffer, format="PNG")
-            archive.writestr(f"{view}.png", image_buffer.getvalue())
-        archive.writestr("views.json", json.dumps({"views": {}}).encode())
-    alignment_views_bytes = alignment_views_buffer.getvalue()
     manifest = {
         "schema_version": schema_version,
         "job_id": context["job_id"],
         "engine_contract": "retopology-direct-v2",
-        "package_version": "3.0.11",
+        "package_version": "3.0.13",
         "package_sha256": context["package_sha256"],
         "source_sha256": context["project_sha256"],
         "adapter_input_sha256": context["adapter_input_sha"],
@@ -598,14 +563,16 @@ def direct_v2_completion_files(
         "generation_report_sha256": hashlib.sha256(generation_bytes).hexdigest(),
         "result_sha256": hashlib.sha256(result_bytes).hexdigest(),
         "source_manifest_sha256": hashlib.sha256(source_manifest_bytes).hexdigest(),
-        "shape_validation": shape_validation,
-        "shape_validation_sha256": hashlib.sha256(shape_validation_bytes).hexdigest(),
-        "alignment_views_sha256": hashlib.sha256(alignment_views_bytes).hexdigest(),
         "status": "generated_for_user_inspection_aligned",
         "coordinate_authority": "high_object_matrix_world",
         "alignment_mode": "source_matrix_restore",
         "topology_uv_preserved": True,
-        "fbx_reimport_passed": True,
+        "topology_gate": "no_broken_faces",
+        "uv_policy": "preserve_optional",
+        "fbx_reimport_performed": False,
+        "fbx_reimport_status": "skipped_by_user_policy",
+        "direction_review_performed": False,
+        "direction_review_status": "skipped_by_user_policy",
         "automatic_post_generation_review": False,
         "automatic_retry": False,
         "bake_alignment": alignment_report,
@@ -622,16 +589,6 @@ def direct_v2_completion_files(
             "bake_alignment_report.json",
             alignment_bytes,
             "application/json",
-        ),
-        "shape_validation": (
-            "bake_pair_validation.json",
-            shape_validation_bytes,
-            "application/json",
-        ),
-        "alignment_views": (
-            "alignment_views.zip",
-            alignment_views_bytes,
-            "application/zip",
         ),
         "generation_report": (
             "generation_report.json",
@@ -676,9 +633,9 @@ async def test_retopology_process_creates_v300_direct_contract(tmp_path: Path) -
         assert response.status_code == 202, response.text
         payload = response.json()
         assert payload["options"]["engine_contract"] == "retopology-direct-v2"
-        assert payload["options"]["package_version"] == "3.0.11"
+        assert payload["options"]["package_version"] == "3.0.13"
         assert payload["options"]["package_sha256"] == (
-            "8140b5b2359e4ea5542b533fe697992668b45b10a2496d9084c8e52a2e398f2c"
+            "b5f96ee6f0201fe31eaa5018dd341dc924d458f88027f9c5fcd631b5c8dbcfe7"
         )
 
         bundle = settings.asset_root / payload["job_id"] / "retopology_input.zip"
@@ -701,7 +658,7 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.11",
+            skill_version="asset-skills-auto-retopo-align-v3.0.13",
         )
         leased = await claim_asset_job(client, settings)
         assert leased["job_id"] == created_payload["job_id"]
@@ -726,6 +683,7 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
                     "coordinate_space": "source_high_local",
                     "coordinate_authority": "high_object_matrix_world",
                     "presentation_offset_applied": False,
+                    "uv_layers": 0,
                 }
             ],
         }
@@ -748,23 +706,14 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
             "coordinate_authority": "high_object_matrix_world",
             "alignment_mode": "source_matrix_restore",
             "topology_uv_preserved": True,
-            "fbx_readback_passed": True,
+            "fbx_exported": True,
+            "fbx_readback_performed": False,
+            "direction_review_performed": False,
+            "topology_gate": "no_broken_faces",
+            "uv_policy": "preserve_optional",
             "low_display": "opaque_yellow",
             "automatic_post_generation_review": False,
             "automatic_retry": False,
-        }
-        structure = {
-            "object_count": 1,
-            "meshes": [
-                {
-                    "vertices": 80,
-                    "polygons": 100,
-                    "loops": 300,
-                    "polygon_sizes": [3] * 100,
-                    "uv_layer_count": 1,
-                    "material_slot_count": 1,
-                }
-            ],
         }
         alignment_report = {
             "schema": "li3d-auto-retopo-align-v1",
@@ -776,14 +725,21 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
             "topology_or_uv_edited": False,
             "low_display": "opaque_yellow",
             "topology_uv_unchanged": True,
+            "uv_policy": "preserve_optional",
+            "direction_review": {
+                "performed": False,
+                "status": "skipped_by_user_policy",
+            },
             "topology_validation": {
                 "schema": "li3d-retopology-topology-v1",
                 "passed": True,
+                "gate": "no_broken_faces",
+                "uv_policy": "preserve_optional",
                 **{
                     stage: {
                         "stage": stage,
                         "passed": True,
-                        "require_unique_vertex_positions": stage != "fbx_readback",
+                        "require_unique_vertex_positions": False,
                         "pairs": [
                             {
                                 "pair": 0,
@@ -795,7 +751,7 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
                                 "low": {
                                     "faces": 100,
                                     "finite_coordinates": True,
-                                    "uv_layers": 1,
+                                    "uv_layers": 0,
                                     "boundary_edges": 0,
                                     "boundary_edge_ratio": 0.0,
                                     "multi_face_nonmanifold_edges": 0,
@@ -814,7 +770,6 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
                     for stage in (
                         "generated_blend",
                         "blend_readback",
-                        "fbx_readback",
                     )
                 },
             },
@@ -830,13 +785,8 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
                 }
             ],
             "fbx_readback": {
-                "pass": True,
-                "high_center_size_error_ratio": 0.0,
-                "low_center_size_error_ratio": 0.0,
-                "tolerance": 1e-5,
-                "low_structure_match": True,
-                "expected_low_structure": structure,
-                "actual_low_structure": structure,
+                "performed": False,
+                "status": "skipped_by_user_policy",
             },
         }
         alignment_report_bytes = json.dumps(alignment_report).encode()
@@ -846,7 +796,7 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
 
         completion_context = {
             "job_id": created_payload["job_id"],
-            "package_version": "3.0.11",
+            "package_version": "3.0.13",
             "package_sha256": created_payload["options"]["package_sha256"],
             "project_sha256": created_payload["options"]["project_sha256"],
             "adapter_input_sha": adapter_input_sha,
@@ -879,7 +829,7 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
         rejected_coordinate_response = await client.post(
             endpoint,
             headers={"X-Asset-Lease": str(leased["lease_token"])},
-            files=direct_v2_completion_files("retopology_direct_delivery.v7", rejected_coordinate),
+            files=direct_v2_completion_files("retopology_direct_delivery.v8", rejected_coordinate),
         )
         assert rejected_coordinate_response.status_code == 422, rejected_coordinate_response.text
         assert (
@@ -890,7 +840,7 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
         completed = await client.post(
             endpoint,
             headers={"X-Asset-Lease": str(leased["lease_token"])},
-            files=direct_v2_completion_files("retopology_direct_delivery.v7", completion_context),
+            files=direct_v2_completion_files("retopology_direct_delivery.v8", completion_context),
         )
         assert completed.status_code == 200, completed.text
         status = await client.get(
@@ -915,8 +865,10 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
             "coordinate_authority": "high_object_matrix_world",
             "icp_used": False,
             "topology_uv_preserved": True,
-            "fbx_reimport_passed": True,
-            "user_visual_inspection_required": True,
+            "topology_gate": "no_broken_faces",
+            "uv_policy": "preserve_optional",
+            "fbx_reimport_performed": False,
+            "direction_review_performed": False,
         }
 
 
@@ -2766,12 +2718,12 @@ async def claim_asset_job(
     return job
 
 
-async def test_retopology_retry_resets_active_attempt_progress(tmp_path: Path) -> None:
+async def test_retopology_retry_keeps_task_progress_monotonic(tmp_path: Path) -> None:
     async for settings, client in prepared_asset_app(tmp_path):
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.11",
+            skill_version="asset-skills-auto-retopo-align-v3.0.13",
         )
         created = await post_retopology_process(
             client,
@@ -2788,9 +2740,9 @@ async def test_retopology_retry_resets_active_attempt_progress(tmp_path: Path) -
             f"/internal/v1/assets/jobs/{job_id}/progress",
             headers=first_lease,
             json={
-                "progress": 99,
-                "stage": "RETOPOLOGY_BAKE_VISUAL_QA",
-                "message": "first attempt visual QA",
+                "progress": 40,
+                "stage": "RETOPOLOGY_DIRECT_V2_BUILD",
+                "message": "first candidate failed its early gate",
                 "estimated_remaining_seconds": 60,
             },
         )
@@ -2812,7 +2764,7 @@ async def test_retopology_retry_resets_active_attempt_progress(tmp_path: Path) -
             headers={"X-API-Key": "gpc_assetkey_secret"},
         )
         assert queued.status_code == 200, queued.text
-        assert queued.json()["progress"] == 0
+        assert queued.json()["progress"] == 50
         assert queued.json()["stage"] == "RETRY_QUEUED"
         assert queued.json()["attempt_count"] == 1
         assert queued.json()["timing"]["estimated_remaining_seconds"] is None
@@ -2825,8 +2777,8 @@ async def test_retopology_retry_resets_active_attempt_progress(tmp_path: Path) -
                 .order_by(AssetJobEvent.sequence.desc())
             )
             assert event is not None
-            assert event.progress == 0
-            assert event.details["previous_attempt_progress"] == 99
+            assert event.progress == 50
+        assert event.details["previous_attempt_progress"] == pytest.approx(19.6)
 
         second = await claim_asset_job(client, settings)
         assert second["job_id"] == job_id
@@ -2847,7 +2799,7 @@ async def test_retopology_retry_resets_active_attempt_progress(tmp_path: Path) -
             f"/api/v1/assets/jobs/{job_id}",
             headers={"X-API-Key": "gpc_assetkey_secret"},
         )
-        assert status.json()["progress"] == 8
+        assert status.json()["progress"] == pytest.approx(53.92)
         assert status.json()["attempt_count"] == 2
 
 
@@ -2856,7 +2808,7 @@ async def test_retopology_post_build_qa_failure_is_not_retried(tmp_path: Path) -
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.11",
+            skill_version="asset-skills-auto-retopo-align-v3.0.13",
         )
         created = await post_retopology_process(
             client,
@@ -2917,7 +2869,7 @@ async def test_retopology_early_generated_low_qa_failure_retries_once(tmp_path: 
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.11",
+            skill_version="asset-skills-auto-retopo-align-v3.0.13",
         )
         created = await post_retopology_process(
             client,
@@ -2956,7 +2908,7 @@ async def test_retopology_early_generated_low_qa_failure_retries_once(tmp_path: 
             headers={"X-API-Key": "gpc_assetkey_secret"},
         )
         assert status.json()["status"] == "QUEUED"
-        assert status.json()["progress"] == 0
+        assert status.json()["progress"] == 50
         assert status.json()["attempt_count"] == 1
         assert status.json()["stage"] == "RETRY_QUEUED"
 
@@ -2966,7 +2918,7 @@ async def test_busy_codex_slot_still_claims_blender_only_work(tmp_path: Path) ->
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.11",
+            skill_version="asset-skills-auto-retopo-align-v3.0.13",
         )
         retopology = await post_retopology_process(
             client,
@@ -2997,7 +2949,7 @@ async def test_durable_codex_assignment_blocks_racing_second_topology_claim(
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.11",
+            skill_version="asset-skills-auto-retopo-align-v3.0.13",
         )
         first = await post_retopology_process(
             client,

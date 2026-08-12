@@ -44,7 +44,6 @@ from packages.gpu_control_core.assets import (
     retopology_audit_request_hash,
     retopology_auto_align_v3_evidence_valid,
     retopology_direct_v2_completion_identity_valid,
-    retopology_direct_v2_shape_evidence_valid,
     retopology_v6_process_request_hash,
     substance_bake_request_hash,
     uv_process_request_hash,
@@ -139,7 +138,7 @@ SUBSTANCE_BAKE_COMMAND_COUNTS = {
     "li3d-pbr-full-v2": 10,
 }
 CODEX_REQUIRED_JOB_TYPES = frozenset({"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"})
-RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-auto-retopo-align-v3.0.11"
+RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-auto-retopo-align-v3.0.13"
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,8 +282,6 @@ RETOPOLOGY_DIRECT_V2_ARTIFACTS = {
     "fbx": ("bake_low.fbx", "application/octet-stream"),
     "high_fbx": ("bake_high.fbx", "application/octet-stream"),
     "alignment_report": ("bake_alignment_report.json", "application/json"),
-    "shape_validation": ("bake_pair_validation.json", "application/json"),
-    "alignment_views": ("alignment_views.zip", "application/zip"),
     "generation_report": ("generation_report.json", "application/json"),
     "delivery_manifest": ("delivery_manifest.json", "application/json"),
     "result": ("result.json", "application/json"),
@@ -852,6 +849,17 @@ WORKER_PROGRESS_STAGE_ALIASES = {
     "RETOPOLOGY_DIRECT_V2_COORDINATE_RESTORE": "RETOPOLOGY_V2_COORD_RESTORE",
 }
 
+RETOPOLOGY_POST_BUILD_STAGES = frozenset(
+    {
+        "RETOPOLOGY_BAKE_VISUAL_QA",
+        "RETOPOLOGY_V2_COORD_RESTORE",
+        "RETOPOLOGY_V6_MERGE_EXPORT",
+        "RETOPOLOGY_V6_INDEPENDENT_QA",
+        "RETOPOLOGY_FINAL_AUDIT",
+        "RETOPOLOGY_RENDERING",
+    }
+)
+
 
 def canonical_worker_progress_stage(stage: str) -> str:
     canonical = WORKER_PROGRESS_STAGE_ALIASES.get(stage, stage)
@@ -864,6 +872,23 @@ def canonical_worker_progress_stage(stage: str) -> str:
             },
         )
     return canonical
+
+
+def client_visible_worker_progress(job: AssetJob, reported_progress: float) -> float:
+    """Keep bounded retopology retries monotonic on one task-wide progress bar.
+
+    The Worker reports progress on a per-attempt 0-99.9 scale.  Direct V2 may
+    build at most two fresh candidates, so expose the first attempt in the
+    first half and the bounded retry in the second half.  This avoids both a
+    visible regression and a misleading 98% plateau while the retry runs.
+    Other job types retain their existing scale.
+    """
+
+    if job.job_type == "RETOPOLOGY_PROCESS_V2":
+        if job.attempt_count >= 2:
+            return min(99.8, 50.0 + reported_progress * 0.49)
+        return min(49.8, reported_progress * 0.49)
+    return reported_progress
 
 
 class WorkerFailure(BaseModel):
@@ -1079,7 +1104,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "自动重拓扑候选未通过严格交付 QA；诊断制品已保留，未发布为最终结果。"
             ),
             "RETOPOLOGY_COORDINATE_MISMATCH": (
-                "自动拓扑低模未通过高模原坐标或 FBX 回读门禁；系统未发布错位结果，"
+                "自动拓扑低模未通过高模原坐标门禁；系统未发布错位结果，"
                 "也不会自动再次建模，请检查本次任务诊断。"
             ),
             "RETOPOLOGY_OUTPUT_MISSING": (
@@ -2913,10 +2938,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job.lease_expires_at = now + timedelta(seconds=cfg.asset_worker_lease_seconds)
         job.attempt_count += 1
         job.started_at = job.started_at or now
-        # ``progress`` represents the active attempt. A retried job must start
-        # from a fresh scale instead of inheriting 99% from the rejected
-        # attempt and appearing permanently stuck while it rebuilds.
-        job.progress = 1
+        # Public progress represents the whole task, not an individual
+        # candidate.  Bounded Direct V2 retries therefore retain their 50%
+        # floor; per-attempt Worker progress is mapped below.
+        job.progress = max(job.progress, 1)
         job.stage = "CLAIMED"
         job.stage_message = f"任务已分配给 {worker.display_name}"
         job.estimated_remaining_seconds = {
@@ -3089,7 +3114,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"cancel_requested": True}
         stage = canonical_worker_progress_stage(body.stage)
         job.status = "RUNNING"
-        job.progress = max(job.progress, body.progress)
+        visible_progress = client_visible_worker_progress(job, body.progress)
+        job.progress = max(job.progress, visible_progress)
         job.stage = stage
         job.stage_message = body.message
         job.estimated_remaining_seconds = body.estimated_remaining_seconds
@@ -3896,9 +3922,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 alignment_report = json.loads(
                     (staging / "bake_alignment_report.json").read_text("utf-8")
                 )
-                shape_validation = json.loads(
-                    (staging / "bake_pair_validation.json").read_text("utf-8")
-                )
                 source_manifest = json.loads((staging / "source_manifest.json").read_text("utf-8"))
             except (OSError, ValueError) as exc:
                 raise HTTPException(
@@ -3915,7 +3938,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or result.get("coordinate_authority") != "high_object_matrix_world"
                 or result.get("alignment_mode") != "source_matrix_restore"
                 or result.get("topology_uv_preserved") is not True
-                or result.get("fbx_readback_passed") is not True
+                or result.get("fbx_exported") is not True
+                or result.get("fbx_readback_performed") is not False
+                or result.get("direction_review_performed") is not False
+                or result.get("topology_gate") != "no_broken_faces"
+                or result.get("uv_policy") != "preserve_optional"
                 or result.get("low_display") != "opaque_yellow"
                 or result.get("automatic_post_generation_review") is not False
                 or result.get("automatic_retry") is not False
@@ -3934,7 +3961,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             bake_files = result.get("bake_files")
             if (
                 not retopology_direct_v2_completion_identity_valid(snapshot.options, manifest)
-                or manifest.get("schema_version") != "retopology_direct_delivery.v7"
+                or manifest.get("schema_version") != "retopology_direct_delivery.v8"
                 or manifest.get("job_id") != snapshot.id
                 or manifest.get("engine_contract") != "retopology-direct-v2"
                 or manifest.get("source_sha256") != snapshot.options.get("project_sha256")
@@ -3951,21 +3978,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or manifest.get("result_sha256") != staged_by_kind["result"].sha256
                 or manifest.get("source_manifest_sha256")
                 != staged_by_kind["source_manifest"].sha256
-                or manifest.get("shape_validation_sha256")
-                != staged_by_kind["shape_validation"].sha256
-                or manifest.get("alignment_views_sha256")
-                != staged_by_kind["alignment_views"].sha256
-                or manifest.get("shape_validation") != shape_validation
-                or not retopology_direct_v2_shape_evidence_valid(shape_validation)
                 or manifest.get("status") != "generated_for_user_inspection_aligned"
                 or manifest.get("coordinate_authority") != "high_object_matrix_world"
                 or manifest.get("alignment_mode") != "source_matrix_restore"
                 or manifest.get("topology_uv_preserved") is not True
-                or manifest.get("fbx_reimport_passed") is not True
+                or manifest.get("topology_gate") != "no_broken_faces"
+                or manifest.get("uv_policy") != "preserve_optional"
+                or manifest.get("fbx_reimport_performed") is not False
+                or manifest.get("fbx_reimport_status") != "skipped_by_user_policy"
+                or manifest.get("direction_review_performed") is not False
+                or manifest.get("direction_review_status") != "skipped_by_user_policy"
                 or manifest.get("automatic_post_generation_review") is not False
                 or manifest.get("automatic_retry") is not False
                 or manifest.get("bake_alignment") != alignment_report
-                or not retopology_auto_align_v3_evidence_valid(alignment_report)
+                or not retopology_auto_align_v3_evidence_valid(
+                    alignment_report,
+                    require_fbx_readback=False,
+                    require_uv=False,
+                    strict_geometry=False,
+                )
                 or not isinstance(alignment_pairs, list)
                 or len(alignment_pairs) != len(generation["assets"])
                 or not isinstance(bake_files, dict)
@@ -3977,36 +4008,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or not isinstance(source_manifest, dict)
             ):
                 raise HTTPException(422, detail={"code": "RETOPOLOGY_DIRECT_V2_IDENTITY_MISMATCH"})
-
-            required_view_files = {
-                "front.png",
-                "back.png",
-                "left.png",
-                "right.png",
-                "top.png",
-                "bottom.png",
-                "perspective.png",
-                "views.json",
-            }
-            try:
-                with zipfile.ZipFile(staging / "alignment_views.zip") as archive:
-                    if set(archive.namelist()) != required_view_files or archive.testzip() is not None:
-                        raise ValueError("alignment view member mismatch")
-                    for name in required_view_files - {"views.json"}:
-                        info = archive.getinfo(name)
-                        if info.file_size <= 0 or info.file_size > 16 * 1024 * 1024:
-                            raise ValueError("alignment view size invalid")
-                        with archive.open(name) as source, Image.open(source) as image:
-                            if image.width * image.height > cfg.max_image_pixels:
-                                raise ValueError("alignment view dimensions invalid")
-                            image.verify()
-                    views_payload = json.loads(archive.read("views.json"))
-                    if not isinstance(views_payload, dict):
-                        raise ValueError("alignment views manifest invalid")
-            except (OSError, ValueError, zipfile.BadZipFile, UnidentifiedImageError) as exc:
-                raise HTTPException(
-                    422, detail={"code": "RETOPOLOGY_ALIGNMENT_VIEWS_INVALID"}
-                ) from exc
 
             fsync_completion_staging(staging)
             job = await lock_asset_completion_for_publish(snapshot, lease, db)
@@ -4027,7 +4028,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.progress = 100
             job.stage = "SUCCEEDED"
             job.stage_message = (
-                "v3 自动拓扑完成；已恢复高模原坐标并通过高低模 FBX 回读，等待用户检查"
+                "v3 自动拓扑完成；无破面低模已恢复高模原坐标并导出 FBX"
             )
             job.estimated_remaining_seconds = 0
             job.last_progress_at = datetime.now(UTC)
@@ -4054,8 +4055,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "coordinate_authority": "high_object_matrix_world",
                         "icp_used": False,
                         "topology_uv_preserved": True,
-                        "fbx_reimport_passed": True,
-                        "user_visual_inspection_required": True,
+                        "topology_gate": "no_broken_faces",
+                        "uv_policy": "preserve_optional",
+                        "fbx_reimport_performed": False,
+                        "direction_review_performed": False,
                     },
                     "assets": generation["assets"],
                 },
@@ -4071,7 +4074,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "engine_contract": "retopology-direct-v2",
                     "delivery_format": "bake_alignment+high_fbx+low_fbx+evidence",
                     "bake_alignment": "passed",
-                    "fbx_reimport": "passed",
+                    "fbx_reimport": "skipped_by_user_policy",
+                    "direction_review": "skipped_by_user_policy",
+                    "uv_policy": "preserve_optional",
                     "coordinate_authority": "high_object_matrix_world",
                     "automatic_post_generation_review": False,
                 },
@@ -4475,15 +4480,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
             and previous_worker_id is not None
         )
-        v6_post_build_failure = (
-            job.job_type == "RETOPOLOGY_PROCESS_V2"
-            and job.progress >= 70
-            and body.code
-            in {
-                "BLENDER_EXECUTION_FAILED",
-                "RETOPOLOGY_QA_FAILED",
-                "RETOPOLOGY_COORDINATE_MISMATCH",
-            }
+        v6_post_build_failure = job.job_type == "RETOPOLOGY_PROCESS_V2" and (
+            body.code == "RETOPOLOGY_COORDINATE_MISMATCH"
+            or (
+                job.stage in RETOPOLOGY_POST_BUILD_STAGES
+                and body.code
+                in {
+                    "BLENDER_EXECUTION_FAILED",
+                    "RETOPOLOGY_QA_FAILED",
+                }
+            )
         )
         effective_retryable = (
             body.retryable and not requires_runtime_recovery and not v6_post_build_failure
@@ -4506,9 +4512,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.finished_at = datetime.now(UTC)
         elif effective_retryable and job.attempt_count < cfg.asset_job_max_attempts:
             job.status = "QUEUED"
-            job.progress = 0
+            if job.job_type == "RETOPOLOGY_PROCESS_V2":
+                job.progress = max(job.progress, 50)
+            else:
+                job.progress = 0
             job.stage = "RETRY_QUEUED"
-            job.stage_message = "执行失败，任务已按策略返回队列重试"
+            job.stage_message = (
+                "第一次候选未通过质量门禁，正在切换生成方法；整体进度不会回退"
+                if job.job_type == "RETOPOLOGY_PROCESS_V2"
+                else "执行失败，任务已按策略返回队列重试"
+            )
             job.estimated_remaining_seconds = None
             job.worker_id = None
             job.worker_instance_id = None

@@ -35,10 +35,10 @@ The finalizer defensively normalizes the low matrix into the high local space an
 
 - High and low final object matrices: exact within `1e-5` per matrix component before export baking.
 - Center error: at most `1e-5` of the high diagonal after presentation-offset removal.
-- Coordinate restoration retains its broad safety envelope, but formal server publication adds a stricter bake-shape gate: maximum per-axis high/low dimension error at most `0.03`, low-to-high P95 surface distance at most `0.04` of the high diagonal, and high-to-low P95 at most `0.04`. Exceeding any one means the generated candidate is visually/semantically unsafe even if its matrix and center are correct.
+- Coordinate restoration retains its broad size safety envelope from the generated Blend. The generated-low server policy does not run a direction review or an independent surface-distance gate.
 - Determinant sign: identical; reflections are forbidden.
-- Blend topology and UV fingerprint: exactly unchanged.
-- Fresh FBX import: center/size error at most `1e-5` of the high diagonal and low structure counts unchanged.
+- Blend topology fingerprint: exactly unchanged after the no-UV policy is applied.
+- FBX files are exported and hashed but are not freshly reimported by the automatic-retopology stage.
 - Low inspection appearance: opaque yellow/orange, no X-ray, visible alongside the high.
 
 ## Front-End Integration

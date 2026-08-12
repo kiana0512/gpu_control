@@ -306,3 +306,76 @@ def test_alignment_evidence_identifies_missing_low_uv_at_each_stage() -> None:
     assert "TOPOLOGY_GENERATED_BLEND_PAIR_0_LOW_UV_MISSING" in failures
     assert "TOPOLOGY_BLEND_READBACK_PAIR_0_LOW_UV_MISSING" in failures
     assert "TOPOLOGY_FBX_READBACK_PAIR_0_LOW_UV_MISSING" in failures
+
+
+def generated_low_delivery_evidence() -> dict:
+    evidence = alignment_evidence()
+    topology = evidence["topology_validation"]
+    topology.pop("fbx_readback")
+    topology["gate"] = "no_broken_faces"
+    topology["uv_policy"] = "preserve_optional"
+    for stage_name in ("generated_blend", "blend_readback"):
+        topology[stage_name]["require_unique_vertex_positions"] = False
+        low = topology[stage_name]["pairs"][0]["low"]
+        low["uv_layers"] = 0
+        # These defects are diagnostic under the generated-low delivery policy.
+        low["boundary_edges"] = 3
+        low["multi_face_nonmanifold_edges"] = 2
+        low["loose_edges"] = 1
+        low["loose_vertices"] = 1
+        low["duplicate_vertices"] = 2
+        low["duplicate_faces"] = 1
+        low["inconsistent_orientation_edges"] = 4
+    evidence["uv_policy"] = "preserve_optional"
+    evidence["fbx_readback"] = {
+        "performed": False,
+        "status": "skipped_by_user_policy",
+    }
+    evidence["direction_review"] = {
+        "performed": False,
+        "status": "skipped_by_user_policy",
+    }
+    return evidence
+
+
+def test_generated_low_policy_accepts_uv0_and_advisory_topology_defects() -> None:
+    evidence = generated_low_delivery_evidence()
+
+    assert (
+        retopology_auto_align_v3_evidence_failures(
+            evidence,
+            require_fbx_readback=False,
+            require_uv=False,
+            strict_geometry=False,
+        )
+        == []
+    )
+    assert retopology_auto_align_v3_evidence_valid(
+        evidence,
+        require_fbx_readback=False,
+        require_uv=False,
+        strict_geometry=False,
+    )
+
+
+def test_generated_low_policy_preserves_optional_uv_and_rejects_degenerate_faces() -> None:
+    evidence = generated_low_delivery_evidence()
+    evidence["topology_validation"]["generated_blend"]["pairs"][0]["low"][
+        "uv_layers"
+    ] = 1
+    evidence["topology_validation"]["blend_readback"]["pairs"][0]["low"][
+        "uv_layers"
+    ] = 1
+    evidence["topology_validation"]["blend_readback"]["pairs"][0]["low"][
+        "degenerate_faces"
+    ] = 1
+
+    failures = retopology_auto_align_v3_evidence_failures(
+        evidence,
+        require_fbx_readback=False,
+        require_uv=False,
+        strict_geometry=False,
+    )
+
+    assert "TOPOLOGY_GENERATED_BLEND_PAIR_0_LOW_UV_COUNT_INVALID" not in failures
+    assert "TOPOLOGY_BLEND_READBACK_PAIR_0_DEGENERATE_FACES" in failures

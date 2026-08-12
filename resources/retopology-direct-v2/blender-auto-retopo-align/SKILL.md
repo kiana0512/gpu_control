@@ -1,6 +1,6 @@
 ---
 name: blender-auto-retopo-align
-description: Generate one sparse next-generation Blender low-poly model from a high-poly FBX, GLB, GLTF, OBJ, or Blend source, then restore the generated low to the high model's original position, rotation, axis orientation, and scale and export bake-ready high/low FBX files with topology, UV, and readback validation. Use for 服务器自动拓扑替换、一键拓扑后高低模不重合、自动拓扑后恢复原坐标、拓扑完成后强制对齐、批量高模生成低模并输出烘焙文件。Also supports transform-only alignment of an externally supplied existing low model. Never use the alignment stage to retopologize, remesh, decimate, triangulate, edit UVs, or replace the user's low model as part of transform-only alignment.
+description: Generate one sparse next-generation Blender low-poly model from a high-poly FBX, GLB, GLTF, OBJ, or Blend source, then restore the generated low to the high model's original position, rotation, axis orientation, and scale and export high/low FBX files. The generated-low server policy delivers no UV, performs no direction render, and performs no FBX reimport. Use for 服务器自动拓扑替换、一键拓扑后高低模不重合、自动拓扑后恢复原坐标、拓扑完成后强制对齐、批量高模生成低模并输出模型文件。Also supports transform-only alignment of an externally supplied existing low model. Never use the alignment stage to retopologize, remesh, decimate, triangulate, edit UVs, or replace the user's low model as part of transform-only alignment.
 ---
 
 # Blender Auto Retopo Align
@@ -65,13 +65,13 @@ Use this mode only when the user supplies a separately created low whose coordin
 - Produce exactly one low object for each requested high.
 - Spend polygons on silhouette, openings, section changes, negative space, and key connections; keep flat non-silhouette regions sparse.
 - Create the low in `source_high_local` coordinates and assign the same `matrix_world` as its high.
-- Create at least one non-empty UV layer during this single generation build. A low with no UV is a failed generation and must never be reported as deliverable.
+- Do not create, delete, unwrap, repack, or otherwise modify UVs in the automatic-retopology stage. Preserve existing low UVs byte-for-byte when present; a low with no UV is also valid and UV work belongs to the separate UV stage.
 - Give the low an opaque yellow/orange display material or object color. Do not use transparency.
 - Do not add a presentation offset in unattended/server mode.
-- After applying generated modifiers, converting curves, and joining the fresh low, finish construction before UV creation: use a scale-relative exact-position tolerance to merge only duplicate generated vertices, dissolve numerically degenerate edges, delete zero-area faces plus resulting loose edges/vertices, and recalculate normals. Then measure boundary edges and repair each accidental boundary inside its own generated component in the same build: cap an intended solid end, bridge paired section rings, or use `bmesh.ops.holes_fill` only for a simple closed accidental gap and triangulate the newly filled faces. A real opening needs inner/outer walls joined by a rim; never cover it with a broad cap. Rebuild the new low component when its boundary graph is not a simple cycle or a fill would cross components/negative space. Re-measure after every repair and proceed only at zero boundary edges. This generated-low finish is not a second candidate or post-alignment edit. It is allowed only on the newly generated low, never on `SOURCE_HIGH`; it must not use broad merge distances, Decimate, remesh, or whole-object reconstruction.
-- Before reporting success, require a closed manifold: zero boundary/open edges, loose edges/vertices, duplicate geometry, degenerate faces, multi-face non-manifold edges, and inconsistent orientation. This is a deterministic delivery gate, not a second modeling pass.
+- After applying generated modifiers, converting curves, and joining the fresh low, remove only zero-area or degenerate faces and require finite vertex coordinates. This finish applies only to the new low, never to `SOURCE_HIGH`.
+- Boundary/open, non-manifold, loose, duplicate, and orientation measurements remain diagnostics. They do not block generated-low delivery under the user-selected `no_broken_faces` gate.
 - Execute the Blender build; writing a plan or build script without producing the requested Blend is a failed generation.
-- Write `generation_report.json` with the normal generation fields, including `uv_layers >= 1`, plus:
+- Write `generation_report.json` with the normal generation fields, including the measured `uv_layers` count, plus:
   - `coordinate_space: source_high_local`
   - `coordinate_authority: high_object_matrix_world`
   - `presentation_offset_applied: false`
@@ -95,11 +95,11 @@ The finalizer may:
 - bake identical high/low world transforms into export copies and set object transforms to identity;
 - add an opaque low display material only when the generated low has no material.
 
-It may not change vertex count, edge connectivity, polygon connectivity, polygon count, UV coordinates, vertex groups, shape keys, custom normals, or modifiers. It never runs Decimate, remesh, triangulation, projection, or geometry repair.
+It may not change vertex count, edge connectivity, polygon connectivity, polygon count, UV layers or coordinates, vertex groups, shape keys, custom normals, or modifiers. It never creates, deletes, or unwraps UVs, and never runs Decimate, remesh, triangulation, projection, or geometry repair.
 
 ### 5. Stop at the defined terminal
 
-Coordinate restoration, topology/UV preservation checks, and FBX readback are fixed persistence checks, not a second topology review. Do not render, score, revise, retry, or generate another low automatically after the builder has produced a gate-passing Blend. An early builder rejection for a malformed generated candidate may be returned to the queue for at most one fresh attempt; the malformed candidate is never published. Return only a gate-passing generated result for user inspection with coordinate validation attached.
+Coordinate restoration and saved-Blend topology preservation are fixed persistence checks. Generated-low delivery does not render direction views and does not reimport FBX. Do not score, revise, retry, or generate another low automatically after the builder has produced a gate-passing Blend. An early builder rejection for an empty, non-finite, or degenerate-face candidate may be returned to the queue for at most one fresh attempt.
 
 ## Required Outputs
 
@@ -123,14 +123,13 @@ Return `RETOPOLOGY_COORDINATE_MISMATCH` and publish no final result if any of th
 - high and low cannot be resolved unambiguously;
 - high/low matrix equality cannot be established after restoration;
 - center or size gates fail;
-- a topology or UV fingerprint changes during finalization or Blend readback;
-- FBX fresh-import bounds or structure differ from the exported scene;
+- a topology fingerprint changes after the user-selected no-UV policy is applied or during Blend readback;
 - handedness changes or a mirror is introduced.
-- the generated Blend or fresh-imported low FBX contains boundary/open, loose, duplicate, degenerate, multi-face non-manifold, or inconsistently oriented geometry.
+- the generated or saved Blend contains zero-area/degenerate faces or non-finite coordinates.
 
-Never retry modeling automatically after a coordinate, topology-preservation, or FBX-readback integrity failure. An early generated-candidate topology rejection or a post-generation shape-proximity mismatch may use the server's single bounded fresh attempt; preserve both attempts' logs and never publish the rejected candidate.
+Never retry modeling automatically after a coordinate or saved-Blend topology-preservation failure. An early empty, non-finite, or degenerate-face rejection may use the server's single bounded fresh attempt; preserve both attempts' logs and never publish the rejected candidate.
 
-On that single bounded fresh attempt, do not repeat the same low-detail semantic proxy. Re-read the immutable source topology. When the plan guard permits whole-object controlled reduction, prefer a fresh `SOURCE_HIGH` duplicate with enough retained density to inherit the measured high silhouette and dimensions, then run the same generated-low closure and UV finish. Otherwise change to measured per-component hybrid construction. The retry never modifies `SOURCE_HIGH` and never relaxes topology, shape, seven-view, or FBX-readback gates.
+On that single bounded fresh attempt, do not repeat the same low-detail semantic proxy. Re-read the immutable source topology. When the plan guard permits whole-object controlled reduction, prefer a fresh `SOURCE_HIGH` duplicate with enough retained density to inherit the measured high silhouette and dimensions. Otherwise change to measured per-component hybrid construction. The retry never modifies `SOURCE_HIGH` and still requires the `no_broken_faces` gate.
 
 ## Server Compatibility
 

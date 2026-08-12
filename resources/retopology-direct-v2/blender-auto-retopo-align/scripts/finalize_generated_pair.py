@@ -110,23 +110,6 @@ def topology_uv_fingerprint(objects: Iterable[bpy.types.Object]) -> dict[str, An
     return {"object_count": len(records), "meshes": records}
 
 
-def structure_summary(objects: Iterable[bpy.types.Object]) -> dict[str, Any]:
-    records = []
-    for obj in mesh_objects(objects):
-        mesh = obj.data
-        records.append(
-            {
-                "vertices": len(mesh.vertices),
-                "polygons": len(mesh.polygons),
-                "loops": len(mesh.loops),
-                "polygon_sizes": sorted(len(polygon.vertices) for polygon in mesh.polygons),
-                "uv_layer_count": len(mesh.uv_layers),
-                "material_slot_count": len(obj.material_slots),
-            }
-        )
-    return {"object_count": len(records), "meshes": records}
-
-
 def topology_metrics(obj: bpy.types.Object) -> dict[str, Any]:
     """Measure bake-safety defects without changing the generated low."""
 
@@ -208,8 +191,6 @@ def topology_metrics(obj: bpy.types.Object) -> dict[str, Any]:
 def topology_failures(
     high: dict[str, Any],
     low: dict[str, Any],
-    *,
-    require_unique_vertex_positions: bool,
 ) -> list[str]:
     failures: list[str] = []
     if low["faces"] <= 0:
@@ -218,21 +199,13 @@ def topology_failures(
         failures.append("LOW_FACE_COUNT_NOT_BELOW_HIGH")
     if not low["finite_coordinates"]:
         failures.append("NON_FINITE_COORDINATES")
-    if low["uv_layers"] < 1:
-        failures.append("MISSING_UV")
-    for field in (
-        "boundary_edges",
-        "multi_face_nonmanifold_edges",
-        "loose_edges",
-        "loose_vertices",
-        "duplicate_faces",
-        "degenerate_faces",
-        "inconsistent_orientation_edges",
-    ):
-        if low[field]:
-            failures.append(f"{field.upper()}={low[field]}")
-    if require_unique_vertex_positions and low["duplicate_vertices"]:
-        failures.append(f"DUPLICATE_VERTICES={low['duplicate_vertices']}")
+    # Direct V2's user-selected delivery policy is intentionally narrow: only
+    # broken/degenerate faces block publication.  Boundary, non-manifold,
+    # loose, duplicate and orientation metrics remain in the report as
+    # diagnostics but are advisory and must not discard an otherwise usable
+    # low model.
+    if low["degenerate_faces"]:
+        failures.append(f"DEGENERATE_FACES={low['degenerate_faces']}")
     return failures
 
 
@@ -253,7 +226,6 @@ def require_clean_topology(
         failures = topology_failures(
             high_metrics,
             low_metrics,
-            require_unique_vertex_positions=require_unique_vertex_positions,
         )
         records.append(
             {
@@ -404,26 +376,6 @@ def export_fbx(objects: list[bpy.types.Object], path: Path) -> None:
         raise RuntimeError(f"FBX export failed: {path}")
 
 
-def clear_scene() -> None:
-    bpy.ops.object.select_all(action="SELECT")
-    bpy.ops.object.delete(use_global=False)
-
-
-def import_fbx(path: Path) -> list[bpy.types.Object]:
-    before = {obj.as_pointer() for obj in bpy.context.scene.objects}
-    result = bpy.ops.import_scene.fbx(filepath=str(path))
-    if "FINISHED" not in result:
-        raise RuntimeError(f"FBX readback failed: {path}")
-    return mesh_objects(obj for obj in bpy.context.scene.objects if obj.as_pointer() not in before)
-
-
-def bounds_error(actual: dict[str, list[float]], expected: dict[str, list[float]], reference: float) -> float:
-    return max(
-        (vector(actual[field]) - vector(expected[field])).length / reference
-        for field in ("center", "size")
-    )
-
-
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     partial = path.with_suffix(path.suffix + ".partial")
     partial.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -528,13 +480,10 @@ def main() -> int:
             high_objects,
             low_objects,
             stage="generated_blend_after_coordinate_bake",
-            require_unique_vertex_positions=True,
+            require_unique_vertex_positions=False,
         ),
     }
 
-    expected_high_bounds = world_bounds(high_objects)
-    expected_low_bounds = world_bounds(low_objects)
-    expected_low_structure = structure_summary(low_objects)
     blend_path = output_dir / "bake_alignment.blend"
     high_fbx = output_dir / "bake_high.fbx"
     low_fbx = output_dir / "bake_low.fbx"
@@ -552,33 +501,11 @@ def main() -> int:
         blend_high,
         blend_low,
         stage="saved_blend_readback",
-        require_unique_vertex_positions=True,
-    )
-
-    clear_scene()
-    readback_high = import_fbx(high_fbx)
-    actual_high_bounds = world_bounds(readback_high)
-    readback_high = sorted(readback_high, key=lambda item: item.name)
-    readback_low = import_fbx(low_fbx)
-    actual_low_bounds = world_bounds(readback_low)
-    readback_low = sorted(readback_low, key=lambda item: item.name)
-    actual_low_structure = structure_summary(readback_low)
-    topology_validation["fbx_readback"] = require_clean_topology(
-        readback_high,
-        readback_low,
-        stage="fresh_fbx_readback",
-        # FBX may split a used vertex at a legitimate UV or normal seam.  The
-        # generated Blend is authoritative for duplicate positions; fresh FBX
-        # still must contain no unused vertices, loose edges, or invalid faces.
         require_unique_vertex_positions=False,
     )
+    topology_validation["gate"] = "no_broken_faces"
+    topology_validation["uv_policy"] = "preserve_optional"
     topology_validation["passed"] = True
-    reference = max(vector(expected_high_bounds["size"]).length, 1e-12)
-    high_error = bounds_error(actual_high_bounds, expected_high_bounds, reference)
-    low_error = bounds_error(actual_low_bounds, expected_low_bounds, reference)
-    readback_pass = high_error <= 1e-5 and low_error <= 1e-5 and actual_low_structure == expected_low_structure
-    if not readback_pass:
-        raise RuntimeError("EXPORT_READBACK_MISMATCH")
 
     report = {
         "schema": "li3d-auto-retopo-align-v1",
@@ -595,16 +522,14 @@ def main() -> int:
         "low_fingerprint_after_bake": topology_after_bake,
         "low_fingerprint_after_blend_readback": topology_after_blend_readback,
         "topology_uv_unchanged": True,
+        "uv_policy": "preserve_optional",
         "topology_validation": topology_validation,
         "fbx_readback": {
-            "pass": True,
-            "high_center_size_error_ratio": float(high_error),
-            "low_center_size_error_ratio": float(low_error),
-            "tolerance": 1e-5,
-            "low_structure_match": True,
-            "expected_low_structure": expected_low_structure,
-            "actual_low_structure": actual_low_structure,
+            "performed": False,
+            "status": "skipped_by_user_policy",
         },
+        "direction_review": {"performed": False, "status": "skipped_by_user_policy"},
+        "fbx_exported": high_fbx.is_file() and low_fbx.is_file(),
         "outputs": {
             "blend": str(blend_path),
             "high_fbx": str(high_fbx),

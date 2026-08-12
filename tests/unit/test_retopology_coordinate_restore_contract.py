@@ -300,11 +300,11 @@ def test_direct_v2_delivery_requires_bake_alignment_evidence() -> None:
     worker = Path("apps/blender_worker/src/gpu_control_blender_worker/main.py").read_text("utf-8")
     api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text("utf-8")
 
-    assert '"schema_version": "retopology_direct_delivery.v7"' in worker
+    assert '"schema_version": "retopology_direct_delivery.v8"' in worker
     assert '"bake_alignment": alignment_report' in worker
     assert '"coordinate_authority": "high_object_matrix_world"' in worker
     assert '"automatic_post_generation_review": False' in worker
-    assert 'manifest.get("schema_version") != "retopology_direct_delivery.v7"' in api
+    assert 'manifest.get("schema_version") != "retopology_direct_delivery.v8"' in api
     assert 'staged_by_kind["blend"].filename = f"{stem}_GAME_LOW.blend"' in api
     assert 'staged_by_kind["fbx"].filename = f"{stem}_GAME_LOW.fbx"' in api
     assert "retopology_auto_align_v3_evidence_failures" in worker

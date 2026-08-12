@@ -1,4 +1,4 @@
-# Blender 自动拓扑与原坐标对齐服务器包 v3.0.11
+# Blender 自动拓扑与原坐标对齐服务器包 v3.0.13
 
 本包合并两个正式技能：
 
@@ -6,6 +6,22 @@
 2. 烘焙前对齐：同任务低模按高模原矩阵恢复坐标，只做变换与导出校验，不改拓扑或 UV。
 
 它用于替换现有 `blender-retopology-compare-iterate-server-package-v2.5.0`。旧单文件调用参数和成功状态保持兼容；成功后额外输出烘焙高低模 FBX 与对齐报告。
+
+## v3.0.13 行为
+
+- 自动拓扑交付取消前后左右顶底透视方向渲染，不再生成 `alignment_views.zip`。
+- 高低模 FBX 仍正常导出并绑定 SHA-256，但不再重新导入 FBX 验证。
+- 自动拓扑阶段不生成或修改 UV；低模已有 UV 就原样保留，没有 UV 也允许交付，后续可由独立 UV 阶段处理。
+- 硬门禁简化为 `no_broken_faces`：低模必须非空、坐标有效、面数少于高模且零面积/退化面为 0；
+  开放边、非流形、游离、重复和面朝向只记录诊断，不阻止交付。
+- 原始高模只读、坐标恢复、保存后 Blend 指纹、FBX 导出哈希、一次有界重试和单调进度保持不变。
+
+## v3.0.12 行为
+
+- 同一任务的一次有界重试使用任务级单调进度：第一次候选失败后进入 50% 边界，第二次进度映射到
+  50%～99%，不再显示 40% 回到 0%/1%。
+- 新鲜 FBX 的尺寸、双向表面距离或回读门禁已经失败时，废弃候选不再渲染七方向，直接切换生成方法；
+  数值通过的正式候选仍必须生成完整七方向证据，质量门禁不放宽。
 
 ## v3.0.11 行为
 
@@ -40,33 +56,31 @@
 - 同任务低模不运行 ICP；语义低模和高模表面差异不再触发错误的 ICP 修正。
 - 自动移除纯展示平移，使高低模中心和矩阵回到原坐标。
 - 对齐阶段禁止 Decimate、remesh、重建、三角化、UV 修改和几何修复。
-- 对低模执行拓扑/UV 指纹、Blend 回读、FBX 新导入回读。
+- 对低模执行拓扑指纹与保存后 Blend 回读；自动拓扑交付不生成 UV，也不执行 FBX 新导入回读。
 - 生成代理只写 `build.py`/`build_once.py` 而未真正执行 Blender 时，服务器只执行任务根目录内唯一、
-  非符号链接且大小受限的既有构建脚本一次；这不是第二次建模，完成后仍经过相同报告、UV、拓扑、
-  坐标和 FBX 回读门禁。脚本缺失、歧义或超限保持输出缺失硬失败；实际执行失败明确返回
+  非符号链接且大小受限的既有构建脚本一次；这不是第二次建模，完成后仍经过相同报告、无破面、
+  坐标和 FBX 导出门禁。脚本缺失、歧义或超限保持输出缺失硬失败；实际执行失败明确返回
   `BLENDER_EXECUTION_FAILED`。
 - 补执行构建脚本前先以 `--disable-autoexec` 打开服务器已准备并校验的任务工作 Blend，保证脚本能读取
   `SOURCE_HIGH`；不再从空的 factory-startup 场景执行而误报 `SOURCE_HIGH missing`。
 - `faces`、`triangles`、`uv_layers` 不再相信代理写入的可波动文本值；服务器以最终化 Blender 对
-  generated Blend、保存后 Blend 和重新导入 FBX 的实际读取为权威，并将真实数值回填报告。报告漏字段
-  不再误杀有效模型，真实无 UV、空低模或低模面数不小于高模仍由几何门禁硬拒绝。
+  generated Blend 和保存后 Blend 的实际读取为权威，并将真实数值回填报告。UV0 与保留已有 UV 都可
+  交付；空低模、非有限坐标、低模面数不小于高模或存在零面积/退化面时由几何门禁硬拒绝。
 - 服务器补执行脚本若失败，结果会保留执行退出码以及 Blender stdout/stderr 尾部，避免再次只显示
   `BUILD_SCRIPT_NOT_EXECUTED` 而丢失真实异常。
-- 新生成低模在 modifier、曲线转换和 Join 后、创建 UV 前，必须用尺度相关的极小容差清理完全重合点、
-  数值退化边/面及其产生的游离几何，并重算法线；清理只作用于新低模，禁止修改 `SOURCE_HIGH`、宽距离
-  焊接、Decimate、remesh 或重建。
-- 构建阶段约 40% 的新低模拓扑门禁失败可按队列上限重新生成一次；已进入最终对齐/FBX 回读阶段的失败
+- 新生成低模在 modifier、曲线转换和 Join 后，只清理零面积/退化面并验证坐标为有限数值；自动拓扑
+  阶段不创建 UV。收尾只作用于新低模，禁止修改 `SOURCE_HIGH`、宽距离焊接、Decimate、remesh 或重建。
+- 构建阶段的新低模无破面门禁失败可按队列上限重新生成一次；已进入最终坐标恢复与导出阶段的失败
   继续禁止重试。首个坏候选永不发布，第二次仍不过门即终止。
-- 低模缺少非空 UV 时在最终化阶段直接返回 `RETOPOLOGY_TOPOLOGY_INVALID`，并在交付门返回具体的
-  `*_LOW_UV_MISSING` 缺陷代码。
+- 自动拓扑不得生成或修改 UV；生成低模已有 UV 时原样保留，没有 UV 时也不补建 UV。
 - Codex 正常结束但把有效 Blend 保存到声明的兼容别名时，只复制该唯一候选到正式输出名；不修改几何，
   候选缺失或不唯一时仍硬失败并写结构化诊断。
 - 任务私有 Codex 认证如发生安全刷新，会以源哈希和账户身份双重校验后原子回写节点持久认证；
   并发变化或身份不一致时拒绝覆盖。
 - 低模使用不透明黄色/橙色显示，不隐藏，不用半透明或 X-ray。
-- 坐标异常返回 `RETOPOLOGY_COORDINATE_MISMATCH`；低模存在开边、游离几何、重复/退化面或其他非流形
-  缺陷时返回 `RETOPOLOGY_TOPOLOGY_INVALID`。最终对齐/回读失败不自动重跑；仅构建阶段坏候选允许一次
-  有界新尝试。
+- 坐标异常返回 `RETOPOLOGY_COORDINATE_MISMATCH`；低模为空、含非有限坐标、面数不低于高模或存在
+  零面积/退化面时返回 `RETOPOLOGY_TOPOLOGY_INVALID`。开放边、非流形、游离、重复和面朝向只记录诊断；
+  最终坐标恢复或导出失败不自动重跑，仅构建阶段坏候选允许一次有界新尝试。
 
 ## 运行条件
 
@@ -80,8 +94,8 @@
 推荐把每个版本解压到独立 release 目录，再切换服务配置或符号链接，保留旧版用于回滚：
 
 ```bash
-unzip blender-auto-retopo-align-server-package-v3.0.11.zip -d /opt/li3d/releases/
-cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.11
+unzip blender-auto-retopo-align-server-package-v3.0.13.zip -d /opt/li3d/releases/
+cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.13
 python3 server/verify_package.py
 cp server/worker.env.example server/worker.env
 ```
@@ -132,7 +146,10 @@ python3 server/one_click_retopology.py \
   "bake_alignment_status": "aligned",
   "alignment_mode": "source_matrix_restore",
   "topology_uv_preserved": true,
-  "fbx_readback_passed": true,
+  "topology_gate": "no_broken_faces",
+  "uv_policy": "preserve_optional",
+  "fbx_readback_performed": false,
+  "direction_review_performed": false,
   "low_display": "opaque_yellow"
 }
 ```
@@ -179,12 +196,12 @@ python3 server/align_existing_low.py \
 
 ## 错误处理
 
-`RETOPOLOGY_COORDINATE_MISMATCH` 表示以下任一问题：坐标声明缺失、高低模解析不唯一、矩阵/中心/尺寸门失败、拓扑或 UV 指纹改变、手性改变、FBX 回读不一致。
+`RETOPOLOGY_COORDINATE_MISMATCH` 表示以下任一问题：坐标声明缺失、高低模解析不唯一、矩阵/中心/尺寸门失败、保存后拓扑指纹改变或手性改变。
 
-`RETOPOLOGY_TOPOLOGY_INVALID` 表示低模不是可烘焙闭合流形，例如存在边界边、游离边点、重合点面、
-退化面、多面非流形边或错误面朝向。失败件不会发布。
+`RETOPOLOGY_TOPOLOGY_INVALID` 表示低模为空、坐标非有限、面数不低于高模或存在零面积/退化破面。
+开放边、非流形、游离、重复和面朝向只写入报告，不再阻止发布。
 
-若错误发生在生成阶段且进度低于最终化门槛，队列只允许一次新候选；最终化、对齐或 FBX 回读错误不重试。
+若错误发生在生成阶段，队列只允许一次新候选；最终化或坐标对齐错误不重试。
 检查任务目录中的：
 
 - `generation_report.json`
@@ -198,7 +215,7 @@ python3 server/align_existing_low.py \
 docker build \
   --build-arg WORKER_IMAGE=现有Worker镜像@sha256:固定摘要 \
   -f Dockerfile.layer \
-  -t li3d/blender-auto-retopo-align:v3.0.11 .
+  -t li3d/blender-auto-retopo-align:v3.0.13 .
 ```
 
 本 Layer 不替换现有 HTTP、队列、存储、鉴权或 Worker entrypoint，只加入合并技能和兼容入口。
@@ -208,7 +225,9 @@ docker build \
 1. `python3 server/verify_package.py` 必须通过。
 2. 分别用一个已知 FBX 和 GLB 跑单文件 smoke test。
 3. 确认输出 Blend 中高低模重合，低模为不透明黄色/橙色。
-4. 确认 `bake_alignment_report.json` 中 `pass`、`topology_uv_unchanged` 和 `fbx_readback.pass` 全为 `true`。
+4. 确认 `bake_alignment_report.json` 中 `pass=true`、`uv_policy=preserve_optional`，保存前后的
+   UV 指纹完全一致，且
+   `fbx_readback.status` 与 `direction_review.status` 都是 `skipped_by_user_policy`。
 5. 确认前端没有二次归零或居中。
 6. 再把新 package root 切到生产 Worker。
 

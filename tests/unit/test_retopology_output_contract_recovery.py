@@ -174,7 +174,7 @@ def test_generated_build_completion_rejects_ambiguous_or_symlinked_scripts(
     assert MODULE.generated_build_script(tmp_path) is None
 
 
-def test_generation_report_allows_blender_to_author_uv_metrics(tmp_path: Path) -> None:
+def test_generation_report_allows_blender_to_author_optional_uv_metrics(tmp_path: Path) -> None:
     report = tmp_path / "generation_report.json"
     report.write_text(
         json.dumps(
@@ -225,7 +225,7 @@ def test_generation_report_allows_blender_to_author_uv_metrics(tmp_path: Path) -
     assert reconciled["assets"][0]["mesh_metrics_authority"].startswith("blender_")
 
 
-def test_verified_blend_without_uv_still_fails_closed(tmp_path: Path) -> None:
+def test_verified_blend_with_invalid_uv_count_fails_closed(tmp_path: Path) -> None:
     report = {
         "assets": [
             {
@@ -246,7 +246,7 @@ def test_verified_blend_without_uv_still_fails_closed(tmp_path: Path) -> None:
                                 "low": {
                                     "faces": 12,
                                     "triangles": 24,
-                                    "uv_layers": 0,
+                                    "uv_layers": -1,
                                 }
                             }
                         ]
@@ -258,7 +258,7 @@ def test_verified_blend_without_uv_still_fails_closed(tmp_path: Path) -> None:
     except RuntimeError as error:
         assert "RETOPOLOGY_TOPOLOGY_INVALID" in str(error)
     else:
-        raise AssertionError("Blender-verified missing UV must fail")
+        raise AssertionError("Negative Blender-verified UV layer count must fail")
 
 
 def test_one_click_prepares_every_supported_static_source_as_source_high() -> None:

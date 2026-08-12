@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-08-12 — Automatic retopology streamlined delivery v3.0.13
+
+- Remove generated-low direction rendering and the seven-view ZIP from Direct V2 publication.
+- Export high/low FBX files without freshly reimporting them; the alignment report records the
+  user-selected skip policy explicitly instead of claiming a readback pass.
+- Do not create or modify UVs during automatic retopology. Preserve existing low UVs when present;
+  allow UV0 when absent and defer new UV work to the dedicated UV stage.
+- Replace the strict closed-manifold delivery gate with `no_broken_faces`: empty/non-finite meshes,
+  face count not below the high, and zero-area/degenerate faces still fail; boundary, non-manifold,
+  loose, duplicate, and orientation metrics remain advisory diagnostics.
+- Keep immutable source hashing, source-coordinate restoration, saved-Blend fingerprint validation,
+  FBX export hashes, bounded retry, and monotonic task progress.
+- Release Asset API `1.6.35-retopo-fast-delivery-v1`, Blender Worker
+  `1.4.35-retopo-fast-delivery-v1`, and retopology package v3.0.13.
+
+## 2026-08-12 — Automatic retopology monotonic progress and failed-candidate fast retry v3.0.12
+
+- Keep one public task progress bar monotonic across the single bounded retry. A rejected first
+  candidate advances to the 50% retry boundary, and second-attempt Worker progress maps into the
+  remaining half instead of returning to 0%/1%.
+- When fresh-FBX dimension, bidirectional surface-distance, or FBX-readback validation already
+  rejects a candidate, skip its seven-view render and immediately switch construction method.
+- Keep all seven mandatory views for every numerically valid final candidate; no topology, shape,
+  UV, source-preservation, or FBX-readback threshold is relaxed.
+- Release Asset API `1.6.34-retopo-progress-speed-v1`, Blender Worker
+  `1.4.34-retopo-progress-speed-v1`, and retopology package v3.0.12.
+
 ## 2026-08-11 — Automatic retopology bounded-retry method diversification v3.0.11
 
 - Carry the authoritative Asset API `attempt_count` through the claim contract, Blender Worker,

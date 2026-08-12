@@ -139,8 +139,9 @@ def main() -> int:
             "source_topology",
             "RETOPOLOGY_TOPOLOGY_INVALID",
             "SOURCE_HIGH_NORMALIZED_WORK",
-            "bmesh.ops.holes_fill",
-            "boundary_edges == 0",
+            "不生成 UV",
+            "不执行 FBX 重新导入验证",
+            "开放边、非流形边、游离点边、重复点面和面朝向仅记录为诊断",
             "ATTEMPT_GUIDANCE",
         ),
         "agent prompt",
@@ -150,11 +151,11 @@ def main() -> int:
         ROOT / "server" / "one_click_retopology.py",
         (
             "finalize_generated_pair.py",
-            "validate_bake_pair.py",
-            "render_alignment_views.py",
-            "RETOPOLOGY_VISUAL_MISMATCH",
-            "seven_view_evidence_generated",
             "RETOPOLOGY_COORDINATE_MISMATCH",
+            '"topology_gate": "no_broken_faces"',
+            '"uv_policy": "preserve_optional"',
+            '"fbx_readback_performed": False',
+            '"direction_review_performed": False',
             '"bake_alignment_status": "aligned"',
             '"status": "generated_for_user_inspection"',
             '"automatic_retry": False',
@@ -167,7 +168,7 @@ def main() -> int:
         (
             "source_matrix_restore",
             "topology_uv_fingerprint",
-            "EXPORT_READBACK_MISMATCH",
+            "skipped_by_user_policy",
             "opaque_yellow",
             "icp_used",
             "require_clean_topology",
@@ -176,6 +177,9 @@ def main() -> int:
         "coordinate finalizer",
         errors,
     )
+    one_click_text = (ROOT / "server" / "one_click_retopology.py").read_text("utf-8")
+    if "shape_validation_command" in one_click_text or "alignment_views_dir" in one_click_text:
+        errors.append("one-click entrypoint still executes disabled FBX/direction validation")
     require_tokens(
         SKILL / "scripts" / "prepare_fbx_source.py",
         (
@@ -244,7 +248,7 @@ def main() -> int:
 
     payload = {
         "ok": not errors,
-        "package_version": "3.0.11",
+        "package_version": "3.0.13",
         "skill_id": SKILL_ID,
         "skill_file_count": len(actual_skill),
         "one_click_entrypoint": str(ROOT / "server" / "one_click_retopology.py"),

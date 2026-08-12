@@ -461,9 +461,10 @@ def reconcile_generation_report_mesh_metrics(
 
     Object names and coordinate intent still come from the generation contract,
     while faces, triangles and UV layers are facts that the deterministic
-    finalizer already reads from the generated Blend, saved Blend and FBX
-    readback.  A missing or stale text field must therefore never discard an
-    otherwise valid topology delivery.
+    finalizer reads from the generated Blend and saved Blend.  A missing or
+    stale text field must therefore never discard an otherwise valid delivery.
+    Automatic retopology never creates or changes UVs, but either UV0 or an
+    existing preserved UV set is valid.
     """
 
     assets = report.get("assets")
@@ -476,15 +477,20 @@ def reconcile_generation_report_mesh_metrics(
         low = pair.get("low") if isinstance(pair, dict) else None
         if not isinstance(asset, dict) or not isinstance(low, dict):
             raise RuntimeError(f"RETOPOLOGY_TOPOLOGY_INVALID: verified pair {index} is invalid")
-        for field in ("faces", "triangles", "uv_layers"):
+        for field in ("faces", "triangles"):
             value = low.get(field)
-            minimum = 1
-            if not isinstance(value, int) or value < minimum:
+            if not isinstance(value, int) or value < 1:
                 raise RuntimeError(
                     f"RETOPOLOGY_TOPOLOGY_INVALID: verified low {index} has invalid {field}"
                 )
             asset[field] = value
-        asset["mesh_metrics_authority"] = "blender_generated_blend_and_fbx_readback"
+        uv_layers = low.get("uv_layers")
+        if not isinstance(uv_layers, int) or uv_layers < 0:
+            raise RuntimeError(
+                f"RETOPOLOGY_TOPOLOGY_INVALID: verified low {index} has invalid uv_layers"
+            )
+        asset["uv_layers"] = uv_layers
+        asset["mesh_metrics_authority"] = "blender_generated_and_saved_blend"
     atomic_write(path, json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     return report
 
@@ -498,7 +504,12 @@ def validate_alignment_report(path: Path) -> dict:
         and report.get("transform_only_alignment") is True
         and report.get("icp_used") is False
         and report.get("topology_uv_unchanged") is True
-        and report.get("fbx_readback", {}).get("pass") is True
+        and report.get("fbx_readback", {}).get("performed") is False
+        and report.get("fbx_readback", {}).get("status") == "skipped_by_user_policy"
+        and report.get("direction_review", {}).get("performed") is False
+        and report.get("topology_validation", {}).get("gate") == "no_broken_faces"
+        and report.get("topology_validation", {}).get("uv_policy") == "preserve_optional"
+        and report.get("uv_policy") == "preserve_optional"
     ):
         raise RuntimeError("RETOPOLOGY_COORDINATE_MISMATCH: finalization invariants failed")
     return report
@@ -819,126 +830,6 @@ def main() -> int:
         )
         return 3
 
-    shape_validation_path = aligned_dir / "bake_pair_validation.json"
-    shape_validation_command = [
-        blender,
-        "--background",
-        "--factory-startup",
-        "--disable-autoexec",
-        "--python-exit-code",
-        "1",
-        "--python",
-        str(installed_skill / "scripts" / "validate_bake_pair.py"),
-        "--",
-        "--high",
-        str(aligned_dir / "bake_high.fbx"),
-        "--low",
-        str(aligned_dir / "bake_low.fbx"),
-        "--report",
-        str(shape_validation_path),
-    ]
-    shape_code, shape_timed_out = run_logged(
-        shape_validation_command,
-        job_dir,
-        job_dir / "shape_validation_stdout.log",
-        job_dir / "shape_validation_stderr.log",
-        min(args.finalize_timeout_seconds, 600),
-    )
-
-    alignment_views_dir = aligned_dir / "alignment_views"
-    render_views_command = [
-        blender,
-        "--background",
-        "--factory-startup",
-        "--disable-autoexec",
-        "--python-exit-code",
-        "1",
-        "--python",
-        str(installed_skill / "scripts" / "render_alignment_views.py"),
-        "--",
-        "--blend",
-        str(aligned_dir / "bake_alignment.blend"),
-        "--output-dir",
-        str(alignment_views_dir),
-        "--resolution",
-        "384",
-    ]
-    views_code, views_timed_out = run_logged(
-        render_views_command,
-        job_dir,
-        job_dir / "alignment_views_stdout.log",
-        job_dir / "alignment_views_stderr.log",
-        min(args.finalize_timeout_seconds, 600),
-    )
-    expected_view_files = {
-        "front.png",
-        "back.png",
-        "left.png",
-        "right.png",
-        "top.png",
-        "bottom.png",
-        "perspective.png",
-        "views.json",
-    }
-    actual_view_files = (
-        {path.name for path in alignment_views_dir.iterdir() if path.is_file()}
-        if alignment_views_dir.is_dir()
-        else set()
-    )
-    views_valid = (
-        not views_timed_out
-        and views_code == 0
-        and expected_view_files.issubset(actual_view_files)
-        and all((alignment_views_dir / name).stat().st_size > 0 for name in expected_view_files)
-    )
-    views_archive = aligned_dir / "alignment_views.zip"
-    if views_valid:
-        shutil.make_archive(
-            str(views_archive.with_suffix("")),
-            "zip",
-            root_dir=alignment_views_dir,
-        )
-        views_valid = views_archive.is_file() and views_archive.stat().st_size > 0
-
-    shape_validation: dict = {}
-    if shape_validation_path.is_file():
-        try:
-            shape_validation = json.loads(shape_validation_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            shape_validation = {}
-    shape_valid = (
-        not shape_timed_out
-        and shape_code == 0
-        and shape_validation.get("pass") is True
-        and shape_validation.get("fbx_readback") is True
-    )
-    if not shape_valid or not views_valid:
-        failure = {
-            "shape_validation_passed": shape_valid,
-            "shape_validation_timed_out": shape_timed_out,
-            "shape_validation_returncode": shape_code,
-            "shape_validation": shape_validation,
-            "seven_view_evidence_passed": views_valid,
-            "seven_view_evidence_timed_out": views_timed_out,
-            "seven_view_evidence_returncode": views_code,
-            "expected_views": sorted(expected_view_files),
-            "actual_views": sorted(actual_view_files),
-        }
-        write_result(
-            result_path,
-            {
-                "job_id": job_id,
-                "status": "failed",
-                "error": "RETOPOLOGY_VISUAL_MISMATCH",
-                "detail": json.dumps(failure, ensure_ascii=False, sort_keys=True)[-12000:],
-                "alignment_report": str(alignment_report_path),
-                "shape_validation_report": str(shape_validation_path),
-                "alignment_views": str(alignment_views_dir),
-                "automatic_retry": False,
-            },
-        )
-        return 3
-
     if sha256(source) != sha256(input_copy):
         raise SystemExit("uploaded source copy hash mismatch")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -971,11 +862,11 @@ def main() -> int:
         "coordinate_authority": "high_object_matrix_world",
         "alignment_mode": alignment_report["alignment_mode"],
         "topology_uv_preserved": True,
-        "fbx_readback_passed": True,
-        "shape_proximity_validation_passed": True,
-        "shape_validation_report": str(sidecar_destination / "bake_pair_validation.json"),
-        "seven_view_evidence_generated": True,
-        "alignment_views_archive": str(sidecar_destination / "alignment_views.zip"),
+        "fbx_exported": True,
+        "fbx_readback_performed": False,
+        "direction_review_performed": False,
+        "topology_gate": "no_broken_faces",
+        "uv_policy": "preserve_optional",
         "low_display": "opaque_yellow",
         "automatic_post_generation_review": False,
         "automatic_retry": False,

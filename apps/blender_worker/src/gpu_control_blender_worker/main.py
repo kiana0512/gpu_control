@@ -1823,7 +1823,11 @@ def retopology_v3_delivery_evidence_failures(
         "coordinate_authority": "high_object_matrix_world",
         "alignment_mode": "source_matrix_restore",
         "topology_uv_preserved": True,
-        "fbx_readback_passed": True,
+        "fbx_exported": True,
+        "fbx_readback_performed": False,
+        "direction_review_performed": False,
+        "topology_gate": "no_broken_faces",
+        "uv_policy": "preserve_optional",
         "low_display": "opaque_yellow",
     }
     for field, expected in expected_result_fields.items():
@@ -1854,7 +1858,12 @@ def retopology_v3_delivery_evidence_failures(
             if bake_files.get(filename) != expected_digest:
                 failures.append(f"BAKE_DIGEST_MISMATCH:{filename}")
 
-    alignment_failures = retopology_auto_align_v3_evidence_failures(alignment_report)
+    alignment_failures = retopology_auto_align_v3_evidence_failures(
+        alignment_report,
+        require_fbx_readback=False,
+        require_uv=False,
+        strict_geometry=False,
+    )
     failures.extend(alignment_failures)
     reported_pairs = alignment_report.get("pairs") if isinstance(alignment_report, dict) else None
     if not isinstance(reported_pairs, list) or len(reported_pairs) != len(generation_assets):
@@ -2009,7 +2018,7 @@ async def run_retopology_v6(
             8,
             98,
             "RETOPOLOGY_DIRECT_V2_BUILD",
-            ("v3 正在一次生成低模并恢复高模原坐标；随后写出高低模 FBX 与回读证据"),
+            ("v3 正在生成无破面低模并恢复高模原坐标；随后直接写出高低模 FBX"),
             DIRECT_V2_ESTIMATED_STAGE_SECONDS,
             hard_timeout_seconds=settings.codex_job_timeout_seconds + 60,
         )
@@ -2059,8 +2068,6 @@ async def run_retopology_v6(
         "fbx": sidecar / "bake_low.fbx",
         "high_fbx": sidecar / "bake_high.fbx",
         "alignment_report": sidecar / "bake_alignment_report.json",
-        "shape_validation": sidecar / "bake_pair_validation.json",
-        "alignment_views": sidecar / "alignment_views.zip",
     }
     for kind, source in required_sidecars.items():
         if not source.is_file() or source.stat().st_size <= 0:
@@ -2071,12 +2078,7 @@ async def run_retopology_v6(
     bake_high_fbx = output_dir / "bake_high.fbx"
     bake_low_fbx = output_dir / "bake_low.fbx"
     alignment_report_path = output_dir / "bake_alignment_report.json"
-    shape_validation_path = output_dir / "bake_pair_validation.json"
-    alignment_views_path = output_dir / "alignment_views.zip"
     alignment_report = json.loads(alignment_report_path.read_text("utf-8"))
-    shape_validation = json.loads(shape_validation_path.read_text("utf-8"))
-    if shape_validation.get("pass") is not True:
-        raise RuntimeError("RETOPOLOGY_VISUAL_MISMATCH: bake pair shape validation failed")
     bake_files = result.get("bake_files")
     expected_bake_files = {path.name: file_sha256(path) for path in required_sidecars.values()}
     evidence_failures = retopology_v3_delivery_evidence_failures(
@@ -2119,7 +2121,7 @@ async def run_retopology_v6(
     bake_high_fbx_sha256 = file_sha256(bake_high_fbx)
     bake_low_fbx_sha256 = file_sha256(bake_low_fbx)
     delivery_manifest = {
-        "schema_version": "retopology_direct_delivery.v7",
+        "schema_version": "retopology_direct_delivery.v8",
         "job_id": job_id,
         "engine_contract": "retopology-direct-v2",
         "package_version": RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION,
@@ -2140,14 +2142,16 @@ async def run_retopology_v6(
         "source_manifest_sha256": file_sha256(source_manifest_path),
         "low_objects": low_objects,
         "bake_alignment": alignment_report,
-        "shape_validation": shape_validation,
-        "shape_validation_sha256": file_sha256(shape_validation_path),
-        "alignment_views_sha256": file_sha256(alignment_views_path),
         "status": "generated_for_user_inspection_aligned",
         "coordinate_authority": "high_object_matrix_world",
         "alignment_mode": "source_matrix_restore",
         "topology_uv_preserved": True,
-        "fbx_reimport_passed": True,
+        "topology_gate": "no_broken_faces",
+        "uv_policy": "preserve_optional",
+        "fbx_reimport_performed": False,
+        "fbx_reimport_status": "skipped_by_user_policy",
+        "direction_review_performed": False,
+        "direction_review_status": "skipped_by_user_policy",
         "automatic_post_generation_review": False,
         "automatic_retry": False,
     }
@@ -2161,8 +2165,6 @@ async def run_retopology_v6(
         "fbx": bake_low_fbx.name,
         "high_fbx": bake_high_fbx.name,
         "alignment_report": alignment_report_path.name,
-        "shape_validation": shape_validation_path.name,
-        "alignment_views": alignment_views_path.name,
         "generation_report": "generation_report.json",
         "delivery_manifest": "delivery_manifest.json",
         "result": "result.json",
