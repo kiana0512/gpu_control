@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-08-12 — Automatic retopology one-pass plan guard v3.0.15
+
+- Keep the v3.0.14 Codex generated-low fast path and correct its remaining live bottleneck: the
+  task prompt now provides the exact plan-guard field names, enum values, evidence linkage and
+  ordinary-Python invocation instead of leaving Codex to infer them.
+- Run the generated-low shape-authority guard at most once per Codex turn. A malformed plan now
+  fails explicitly instead of spending multiple model turns reading guard diagnostics and rewriting
+  the same JSON.
+- Keep topology construction, the Codex model, source-coordinate restoration, no-broken-face gate,
+  optional preserved-UV policy and published artifacts unchanged.
+- Release Asset API `1.6.37-retopo-plan-once-v2`, Blender Worker
+  `1.4.37-retopo-plan-once-v2`, and retopology package v3.0.15.
+
 ## 2026-08-12 — Automatic retopology Codex fast path v3.0.14
 
 - Keep the full trained skill package and all reference files hash-verified, while routing routine

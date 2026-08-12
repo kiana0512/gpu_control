@@ -108,7 +108,8 @@ def attempt_guidance(attempt_number: int) -> str:
         "这是唯一一次有界重试；前一候选未通过拓扑或形体门禁，禁止原样重复低密度语义代理。"
         "先重新读取 source-manifest.json 的 source_topology。若计划 guard 允许全物体受控降面，"
         "优先从未修改的 SOURCE_HIGH 新副本执行 controlled_direct_reduction，保留足够密度使三轴"
-        "尺寸与主要轮廓来自高模本身，再执行本包规定的闭合收尾与 UV；绝不直接降面 SOURCE_HIGH。"
+        "尺寸与主要轮廓来自高模本身，再执行本包规定的无破面收尾并保持 UV 原样；"
+        "绝不直接降面 SOURCE_HIGH。"
         "若 guard 不允许全物体降面，则必须改用按实测截面重建的 per_component_hybrid，"
         "不得再次使用会改变整体尺寸、把手/附件位置或外轮廓的简化代理。"
     )
