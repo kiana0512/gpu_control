@@ -14,6 +14,7 @@ services:
       - ${MODELVIEW_ROOT:-/opt/modelviewcreator}/model:/opt/modelviewcreator/model:ro
       - ../../configs/comfyui-extra-model-paths.yaml:/opt/comfyui/extra_model_paths.yaml:ro
       - ${IMAGECLIP_ROOT:-/opt/imageclip}/Cherry_lizi:/opt/comfyui/custom_nodes/Cherry_lizi:ro
+      - ${IMAGECLIP_ROOT:-/opt/imageclip}/ComfyLiterals:/opt/comfyui/custom_nodes/ComfyLiterals:ro
       - ${MODELVIEW_ROOT:-/opt/modelviewcreator}/custom_nodes/haoze-LiClick:/opt/comfyui/custom_nodes/haoze-LiClick:ro
       - /srv/comfyui/runtime/input:/opt/comfyui/input
       - /srv/comfyui/runtime/output:/opt/comfyui/output

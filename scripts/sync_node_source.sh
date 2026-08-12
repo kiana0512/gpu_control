@@ -69,6 +69,7 @@ ssh "${ssh_options[@]}" "${user}@${host}" \
 
 files=(
   deploy/gpu-node/compose.yaml
+  deploy/gpu-node/compose.wsl.yaml
   scripts/deploy_node.sh
   scripts/verify_comfy_projects.sh
   docker/comfyui/custom_nodes.lock.yaml

@@ -53,11 +53,23 @@ const metrics = computed(() => [
     hint: "当前队列最长等待",
   },
 ]);
-const connectedNodes = computed(() =>
-  store.nodes.filter(
-    (node) => node.last_heartbeat_at || node.health !== "OFFLINE",
-  ),
-);
+const connectedNodes = computed(() => {
+  const order = [
+    "control-4090",
+    "worker-3090-a",
+    "worker-3090-b",
+    "worker-4070ti-animation-host-01",
+  ];
+  return [...store.nodes].sort((left, right) => {
+    const leftIndex = order.indexOf(left.id);
+    const rightIndex = order.indexOf(right.id);
+    return (
+      (leftIndex === -1 ? order.length : leftIndex) -
+        (rightIndex === -1 ? order.length : rightIndex) ||
+      left.display_name.localeCompare(right.display_name, "zh-CN")
+    );
+  });
+});
 const assetActive = computed(() => {
   const counts = assetOverview.value?.summary.counts ?? {};
   return (counts.QUEUED ?? 0) + (counts.CLAIMED ?? 0) + (counts.RUNNING ?? 0);

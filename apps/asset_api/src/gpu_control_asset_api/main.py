@@ -74,6 +74,7 @@ from packages.gpu_control_core.retopology_v6 import (
     verify_runtime_resources,
 )
 from packages.gpu_control_core.scheduling import (
+    GPU_SPECIALIZATION_LABEL,
     SUBSTANCE_DRAIN_OWNER,
     SUBSTANCE_DRAIN_OWNER_LABEL,
     SUBSTANCE_FENCE_LABEL,
@@ -82,9 +83,12 @@ from packages.gpu_control_core.scheduling import (
     SUBSTANCE_MAX_PARALLEL,
     SUBSTANCE_PENDING_RESERVATION_LABEL,
     SUBSTANCE_RECOVERY_REQUIRED_LABEL,
+    SUBSTANCE_SPECIALIZATION_KEY,
     SUBSTANCE_WORKER_ID,
     SUBSTANCE_WORKER_ID_PREFIX,
+    gpu_specialization,
     linux_asset_claim_allowed,
+    refresh_gpu_specialization,
     substance_fence_job_ids,
     substance_pending_reservation,
 )
@@ -215,7 +219,7 @@ def fsync_completion_staging(staging: Path) -> None:
 
 
 SUBSTANCE_VERSION = "substance-15.1.0"
-SUBSTANCE_SKILL_VERSION = "substance-baker-2026.08.03-v6"
+SUBSTANCE_SKILL_VERSION = "substance-baker-2026.08.12-v7"
 RETOPOLOGY_AUDIT_ARTIFACTS = {
     "audit": ("retopology_audit.json", "application/json"),
     "manifest": ("retopology_manifest.json", "application/json"),
@@ -435,7 +439,15 @@ def expire_substance_pending_reservation(node: Node, now: datetime) -> None:
         labels.pop(SUBSTANCE_PENDING_RESERVATION_LABEL, None)
     fenced_job_ids = substance_fence_job_ids(labels)
     recovery_required = bool(labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL))
-    if not fenced_job_ids and not pending_ids and not recovery_required:
+    specialization, _ = gpu_specialization(labels, now)
+    if specialization is None:
+        labels.pop(GPU_SPECIALIZATION_LABEL, None)
+    if (
+        not fenced_job_ids
+        and not pending_ids
+        and not recovery_required
+        and specialization != SUBSTANCE_SPECIALIZATION_KEY
+    ):
         owned = labels.get(SUBSTANCE_DRAIN_OWNER_LABEL) == SUBSTANCE_DRAIN_OWNER
         if owned:
             labels.pop(SUBSTANCE_DRAIN_OWNER_LABEL, None)
@@ -532,7 +544,10 @@ async def reconcile_substance_gpu_reservation(
         # The fence is a hard scheduling interlock, but it is not proof that
         # Asset API owns an administrative DISABLED/RESERVED/non-owner drain.
         ensure_substance_owned_drain(node, labels)
-    elif not pending_job_ids:
+    elif (
+        not pending_job_ids
+        and gpu_specialization(labels, current)[0] != SUBSTANCE_SPECIALIZATION_KEY
+    ):
         owned = labels.get(SUBSTANCE_DRAIN_OWNER_LABEL) == SUBSTANCE_DRAIN_OWNER
         if owned:
             labels.pop(SUBSTANCE_DRAIN_OWNER_LABEL, None)
@@ -1839,6 +1854,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.add(job)
             await db.flush()
             if substance_node is not None:
+                # Every production bake arrival renews the 3090-B GPU-only
+                # hold. A sustained backlog therefore keeps the window alive;
+                # Linux CPU topology/UV claims use a separate gate.
+                refresh_gpu_specialization(
+                    substance_node,
+                    SUBSTANCE_SPECIALIZATION_KEY,
+                    datetime.now(UTC),
+                    owner=SUBSTANCE_DRAIN_OWNER,
+                )
                 await reconcile_substance_gpu_reservation(
                     db,
                     substance_node,

@@ -30,6 +30,8 @@ def test_control_env_generator_produces_consistent_ready_to_copy_files(tmp_path:
             "10.20.0.11",
             "--worker-b-ip",
             "10.20.0.12",
+            "--worker-4070ti-ip",
+            "10.20.0.13",
             "--output",
             str(control),
             "--bundle-dir",
@@ -51,13 +53,27 @@ def test_control_env_generator_produces_consistent_ready_to_copy_files(tmp_path:
     assert all("CHANGE_ME" not in value for value in values.values())
     worker_a = parse_env(bundle / "worker-3090-a.env")
     worker_b = parse_env(bundle / "worker-3090-b.env")
+    worker_4070ti = parse_env(bundle / "worker-4070ti-animation-host-01.env")
     assert worker_a["NODE_ID"] == "worker-3090-a"
     assert worker_b["NODE_ID"] == "worker-3090-b"
+    assert worker_4070ti["NODE_ID"] == "worker-4070ti-animation-host-01"
     assert worker_a["NODE_BIND_IP"] == "0.0.0.0"  # noqa: S104
     assert worker_a["NODE_ADVERTISE_IP"] == "10.20.0.11"
     assert worker_b["NODE_ADVERTISE_IP"] == "10.20.0.12"
+    assert worker_4070ti["NODE_ADVERTISE_IP"] == "10.20.0.13"
+    assert worker_4070ti["NODE_MAC_ADDRESS"] == "34:5a:60:47:c6:1d"
     assert worker_a["NODE_AGENT_HMAC_SECRET"] != worker_b["NODE_AGENT_HMAC_SECRET"]
-    assert len(load_inventory(inventory)) == 3
+    assert worker_4070ti["NODE_AGENT_HMAC_SECRET"] not in {
+        worker_a["NODE_AGENT_HMAC_SECRET"],
+        worker_b["NODE_AGENT_HMAC_SECRET"],
+    }
+    generated_nodes = load_inventory(inventory)
+    assert len(generated_nodes) == 4
+    generated_4070ti = next(
+        node for node in generated_nodes if node["id"] == "worker-4070ti-animation-host-01"
+    )
+    assert generated_4070ti["mode"] == "DRAINING"
+    assert generated_4070ti["wsl_runtime"] is True
     rendered_prometheus = prometheus.read_text(encoding="utf-8")
     assert "http_sd_configs" in rendered_prometheus
     assert "http://api:8000/internal/prometheus/workers" in rendered_prometheus

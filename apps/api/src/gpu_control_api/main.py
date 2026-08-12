@@ -88,6 +88,10 @@ from packages.gpu_control_core.models import (
 )
 from packages.gpu_control_core.repository import ACTIVE_STATUSES, transition_job
 from packages.gpu_control_core.scheduling import (
+    IMAGECLIP_INPAINT_PREEMPTION_CODE,
+    IMAGECLIP_WORKFLOW_KEY,
+    MODELVIEW_INPAINT_NODE_ID,
+    MODELVIEW_INPAINT_WORKFLOW_KEY,
     SUBSTANCE_DRAIN_OWNER,
     SUBSTANCE_DRAIN_OWNER_LABEL,
     SUBSTANCE_GPU_NODE_ID,
@@ -96,6 +100,7 @@ from packages.gpu_control_core.scheduling import (
     SUBSTANCE_WORKER_ID,
     SUBSTANCE_WORKER_ID_PREFIX,
     linux_asset_claim_allowed,
+    refresh_gpu_specialization,
     substance_fence_job_ids,
     substance_pending_reservation,
 )
@@ -1313,6 +1318,44 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         )
         db.add(job)
         await db.flush()
+        if workflow_key == MODELVIEW_INPAINT_WORKFLOW_KEY and not is_load_test:
+            # The arrival itself renews 4070Ti's guaranteed response lane.
+            # This does not pin the job: all four compatible idle GPUs may
+            # still claim inpaint work in parallel.
+            inpaint_guard_node = await db.scalar(
+                select(Node)
+                .where(Node.id == MODELVIEW_INPAINT_NODE_ID)
+                .with_for_update()
+            )
+            if inpaint_guard_node is not None:
+                refresh_gpu_specialization(
+                    inpaint_guard_node,
+                    MODELVIEW_INPAINT_WORKFLOW_KEY,
+                    job_now,
+                    owner="gpu-api",
+                )
+                active_imageclip = await db.scalar(
+                    select(Job)
+                    .where(
+                        Job.node_id == MODELVIEW_INPAINT_NODE_ID,
+                        Job.workflow_key == IMAGECLIP_WORKFLOW_KEY,
+                        Job.status.in_(
+                            {
+                                JobStatus.CLAIMED.value,
+                                JobStatus.UPLOADING.value,
+                                JobStatus.SUBMITTED.value,
+                                JobStatus.RUNNING.value,
+                            }
+                        ),
+                    )
+                    .order_by(Job.claimed_at, Job.id)
+                    .with_for_update()
+                )
+                if active_imageclip is not None:
+                    active_imageclip.error_code = IMAGECLIP_INPAINT_PREEMPTION_CODE
+                    active_imageclip.error_message = (
+                        "4070Ti 局部重绘优先：当前抠图执行尝试将安全中断并改派其他 GPU"
+                    )
         await transition_job(db, job, JobStatus.VALIDATING, "api.validated")
         await transition_job(db, job, JobStatus.QUEUED, "api.queued")
         if idempotency_key:
@@ -3746,7 +3789,10 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "roughness": {
                     "submit": "/api/v1/services/modelview-roughness",
                     "format": "multipart image",
-                    "runtime": "GPU: control-4090 / worker-3090-a / worker-3090-b",
+                    "runtime": (
+                        "GPU: control-4090 / worker-3090-a / worker-3090-b / "
+                        "worker-4070ti-animation-host-01"
+                    ),
                     "response": "final image/png",
                 },
                 "substance_bake": {

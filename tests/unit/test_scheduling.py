@@ -3,6 +3,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from packages.gpu_control_core.scheduling import (
+    GPU_CACHE_DRAIN_FAILED_LABEL,
+    GPU_SPECIALIZATION_LABEL,
+    MODELVIEW_INPAINT_WORKFLOW_KEY,
     SUBSTANCE_DRAIN_OWNER,
     SUBSTANCE_DRAIN_OWNER_LABEL,
     SUBSTANCE_FENCE_LABEL,
@@ -10,7 +13,11 @@ from packages.gpu_control_core.scheduling import (
     SUBSTANCE_RECOVERY_REQUIRED_LABEL,
     OverflowGuard,
     QueueSnapshot,
+    SUBSTANCE_SPECIALIZATION_KEY,
     choose_node,
+    gpu_specialization,
+    linux_asset_claim_allowed,
+    refresh_gpu_specialization,
 )
 from packages.gpu_control_core.settings import Settings
 
@@ -129,6 +136,91 @@ def test_drain_foreign_queue_and_expired_heartbeat_block_node(tmp_path: Path) ->
         "3090-b": "foreign_comfy_queue",
         "4090": "heartbeat_expired",
     }
+
+
+def test_gpu_specialization_refreshes_to_exact_hard_expiry() -> None:
+    now = datetime.now(UTC)
+    node = FakeNode(
+        "worker-4070ti-animation-host-01",
+        "PRIMARY",
+        "ACTIVE",
+        last_heartbeat_at=now,
+    )
+    first_expiry = refresh_gpu_specialization(
+        node,
+        MODELVIEW_INPAINT_WORKFLOW_KEY,
+        now,
+        owner="gpu-api",
+    )
+    assert first_expiry == now + timedelta(minutes=15)
+    assert gpu_specialization(node.labels, now) == (
+        MODELVIEW_INPAINT_WORKFLOW_KEY,
+        first_expiry,
+    )
+    assert gpu_specialization(node.labels, first_expiry) == (None, first_expiry)
+
+    refreshed_at = now + timedelta(minutes=10)
+    second_expiry = refresh_gpu_specialization(
+        node,
+        MODELVIEW_INPAINT_WORKFLOW_KEY,
+        refreshed_at,
+        owner="gpu-api",
+    )
+    assert second_expiry == refreshed_at + timedelta(minutes=15)
+    assert second_expiry > first_expiry
+
+
+def test_substance_specialization_blocks_only_gpu_and_hard_expires(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(UTC)
+    node = FakeNode(
+        "worker-3090-b",
+        "PRIMARY",
+        "DRAINING",
+        last_heartbeat_at=now,
+        labels={SUBSTANCE_DRAIN_OWNER_LABEL: SUBSTANCE_DRAIN_OWNER},
+    )
+    refresh_gpu_specialization(
+        node,
+        SUBSTANCE_SPECIALIZATION_KEY,
+        now,
+        owner=SUBSTANCE_DRAIN_OWNER,
+    )
+    chosen, excluded = choose_node(
+        [node], QueueSnapshot(1, 0), guard(tmp_path), 20, now
+    )
+    assert chosen is None
+    assert excluded[node.id] == "substance_specialization"
+    assert linux_asset_claim_allowed(node, now)
+
+    after_expiry = now + timedelta(minutes=15, seconds=1)
+    node.last_heartbeat_at = after_expiry
+    chosen, excluded = choose_node(
+        [node],
+        QueueSnapshot(1, 0),
+        guard(tmp_path),
+        20,
+        after_expiry,
+    )
+    assert chosen is node
+    assert excluded == {}
+
+
+def test_cache_drain_failure_is_a_hard_gpu_interlock(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    node = FakeNode("4070", "PRIMARY", "ACTIVE", last_heartbeat_at=now)
+    node.labels = {
+        GPU_CACHE_DRAIN_FAILED_LABEL: {
+            "observed_at": now.isoformat(),
+            "message": "unsafe VRAM recovery",
+        }
+    }
+    chosen, excluded = choose_node(
+        [node], QueueSnapshot(1, 0), guard(tmp_path), 20, now
+    )
+    assert chosen is None
+    assert excluded[node.id] == "gpu_cache_drain_failed"
 
 
 def test_pending_substance_reservation_blocks_until_its_deadline(tmp_path: Path) -> None:

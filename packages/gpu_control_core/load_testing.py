@@ -2210,7 +2210,7 @@ class RuntimeSettings:
                 for target, component, container_name, _ in LOAD_LIVE_DEPLOYMENT_TARGETS
             },
             "substance_agent": {
-                "skill_version": "substance-baker-2026.08.03-v6",
+                "skill_version": "substance-baker-2026.08.12-v7",
                 "installed_path": (
                     "D:\\GPUControl\\agent\\Invoke-GPUControlSubstanceAgent.ps1"
                 ),

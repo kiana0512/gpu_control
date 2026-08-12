@@ -133,7 +133,7 @@ services:
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
       sbom: true
       provenance: mode=max
-    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-scheduler:${APP_IMAGE_TAG:-1.5.12}
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-scheduler:${SCHEDULER_IMAGE_TAG:-1.5.12}
     volumes:
       - ${JOB_ROOT:-/srv/gpu-control/jobs}:/srv/gpu-control/jobs
       - /run/gpu-control:/run/gpu-control:ro
@@ -256,15 +256,18 @@ services:
     networks: [backend]
 
   comfyui-4090:
+    container_name: comfyui-4090
     image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:projects-0.2.3}
     profiles: ["4090-gpu"]
     restart: unless-stopped
+    ports: ["8188:8188"]
     deploy: {resources: {reservations: {devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]}}}
     volumes:
       - ${MODEL_ROOT:-/opt/imageclip/models}:/opt/comfyui/models:ro
       - ${MODELVIEW_ROOT:-/opt/modelviewcreator}/model:/opt/modelviewcreator/model:ro
       - ../../configs/comfyui-extra-model-paths.yaml:/opt/comfyui/extra_model_paths.yaml:ro
       - ${IMAGECLIP_ROOT:-/opt/imageclip}/Cherry_lizi:/opt/comfyui/custom_nodes/Cherry_lizi:ro
+      - ${IMAGECLIP_ROOT:-/opt/imageclip}/ComfyLiterals:/opt/comfyui/custom_nodes/ComfyLiterals:ro
       - ${MODELVIEW_ROOT:-/opt/modelviewcreator}/custom_nodes/haoze-LiClick:/opt/comfyui/custom_nodes/haoze-LiClick:ro
       - /srv/comfyui/4090/input:/opt/comfyui/input
       - /srv/comfyui/4090/output:/opt/comfyui/output

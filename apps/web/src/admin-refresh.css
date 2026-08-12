@@ -2216,6 +2216,36 @@ pre button {
   display: grid;
   gap: 14px;
 }
+.gpu-specialization-guide {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 16px;
+  border: 1px solid rgba(153, 77, 239, 0.3);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(153, 77, 239, 0.1), rgba(37, 212, 163, 0.04));
+}
+.gpu-specialization-guide > div {
+  display: grid;
+  gap: 5px;
+}
+.gpu-specialization-guide strong {
+  color: #ead9ff;
+  font-size: 13px;
+}
+.gpu-specialization-guide span,
+.gpu-specialization-guide p {
+  color: #98a1b3;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.gpu-specialization-guide p {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid rgba(153, 77, 239, 0.2);
+}
 .node-card {
   position: relative;
   display: grid;
@@ -2235,6 +2265,10 @@ pre button {
   border-left-color: #4a5262;
   background: #10131c;
   opacity: 0.72;
+}
+.node-card.degraded {
+  border-left-color: #f5b24b;
+  opacity: 1;
 }
 .node-identity {
   display: flex;
@@ -2309,6 +2343,9 @@ pre button {
   border: 0;
   white-space: nowrap;
 }
+.node-card .offline-node-note.degraded {
+  color: #f5c273;
+}
 .node-card .status-mark {
   font-size: 13px;
 }
@@ -2327,6 +2364,48 @@ pre button {
   gap: 22px;
   min-height: 112px;
   padding: 20px 22px;
+}
+.node-policy-strip {
+  display: grid;
+  grid-template-columns: minmax(230px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 10px 22px;
+  border-top: 1px solid var(--line);
+  color: #8f99ab;
+  background: rgba(5, 9, 17, 0.3);
+  font-size: 11px;
+}
+.node-policy-strip strong {
+  color: #cbd2df;
+  font-size: 12px;
+}
+.node-policy-strip small {
+  color: #747e91;
+}
+.node-policy-strip.specialist.inpaint {
+  background: rgba(153, 77, 239, 0.1);
+}
+.node-policy-strip.specialist.inpaint strong {
+  color: #d9b4ff;
+}
+.node-policy-strip.specialist.bake {
+  background: rgba(245, 178, 75, 0.09);
+}
+.node-policy-strip.specialist.bake strong {
+  color: #f6c16d;
+}
+@media (max-width: 1100px) {
+  .gpu-specialization-guide {
+    grid-template-columns: 1fr;
+  }
+  .gpu-specialization-guide p {
+    grid-column: 1;
+  }
+  .node-policy-strip {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
 }
 .node-runtime-strip {
   display: grid;

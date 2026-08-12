@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -16,6 +16,14 @@ SUBSTANCE_GPU_NODE_ID = "worker-3090-b"
 SUBSTANCE_WORKER_ID = "asset-worker-3090-b-windows"
 SUBSTANCE_WORKER_ID_PREFIX = f"{SUBSTANCE_WORKER_ID}-"
 SUBSTANCE_MAX_PARALLEL = 4
+SPECIALIZED_GPU_HOLD_SECONDS = 15 * 60
+GPU_SPECIALIZATION_LABEL = "gpu_specialization"
+GPU_CACHE_DRAIN_FAILED_LABEL = "gpu_cache_drain_failed"
+MODELVIEW_INPAINT_NODE_ID = "worker-4070ti-animation-host-01"
+MODELVIEW_INPAINT_WORKFLOW_KEY = "modelview-inpaint"
+IMAGECLIP_WORKFLOW_KEY = "imageclip-rgba"
+IMAGECLIP_INPAINT_PREEMPTION_CODE = "IMAGECLIP_PREEMPTED_FOR_INPAINT"
+SUBSTANCE_SPECIALIZATION_KEY = "substance-bake"
 
 
 class NodeLike(Protocol):
@@ -106,6 +114,62 @@ def substance_pending_reservation(
     return job_ids, expires_at
 
 
+def gpu_specialization(
+    labels: object, now: datetime
+) -> tuple[str | None, datetime | None]:
+    """Return one live GPU specialization and its UTC expiry.
+
+    Invalid or expired labels are treated as inactive. Callers that already
+    hold the Node row lock may remove the stale label, but read-only ranking
+    never mutates ORM state.
+    """
+
+    if not isinstance(labels, dict):
+        return None, None
+    raw = labels.get(GPU_SPECIALIZATION_LABEL)
+    if not isinstance(raw, dict):
+        return None, None
+    key = raw.get("key")
+    raw_expiry = raw.get("expires_at")
+    if not isinstance(key, str) or not key or not isinstance(raw_expiry, str):
+        return None, None
+    try:
+        expires_at = datetime.fromisoformat(raw_expiry.replace("Z", "+00:00"))
+    except ValueError:
+        return None, None
+    expires_at = (
+        expires_at.replace(tzinfo=UTC)
+        if expires_at.tzinfo is None
+        else expires_at.astimezone(UTC)
+    )
+    current = now if now.tzinfo else now.replace(tzinfo=UTC)
+    if expires_at <= current:
+        return None, expires_at
+    return key, expires_at
+
+
+def refresh_gpu_specialization(
+    node: NodeLike,
+    key: str,
+    now: datetime,
+    *,
+    owner: str,
+) -> datetime:
+    """Start or refresh the fixed 15-minute specialized-GPU window."""
+
+    current = now if now.tzinfo else now.replace(tzinfo=UTC)
+    expires_at = current + timedelta(seconds=SPECIALIZED_GPU_HOLD_SECONDS)
+    labels = dict(getattr(node, "labels", {}) or {})
+    labels[GPU_SPECIALIZATION_LABEL] = {
+        "key": key,
+        "owner": owner,
+        "started_at": current.isoformat(),
+        "expires_at": expires_at.isoformat(),
+    }
+    node.labels = labels
+    return expires_at
+
+
 def substance_owned_drain_is_expired(node: NodeLike, now: datetime) -> bool:
     """Treat only an expired Asset API-owned drain as schedulable again."""
     labels = getattr(node, "labels", {})
@@ -119,7 +183,8 @@ def substance_owned_drain_is_expired(node: NodeLike, now: datetime) -> bool:
     if substance_fence_job_ids(labels):
         return False
     pending_ids, _ = substance_pending_reservation(labels, now)
-    return not pending_ids
+    specialization, _ = gpu_specialization(labels, now)
+    return not pending_ids and specialization != SUBSTANCE_SPECIALIZATION_KEY
 
 
 def linux_asset_claim_allowed(
@@ -149,16 +214,20 @@ def linux_asset_claim_allowed(
     ):
         return False
     pending_ids, _ = substance_pending_reservation(labels, now)
+    specialization, _ = gpu_specialization(labels, now)
     return bool(
         pending_ids
         or substance_fence_job_ids(labels)
         or labels.get(SUBSTANCE_RECOVERY_REQUIRED_LABEL)
+        or specialization == SUBSTANCE_SPECIALIZATION_KEY
     )
 
 
 def base_exclusion(node: NodeLike, now: datetime, heartbeat_timeout_seconds: int) -> str | None:
     labels = getattr(node, "labels", {})
     if isinstance(labels, dict):
+        if labels.get(GPU_CACHE_DRAIN_FAILED_LABEL):
+            return "gpu_cache_drain_failed"
         # Substance's physical-GPU interlocks are authoritative even if an
         # administrator (or another control-plane writer) changes the mode
         # back to ACTIVE.  Mode is presentation/administrative state; these
@@ -170,6 +239,9 @@ def base_exclusion(node: NodeLike, now: datetime, heartbeat_timeout_seconds: int
         pending_ids, _ = substance_pending_reservation(labels, now)
         if pending_ids:
             return "substance_reserved"
+        specialization, _ = gpu_specialization(labels, now)
+        if specialization == SUBSTANCE_SPECIALIZATION_KEY:
+            return "substance_specialization"
     effective_mode = node.mode
     if node.mode == NodeMode.DRAINING.value and substance_owned_drain_is_expired(node, now):
         effective_mode = NodeMode.ACTIVE.value

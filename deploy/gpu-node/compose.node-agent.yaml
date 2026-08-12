@@ -1,0 +1,55 @@
+services:
+  node-agent:
+    image: gpu-control-node-agent:${NODE_AGENT_IMAGE_TAG:-1.5.12-4070-canary-v1}
+    build:
+      context: ../..
+      dockerfile: apps/node_agent/Dockerfile
+      args:
+        GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.12}
+        GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      ENVIRONMENT: production
+      NODE_AGENT_HOST: 0.0.0.0
+      NODE_AGENT_PORT: ${NODE_AGENT_PORT:-9201}
+      NODE_AGENT_HMAC_SECRET: ${NODE_AGENT_HMAC_SECRET}
+      NODE_ID: ${NODE_ID}
+      CONTROL_HOST: ${CONTROL_HOST}
+      NODE_ADVERTISE_IP: ${NODE_ADVERTISE_IP}
+      NODE_MAC_ADDRESS: ${NODE_MAC_ADDRESS}
+      NODE_HEARTBEAT_INTERVAL_SECONDS: ${NODE_HEARTBEAT_INTERVAL_SECONDS:-5}
+      NODE_CONTROL_CA_CERT: /run/certs/lan-ca.crt
+      IMAGECLIP_ROOT: /opt/imageclip
+      CODEX_BINARY: /usr/local/bin/codex
+      # The container canary is built from the live integration worktree, not
+      # the released Asset Worker revision. Never make its heartbeat claim the
+      # Asset Worker commit merely because both services share one env file.
+      GPU_CONTROL_REVISION: ${NODE_AGENT_REVISION:-unknown}
+    volumes:
+      - ${IMAGECLIP_ROOT:-/opt/imageclip}:/opt/imageclip:ro
+      - ${LAN_CA_PATH}:/run/certs/lan-ca.crt:ro
+      - ${CODEX_BINARY_PATH}:/usr/local/bin/codex:ro
+      - ../../scripts/gpu-node-ctl:/usr/local/sbin/gpu-node-ctl:ro
+      - /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:9201/health/ready',timeout=2)
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

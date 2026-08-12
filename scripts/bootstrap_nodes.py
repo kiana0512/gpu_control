@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply the reviewed three-node inventory to PostgreSQL after migration."""
+"""Apply the reviewed four-node inventory to PostgreSQL after migration."""
 
 import argparse
 import asyncio
@@ -15,7 +15,12 @@ from packages.gpu_control_core.settings import get_settings
 
 POOLS = {"PRIMARY", "OVERFLOW"}
 MODES = {"ACTIVE", "RESERVED", "OVERFLOW", "DRAINING", "DISABLED"}
-EXPECTED_IDS = {"worker-3090-a", "worker-3090-b", "control-4090"}
+EXPECTED_IDS = {
+    "worker-3090-a",
+    "worker-3090-b",
+    "worker-4070ti-animation-host-01",
+    "control-4090",
+}
 
 
 def load_inventory(path: Path) -> list[dict[str, Any]]:
@@ -67,6 +72,9 @@ async def apply(path: Path) -> None:
                 if item.get(identity_field):
                     value = str(item[identity_field])
                     labels[identity_field] = value.lower() if identity_field == "mac" else value
+            for label_field in ("wsl_runtime", "dcgm_exporter_enabled", "vram_class"):
+                if label_field in item:
+                    labels[label_field] = item[label_field]
             node.labels = labels
             node.approved_at = node.approved_at or datetime.now(UTC)
         await session.commit()
@@ -75,7 +83,7 @@ async def apply(path: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="应用经过审核的三节点清单")
+    parser = argparse.ArgumentParser(description="应用经过审核的四节点清单")
     parser.add_argument("--config", type=Path, required=True)
     args = parser.parse_args()
     asyncio.run(apply(args.config.resolve()))

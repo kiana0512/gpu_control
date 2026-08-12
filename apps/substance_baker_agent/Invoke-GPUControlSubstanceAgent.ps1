@@ -122,7 +122,7 @@ function Send-Heartbeat {
     $payload = [ordered]@{
         worker_id = $WorkerId; node_id = $NodeId
         display_name = ('3090-B Windows Substance Baker #{0:D2}' -f $InstanceId); hostname = $env:COMPUTERNAME
-        blender_version = 'substance-15.1.0'; skill_version = 'substance-baker-2026.08.03-v6'
+        blender_version = 'substance-15.1.0'; skill_version = 'substance-baker-2026.08.12-v7'
         cpu_count = [Environment]::ProcessorCount; max_concurrency = 1
         current_jobs = $script:CurrentJobs; load_1m = 0; available_memory_mb = $availableMb
         agent_instance_id = $AgentInstanceId; agent_started_at = $AgentStartedAt
@@ -135,9 +135,8 @@ function Send-Heartbeat {
 
 function Assert-ComfyUiProcessStable([string]$ExpectedIdentity = '') {
     # The control plane has already drained 3090-B and waited for its current
-    # prompt to finish before a Baker can claim.  Keep the idle ComfyUI process
-    # alive, request no model eviction, and preserve the opportunity to reuse
-    # its hot cache. Actual VRAM residency is verified by the next real job.
+    # prompt to finish before a Baker can claim. Keep the healthy container
+    # process alive so cache eviction never masquerades as a service restart.
     $probeLines = @(& $WslExe -d $WslDistribution -u gpucontrol -- $WslDockerExe inspect `
         --format '{{.Id}}~{{.State.StartedAt}}~{{.RestartCount}}~{{.State.Status}}~{{.State.Health.Status}}' `
         $WslComfyContainer 2>$null | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ })
@@ -155,11 +154,68 @@ function Assert-ComfyUiProcessStable([string]$ExpectedIdentity = '') {
     return $identityToken
 }
 
+function Clear-ComfyUiModelsForBaker([string]$ExpectedIdentity) {
+    $python = @'
+import json
+import urllib.request
+
+base = "http://127.0.0.1:8188"
+with urllib.request.urlopen(base + "/queue", timeout=5) as response:
+    queue = json.load(response)
+running = queue.get("queue_running", [])
+pending = queue.get("queue_pending", [])
+if running or pending:
+    raise SystemExit("COMFY_QUEUE_NOT_EMPTY")
+request = urllib.request.Request(
+    base + "/free",
+    data=json.dumps({"unload_models": True, "free_memory": True}).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+with urllib.request.urlopen(request, timeout=10) as response:
+    response.read()
+with urllib.request.urlopen(base + "/system_stats", timeout=5) as response:
+    stats = json.load(response)
+devices = stats.get("devices") or []
+if not devices:
+    raise SystemExit("COMFY_VRAM_EVIDENCE_MISSING")
+total_mb = float(devices[0].get("vram_total", 0)) / 1048576
+free_mb = float(devices[0].get("vram_free", 0)) / 1048576
+ratio = free_mb / total_mb if total_mb > 0 else 0
+if free_mb < 6144 or ratio < 0.60:
+    raise SystemExit("COMFY_VRAM_RECOVERY_UNSAFE")
+print(json.dumps({
+    "queue_empty": True,
+    "models_unloaded": True,
+    "free_vram_mb": round(free_mb),
+    "total_vram_mb": round(total_mb),
+    "free_ratio": round(ratio, 4),
+}, separators=(",", ":")))
+'@
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($python))
+    $pythonCommand = "import base64;exec(base64.b64decode('$encoded'))"
+    $probeLines = @(& $WslExe -d $WslDistribution -u gpucontrol -- $WslDockerExe exec -i `
+        $WslComfyContainer python -c $pythonCommand 2>&1 | ForEach-Object {
+            $_.ToString().Trim()
+        } | Where-Object { $_ })
+    if ($LASTEXITCODE -ne 0) {
+        throw "${ComfyContinuityError}: ComfyUI queue drain/model eviction failed: $($probeLines -join '; ')"
+    }
+    $evidenceLine = @($probeLines | Where-Object { $_ -match '^\{.*\}$' } | Select-Object -Last 1)
+    if ($evidenceLine.Count -ne 1) {
+        throw "${ComfyContinuityError}: ComfyUI VRAM recovery evidence missing"
+    }
+    $script:ComfyDrainEvidence = [string]$evidenceLine[0]
+    $null = Assert-ComfyUiProcessStable $ExpectedIdentity
+}
+
 function Enter-BakerGpuFence([string]$JobId) {
     # The durable, multi-worker fence is owned by Asset API in PostgreSQL.
     # Keep only this attempt's ComfyUI identity locally so a dead process or
     # host reboot cannot leave a stale shared file that poisons later claims.
-    return Assert-ComfyUiProcessStable
+    $identity = Assert-ComfyUiProcessStable
+    Clear-ComfyUiModelsForBaker $identity
+    return $identity
 }
 
 function Exit-BakerGpuFence([string]$JobId, [string]$ExpectedIdentity) {
@@ -563,7 +619,7 @@ function Execute-Bake($Job) {
         if ($LASTEXITCODE -ne 0 -or $version -notmatch '15\.1\.0') { throw 'Baker version mismatch' }
 
         $null = Invoke-LeasedJsonPost "/internal/v1/assets/jobs/$jobId/progress" $lease ([ordered]@{
-            progress = 5; stage = 'GPU_FENCING'; message = '3090-B inference drained; ComfyUI stays running and no model eviction is requested while native Windows Baker runs'; estimated_remaining_seconds = 540
+            progress = 5; stage = 'GPU_FENCING'; message = '3090-B inference queue drained; ComfyUI models unloaded and VRAM recovery verified before native Windows Baker runs'; estimated_remaining_seconds = 540
         })
         $comfyProcessIdentity = Enter-BakerGpuFence $jobId
         $fenceEntered = $true
@@ -699,7 +755,8 @@ function Execute-Bake($Job) {
                 commands = $commandEvidence
                 gpu_backends = @('SAL', 'SoRa')
                 gpu_uuid = 'GPU-092a5184-5857-d196-5df2-efa9503368aa'
-                comfyui_cache_policy = 'no_explicit_eviction_process_preserved'
+                comfyui_cache_policy = 'queue_drained_models_unloaded_vram_verified'
+                comfyui_drain_evidence = $script:ComfyDrainEvidence
                 comfyui_container_restarted = $false
                 comfyui_process_continuity_verified = $comfyProcessContinuityVerified
             }

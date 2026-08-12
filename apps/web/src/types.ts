@@ -14,6 +14,7 @@ export interface NodeInfo {
   total_vram_mb: number;
   manual_reserved: boolean;
   foreign_queue_detected: boolean;
+  labels?: Record<string, unknown>;
   last_heartbeat_at?: string | null;
   codex_cli?: {
     health: "HEALTHY" | "CHECKING" | "DEGRADED" | "STALE" | "UNAVAILABLE";

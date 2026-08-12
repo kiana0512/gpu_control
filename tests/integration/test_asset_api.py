@@ -34,12 +34,20 @@ from packages.gpu_control_core.models import (
     Node,
 )
 from packages.gpu_control_core.scheduling import (
+    GPU_SPECIALIZATION_LABEL,
     OverflowGuard,
     QueueSnapshot,
     choose_node,
 )
 from packages.gpu_control_core.security import hash_api_secret, sign_agent_request
 from packages.gpu_control_core.settings import Settings
+
+
+def assert_substance_specialization(node: Node) -> None:
+    assert node.mode == "DRAINING"
+    specialization = node.labels[GPU_SPECIALIZATION_LABEL]
+    assert specialization["key"] == "substance-bake"
+    assert datetime.fromisoformat(specialization["expires_at"]) > datetime.now(UTC)
 
 
 def test_direct_v2_long_progress_stage_is_canonicalized_for_rolling_workers() -> None:
@@ -1085,7 +1093,7 @@ async def register_substance_worker(
             "display_name": worker_id,
             "hostname": "LILITHGAMES3",
             "blender_version": "substance-15.1.0",
-            "skill_version": "substance-baker-2026.08.03-v6",
+            "skill_version": "substance-baker-2026.08.12-v7",
             "cpu_count": 128,
             "max_concurrency": 1,
             "current_jobs": current_jobs,
@@ -1293,7 +1301,7 @@ async def test_substance_v4_without_host_process_evidence_is_drained(
                 "display_name": "incomplete v4 Windows Substance Baker",
                 "hostname": "LILITHGAMES3",
                 "blender_version": "substance-15.1.0",
-                "skill_version": "substance-baker-2026.08.03-v6",
+                "skill_version": "substance-baker-2026.08.12-v7",
                 "cpu_count": 128,
                 "max_concurrency": 1,
                 "current_jobs": 0,
@@ -1310,7 +1318,7 @@ async def test_substance_v4_without_host_process_evidence_is_drained(
         assert claimed.json()["job"] is None
 
 
-async def test_substance_v5_identity_is_drained_and_cannot_claim_v6_work(
+async def test_substance_v5_identity_is_drained_and_cannot_claim_v7_work(
     tmp_path: Path,
 ) -> None:
     async for settings, client in prepared_asset_app(tmp_path):
@@ -1357,7 +1365,7 @@ async def test_substance_v5_identity_is_drained_and_cannot_claim_v6_work(
         assert claimed.json()["job"] is None
 
 
-async def test_substance_v6_identity_is_online_and_can_claim(
+async def test_substance_v7_identity_is_online_and_can_claim(
     tmp_path: Path,
 ) -> None:
     async for settings, client in prepared_asset_app(tmp_path):
@@ -1617,7 +1625,7 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")
             assert node is not None
-            assert node.mode == "ACTIVE"
+            assert_substance_specialization(node)
             assert "substance_bake_fence_job_ids" not in node.labels
 
 
@@ -1698,7 +1706,7 @@ async def test_substance_completion_honors_cancel_before_artifact_publication(
             assert job is not None and node is not None
             assert job.lease_token_hash is None
             assert job.lease_expires_at is None
-            assert node.mode == "ACTIVE"
+            assert_substance_specialization(node)
             assert "substance_bake_fence_job_ids" not in node.labels
 
 
@@ -1809,9 +1817,9 @@ async def test_production_substance_queue_reserves_next_gpu_turn_and_cancel_rele
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")
             assert node is not None
-            assert node.mode == "ACTIVE"
+            assert_substance_specialization(node)
             assert "substance_bake_pending_reservation" not in node.labels
-            assert "substance_bake_drain_owner" not in node.labels
+            assert node.labels["substance_bake_drain_owner"] == "asset-api"
 
 
 async def test_substance_pending_reservation_requires_fresh_available_baker(
@@ -1854,9 +1862,9 @@ async def test_substance_pending_reservation_requires_fresh_available_baker(
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")
             assert node is not None
-            assert node.mode == "ACTIVE"
+            assert_substance_specialization(node)
             assert "substance_bake_pending_reservation" not in node.labels
-            assert "substance_bake_drain_owner" not in node.labels
+            assert node.labels["substance_bake_drain_owner"] == "asset-api"
 
 
 @pytest.mark.parametrize(
@@ -2232,7 +2240,7 @@ async def test_unconfirmed_baker_termination_is_never_retried_and_recovers_two_p
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")
             assert node is not None
-            assert node.mode == "ACTIVE"
+            assert_substance_specialization(node)
             assert "substance_bake_recovery_required" not in node.labels
 
 
@@ -2451,9 +2459,9 @@ async def test_substance_recovery_restores_asset_owned_drain_to_active(
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")
             assert node is not None
-            assert node.mode == "ACTIVE"
+            assert_substance_specialization(node)
             assert "substance_bake_recovery_required" not in node.labels
-            assert "substance_bake_drain_owner" not in node.labels
+            assert node.labels["substance_bake_drain_owner"] == "asset-api"
 
 
 async def test_uv_asset_job_contract_worker_concurrency_and_atomic_artifacts(

@@ -37,6 +37,9 @@ from packages.gpu_control_core.models import (
 )
 from packages.gpu_control_core.repository import claim_next_job, prompt_client_id, release_lease
 from packages.gpu_control_core.scheduling import (
+    GPU_SPECIALIZATION_LABEL,
+    MODELVIEW_INPAINT_NODE_ID,
+    MODELVIEW_INPAINT_WORKFLOW_KEY,
     SUBSTANCE_DRAIN_OWNER,
     SUBSTANCE_DRAIN_OWNER_LABEL,
     SUBSTANCE_FENCE_LABEL,
@@ -797,6 +800,72 @@ async def test_incompatible_workflow_is_not_claimed(tmp_path: Path) -> None:
     await database.close()
 
 
+async def test_4070_specialization_filters_normal_gpu_work_and_hard_expires(
+    tmp_path: Path,
+) -> None:
+    database = await make_database(tmp_path / "4070-specialization.db")
+    await seed(database)
+    now = datetime.now(UTC)
+    async with database.session() as session:
+        version = await session.scalar(select(WorkflowVersion))
+        assert version is not None
+        node = Node(
+            id=MODELVIEW_INPAINT_NODE_ID,
+            display_name="4070Ti",
+            base_url="http://fake-4070",
+            pool="PRIMARY",
+            mode="ACTIVE",
+            health="ONLINE",
+            labels={
+                GPU_SPECIALIZATION_LABEL: {
+                    "key": MODELVIEW_INPAINT_WORKFLOW_KEY,
+                    "owner": "gpu-api",
+                    "started_at": now.isoformat(),
+                    "expires_at": (now + timedelta(minutes=15)).isoformat(),
+                }
+            },
+            max_concurrency=1,
+            current_jobs=0,
+            free_vram_mb=11000,
+            total_vram_mb=12288,
+            last_heartbeat_at=now,
+        )
+        session.add(node)
+        await session.flush()
+        session.add(
+            WorkflowNodeCompatibility(
+                workflow_version_id=version.id,
+                node_id=node.id,
+                compatible=True,
+                reasons=[],
+            )
+        )
+        await session.commit()
+
+    async with database.session() as session:
+        async with session.begin():
+            assert await claim_next_job(session, MODELVIEW_INPAINT_NODE_ID, 300) is None
+
+    async with database.session() as session:
+        node = await session.get(Node, MODELVIEW_INPAINT_NODE_ID)
+        assert node is not None
+        labels = dict(node.labels)
+        labels[GPU_SPECIALIZATION_LABEL] = {
+            "key": MODELVIEW_INPAINT_WORKFLOW_KEY,
+            "owner": "gpu-api",
+            "started_at": (now - timedelta(minutes=16)).isoformat(),
+            "expires_at": (now - timedelta(seconds=1)).isoformat(),
+        }
+        node.labels = labels
+        await session.commit()
+    async with database.session() as session:
+        async with session.begin():
+            claimed = await claim_next_job(session, MODELVIEW_INPAINT_NODE_ID, 300)
+        assert claimed is not None
+        assert claimed[0].workflow_key == "fake"
+    await database.close()
+
+
 async def test_scheduler_skips_incompatible_node_and_claims_on_compatible_fallback(
     tmp_path: Path,
 ) -> None:
@@ -1516,6 +1585,19 @@ async def test_cancel_committed_after_upload_prevents_prompt_submission(
 
         async def free(self) -> dict[str, object]:
             return {"released": True}
+
+        async def queue(self) -> dict[str, object]:
+            return {"queue_running": [], "queue_pending": []}
+
+        async def system_stats(self) -> dict[str, object]:
+            return {
+                "devices": [
+                    {
+                        "vram_total": 24 * 1024 * 1024 * 1024,
+                        "vram_free": 23 * 1024 * 1024 * 1024,
+                    }
+                ]
+            }
 
         async def upload(
             self,
