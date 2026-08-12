@@ -17,6 +17,9 @@ def test_worker_image_carries_immutable_release_identity() -> None:
     assert 'org.opencontainers.image.revision="${GPU_CONTROL_REVISION}"' in dockerfile
     assert "ASSET_WORKER_BUILD_VERSION=${ASSET_WORKER_VERSION}" in dockerfile
     assert "GPU_CONTROL_BUILD_REVISION=${GPU_CONTROL_REVISION}" in dockerfile
+    assert dockerfile.index("RUN apt-get update") < dockerfile.index(
+        "ARG ASSET_WORKER_VERSION"
+    )
 
 
 def test_all_three_workers_receive_the_same_approved_skill_root() -> None:
