@@ -64,7 +64,7 @@ UV_FBX_UNITS_SCRIPT_SHA256 = "67e98dc5db415a83736ee154856b2c3b54f057e69440d1edbc
 RETOPOLOGY_BAKE_POSTPROCESS_SCRIPT_SHA256 = (
     "bc14804d9c0bde6610360aacc8de3d80cf6847368e26eff5c29abb0b0c0c6797"
 )
-RETOPOLOGY_AUDIT_SCRIPT_SHA256 = "a6575902cfacd7b8106f9c887069d717a880d870fc48a6295431cdcf717a9dc4"
+RETOPOLOGY_AUDIT_SCRIPT_SHA256 = "bbc9990a045284be799df2f56f29b4a52f066c923eda0c65f2a88fe2d3128f1b"
 RETOPOLOGY_PROCESS_SCRIPT_SHA256 = (
     "f18ceebcc5f47279ee1f11c5bcfcec9c76cec8ebdd7247c74b9412b26aa47501"
 )
@@ -2620,8 +2620,6 @@ async def run_retopology_audit(
         "--",
         "--high",
         str(options["high_object"]),
-        "--reference",
-        str(options["reference_object"]),
         "--low",
         str(options["low_object"]),
         "--output",
@@ -2717,10 +2715,6 @@ async def run_retopology_process(
         "--",
         "--high",
         high,
-        "--reference",
-        reference,
-        "--low",
-        current,
         "--output",
         str(baseline_path),
     ]
@@ -2846,8 +2840,6 @@ async def run_retopology_process(
         "--",
         "--high",
         high,
-        "--reference",
-        reference,
         "--low",
         generated,
         "--output",

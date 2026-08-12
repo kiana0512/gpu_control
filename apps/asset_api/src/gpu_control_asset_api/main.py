@@ -2871,11 +2871,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             )
             if worker.skill_version == RETOPOLOGY_V6_SKILL_VERSION:
-                # A Direct V2 worker consumes only the new high-only contract. V5
-                # audit/process work stays on the rollback pool because the
-                # two Skill contracts intentionally have incompatible inputs.
+                # A Direct V2 worker must not consume the retired V1 build
+                # contract.  RETOPOLOGY_AUDIT remains Blender-only and is a
+                # public six-API contract, so current Workers keep serving it.
                 claim_query = claim_query.where(
-                    AssetJob.job_type.not_in({"RETOPOLOGY_AUDIT", "RETOPOLOGY_PROCESS_V1"})
+                    AssetJob.job_type != "RETOPOLOGY_PROCESS_V1"
                 )
             else:
                 # Old Workers must never claim a Direct V2 job: they still execute
@@ -3261,18 +3261,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             except (OSError, ValueError) as exc:
                 raise HTTPException(422, detail={"code": "RETOPOLOGY_AUDIT_INVALID"}) from exc
-            if audit_payload.get("schema_version") != 2:
+            audit_schema_version = audit_payload.get("schema_version")
+            if audit_schema_version not in {2, 3}:
                 raise HTTPException(422, detail={"code": "RETOPOLOGY_AUDIT_SCHEMA_INVALID"})
             objects = audit_payload.get("objects")
-            if not isinstance(objects, dict) or not {"high", "reference", "low"}.issubset(objects):
+            required_objects = (
+                {"high", "reference", "low"}
+                if audit_schema_version == 2
+                else {"high", "low"}
+            )
+            if not isinstance(objects, dict) or not required_objects.issubset(objects):
                 raise HTTPException(422, detail={"code": "RETOPOLOGY_AUDIT_OBJECTS_MISSING"})
             visual_review = audit_payload.get("visual_review_required")
-            if not isinstance(visual_review, list) or not {
-                "front",
-                "side",
-                "top",
-                "perspective",
-            }.issubset(set(visual_review)):
+            required_views = (
+                {"front", "side", "top", "perspective"}
+                if audit_schema_version == 2
+                else {"front", "back", "left", "right", "top", "bottom", "perspective"}
+            )
+            if not isinstance(visual_review, list) or not required_views.issubset(
+                set(visual_review)
+            ):
                 raise HTTPException(422, detail={"code": "RETOPOLOGY_VISUAL_REVIEW_MISSING"})
             if (
                 manifest_payload.get("job_id") != snapshot.id

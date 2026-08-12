@@ -82,7 +82,6 @@ from packages.gpu_control_core.scheduling import (
     MODELVIEW_INPAINT_WORKFLOW_KEY,
     OverflowGuard,
     QueueSnapshot,
-    gpu_specialization,
     rank_nodes,
 )
 from packages.gpu_control_core.security import (
@@ -787,16 +786,14 @@ class Scheduler:
         # are necessarily visible as released. Poll the authoritative VRAM
         # counters inside the same bounded drain window; a single immediate
         # read both produces false failures and can race the next model family.
-        last_error: ComfyError | None = None
         while True:
             stats = await client.system_stats()
             try:
                 vram = self.validated_vram_recovery(stats)
                 break
-            except ComfyError as exc:
-                last_error = exc
+            except ComfyError:
                 if asyncio.get_running_loop().time() >= deadline:
-                    raise last_error
+                    raise
                 await asyncio.sleep(0.25)
         return {
             "queue_empty": True,

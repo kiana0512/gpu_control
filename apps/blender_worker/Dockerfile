@@ -23,7 +23,7 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip==26.2.1 \
     && python3 -m pip install --no-cache-dir .
 RUN python3 -c "from pathlib import Path; from packages.gpu_control_core.retopology_v6 import verify_runtime_resources; verify_runtime_resources(Path('/opt/li3d/retopology-v6'))"
 RUN useradd --uid 10002 --create-home assetworker
-ARG ASSET_WORKER_VERSION=1.4.47-retopo-adaptive-density-v1
+ARG ASSET_WORKER_VERSION=1.4.48
 ARG GPU_CONTROL_REVISION=unknown
 USER assetworker
 ENV PYTHONDONTWRITEBYTECODE=1 \

@@ -1,5 +1,5 @@
 workflow_key: modelview-inpaint
-version: 2026.07.27-8c37f07-seedvr2
+version: 2026.08.12-8c37f07-seedvr2-12g-r1
 template_file: template.api.json
 parameter_schema:
   type: object
@@ -54,9 +54,9 @@ required_custom_nodes:
   - ComfyUI-Nunchaku
   - ComfyUI-SeedVR2_VideoUpscaler@690cc39379c1481159ddd451368dbf2295930fc6
   - haoze-LiClick@8c37f07
-min_vram_mb: 22000
+min_vram_mb: 12000
 timeout_seconds: 2400
 node_labels: {}
 output_nodes:
   - "9"
-enabled: false
+enabled: true

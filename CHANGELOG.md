@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.5.13 — Four-GPU scheduling, WSL telemetry and six-API closure — 2026-08-12
+
+- Add the RTX 4070Ti WSL2 node to scheduling, Web UI, Asset Worker and Codex runtime views while
+  retaining one physical GPU slot and two independent CPU Asset slots.
+- Add signed WSL host telemetry proxy support so GPU utilization, VRAM, temperature and power remain
+  observable while ComfyUI is busy; node liveness no longer depends on Docker NVML behavior in WSL.
+- Lock ImageClip, ModelView inpaint and roughness to the approved production manifests and exact
+  model/custom-node/output contracts without changing external workflow semantics.
+- Enforce work-conserving 15-minute GPU specialization: 4070Ti protects inpaint response and 3090-B
+  protects its unique Substance channel, while CPU UV/retopology work remains independent.
+- Restore public retopology audit capacity on current Direct V2 Workers, align the packaged audit
+  script SHA, remove retired `--reference` arguments and accept both legacy schema v2 and current
+  schema v3 completion payloads.
+- Align first-party release identity to GPU Control `1.5.13` and Blender Worker `1.4.48`; detailed
+  production evidence and remaining fail-closed Substance v7 gate are recorded in document 118.
+
 ## 2026-08-12 — Automatic retopology fused-surface fallback v3.0.24
 
 - Detect the real cloth-over-wood failure mode where classification-only adjacency recovers one

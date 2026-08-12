@@ -1,25 +1,19 @@
 # ImageClip RGBA API
 
-- 业务仓库提交：`/opt/imageclip` `691770cd6a59fd7c51391456fe900dc57a313233`
-- 管线文件哈希：`00e7104762f0a1fdf3a4c20e043bec2b9f088132452d5a5ce4302ba268edac0b`
-- 用户输入：multipart 字段 `input_image`
-- 参数注入：`image_filename -> 28.inputs.image` (`LoadImage #28`)
-- 唯一业务输出：`SaveImage #25`
-- API 模板修订：`r1` 正确跳过 ComfyUI 在 seed/PrimitiveInt 后序列化的
-  `control_after_generate` UI 控制值；已通过 `/prompt` 实机校验，不再发生
-  KSampler 参数错位。
-- 输出来源：v4.3 最终发布节点 `CodexLazyShadowBypassV43 #57` 的 RGBA 图；其上游依次包含
-  `CodexExistingBlackShadowJudgeV43 #56`、`CodexFootPasteGuardV42 #55`、
-  `CodexShoePixelProtectV41 #54`、`122_ShadowBranchDecide #53` 与
-  `122_FootRegionPaste #52`
+- 业务仓库批准提交：`c39ed0b3b637f0a1435bbe10e5a3acf6bfca07bd`
+- 管线组合 SHA-256：`07928d57852ed56ed37527960ec9955d867c0090456fda687fbcd12fecf1775c`
+- GPU Control 版本：`2026.08.12-c39ed0b-fp8-r1`
+- 参数注入：`image_filename -> 108.inputs.image`（`LoadImage #108`）
+- 唯一最终输出：`SaveImage #102`
+- UNET：`diffusion_models/flux-2-klein-9b-fp8.safetensors`
+- 最低调度显存：`12000 MiB`，因此 12 GiB 4070 Ti 可参与执行。
 
-API 模板只保留 `SaveImage #25` 的祖先子图，并拒绝出现第二个输出节点。中间保存、
-预览、对比和镜像保存节点不会进入 API prompt，避免任务产物混入黑底图、中间抠图
-或调试预览。UI 工作流的版本真相仍位于 ImageClip Git 仓库。
+API 模板是批准的上游 `c39ed0b` 工作流导出的 18 节点祖先子图。GPU Control 不修改
+工作流节点、模型、提示词、采样参数、图拓扑或输出语义；运行时只替换上传图片文件名。
 
-调度器还会在领取任务时逐项比较工作流声明的 Git 提交和管线内容哈希与节点最近一次
-签名心跳；任一值缺失或不一致，该节点都不能领取此版本的抠图任务。
+四个节点的签名心跳必须同时满足 `imageclip_commit` 和
+`imageclip_pipeline_sha256` 两个标签，才允许领取此版本。最终产物严格从
+`SaveImage #102` 获取，禁止把预览或中间结果作为批次产物。
 
-`2026.07.30-691770c-r1` 仅更新 GPU Control 的不可变兼容标签。三台节点与
-ImageClip 远端 `main` 均为 `691770c…`，API 管线内容哈希仍为
-`00e7104762f0…`，因此没有修改业务工作流、模型、提示词、节点参数或输出语义。
+2026-08-12 已在 4090、3090-A、3090-B、4070 Ti 上对齐相同提交、相同组合哈希、
+相同 FP8 模型和自定义节点；旧 `691770c / SaveImage #25 / Q6_K` 版本已禁用。

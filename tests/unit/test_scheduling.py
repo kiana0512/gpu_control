@@ -4,16 +4,15 @@ from pathlib import Path
 
 from packages.gpu_control_core.scheduling import (
     GPU_CACHE_DRAIN_FAILED_LABEL,
-    GPU_SPECIALIZATION_LABEL,
     MODELVIEW_INPAINT_WORKFLOW_KEY,
     SUBSTANCE_DRAIN_OWNER,
     SUBSTANCE_DRAIN_OWNER_LABEL,
     SUBSTANCE_FENCE_LABEL,
     SUBSTANCE_PENDING_RESERVATION_LABEL,
     SUBSTANCE_RECOVERY_REQUIRED_LABEL,
+    SUBSTANCE_SPECIALIZATION_KEY,
     OverflowGuard,
     QueueSnapshot,
-    SUBSTANCE_SPECIALIZATION_KEY,
     choose_node,
     gpu_specialization,
     linux_asset_claim_allowed,

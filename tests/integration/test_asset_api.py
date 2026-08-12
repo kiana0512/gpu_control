@@ -3684,6 +3684,52 @@ async def test_cpu_asset_claim_prioritizes_production_and_keeps_pool_fifo(
         ]
 
 
+async def test_direct_v2_worker_keeps_public_retopology_audit_capacity(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        now = datetime.now(UTC)
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            db.add_all(
+                [
+                    queued_asset_job(
+                        "retopology-v1-retired",
+                        client_id="asset-client",
+                        job_type="RETOPOLOGY_PROCESS_V1",
+                        created_at=now - timedelta(minutes=2),
+                    ),
+                    queued_asset_job(
+                        "retopology-audit-supported",
+                        client_id="asset-client",
+                        job_type="RETOPOLOGY_AUDIT",
+                        created_at=now - timedelta(minutes=1),
+                    ),
+                ]
+            )
+            await db.commit()
+
+        await register_asset_worker(
+            client,
+            settings,
+            skill_version="asset-skills-auto-retopo-align-v3.0.25",
+        )
+        claimed = await claim_asset_job(client, settings)
+        assert claimed["job_id"] == "retopology-audit-supported"
+
+        no_retired_v1_claim = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(),
+                "load_1m": 1.0,
+                "available_memory_mb": 100000,
+                "accepts_codex_jobs": True,
+            },
+        )
+        assert no_retired_v1_claim.json()["job"] is None
+
+
 async def test_codex_unhealthy_worker_skips_process_but_keeps_cpu_queue_moving(
     tmp_path: Path,
 ) -> None:
@@ -4283,8 +4329,9 @@ async def test_uv_process_v2_rejects_non_object_qa_json_as_422(
         assert list((settings.asset_root / str(job["job_id"])).glob(".outputs-*")) == []
 
 
+@pytest.mark.parametrize("audit_schema_version", [2, 3])
 async def test_retopology_audit_stops_at_review_gate_and_exposes_audit_artifacts(
-    tmp_path: Path,
+    tmp_path: Path, audit_schema_version: int,
 ) -> None:
     metadata = {
         "external_asset_id": "asset:crate:retopo:audit:v1",
@@ -4316,16 +4363,30 @@ async def test_retopology_audit_stops_at_review_gate_and_exposes_audit_artifacts
         assert job["job_type"] == "RETOPOLOGY_AUDIT"
         assert job["options"] == metadata["options"]
         lease_headers = {"X-Asset-Lease": str(job["lease_token"])}
+        audit_objects = {
+            "high": {"object": "crate_high"},
+            "low": {"object": "crate_current_low"},
+        }
+        visual_review_required = ["front", "side", "top", "perspective"]
+        if audit_schema_version == 2:
+            audit_objects["reference"] = {"object": "crate_reference_low"}
+        else:
+            visual_review_required = [
+                "front",
+                "back",
+                "left",
+                "right",
+                "top",
+                "bottom",
+                "perspective",
+                "high/generated topology comparison",
+            ]
         audit = {
-            "schema_version": 2,
+            "schema_version": audit_schema_version,
             "audit_passed": True,
-            "objects": {
-                "high": {"object": "crate_high"},
-                "reference": {"object": "crate_reference_low"},
-                "low": {"object": "crate_current_low"},
-            },
+            "objects": audit_objects,
             "failures": [],
-            "visual_review_required": ["front", "side", "top", "perspective"],
+            "visual_review_required": visual_review_required,
         }
         manifest = {
             "schema_version": "retopology_manifest.v1",

@@ -398,7 +398,9 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           <div class="capacity-lane-title">
             <div>
               <strong>CPU Asset Worker</strong
-              ><span>独立处理 UV、重拓扑；Substance 烘焙单独占用 3090-B GPU</span>
+              ><span
+                >独立处理 UV、重拓扑；Substance 烘焙单独占用 3090-B GPU</span
+              >
             </div>
             <router-link to="/asset-processing">查看资产任务 →</router-link>
           </div>
@@ -505,7 +507,11 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <b>05</b>
             <div>
               <strong>4070Ti：局部重绘保底 + 四卡扩展</strong>
-              <p>四台空闲 GPU 都能接局部重绘；发生抠图冲突时，4070Ti 的抠图帧安全中断并改派其它物理 GPU，4070Ti 清显存后优先响应局部重绘。</p>
+              <p>
+                四台空闲 GPU 都能接局部重绘；发生抠图冲突时，4070Ti
+                的抠图帧安全中断并改派其它物理 GPU，4070Ti
+                清显存后优先响应局部重绘。
+              </p>
             </div>
             <dl>
               <dt>保护窗口</dt>
@@ -518,7 +524,10 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <b>06</b>
             <div>
               <strong>3090-B：唯一 Substance 烘焙通道</strong>
-              <p>生产烘焙排队后停止领取新抠图；当前抠图帧必须自然完成，再清空模型缓存并切换 Windows Baker。持续到达会续期保护。</p>
+              <p>
+                生产烘焙排队后停止领取新抠图；当前抠图帧必须自然完成，再清空模型缓存并切换
+                Windows Baker。持续到达会续期保护。
+              </p>
             </div>
             <dl>
               <dt>保护窗口</dt>
@@ -531,7 +540,10 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <b>07</b>
             <div>
               <strong>正常状态自动恢复，CPU 不冻结</strong>
-              <p>保护窗口不能被旧任务或心跳无限续期；到期后立即恢复抠图、粗糙度等普通 GPU 调度。拓扑、拆 UV 等 CPU 槽始终独立运行。</p>
+              <p>
+                保护窗口不能被旧任务或心跳无限续期；到期后立即恢复抠图、粗糙度等普通
+                GPU 调度。拓扑、拆 UV 等 CPU 槽始终独立运行。
+              </p>
             </div>
             <dl>
               <dt>GPU 槽位</dt>

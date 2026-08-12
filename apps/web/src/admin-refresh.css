@@ -2224,7 +2224,11 @@ pre button {
   padding: 16px;
   border: 1px solid rgba(153, 77, 239, 0.3);
   border-radius: 12px;
-  background: linear-gradient(135deg, rgba(153, 77, 239, 0.1), rgba(37, 212, 163, 0.04));
+  background: linear-gradient(
+    135deg,
+    rgba(153, 77, 239, 0.1),
+    rgba(37, 212, 163, 0.04)
+  );
 }
 .gpu-specialization-guide > div {
   display: grid;

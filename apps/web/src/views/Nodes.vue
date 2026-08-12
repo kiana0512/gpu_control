@@ -183,17 +183,29 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
     <section class="gpu-specialization-guide">
       <div>
         <strong>四卡共享，不是单机绑定</strong>
-        <span>空闲时，抠图与局部重绘都可分配到 4090、3090-A、3090-B、4070Ti；粗糙度按兼容性使用空闲 GPU。</span>
+        <span
+          >空闲时，抠图与局部重绘都可分配到
+          4090、3090-A、3090-B、4070Ti；粗糙度按兼容性使用空闲 GPU。</span
+        >
       </div>
       <div>
         <strong>4070Ti 保证局部重绘响应</strong>
-        <span>与抠图冲突时让出抠图帧并改派其它 GPU；进入可续期的 15 分钟局部重绘保护。</span>
+        <span
+          >与抠图冲突时让出抠图帧并改派其它 GPU；进入可续期的 15
+          分钟局部重绘保护。</span
+        >
       </div>
       <div>
         <strong>3090-B 保证唯一烘焙通道</strong>
-        <span>烘焙排队后不再接新抠图，当前帧自然结束再切换；15 分钟无新任务会硬过期。</span>
+        <span
+          >烘焙排队后不再接新抠图，当前帧自然结束再切换；15
+          分钟无新任务会硬过期。</span
+        >
       </div>
-      <p>GPU 保护只影响 GPU 单槽；各节点 CPU 拓扑、拆 UV 等 Asset Worker 槽位不受影响。</p>
+      <p>
+        GPU 保护只影响 GPU 单槽；各节点 CPU 拓扑、拆 UV 等 Asset Worker
+        槽位不受影响。
+      </p>
     </section>
 
     <div class="node-list">
@@ -294,10 +306,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           <small>GPU 1 槽 · CPU Asset 独立</small>
         </div>
       </section>
-      <div
-        v-if="!nodes.length && !refreshing"
-        class="empty-state action-empty"
-      >
+      <div v-if="!nodes.length && !refreshing" class="empty-state action-empty">
         <strong>尚无 GPU 节点接入</strong
         ><span>节点首次上报真实心跳后会自动显示在这里。</span>
       </div>

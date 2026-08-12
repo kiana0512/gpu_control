@@ -1,27 +1,26 @@
 # 统一调度中心（GPU Control）
 
-> 今天部署请先打开 [文档总入口](docs/00_START_HERE.md)，再按 [三机当天部署手册](docs/28_TODAY_DEPLOYMENT_MANUAL.md) 和 [现场勾选表](docs/30_TODAY_ONSITE_CHECKLIST.md) 执行。单文件离线版位于仓库根目录 `GPU_CONTROL_成品部署联调与核心逻辑手册.pdf`。
+> 今天部署请先打开 [文档总入口](docs/00_START_HERE.md)；四 GPU 现状、4070Ti 接入、六 API
+> 验证与发布证据以 [2026-08-12 四 GPU 收口报告](docs/118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md) 为准。
 
-面向两台 RTX 3090 工作节点和一台 RTX 4090 控制中心的统一任务调度、运维与可观测平台；GPU
+面向 RTX 4090 控制中心、两台 RTX 3090 和一台 RTX 4070Ti 的统一任务调度、运维与可观测平台；GPU
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
-当前生产基线为 GPU Control API/Scheduler `1.5.12`、Web `1.5.11-retopo-direct-v2`、Asset API
-`1.6.48-retopo-adaptive-density-v1`、Blender Worker
-`1.4.47-retopo-adaptive-density-v1`、数据库 `20260810_0013`。当前总状态为
+当前源码发布基线为 GPU Control API/Scheduler/Asset API/Web `1.5.13`、Blender Worker
+`1.4.48`、数据库 `20260810_0013`。当前总状态为
 `DEPLOYED_NOT_ACCEPTED`：第三次正式 100 VU、registry digest/SBOM、固定基准、完整故障矩阵和
 连续七天观察尚未闭环，禁止标记 `FROZEN` 或 `PRODUCTION_ACCEPTED`。
 
 生产 `UV_QA_ENFORCEMENT=advisory` 和旧版 `RETOPOLOGY_QA_ENFORCEMENT=advisory` 仍保留兼容语义；
 v3 同任务生成路径保留坐标恢复、保存后 Blend 拓扑指纹、身份、manifest、文件完整性和 SHA 硬门禁；
 方向检查、FBX 回读与自动 UV 已按当前用户策略取消；
-缺失、空文件、非法 JSON、身份、租约或 SHA 失败仍硬拒绝。三台 Linux Worker 使用同一镜像、
+缺失、空文件、非法 JSON、身份、租约或 SHA 失败仍硬拒绝。四台 Linux/WSL Worker 使用同一镜像、
 同一源码和同一批准包 SHA；统一 registry digest/SBOM 仍待补齐。
 
-3090-B 上四个 Windows Substance Baker Agent 已更新为
-`substance-baker-2026.08.03-v6`，均为 `ONLINE/HEALTHY`，用 PBR 成功 marker、逐命令证据和制品完整性
-消除 PowerShell 空 `ExitCode` 假失败，但不放行真实非零退出或缺少 marker。三节点 ComfyUI 仍是同一
-`projects-0.2.3` 镜像，健康、`RestartCount=0`；本轮未停止/重启 ComfyUI，也未调用 `/free` 或
-清理模型缓存。自动拓扑对齐包 v3.0.24 统一 FBX/GLB/GLTF/OBJ 的只读高模准备入口，并把 API 中
+3090-B 上四个 Windows Substance Baker Agent 当前仍为
+`substance-baker-2026.08.03-v6 / DRAINING`；控制面要求 `2026.08.12-v7`，因此烘焙在完成 Windows
+升级前保持 fail-closed，不能标记六 API 全部接受。四节点 ComfyUI 使用同一
+`projects-0.2.3` 镜像。自动拓扑对齐包 v3.0.25 统一 FBX/GLB/GLTF/OBJ 的只读高模准备入口，并把 API 中
 用户明确指定的分区建形意图传入生成器；布料覆盖木堆等分层资产先用只读的同坐标邻接恢复被
 法线/UV 导出缝拆开的完整几何表面，再进行区域分类，禁止把导出碎片误当语义组件；当导入资产
 实际融合成一张无法安全分区的表面时，直接使用打包好的单次 50% 高模副本受控减面，保留导出缝
@@ -74,12 +73,13 @@ flowchart LR
   N -.唤醒/事件.-> R[("Redis")]
   S["asyncio Scheduler\n单主 advisory lock"] --> P
   S --> A["3090-A / ComfyUI"]
-  S --> B["3090-B / ComfyUI"]
+  S --> B["3090-B / ComfyUI + Windows Baker"]
+  S --> T["4070Ti WSL2 / ComfyUI"]
   S -.OVERFLOW guards.-> G["4090 / ComfyUI"]
-  A & B & G --> L["Alloy → Loki / Prometheus → Grafana"]
+  A & B & T & G --> L["Alloy → Loki / Prometheus → Grafana"]
 ```
 
-当前三台 GPU 节点均为 `ONLINE`，合计最多 3 个受控 GPU 执行槽位；节点 mode 会随运维排空和
+当前四台 GPU 节点均为 `ONLINE`，合计最多 4 个受控 GPU 执行槽位；节点 mode 会随运维排空和
 3090-B Substance 物理 GPU 互斥门禁在 `ACTIVE / OVERFLOW / DRAINING` 间受控变化，不能把一次快照写死
 为永久模式。每个 ComfyUI 只保留一个本系统任务。
 

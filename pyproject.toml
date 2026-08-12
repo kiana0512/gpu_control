@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpu-control"
-version = "1.5.12"
-description = "Three-node ComfyUI GPU scheduling and operations platform"
+version = "1.5.13"
+description = "Four-node ComfyUI GPU scheduling and operations platform"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
@@ -75,7 +75,7 @@ ignore = ["E501", "E702", "S101"]
 # These are checksum-frozen Blender/runtime payloads. Their import layout and
 # fixed subprocess adapters are validated by package manifests and dedicated
 # contract tests; do not rewrite packaged bytes merely to satisfy host lint.
-"resources/retopology-direct-v2/**" = ["I001", "S603", "UP038"]
+"resources/retopology-direct-v2/**" = ["I001", "S603", "UP035", "UP038"]
 "resources/retopology-v6/**" = ["I001", "B905", "UP038"]
 "packages/asset_processing/blender_retopology_merge.py" = ["I001"]
 

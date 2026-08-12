@@ -2,11 +2,12 @@
 
 本页是仓库文档导航。今天部署时不要从 30 多份文档逐一翻找，按下面的“现场主线”执行即可；其余文档是遇到具体问题时的细节手册。
 
-2026-08-11 的生产基线为 API/Scheduler `1.5.12`、Web `1.5.11-retopo-direct-v2`、Asset API
-`1.6.19-retopo-align-v3`、三台 Linux Worker
-`1.4.20-retopo-align-v3`、数据库 `20260810_0013`。1.5.11 综合稳定性候选已经完成
-源码审计、五镜像滚动和 Direct V2 真实 canary；第三次正式 100 VU 完成前保持
-`DEPLOYED_NOT_ACCEPTED`。最新执行与证据只看
+2026-08-12 的四节点候选基线为 GPU Control `1.5.13`、Blender Worker `1.4.48`、数据库
+`20260810_0013`，节点为 4090、3090-A、3090-B 和 Windows/WSL2 4070Ti。五个 API 已取得
+真实成功证据；3090-B Windows Substance Agent 仍为 v6，因 v7 版本门禁而处于 `DRAINING`，所以
+当前状态必须保持 `DEPLOYED_NOT_ACCEPTED`，不得宣称六 API 正式通过。四节点架构、固定路由、
+工作流 SHA、4070Ti 指标、真实任务、代码审计和次日验收的唯一最新记录见
+`118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md`。此前 1.5.11 执行与证据见
 `98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`；最新自动拓扑热修复见
 `104_2026-08-11_RETOPOLOGY_DEGENERATE_DELIVERY_HOTFIX.md`；拓扑低模进入 UV 后的 FBX 米制单位修复见
 `105_2026-08-11_UV_FBX_METER_UNIT_HOTFIX.md`；一键烘焙 GLB 输入 422 修复见
@@ -26,9 +27,11 @@ UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重
 
 ## 1. 当前现场主线
 
-1. 根目录 `GPU_CONTROL_成品部署联调与核心逻辑手册.pdf`：产品结构、核心算法、三机命令、联调、日志、压测和故障定位的单文件版本。
+**当前四节点唯一入口：** `docs/118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md`。它覆盖四 GPU 架构、调度定则、工作流身份、4070Ti WSL2 指标、真实五 API 证据、Windows v7 门禁、镜像/Git 和明日验收；下列旧文档只作专项或历史参考。
+
+1. 根目录 `GPU_CONTROL_成品部署联调与核心逻辑手册.pdf`：产品结构、核心算法、历史三机命令、联调、日志、压测和故障定位的单文件版本。
 2. `docs/USER_INPUT_REQUIRED.md`：先补齐真实 IP、SSH 用户、模型、API 工作流和业务限制。
-3. `docs/28_TODAY_DEPLOYMENT_MANUAL.md`：从三台空 Ubuntu 主机开始的完整命令正文。
+3. `docs/28_TODAY_DEPLOYMENT_MANUAL.md`：历史三台 Ubuntu 主机部署命令；4070Ti 必须以 118 号四节点记录为准。
 4. `docs/30_TODAY_ONSITE_CHECKLIST.md`：现场操作者逐项打勾并记录结果。
 5. `docs/33_3090_NODE_DEPLOYMENT_HANDOFF.md`：2026-07-23 当前双项目镜像、模型和 3090 接入的唯一最新交接步骤。
 6. `docs/56_GPU_CONTROL_MATTING_HANDOFF_V4.md`：动画管家批量抠图当前实施合同；冻结上传完整性、失败隔离与真实取消语义。

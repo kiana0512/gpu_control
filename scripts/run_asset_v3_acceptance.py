@@ -57,12 +57,12 @@ def arguments() -> argparse.Namespace:
         parser.error("job counts cannot be negative")
     if args.submit and args.uv_count and not args.uv_file:
         parser.error("--uv-count requires --uv-file")
-    if args.submit and args.retopology_count and not (
-        args.retopology_project and args.reference_root
+    if (
+        args.submit
+        and args.retopology_count
+        and not (args.retopology_project and args.reference_root)
     ):
-        parser.error(
-            "--retopology-count requires --retopology-project and --reference-root"
-        )
+        parser.error("--retopology-count requires --retopology-project and --reference-root")
     if args.submit and args.uv_count + args.retopology_count == 0:
         parser.error("at least one real job is required")
     if not args.submit and not args.monitor:
@@ -95,28 +95,27 @@ def submit(client: httpx.Client, args: argparse.Namespace) -> dict[str, Any]:
                     ),
                     "metadata": (
                         None,
-                        json.dumps(
-                            {"external_asset_id": external_id, "options": uv_options}
-                        ),
+                        json.dumps({"external_asset_id": external_id, "options": uv_options}),
                         "application/json",
                     ),
                 },
             )
         if response.is_error:
-            raise RuntimeError(
-                f"UV submission rejected ({response.status_code}): {response.text}"
-            )
+            raise RuntimeError(f"UV submission rejected ({response.status_code}): {response.text}")
         payload = response.json()
         jobs.append({"job_id": payload["job_id"], "job_type": "UV_PROCESS_V2"})
-    reference_files = [
-        ("front", args.reference_root / "reference_front.png"),
-        ("side", args.reference_root / "reference_side.png"),
-        ("top", args.reference_root / "reference_top.png"),
-        ("perspective", args.reference_root / "reference_perspective.png"),
-    ]
-    for view, path in reference_files:
-        if not path.is_file() or path.stat().st_size == 0:
-            raise RuntimeError(f"real reference view is missing: {view}={path}")
+    reference_files: list[tuple[str, Path]] = []
+    if args.retopology_count:
+        assert args.reference_root is not None
+        reference_files = [
+            ("front", args.reference_root / "reference_front.png"),
+            ("side", args.reference_root / "reference_side.png"),
+            ("top", args.reference_root / "reference_top.png"),
+            ("perspective", args.reference_root / "reference_perspective.png"),
+        ]
+        for view, path in reference_files:
+            if not path.is_file() or path.stat().st_size == 0:
+                raise RuntimeError(f"real reference view is missing: {view}={path}")
     for index in range(1, args.retopology_count + 1):
         external_id = f"acceptance:{run_id}:retopology:{index:02d}"
         metadata = {
@@ -175,13 +174,10 @@ def submit(client: httpx.Client, args: argparse.Namespace) -> dict[str, Any]:
                 handle.close()
         if response.is_error:
             raise RuntimeError(
-                "retopology submission rejected "
-                f"({response.status_code}): {response.text}"
+                f"retopology submission rejected ({response.status_code}): {response.text}"
             )
         payload = response.json()
-        jobs.append(
-            {"job_id": payload["job_id"], "job_type": "RETOPOLOGY_PROCESS_V1"}
-        )
+        jobs.append({"job_id": payload["job_id"], "job_type": "RETOPOLOGY_PROCESS_V1"})
     state = {"schema_version": "asset-v3-live-acceptance.v1", "run_id": run_id, "jobs": jobs}
     args.state.parent.mkdir(parents=True, exist_ok=True)
     args.state.write_text(json.dumps(state, indent=2), encoding="utf-8")

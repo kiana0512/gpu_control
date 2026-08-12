@@ -11,14 +11,44 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
+WORKER_SOURCE = Path(
+    "apps/blender_worker/src/gpu_control_blender_worker/main.py"
+).read_text(encoding="utf-8")
+
+
+def test_worker_uses_current_retopology_audit_script_contract() -> None:
+    audit = WORKER_SOURCE[
+        WORKER_SOURCE.index("async def run_retopology_audit(") :
+        WORKER_SOURCE.index("async def run_retopology_process(")
+    ]
+    process = WORKER_SOURCE[
+        WORKER_SOURCE.index("async def run_retopology_process(") :
+        WORKER_SOURCE.index("async def process_job(")
+    ]
+
+    assert '"--reference"' not in audit
+    baseline = process[process.index("baseline_arguments = [") : process.index(
+        "process = await start_blender(settings, *baseline_arguments)"
+    )]
+    assert '"--reference"' not in baseline
+    assert '"--low"' not in baseline
+    final = process[process.index("final_arguments = [") : process.index(
+        "process = await start_blender(settings, *final_arguments)"
+    )]
+    assert '"--reference"' not in final
+    assert '"--baseline"' in final
+
+
 def test_second_attempt_changes_generation_method_without_relaxing_gates() -> None:
     first = MODULE.attempt_guidance(1)
     second = MODULE.attempt_guidance(2)
 
     assert "首次生成" in first
     assert "controlled_direct_reduction" in second
-    assert "per_component_hybrid" in second
-    assert "禁止原样重复低密度语义代理" in second
+    assert "hybrid_per_component" in second
+    assert "禁止通用基础体" in second
+    assert "全物体无差别" in second
+    assert "不得直接修改 SOURCE_HIGH" in second
     assert "SOURCE_HIGH" in second
 
 
@@ -122,9 +152,7 @@ def test_failure_diagnostic_identifies_an_unexecuted_build_script(tmp_path: Path
     assert diagnostic["error_category"] == "BUILD_SCRIPT_NOT_EXECUTED"
 
 
-def test_completes_one_unexecuted_generated_build_script_once(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_completes_one_unexecuted_generated_build_script_once(tmp_path: Path, monkeypatch) -> None:
     script = tmp_path / "build_once.py"
     script.write_text("# generated build\n", encoding="utf-8")
     working_blend = tmp_path / "work" / "source.blend"
@@ -267,8 +295,8 @@ def test_one_click_prepares_every_supported_static_source_as_source_high() -> No
         "resources/retopology-direct-v2/blender-auto-retopo-align/scripts/prepare_fbx_source.py"
     ).read_text(encoding="utf-8")
     assert 'SUPPORTED_SOURCE_EXTENSIONS = {".fbx", ".glb", ".gltf", ".obj"}' in source
-    assert 'bpy.ops.import_scene.gltf(filepath=input_path)' in source
-    assert 'bpy.ops.wm.obj_import(filepath=input_path)' in source
+    assert "bpy.ops.import_scene.gltf(filepath=input_path)" in source
+    assert "bpy.ops.wm.obj_import(filepath=input_path)" in source
     assert '"schema": "li3d-retopology-static-source-v4"' in source
 
 

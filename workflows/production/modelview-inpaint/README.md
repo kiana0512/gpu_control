@@ -5,6 +5,8 @@
 - 图片注入：`image_filename -> 127.inputs.image` (`LoadImage #127`)
 - 提示词注入：`prompt -> 94.inputs.prompt` (`Qwen3 VL Plus #94`)
 - 唯一业务输出：`SaveImage #9`
+- GPU Control 版本：`2026.08.12-8c37f07-seedvr2-12g-r1`
+- 最低调度显存：`12000 MiB`；原模板已在 4070 Ti WSL2 实机完成并产出节点 `#9`。
 - 输出来源：`InpaintStitchImproved #79` 后经 `SeedVR2VideoUpscaler #110`
   放大的最终图；中间图不作为 API 产物返回。
 
@@ -14,3 +16,6 @@
 
 输入图需要包含工作流可识别的蒙版/Alpha；Qwen3 VL Plus 凭据必须通过服务器
 Secret 管理，不能继续保存在业务 Git 仓库中。
+
+12 GiB 版本只调整 GPU Control 的调度准入值，模板 SHA、模型、节点、提示词、
+采样参数和最终输出均与批准的 `8c37f07` 版本完全一致。
