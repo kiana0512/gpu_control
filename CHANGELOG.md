@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-12 — Automatic retopology repeated-component fidelity v3.0.18
+
+- Lock every repeated or slender high-model component to its measured count, center, endpoints,
+  centerline, section radius and relative layer during the existing single analysis pass.
+- Prevent curve smoothing or sparse section reconstruction from shortening logs, enlarging bends,
+  reordering components or creating intersections that do not exist in the high model.
+- Keep the fast publication policy unchanged: no direction review, visual score, topology-flow audit,
+  FBX reimport or UV generation was added to the delivery path.
+- Release Asset API `1.6.40-retopo-repeated-components-v1`, Blender Worker
+  `1.4.40-retopo-repeated-components-v1`, and retopology package v3.0.18.
+
 ## 2026-08-12 — Automatic retopology trained-skill routing v3.0.17
 
 - Fix Direct V2 task isolation so each job installs and invokes the approved

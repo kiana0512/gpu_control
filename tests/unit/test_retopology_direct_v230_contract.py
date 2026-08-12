@@ -18,7 +18,7 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def test_approved_v317_package_is_complete() -> None:
+def test_approved_v318_package_is_complete() -> None:
     completed = subprocess.run(  # noqa: S603 - repository-owned verifier
         [sys.executable, str(ROOT / "server" / "verify_package.py")],
         capture_output=True,
@@ -31,10 +31,10 @@ def test_approved_v317_package_is_complete() -> None:
         file_sha256(ROOT / "blender-auto-retopo-align" / "SKILL.md")
         == "d2bcdb1dede2e5bddeb10a913cede28e3496e4bbfeb413b0bf6355248ec4376b"
     )
-    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.17"
+    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.18"
     assert (
         RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
-        == "7392f4f218801a97670ee3cfb511b778b23b2e2344ca7971816aefa2898e27d5"
+        == "1dd4cfa22e254b5aa392597a5af95ab879a471cca54eb5b32512c190220be614"
     )
 
 
@@ -72,7 +72,7 @@ def test_rolling_completion_accepts_only_matching_approved_package_identity() ->
     assert retopology_direct_v2_completion_identity_valid(unknown, unknown) is False
 
 
-def test_public_create_contract_selects_v317_without_changing_route() -> None:
+def test_public_create_contract_selects_v318_without_changing_route() -> None:
     api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text(encoding="utf-8")
     assert '@app.post("/api/v1/assets/retopology/process")' in api
     assert '"schema_version": "retopology_input.direct-v2"' in api
@@ -83,7 +83,7 @@ def test_public_create_contract_selects_v317_without_changing_route() -> None:
     ).read_text("utf-8")
 
 
-def test_v317_trained_generation_and_fast_delivery_contract_are_wired() -> None:
+def test_v318_trained_generation_and_fast_delivery_contract_are_wired() -> None:
     entrypoint = (ROOT / "server" / "one_click_retopology.py").read_text("utf-8")
     worker = Path("apps/blender_worker/src/gpu_control_blender_worker/main.py").read_text(
         "utf-8"
@@ -110,6 +110,7 @@ def test_v317_trained_generation_and_fast_delivery_contract_are_wired() -> None:
     assert '"RETOPOLOGY_ALIGNMENT_SKILL_ROOT": str(installed_skill)' in entrypoint
     assert "不得运行计划守卫" in prompt
     assert "最终有效 Blend 和无破面结果才是交付门禁" in prompt
+    assert "逐件锁定组件数量、中心、两端锚点、主轴/中心线" in prompt
     assert "guard_shape_authority_plan.py" not in prompt
     assert '"timing_seconds"' in entrypoint
     prepare = (

@@ -138,7 +138,7 @@ SUBSTANCE_BAKE_COMMAND_COUNTS = {
     "li3d-pbr-full-v2": 10,
 }
 CODEX_REQUIRED_JOB_TYPES = frozenset({"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"})
-RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-auto-retopo-align-v3.0.17"
+RETOPOLOGY_V6_SKILL_VERSION = "asset-skills-auto-retopo-align-v3.0.18"
 
 
 @dataclass(frozen=True, slots=True)

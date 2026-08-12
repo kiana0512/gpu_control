@@ -1,4 +1,4 @@
-# Blender 自动拓扑与原坐标对齐服务器包 v3.0.17
+# Blender 自动拓扑与原坐标对齐服务器包 v3.0.18
 
 本包合并两个正式技能：
 
@@ -7,7 +7,7 @@
 
 它用于替换现有 `blender-retopology-compare-iterate-server-package-v2.5.0`。旧单文件调用参数和成功状态保持兼容；成功后额外输出烘焙高低模 FBX 与对齐报告。
 
-## v3.0.17 行为
+## v3.0.18 行为
 
 - generated-low 任务同时安装两个职责分离的技能：`blender-retopology-compare-iterate`
   按训练规则负责结构分析和建形，`blender-auto-retopo-align` 只负责坐标恢复和服务器输出。
@@ -106,8 +106,8 @@
 推荐把每个版本解压到独立 release 目录，再切换服务配置或符号链接，保留旧版用于回滚：
 
 ```bash
-unzip blender-auto-retopo-align-server-package-v3.0.17.zip -d /opt/li3d/releases/
-cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.17
+unzip blender-auto-retopo-align-server-package-v3.0.18.zip -d /opt/li3d/releases/
+cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.18
 python3 server/verify_package.py
 cp server/worker.env.example server/worker.env
 ```
@@ -227,7 +227,7 @@ python3 server/align_existing_low.py \
 docker build \
   --build-arg WORKER_IMAGE=现有Worker镜像@sha256:固定摘要 \
   -f Dockerfile.layer \
-  -t li3d/blender-auto-retopo-align:v3.0.17 .
+  -t li3d/blender-auto-retopo-align:v3.0.18 .
 ```
 
 本 Layer 不替换现有 HTTP、队列、存储、鉴权或 Worker entrypoint，只加入合并技能和兼容入口。
