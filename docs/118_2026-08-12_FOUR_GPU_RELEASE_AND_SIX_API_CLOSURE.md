@@ -193,16 +193,24 @@ WebUI 已包含：
 已完成的测试结果：
 
 - Web：5 个测试文件、18 项测试通过；ESLint 0 warning；Prettier 通过；Vue/TypeScript/Vite 生产构建通过；
-- 变更相关 Python：26 项单元测试通过；Asset API schema v2/v3 参数化集成测试 2/2 通过；
-- 全量 Python：`585 passed, 16 skipped, 0 failed`，耗时 276.39 秒；两个 warning 仅表示只读测试容器无法写入 `.pytest_cache`，不影响结果；
+- 变更相关负载门禁与夹具：`91 passed, 0 failed`；Asset API schema v2/v3 参数化集成测试 2/2 通过；
+- 最终全量 Python：`586 passed, 15 skipped, 0 failed`，耗时 282.86 秒；
 - Ruff 全仓通过；`git diff --check` 通过；关键脚本可编译；
 - 四节点真实审计 12/12 成功；
 - Web 生产容器健康并由 HTTPS 入口返回 200。
 
 新场景 `tests/load/scenarios/six_api_100_20260812.yaml` 定义 1→10→25→50→100 VU、总时长 1260 秒、
-六 API 混合、失败关闭和清场门禁。由于正式场景要求六 API 容量完整、源码 revision 已发布、运行镜像
-与 release evidence 完全一致，而 Windows Baker v7 尚未上线，本轮没有伪造或强行执行“六 API 正式
+公开六 API 混合、失败关闭和清场门禁。公开六项固定为：ImageClip 抠图、ModelView 局部重绘、
+PBR 粗糙度、Blender PBR UV、Direct V2 自动拓扑和 Substance PBR 烘焙；拓扑独立审计属于内部
+验证合同，保留 12/12 真实成功证据，但不挤占用户可见的六项综合压测名额。由于正式场景要求六 API
+容量完整、源码 revision 已发布、运行镜像与 release evidence 完全一致，而 Windows Baker v7 尚未上线，
+本轮没有伪造或强行执行“六 API 正式
 100 VU 通过”。计划文件可以审计，但正式综合压力必须在 v7 canary 成功后运行。
+
+最终回归前还发现旧负载场景把内部 `retopology_audit` 当作第六项，导致用户可见的
+`modelview_inpaint` 没进入综合集合。现已同时修正场景、Locust 调度器、会话碰撞检测、异常清场、
+制品校验、示例夹具和离线合成夹具；机器可读断言确认 API 恰为上述六项、权重总和 100、峰值 100 VU、
+总时长 1260 秒。旧六项 YAML 仍只保留解析兼容，不会被当前正式场景选中。
 
 ## 9. Docker、Git 与清理
 
@@ -227,6 +235,11 @@ WebUI 已包含：
 大小 89212344 字节，SHA-256 `32f2ad35bff9a5ef00f0408517847f99dca9ea7fbef43fe8bcf4c200c8d93450`。
 拆分件和离线 provenance 位于 `artifacts/control-plane/1.5.13/release-parts/`。五镜像的 Docker/OCI
 config 全部逐项一致，OCI revision label 全部绑定上述代码提交；离线 provenance 已验证。
+
+六 API 负载运行器的公开集合修正发生在正式运行镜像构建之后。该模块仅由离线压测脚本和测试导入，
+生产 API、Scheduler、Asset API、Web、Worker 与 Node Agent 均不导入它，因此不重启或重打生产镜像；
+压测执行时必须同时记录运行镜像 revision `94022a6…` 与后续负载运行器 Git revision，不能混写为同一
+制品身份。
 
 零活动任务门禁确认后，API、Scheduler、Asset API、Web 和本机 Worker 已滚动到正式 tag；三台远端
 Blender Worker 的运行 image ID 也全部等于 `c3e20f…`。4070Ti Node Agent 已滚动到 `1.5.13`，

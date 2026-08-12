@@ -30,13 +30,25 @@ import yaml
 
 API_NAMES = (
     "imageclip_batch",
+    "modelview_inpaint",
+    "modelview_roughness",
+    "uv_process",
+    "retopology_process",
+    "substance_bake",
+)
+LEGACY_API_NAMES = (
+    "imageclip_batch",
     "modelview_roughness",
     "uv_process",
     "retopology_audit",
     "retopology_process",
     "substance_bake",
 )
-SYNC_FINAL_API_NAMES = frozenset({"modelview_roughness"})
+SYNC_FINAL_API_NAMES = frozenset({"modelview_inpaint", "modelview_roughness"})
+SYNC_WORKFLOW_APIS = {
+    "modelview-inpaint": ("modelview_inpaint", "mvi"),
+    "modelview-roughness": ("modelview_roughness", "mvr"),
+}
 # A production load run proves automatic delivery, not historical
 # downloadability. WAITING_REVIEW remains terminal for legacy records but is
 # deliberately not a successful acceptance state.
@@ -89,6 +101,12 @@ API_CONTRACTS: dict[str, dict[str, str]] = {
         "status": "/api/v1/batches/{batch_id}",
         "cancel": "/api/v1/batches/{batch_id}/cancel",
     },
+    "modelview_inpaint": {
+        "resource": "GPU",
+        "submit": "/api/v1/services/modelview-inpaint",
+        "status": "/api/v1/jobs/{job_id}",
+        "cancel": "/api/v1/jobs/{job_id}/cancel",
+    },
     "modelview_roughness": {
         "resource": "GPU",
         "submit": "/api/v1/services/modelview-roughness",
@@ -126,6 +144,7 @@ API_CONTRACTS: dict[str, dict[str, str]] = {
 # planner and the Locust entrypoint do not import application/runtime state.
 FIXED_LOAD_ARTIFACT_KINDS: dict[str, frozenset[str]] = {
     "imageclip_batch": frozenset({"result_archive"}),
+    "modelview_inpaint": frozenset({"output"}),
     "modelview_roughness": frozenset({"output"}),
     "uv_process": frozenset({"blend", "fbx", "report", "qa", "fbx_qa"}),
     "retopology_audit": frozenset({"audit", "manifest"}),
@@ -168,9 +187,9 @@ SUBSTANCE_LOAD_ARTIFACT_KINDS: dict[str, frozenset[str]] = {
 
 REQUIRED_FIXTURE_PATHS: dict[str, tuple[str, ...]] = {
     "imageclip_batch": ("archive", "manifest"),
+    "modelview_inpaint": ("image",),
     "modelview_roughness": ("image",),
     "uv_process": ("asset", "metadata"),
-    "retopology_audit": ("project", "metadata"),
     "retopology_process": ("project", "metadata"),
     "substance_bake": ("low_mesh", "metadata"),
 }
@@ -233,9 +252,7 @@ LOAD_DEPLOYMENT_HOSTS = {
     "worker-3090-a": "10.3.34.12",
     "worker-3090-b": "10.3.34.14:2222",
 }
-LOAD_LIVE_DEPLOYMENT_TARGETS: tuple[
-    tuple[str, str, str, tuple[str, ...]], ...
-] = (
+LOAD_LIVE_DEPLOYMENT_TARGETS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     (
         "control-api",
         "api",
@@ -384,9 +401,9 @@ def copy_load_evidence_json(value: Any) -> Any:
                     raise LoadTestConfigurationError(
                         "load evidence response contains a forbidden credential field"
                     )
-                if (
-                    normalized_key == "url" or normalized_key.endswith("_url")
-                ) and isinstance(nested, str):
+                if (normalized_key == "url" or normalized_key.endswith("_url")) and isinstance(
+                    nested, str
+                ):
                     parsed_url = urlsplit(nested)
                     if parsed_url.query or parsed_url.fragment:
                         raise LoadTestConfigurationError(
@@ -433,13 +450,20 @@ def validate_load_service_provenance(
             raise LoadTestConfigurationError(
                 f"{component} live source revision does not match the load-test plan"
             )
-        if payload.get("version_aligned") is not True or payload.get("provenance_complete") is not True:
+        if (
+            payload.get("version_aligned") is not True
+            or payload.get("provenance_complete") is not True
+        ):
             raise LoadTestConfigurationError(
                 f"{component} live build provenance is incomplete or version-misaligned"
             )
         package_version = payload.get("package_version")
         build_version = payload.get("build_version")
-        if not isinstance(package_version, str) or not package_version or build_version != package_version:
+        if (
+            not isinstance(package_version, str)
+            or not package_version
+            or build_version != package_version
+        ):
             raise LoadTestConfigurationError(
                 f"{component} package/build version evidence is invalid"
             )
@@ -475,8 +499,7 @@ def _load_evidence_git(
     if check and completed.returncode != 0:
         operation = " ".join(arguments[:2])
         raise LoadTestConfigurationError(
-            f"release evidence Git verification failed ({operation}, exit "
-            f"{completed.returncode})"
+            f"release evidence Git verification failed ({operation}, exit {completed.returncode})"
         )
     return completed
 
@@ -524,12 +547,16 @@ def verify_remote_load_release_evidence(
         )
 
     try:
-        origin_url = _load_evidence_git(
-            repository_root,
-            "remote",
-            "get-url",
-            "origin",
-        ).stdout.decode("utf-8", errors="strict").strip()
+        origin_url = (
+            _load_evidence_git(
+                repository_root,
+                "remote",
+                "get-url",
+                "origin",
+            )
+            .stdout.decode("utf-8", errors="strict")
+            .strip()
+        )
     except UnicodeDecodeError as exc:
         raise LoadTestConfigurationError("release evidence origin is not valid UTF-8") from exc
     if origin_url not in LOAD_RELEASE_ORIGIN_URLS:
@@ -551,9 +578,7 @@ def verify_remote_load_release_evidence(
         ) from exc
     remote_rows = [line.split() for line in remote_output.splitlines() if line.strip()]
     remote_commits = [
-        row[0]
-        for row in remote_rows
-        if len(row) == 2 and row[1] == LOAD_RELEASE_REMOTE_HEAD
+        row[0] for row in remote_rows if len(row) == 2 and row[1] == LOAD_RELEASE_REMOTE_HEAD
     ]
     if remote_commits != [evidence_commit]:
         raise LoadTestConfigurationError(
@@ -561,12 +586,16 @@ def verify_remote_load_release_evidence(
         )
 
     try:
-        checkout_head = _load_evidence_git(
-            repository_root,
-            "rev-parse",
-            "--verify",
-            "HEAD",
-        ).stdout.decode("ascii", errors="strict").strip()
+        checkout_head = (
+            _load_evidence_git(
+                repository_root,
+                "rev-parse",
+                "--verify",
+                "HEAD",
+            )
+            .stdout.decode("ascii", errors="strict")
+            .strip()
+        )
     except UnicodeDecodeError as exc:
         raise LoadTestConfigurationError("local harness HEAD is not ASCII") from exc
     if checkout_head != evidence_commit:
@@ -580,9 +609,7 @@ def verify_remote_load_release_evidence(
         "--untracked-files=no",
     ).stdout
     if tracked_status.strip():
-        raise LoadTestConfigurationError(
-            "production load harness has modified tracked files"
-        )
+        raise LoadTestConfigurationError("production load harness has modified tracked files")
 
     evidence_blob = _load_evidence_git(
         repository_root,
@@ -739,9 +766,10 @@ def verify_remote_load_release_evidence(
             "remote release evidence must contain exactly five offline OCI identities"
         )
     attestations = payload.get("attestations")
-    if not isinstance(attestations, Mapping) or attestations.get(
-        "provenance_status"
-    ) != "VERIFIED_OFFLINE_OCI":
+    if (
+        not isinstance(attestations, Mapping)
+        or attestations.get("provenance_status") != "VERIFIED_OFFLINE_OCI"
+    ):
         raise LoadTestConfigurationError("remote release evidence has no verified OCI provenance")
 
     declared_digests = runtime.target_release_identity["image_digests"]
@@ -817,9 +845,7 @@ def verify_remote_load_release_evidence(
             "oci_config_digest": config_digest,
         }
 
-    expected_deployment_inventory = runtime.target_release_identity[
-        "deployment_inventory"
-    ]
+    expected_deployment_inventory = runtime.target_release_identity["deployment_inventory"]
     if receipt_payload.get("components") != verified_images:
         raise LoadTestConfigurationError(
             "live deployment receipt components do not match candidate OCI evidence"
@@ -895,8 +921,7 @@ def verify_live_load_deployment(
             ) from exc
         if completed.returncode != 0:
             raise LoadTestConfigurationError(
-                f"live deployment inspection failed for {target} "
-                f"(exit {completed.returncode})"
+                f"live deployment inspection failed for {target} (exit {completed.returncode})"
             )
         try:
             output_lines = completed.stdout.decode("ascii", errors="strict").splitlines()
@@ -917,9 +942,7 @@ def verify_live_load_deployment(
             "image_id": expected_image_id,
         }
     worker_image_ids = {
-        item["image_id"]
-        for item in inventory.values()
-        if item["component"] == "worker"
+        item["image_id"] for item in inventory.values() if item["component"] == "worker"
     }
     if worker_image_ids != {runtime.worker_image_digest}:
         raise LoadTestConfigurationError(
@@ -952,9 +975,7 @@ def verify_live_load_deployment(
             "live Windows Substance Agent script inspection could not complete"
         ) from exc
     try:
-        substance_output = substance_completed.stdout.decode(
-            "ascii", errors="strict"
-        ).split()
+        substance_output = substance_completed.stdout.decode("ascii", errors="strict").split()
     except UnicodeDecodeError as exc:
         raise LoadTestConfigurationError(
             "live Windows Substance Agent script inspection returned invalid output"
@@ -963,8 +984,7 @@ def verify_live_load_deployment(
         substance_completed.returncode != 0
         or len(substance_output) != 2
         or substance_output[0] != runtime.substance_agent_sha256
-        or substance_output[1]
-        != "/mnt/d/GPUControl/agent/Invoke-GPUControlSubstanceAgent.ps1"
+        or substance_output[1] != "/mnt/d/GPUControl/agent/Invoke-GPUControlSubstanceAgent.ps1"
     ):
         raise LoadTestConfigurationError(
             "live Windows Substance Agent script does not match the remote receipt"
@@ -1029,7 +1049,7 @@ def validate_load_artifact_manifest(
         download_url = str(artifact.get("download_url") or "")
         size_bytes = artifact.get("size_bytes")
         sha256 = str(artifact.get("sha256") or "")
-        if not kind or not identifier or (api_name != "modelview_roughness" and not filename):
+        if not kind or not identifier or (api_name not in SYNC_FINAL_API_NAMES and not filename):
             raise LoadTestConfigurationError(
                 f"{api_name} artifact index {index} omitted identity metadata"
             )
@@ -1113,7 +1133,7 @@ def build_load_artifact_evidence(
     filename = str(artifact.get("filename") or "")
     metadata_size_bytes = artifact.get("size_bytes")
     metadata_sha256 = str(artifact.get("sha256") or "")
-    if not kind or not identifier or (api_name != "modelview_roughness" and not filename):
+    if not kind or not identifier or (api_name not in SYNC_FINAL_API_NAMES and not filename):
         raise LoadTestConfigurationError(f"{api_name} artifact evidence omitted identity metadata")
     if (
         isinstance(metadata_size_bytes, bool)
@@ -1164,7 +1184,10 @@ def find_load_session_identity_collisions(
         )
     escaped_session = re.escape(session_id)
     gpu_batch_pattern = re.compile(rf"^loadtest:{escaped_session}:imageclip_batch:[0-9]{{8}}$")
-    roughness_pattern = re.compile(rf"^lt:{escaped_session}:mvr:[0-9]{{8}}$")
+    sync_patterns = tuple(
+        re.compile(rf"^lt:{escaped_session}:{short_name}:[0-9]{{8}}$")
+        for _, short_name in SYNC_WORKFLOW_APIS.values()
+    )
     asset_pattern = re.compile(
         rf"^loadtest:{escaped_session}:"
         r"(?:uv_process|retopology_audit|retopology_process|substance_bake):[0-9]{8}$"
@@ -1188,7 +1211,7 @@ def find_load_session_identity_collisions(
                 matched = gpu_batch_pattern.fullmatch(identity) is not None
             else:
                 identity = str(row.get("request_id") or "")
-                matched = roughness_pattern.fullmatch(identity) is not None
+                matched = any(pattern.fullmatch(identity) is not None for pattern in sync_patterns)
             if not matched:
                 continue
             identifier = str(row.get("job_id") or row.get("batch_id") or "")
@@ -1525,7 +1548,7 @@ def identify_foreign_active_work(
     """Return minimal evidence for active work outside this load session.
 
     Asset rows use their session-prefixed external ID. ImageClip uses its
-    external batch ID. Synchronous Roughness prefers the server-side
+    external batch ID. Synchronous ModelView services prefer the server-side
     idempotency key because a gateway may replace ``request_id``; older admin
     payloads fall back to the request/key binding registered by this harness.
     GPU rows also require ``client_kind=test`` when the field is present.
@@ -1541,11 +1564,14 @@ def identify_foreign_active_work(
         raise LoadTestConfigurationError("production watchdog requires a valid session id")
     tenant_key_indices = {tenant_id: index for index, tenant_id in enumerate(approved_tenant_order)}
     escaped_session = re.escape(session_id)
-    roughness_pattern = re.compile(rf"^lt:{escaped_session}:mvr:[0-9]{{8}}$")
-    roughness_idempotency_pattern = re.compile(
-        rf"^load:{escaped_session}:mvr:[0-9]{{8}}$"
-    )
-    roughness_idempotency_bindings = dict(roughness_idempotency_key_indices or {})
+    sync_patterns = {
+        workflow_key: (
+            re.compile(rf"^lt:{escaped_session}:{short_name}:[0-9]{{8}}$"),
+            re.compile(rf"^load:{escaped_session}:{short_name}:[0-9]{{8}}$"),
+        )
+        for workflow_key, (_, short_name) in SYNC_WORKFLOW_APIS.items()
+    }
+    sync_idempotency_bindings = dict(roughness_idempotency_key_indices or {})
     imageclip_pattern = re.compile(rf"^loadtest:{escaped_session}:imageclip_batch:[0-9]{{8}}$")
     asset_patterns = {
         api_name: re.compile(rf"^loadtest:{escaped_session}:{re.escape(api_name)}:[0-9]{{8}}$")
@@ -1582,25 +1608,22 @@ def identify_foreign_active_work(
                 belongs_to_session = (
                     imageclip_pattern.fullmatch(str(row.get("external_batch_id") or "")) is not None
                 )
-            elif (
-                belongs_to_load_tenant
-                and row.get("kind") == "job"
-                and row.get("workflow_key") == "modelview-roughness"
-            ):
+            elif belongs_to_load_tenant and row.get("kind") == "job":
                 request_id = str(row.get("request_id") or "")
                 idempotency_key = str(row.get("idempotency_key") or "")
-                if idempotency_key:
-                    belongs_to_session = (
-                        roughness_idempotency_pattern.fullmatch(idempotency_key) is not None
-                        and roughness_idempotency_bindings.get(idempotency_key)
-                        == tenant_key_indices.get(owner)
-                    )
-                else:
-                    belongs_to_session = (
-                        roughness_pattern.fullmatch(request_id) is not None
-                        and roughness_request_key_indices.get(request_id)
-                        == tenant_key_indices.get(owner)
-                    )
+                patterns = sync_patterns.get(str(row.get("workflow_key") or ""))
+                if patterns is not None and idempotency_key:
+                    belongs_to_session = patterns[1].fullmatch(
+                        idempotency_key
+                    ) is not None and sync_idempotency_bindings.get(
+                        idempotency_key
+                    ) == tenant_key_indices.get(owner)
+                elif patterns is not None:
+                    belongs_to_session = patterns[0].fullmatch(
+                        request_id
+                    ) is not None and roughness_request_key_indices.get(
+                        request_id
+                    ) == tenant_key_indices.get(owner)
             if belongs_to_session:
                 continue
             identifier = row.get("job_id") or row.get("batch_id") or "unknown"
@@ -1634,8 +1657,8 @@ def discover_scoped_teardown_tasks(
 
     The configured load tenants are dedicated to one run and map one-to-one to
     API keys. Asset jobs and ImageClip batches must additionally carry the
-    harness session prefix. The synchronous roughness contract has no external
-    business ID, so its server-side idempotency key must exactly match a
+    harness session prefix. Synchronous ModelView contracts have no external
+    business ID, so their server-side idempotency key must exactly match a
     key/tenant binding registered by this harness. Older admin payloads without
     that field fall back to the registered request ID. ``created_at`` remains a
     secondary lower bound for every row. Any ambiguous active row owned by a
@@ -1661,43 +1684,51 @@ def discover_scoped_teardown_tasks(
         raise LoadTestConfigurationError(
             "teardown scan requires a unique API key index for every tenant"
         )
-    roughness_request_pattern = re.compile(rf"^lt:{re.escape(session_id)}:mvr:[0-9]{{8}}$")
-    roughness_idempotency_pattern = re.compile(
-        rf"^load:{re.escape(session_id)}:mvr:[0-9]{{8}}$"
-    )
-    normalized_roughness_requests: dict[str, int] = {}
+    escaped_session = re.escape(session_id)
+    sync_patterns = {
+        workflow_key: (
+            re.compile(rf"^lt:{escaped_session}:{short_name}:[0-9]{{8}}$"),
+            re.compile(rf"^load:{escaped_session}:{short_name}:[0-9]{{8}}$"),
+        )
+        for workflow_key, (_, short_name) in SYNC_WORKFLOW_APIS.items()
+    }
+    normalized_sync_requests: dict[str, int] = {}
     for request_id, raw_index in roughness_request_key_indices.items():
         normalized_request_id = str(request_id).strip()
         if (
-            not roughness_request_pattern.fullmatch(normalized_request_id)
+            not any(
+                patterns[0].fullmatch(normalized_request_id) for patterns in sync_patterns.values()
+            )
             or isinstance(raw_index, bool)
             or not isinstance(raw_index, int)
             or raw_index < 0
             or raw_index not in normalized_indices.values()
         ):
             raise LoadTestConfigurationError(
-                "teardown scan received an invalid roughness request binding"
+                "teardown scan received an invalid synchronous request binding"
             )
-        normalized_roughness_requests[normalized_request_id] = raw_index
-    normalized_roughness_idempotency_keys: dict[str, int] = {}
+        normalized_sync_requests[normalized_request_id] = raw_index
+    normalized_sync_idempotency_keys: dict[str, int] = {}
     for idempotency_key, raw_index in (roughness_idempotency_key_indices or {}).items():
         normalized_idempotency_key = str(idempotency_key).strip()
         if (
-            not roughness_idempotency_pattern.fullmatch(normalized_idempotency_key)
+            not any(
+                patterns[1].fullmatch(normalized_idempotency_key)
+                for patterns in sync_patterns.values()
+            )
             or isinstance(raw_index, bool)
             or not isinstance(raw_index, int)
             or raw_index < 0
             or raw_index not in normalized_indices.values()
         ):
             raise LoadTestConfigurationError(
-                "teardown scan received an invalid roughness idempotency binding"
+                "teardown scan received an invalid synchronous idempotency binding"
             )
-        normalized_roughness_idempotency_keys[normalized_idempotency_key] = raw_index
+        normalized_sync_idempotency_keys[normalized_idempotency_key] = raw_index
     run_started_at = _parse_window_timestamp(started_at)
     if run_started_at is None:
         raise LoadTestConfigurationError("teardown scan requires an aware RFC3339 run start")
 
-    escaped_session = re.escape(session_id)
     imageclip_pattern = re.compile(rf"^loadtest:{escaped_session}:imageclip_batch:[0-9]{{8}}$")
     asset_patterns = {
         api_name: re.compile(rf"^loadtest:{escaped_session}:{re.escape(api_name)}:[0-9]{{8}}$")
@@ -1764,31 +1795,32 @@ def discover_scoped_teardown_tasks(
                 }
             )
             continue
-        roughness_request_id = str(row.get("request_id") or "")
-        roughness_idempotency_key = str(row.get("idempotency_key") or "")
-        if roughness_idempotency_key:
-            roughness_identity_matches = (
-                roughness_idempotency_pattern.fullmatch(roughness_idempotency_key) is not None
-                and normalized_roughness_idempotency_keys.get(roughness_idempotency_key)
-                == key_index
+        workflow_key = str(row.get("workflow_key") or "")
+        sync_contract = SYNC_WORKFLOW_APIS.get(workflow_key)
+        patterns = sync_patterns.get(workflow_key)
+        request_id = str(row.get("request_id") or "")
+        idempotency_key = str(row.get("idempotency_key") or "")
+        if patterns is not None and idempotency_key:
+            sync_identity_matches = (
+                patterns[1].fullmatch(idempotency_key) is not None
+                and normalized_sync_idempotency_keys.get(idempotency_key) == key_index
             )
             scope_basis = "tenant+created_at+workflow_key+idempotency_key"
-        else:
-            roughness_identity_matches = (
-                roughness_request_pattern.fullmatch(roughness_request_id) is not None
-                and normalized_roughness_requests.get(roughness_request_id) == key_index
+        elif patterns is not None:
+            sync_identity_matches = (
+                patterns[0].fullmatch(request_id) is not None
+                and normalized_sync_requests.get(request_id) == key_index
             )
             scope_basis = "tenant+created_at+workflow_key+request_id"
-        if (
-            kind != "job"
-            or row.get("workflow_key") != "modelview-roughness"
-            or not roughness_identity_matches
-        ):
+        else:
+            sync_identity_matches = False
+            scope_basis = "unknown"
+        if kind != "job" or sync_contract is None or not sync_identity_matches:
             raise LoadTestConfigurationError("teardown scan found an ambiguous load-tenant GPU job")
         discovered.append(
             {
                 "id": identifier,
-                "api": "modelview_roughness",
+                "api": sync_contract[0],
                 "kind": "job",
                 "status_url": f"/api/v1/jobs/{identifier}",
                 "cancel_url": f"/api/v1/jobs/{identifier}/cancel",
@@ -1796,8 +1828,8 @@ def discover_scoped_teardown_tasks(
                 "api_key_index": key_index,
                 "last_status": status,
                 "recovery_source": "admin_scope_scan",
-                "request_id": roughness_request_id,
-                "idempotency_key": roughness_idempotency_key or None,
+                "request_id": request_id,
+                "idempotency_key": idempotency_key or None,
                 "scope_basis": scope_basis,
             }
         )
@@ -2035,17 +2067,17 @@ class LoadScenario:
 
     def normalized_weights(self) -> dict[str, float]:
         total = sum(self.weights.values())
-        return {name: round(self.weights[name] / total, 6) for name in API_NAMES}
+        return {name: round(value / total, 6) for name, value in self.weights.items()}
 
     def resource_mix(self) -> dict[str, float]:
         total = sum(self.weights.values())
         gpu_weight = sum(
             self.weights[name]
-            for name in API_NAMES
+            for name in self.weights
             if API_CONTRACTS[name]["resource"] in {"GPU", "GPU_FENCED_ASSET"}
         )
         cpu_weight = sum(
-            self.weights[name] for name in API_NAMES if API_CONTRACTS[name]["resource"] == "CPU"
+            self.weights[name] for name in self.weights if API_CONTRACTS[name]["resource"] == "CPU"
         )
         return {
             "gpu_consuming": round(gpu_weight / total, 6),
@@ -2159,18 +2191,10 @@ class RuntimeSettings:
             asset_api_image_digest=source.get("LOAD_TEST_ASSET_API_IMAGE_DIGEST", "").strip(),
             web_image_digest=source.get("LOAD_TEST_WEB_IMAGE_DIGEST", "").strip(),
             worker_image_digest=source.get("LOAD_TEST_WORKER_IMAGE_DIGEST", "").strip(),
-            release_evidence_commit=source.get(
-                "LOAD_TEST_RELEASE_EVIDENCE_COMMIT", ""
-            ).strip(),
-            release_evidence_path=source.get(
-                "LOAD_TEST_RELEASE_EVIDENCE_PATH", ""
-            ).strip(),
-            release_evidence_sha256=source.get(
-                "LOAD_TEST_RELEASE_EVIDENCE_SHA256", ""
-            ).strip(),
-            substance_agent_sha256=source.get(
-                "LOAD_TEST_SUBSTANCE_AGENT_SHA256", ""
-            ).strip(),
+            release_evidence_commit=source.get("LOAD_TEST_RELEASE_EVIDENCE_COMMIT", "").strip(),
+            release_evidence_path=source.get("LOAD_TEST_RELEASE_EVIDENCE_PATH", "").strip(),
+            release_evidence_sha256=source.get("LOAD_TEST_RELEASE_EVIDENCE_SHA256", "").strip(),
+            substance_agent_sha256=source.get("LOAD_TEST_SUBSTANCE_AGENT_SHA256", "").strip(),
         )
 
     @property
@@ -2211,14 +2235,10 @@ class RuntimeSettings:
             },
             "substance_agent": {
                 "skill_version": "substance-baker-2026.08.12-v7",
-                "installed_path": (
-                    "D:\\GPUControl\\agent\\Invoke-GPUControlSubstanceAgent.ps1"
-                ),
+                "installed_path": ("D:\\GPUControl\\agent\\Invoke-GPUControlSubstanceAgent.ps1"),
                 "installed_script_sha256": self.substance_agent_sha256 or None,
                 "instance_count": 4,
-                "worker_ids": [
-                    f"asset-worker-3090-b-windows-{index:02d}" for index in range(1, 5)
-                ],
+                "worker_ids": [f"asset-worker-3090-b-windows-{index:02d}" for index in range(1, 5)],
             },
         }
 
@@ -2385,12 +2405,9 @@ class RuntimeSettings:
                     )
             if not COMMIT_PATTERN.fullmatch(self.release_evidence_commit):
                 blockers.append(
-                    "LOAD_TEST_RELEASE_EVIDENCE_COMMIT must be the full origin/main evidence "
-                    "commit"
+                    "LOAD_TEST_RELEASE_EVIDENCE_COMMIT must be the full origin/main evidence commit"
                 )
-            if not LOAD_RELEASE_EVIDENCE_PATH_PATTERN.fullmatch(
-                self.release_evidence_path
-            ):
+            if not LOAD_RELEASE_EVIDENCE_PATH_PATTERN.fullmatch(self.release_evidence_path):
                 blockers.append(
                     "LOAD_TEST_RELEASE_EVIDENCE_PATH must name the packaged live deployment receipt"
                 )
@@ -2400,7 +2417,7 @@ class RuntimeSettings:
                 )
             if not HASH_PATTERN.fullmatch(self.substance_agent_sha256):
                 blockers.append(
-                    "LOAD_TEST_SUBSTANCE_AGENT_SHA256 must bind the installed Windows v6 script"
+                    "LOAD_TEST_SUBSTANCE_AGENT_SHA256 must bind the installed Windows v7 script"
                 )
             expected_anchor = self.target_release_identity["release_evidence"]
             verified_images = (
@@ -2408,31 +2425,26 @@ class RuntimeSettings:
                 if isinstance(verified_release_evidence, Mapping)
                 else None
             )
-            verified_image_ids_match = isinstance(verified_images, Mapping) and set(
-                verified_images
-            ) == set(RELEASE_IMAGE_COMPONENTS) and all(
-                isinstance(verified_images.get(component), Mapping)
-                and verified_images[component].get("local_image_id")
-                == image_digests[component]
-                for component in RELEASE_IMAGE_COMPONENTS
+            verified_image_ids_match = (
+                isinstance(verified_images, Mapping)
+                and set(verified_images) == set(RELEASE_IMAGE_COMPONENTS)
+                and all(
+                    isinstance(verified_images.get(component), Mapping)
+                    and verified_images[component].get("local_image_id") == image_digests[component]
+                    for component in RELEASE_IMAGE_COMPONENTS
+                )
             )
             if (
                 not isinstance(verified_release_evidence, Mapping)
                 or verified_release_evidence.get("schema_version")
                 != "gpu-control-load-release-evidence-verification.v1"
                 or verified_release_evidence.get("verified") is not True
-                or verified_release_evidence.get("origin_url")
-                not in LOAD_RELEASE_ORIGIN_URLS
-                or verified_release_evidence.get("remote_ref")
-                != LOAD_RELEASE_REMOTE_HEAD
-                or verified_release_evidence.get("evidence_commit")
-                != expected_anchor["commit"]
-                or verified_release_evidence.get("evidence_path")
-                != expected_anchor["path"]
-                or verified_release_evidence.get("evidence_sha256")
-                != expected_anchor["sha256"]
-                or verified_release_evidence.get("source_revision")
-                != self.source_revision
+                or verified_release_evidence.get("origin_url") not in LOAD_RELEASE_ORIGIN_URLS
+                or verified_release_evidence.get("remote_ref") != LOAD_RELEASE_REMOTE_HEAD
+                or verified_release_evidence.get("evidence_commit") != expected_anchor["commit"]
+                or verified_release_evidence.get("evidence_path") != expected_anchor["path"]
+                or verified_release_evidence.get("evidence_sha256") != expected_anchor["sha256"]
+                or verified_release_evidence.get("source_revision") != self.source_revision
                 or not verified_image_ids_match
             ):
                 blockers.append(
@@ -2446,8 +2458,7 @@ class RuntimeSettings:
                 or verified_live_deployment.get("verified") is not True
                 or verified_live_deployment.get("release_evidence_commit")
                 != self.release_evidence_commit
-                or verified_live_deployment.get("source_revision")
-                != self.source_revision
+                or verified_live_deployment.get("source_revision") != self.source_revision
                 or verified_live_deployment.get("inventory")
                 != self.target_release_identity["deployment_inventory"]
                 or verified_live_deployment.get("substance_agent")
@@ -2577,14 +2588,19 @@ def load_scenario(path: Path) -> LoadScenario:
     if str(payload.get("schema_version")) != "1.0":
         raise LoadTestConfigurationError("scenario schema_version must be 1.0")
     raw_weights = _mapping(payload.get("weights"), "weights")
-    if set(raw_weights) != set(API_NAMES):
-        missing = sorted(set(API_NAMES) - set(raw_weights))
-        extra = sorted(set(raw_weights) - set(API_NAMES))
+    raw_api_names = set(raw_weights)
+    if raw_api_names == set(API_NAMES):
+        scenario_api_names = API_NAMES
+    elif raw_api_names == set(LEGACY_API_NAMES):
+        scenario_api_names = LEGACY_API_NAMES
+    else:
+        missing = sorted(set(API_NAMES) - raw_api_names)
+        extra = sorted(raw_api_names - set(API_NAMES))
         raise LoadTestConfigurationError(
             f"weights must contain exactly six APIs; missing={missing}, extra={extra}"
         )
     weights: dict[str, int] = {}
-    for name in API_NAMES:
+    for name in scenario_api_names:
         value = raw_weights[name]
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise LoadTestConfigurationError(f"weight for {name} must be a positive integer")
@@ -2617,19 +2633,22 @@ def load_scenario(path: Path) -> LoadScenario:
         raise LoadTestConfigurationError("a 100+ virtual-user stage is required")
 
     raw_timeouts = _mapping(payload.get("operation_timeout_seconds"), "operation_timeout_seconds")
-    if set(raw_timeouts) != set(API_NAMES):
+    if set(raw_timeouts) != set(scenario_api_names):
         raise LoadTestConfigurationError(
             "operation_timeout_seconds must contain exactly the six API names"
         )
     try:
-        operation_timeouts = {name: int(raw_timeouts[name]) for name in API_NAMES}
+        operation_timeouts = {name: int(raw_timeouts[name]) for name in scenario_api_names}
     except (TypeError, ValueError) as exc:
         raise LoadTestConfigurationError("operation timeouts must be integers") from exc
     if any(value < 1 for value in operation_timeouts.values()):
         raise LoadTestConfigurationError("operation timeouts must be positive")
 
     approved = _mapping(payload.get("approved_workflows"), "approved_workflows")
-    for workflow_key in ("imageclip-rgba", "modelview-roughness"):
+    required_workflow_keys = ["imageclip-rgba", "modelview-roughness"]
+    if "modelview_inpaint" in weights:
+        required_workflow_keys.insert(1, "modelview-inpaint")
+    for workflow_key in required_workflow_keys:
         approval = _mapping(approved.get(workflow_key), f"approved_workflows.{workflow_key}")
         if not approval.get("version") or not HASH_PATTERN.fullmatch(
             str(approval.get("template_sha256", ""))
@@ -2823,7 +2842,6 @@ def validate_fixture_files(fixtures: FixtureManifest, *, repository_root: Path) 
 
     from packages.gpu_control_core.assets import (
         AssetCreateMetadata,
-        RetopologyAuditMetadata,
         RetopologyProcessMetadata,
         SubstanceBakeMetadata,
     )
@@ -2831,9 +2849,6 @@ def validate_fixture_files(fixtures: FixtureManifest, *, repository_root: Path) 
     try:
         AssetCreateMetadata.model_validate(
             _json_file(_as_path(fixtures.paths_for("uv_process")["metadata"]))
-        )
-        RetopologyAuditMetadata.model_validate(
-            _json_file(_as_path(fixtures.paths_for("retopology_audit")["metadata"]))
         )
         process = RetopologyProcessMetadata.model_validate(
             _json_file(_as_path(fixtures.paths_for("retopology_process")["metadata"]))

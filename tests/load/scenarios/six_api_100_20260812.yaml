@@ -8,9 +8,9 @@ schema_version: "1.0"
 weights_confirmed: true
 weights:
   imageclip_batch: 29
+  modelview_inpaint: 5
   modelview_roughness: 4
   uv_process: 12
-  retopology_audit: 5
   retopology_process: 35
   substance_bake: 15
 
@@ -37,9 +37,9 @@ lifecycle_mode: bounded_stress
 max_backup_age_hours: 24
 operation_timeout_seconds:
   imageclip_batch: 21600
+  modelview_inpaint: 2700
   modelview_roughness: 2100
   uv_process: 3600
-  retopology_audit: 3600
   retopology_process: 21600
   substance_bake: 7200
 
@@ -50,6 +50,9 @@ approved_workflows:
     pipeline_commit: "c39ed0b3b637f0a1435bbe10e5a3acf6bfca07bd"
     pipeline_sha256: "07928d57852ed56ed37527960ec9955d867c0090456fda687fbcd12fecf1775c"
     output_node: "SaveImage #102"
+  modelview-inpaint:
+    version: "2026.08.12-8c37f07-seedvr2-12g-r1"
+    template_sha256: "df13ca08fab5a20cb57aaa07ef81d78ca1e9aaa3e541715e4ba03eeb3bf86ccd"
   modelview-roughness:
     version: "2026.08.12-d318bb39-roughness-12g-r1"
     template_sha256: "bbc80df2c8fc8eb148c671ea1b97a3d77ed2bd1f64593701c68d3bba1438d42f"

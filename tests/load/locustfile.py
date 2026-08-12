@@ -143,9 +143,7 @@ def verify_plan_binding() -> tuple[dict[Path, str], dict[Path, tuple[int, int, i
         else {"verified": False, "reason": "plan-only mode does not contact origin/main"}
     )
     if plan.get("release_evidence_verification") != expected_evidence:
-        raise LoadTestConfigurationError(
-            "remote release evidence changed after plan generation"
-        )
+        raise LoadTestConfigurationError("remote release evidence changed after plan generation")
     expected_live_deployment = (
         VERIFIED_LIVE_DEPLOYMENT
         if VERIFIED_LIVE_DEPLOYMENT is not None
@@ -155,9 +153,7 @@ def verify_plan_binding() -> tuple[dict[Path, str], dict[Path, tuple[int, int, i
         }
     )
     if plan.get("live_deployment_verification") != expected_live_deployment:
-        raise LoadTestConfigurationError(
-            "live deployment identity changed after plan generation"
-        )
+        raise LoadTestConfigurationError("live deployment identity changed after plan generation")
     scenario_plan = plan.get("scenario")
     fixture_plan = plan.get("fixtures")
     if not isinstance(scenario_plan, dict) or not isinstance(fixture_plan, dict):
@@ -428,29 +424,41 @@ class SessionRegistry:
         with self._lock:
             self.recovery_started_at = utc_now()
 
-    def register_roughness_request(
-        self, request_id: str, idempotency_key: str, api_key_index: int
+    def register_sync_image_request(
+        self, api_name: str, request_id: str, idempotency_key: str, api_key_index: int
     ) -> None:
         """Bind a sync request before I/O so teardown can recover a lost response."""
+
+        if api_name not in {"modelview_inpaint", "modelview_roughness"}:
+            raise LoadTestConfigurationError("unsupported synchronous image API")
 
         with self._lock:
             existing = self._roughness_request_key_indices.get(request_id)
             if existing is not None and existing != api_key_index:
                 raise LoadTestConfigurationError(
-                    "roughness request ID was reused by another load-test API key"
+                    "synchronous request ID was reused by another load-test API key"
                 )
             self._roughness_request_key_indices[request_id] = api_key_index
             existing_idempotency = self._roughness_idempotency_key_indices.get(idempotency_key)
             if existing_idempotency is not None and existing_idempotency != api_key_index:
                 raise LoadTestConfigurationError(
-                    "roughness idempotency key was reused by another load-test API key"
+                    "synchronous idempotency key was reused by another load-test API key"
                 )
             self._roughness_idempotency_key_indices[idempotency_key] = api_key_index
         self.event(
             "task.sync_request_registered",
-            api="modelview_roughness",
+            api=api_name,
             request_id=request_id,
             api_key_index=api_key_index,
+        )
+
+    def register_roughness_request(
+        self, request_id: str, idempotency_key: str, api_key_index: int
+    ) -> None:
+        """Backward-compatible wrapper for historical unit helpers."""
+
+        self.register_sync_image_request(
+            "modelview_roughness", request_id, idempotency_key, api_key_index
         )
 
     def roughness_request_key_indices(self) -> dict[str, int]:
@@ -694,6 +702,7 @@ REGISTRY = SessionRegistry(RESULT_DIR)
 def correlation(api_name: str, ordinal: int) -> tuple[str, str, str]:
     short_api = {
         "imageclip_batch": "icb",
+        "modelview_inpaint": "mvi",
         "modelview_roughness": "mvr",
         "uv_process": "uv",
         "retopology_audit": "rta",
@@ -999,7 +1008,8 @@ def perform_preflight() -> dict[str, Any]:
             for item in substance_workers
         ):
             raise LoadTestConfigurationError(
-                "production requires exactly four online Windows Substance v6 Agents"
+                "production requires exactly four online Windows Substance Agents at the "
+                "release-pinned version"
             )
 
     contracts = asset_overview.get("contracts")
@@ -1016,7 +1026,7 @@ def perform_preflight() -> dict[str, Any]:
         str(item.get("submit")) for item in contracts.values() if isinstance(item, dict)
     }
     if expected_asset_submits != actual_asset_submits:
-        raise LoadTestConfigurationError("server six-API contract set has drifted")
+        raise LoadTestConfigurationError("server asset contract set has drifted")
 
     if RUNTIME.is_production_target():
         expected_collision_counts = {
@@ -1029,8 +1039,7 @@ def perform_preflight() -> dict[str, Any]:
             or session_collision_evidence.get("schema_version")
             != "gpu-control-load-session-collision.v1"
             or session_collision_evidence.get("session_id") != RUNTIME.session_id
-            or session_collision_evidence.get("scope")
-            != "exact_global_session_namespace"
+            or session_collision_evidence.get("scope") != "exact_global_session_namespace"
             or session_collision_evidence.get("counts") != expected_collision_counts
             or session_collision_evidence.get("collision_count") != 0
             or session_collision_evidence.get("collision_free") is not True
@@ -2042,11 +2051,14 @@ class SixApiUser(HttpUser):
         )
         self.poll_and_collect(batch_id, api_name, headers)
 
-    def run_modelview_roughness(self, ordinal: int) -> None:
-        api_name = "modelview_roughness"
+    def run_sync_image_service(self, api_name: str, ordinal: int) -> None:
+        if api_name not in {"modelview_inpaint", "modelview_roughness"}:
+            raise LoadTestConfigurationError("unsupported synchronous image API")
         self.ensure_not_preempted(f"{api_name}:submit")
         request_id, idempotency_key, traceparent = correlation(api_name, ordinal)
-        REGISTRY.register_roughness_request(request_id, idempotency_key, self.api_key_index)
+        REGISTRY.register_sync_image_request(
+            api_name, request_id, idempotency_key, self.api_key_index
+        )
         headers = request_headers(self.api_key, request_id, traceparent, idempotency_key)
 
         def builder(stack: ExitStack) -> tuple[dict[str, str], list[tuple[str, Any]]]:
@@ -2071,7 +2083,7 @@ class SixApiUser(HttpUser):
             self.validation_failure(
                 api_name,
                 "final-image",
-                "roughness endpoint did not return a final image",
+                f"{api_name} endpoint did not return a final image",
                 response_length=len(response.content),
             )
             return
@@ -2081,7 +2093,7 @@ class SixApiUser(HttpUser):
             self.validation_failure(
                 api_name,
                 "artifact-sha256",
-                "roughness response omitted or mismatched X-Artifact-SHA256",
+                f"{api_name} response omitted or mismatched X-Artifact-SHA256",
                 response_length=len(response.content),
             )
             REGISTRY.event(
@@ -2116,6 +2128,12 @@ class SixApiUser(HttpUser):
             sha256=actual_sha,
         )
         self.poll_and_collect(job_id, api_name, headers)
+
+    def run_modelview_inpaint(self, ordinal: int) -> None:
+        self.run_sync_image_service("modelview_inpaint", ordinal)
+
+    def run_modelview_roughness(self, ordinal: int) -> None:
+        self.run_sync_image_service("modelview_roughness", ordinal)
 
     def run_uv_process(self, ordinal: int) -> None:
         api_name = "uv_process"
@@ -2212,9 +2230,9 @@ class SixApiUser(HttpUser):
             )[0]
             handler = {
                 "imageclip_batch": self.run_imageclip_batch,
+                "modelview_inpaint": self.run_modelview_inpaint,
                 "modelview_roughness": self.run_modelview_roughness,
                 "uv_process": self.run_uv_process,
-                "retopology_audit": self.run_retopology_audit,
                 "retopology_process": self.run_retopology_process,
                 "substance_bake": self.run_substance_bake,
             }[api_name]
@@ -2650,9 +2668,7 @@ def finalize_results(environment: Any, **_: Any) -> None:
                 RUNTIME,
                 VERIFIED_RELEASE_EVIDENCE or {},
             )
-            live_deployment_stable = (
-                final_live_deployment == VERIFIED_LIVE_DEPLOYMENT
-            )
+            live_deployment_stable = final_live_deployment == VERIFIED_LIVE_DEPLOYMENT
         except LoadTestConfigurationError as exc:
             final_live_deployment = {
                 "verified": False,
