@@ -227,12 +227,16 @@ class RetopologyV6ProcessMetadata(BaseModel):
 
 
 RETOPOLOGY_V6_POLICY_SHA256 = "e7b24c93c11d550ac9fedd167ff23f9ddd70cba4db014caaf2e157cddeafb266"
-RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION = "3.0.16"
+RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION = "3.0.17"
 RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256 = (
-    "ffcd85c61fc0d99e07fa5b670572fc036fd4568468e1a211331ea51ab6a01d26"
+    "7392f4f218801a97670ee3cfb511b778b23b2e2344ca7971816aefa2898e27d5"
 )
 RETOPOLOGY_DIRECT_V2_COMPLETION_IDENTITIES = frozenset(
     {
+        (
+            "3.0.16",
+            "ffcd85c61fc0d99e07fa5b670572fc036fd4568468e1a211331ea51ab6a01d26",
+        ),
         (
             "3.0.15",
             "f5fba2d971d66412f41c60e15d8da3e84f4862dde735bbac1c5e2e9a73b1313e",

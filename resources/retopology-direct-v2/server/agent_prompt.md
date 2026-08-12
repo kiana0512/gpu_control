@@ -1,9 +1,15 @@
-# Blender 自动拓扑并恢复原坐标
+# Blender 训练技能自动拓扑并恢复原坐标
 
-使用 `$blender-auto-retopo-align` 完成任务。完整读取任务 `CODEX_HOME` 中该技能的
-`SKILL.md` **一次**。本任务是标准 generated-low 服务器快速路径：`SKILL.md`、本提示和
-不可变源清单已经包含全部适用规则；四份长 references 仍完整安装并经过哈希校验，但本任务
-不要重复打开，除非源清单缺失或规则互相矛盾。Worker 不保证安装 `rg`，不要调用 `rg`。
+使用 `$blender-retopology-compare-iterate` 负责低模的结构分析与几何构建；使用
+`$blender-auto-retopo-align` 只负责服务器坐标、输出和交付格式。完整读取训练拓扑技能的
+`SKILL.md` 及其直接要求的四份 reference **一次**，不要反复读取。随后读取坐标/输出技能的
+`SKILL.md` **一次**，但不得用它的快速包围盒代理规则代替训练拓扑规则。Worker 不保证安装
+`rg`，不要调用 `rg`。
+
+用户已明确取消交付前的方向审查、拓扑流审查、轮廓评分、FBX 回读和 UV 生成。训练技能中的
+建形方法、轮廓/组件/开口/负空间保护规则仍适用；其审查、渲染、批次等待和用户确认步骤在本
+无人值守任务中不执行，也不得成为交付门禁。本任务唯一几何门禁仍是最终 Blend 有效且没有
+零面积/退化破面；这项用户策略优先于技能中的正式审查流程。
 
 任务参数：
 
@@ -20,8 +26,8 @@ FBX/GLB/GLTF/OBJ 输入已经由技能的 `prepare_fbx_source.py` 导入为唯�
 必须真实执行 Blender 并生成输出文件：
 
 1. 只读打开工作 Blend；指定高模是唯一形状依据，也是唯一坐标依据。
-2. 若源清单包含 `semantic_measurements`，直接使用其中的局部坐标包围盒、最大组件及面数，不得另写或运行 `measure_source.py`。只有没有源清单的直接 Blend 输入才允许一次文本测量。禁止创建 `render_measurement_views.py`，禁止输出任何测量图或方向图。选择 `semantic_reconstruction`、`controlled_direct_reduction` 或 `per_component_hybrid` 后立即进入几何构建；可写简短计划作为诊断，但不得运行计划守卫，也不得让计划字段缺失中断生成。最终有效 Blend 和无破面结果才是交付门禁。
-3. 每个指定高模只生成一个低模。方法只能是 `semantic_reconstruction`、`controlled_direct_reduction` 或 `per_component_hybrid`。普通硬表面优先结构重建/组件混合；不要用全物体 Decimate 或 remesh 代替分析。必须读取源清单的 `source_topology` 和 `normalized_work_source`。当原高模是重复顶点 triangle soup 时，只有清单明确 `normalized_work_source.qualified=true` 才能对 `SOURCE_HIGH_NORMALIZED_WORK` 做 controlled direct reduction；计划中同时写 `source_identity.normalized_work_object` 和 `direct_reduction_evidence.uses_normalized_work_source=true`。禁止焊接、降面或替换 `SOURCE_HIGH`。没有合格工作副本时改用语义重建/组件混合。
+2. `semantic_measurements` 只提供坐标和总体尺寸，不能证明形状相似。必须直接检查工作 Blend 中 `SOURCE_HIGH` 的真实网格，识别主要轮廓、截面变化、开口、负空间、台阶、附件和接地结构；禁止根据对象名、文件名或全局 AABB 猜测模型身份，更禁止把任意模型简化成一个圆角盒、球、柱或其他通用基础体。为建形可执行一次有界的高模只读分析；优先文本几何/截面测量，确有必要时最多生成一次低分辨率高模工作台观察图。它只是生成输入，不是交付审查：不得渲染低模对比、不得评分、不得等待确认。完成这一次分析后立即构建，不得重复测量。可写简短计划作为诊断，但不得运行计划守卫，也不得让计划字段缺失中断生成。最终有效 Blend 和无破面结果才是交付门禁。
+3. 每个指定高模只生成一个低模。方法只能是训练技能规定的 `semantic_reconstruction` 或 `hybrid_per_component`。必须保留决定物体身份的外轮廓、真实组件、开口、负空间、结构台阶和附件位置；宽平面保持稀疏，浅表纹理交给后续烘焙。不得使用全物体 Decimate、remesh、包围盒拟合或通用代理代替结构分析。任何自动降面只能作为内存中的密度参考，不得成为候选、导出物或 `SOURCE_LOW`。禁止焊接、降面或替换 `SOURCE_HIGH`。
    - 本次尝试指令：{{ATTEMPT_GUIDANCE}}
 4. 低模必须直接建立在高模本地坐标系：所有构建点使用 `source_high_local`，低模 `matrix_world` 必须等于对应高模的源矩阵。不要归零高模，不要只靠包围盒恢复坐标。
 5. 无人值守任务不做左右分开展示；不得给低模保留展示平移。低模使用不透明黄色/橙色材质或对象色，保持可见，不用半透明或 X-ray。
@@ -40,6 +46,6 @@ FBX/GLB/GLTF/OBJ 输入已经由技能的 `prepare_fbx_source.py` 导入为唯�
    - `coordinate_space: source_high_local`
    - `coordinate_authority: high_object_matrix_world`
    - `presentation_offset_applied: false`
-10. 保存后立即停止。不要在本次 Codex 生成阶段调用 ICP 或对齐脚本；服务器包装器只运行纯坐标恢复、保存后 Blend 指纹检查和 FBX 导出，不运行方向检查或 FBX 回读。
+10. 保存后立即停止。不得运行训练技能的 pair audit、topology-flow audit、方向渲染、轮廓评分、ICP 或 FBX 回读；服务器包装器只运行纯坐标恢复、保存后 Blend 指纹检查和 FBX 导出。
 
 不得宣称 accepted、final_pass、validated 或 game_ready。最终状态仍是交给用户检查，但服务器会附加坐标对齐校验。

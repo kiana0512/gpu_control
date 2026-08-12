@@ -18,7 +18,7 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def test_approved_v316_package_is_complete() -> None:
+def test_approved_v317_package_is_complete() -> None:
     completed = subprocess.run(  # noqa: S603 - repository-owned verifier
         [sys.executable, str(ROOT / "server" / "verify_package.py")],
         capture_output=True,
@@ -31,10 +31,10 @@ def test_approved_v316_package_is_complete() -> None:
         file_sha256(ROOT / "blender-auto-retopo-align" / "SKILL.md")
         == "d2bcdb1dede2e5bddeb10a913cede28e3496e4bbfeb413b0bf6355248ec4376b"
     )
-    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.16"
+    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.17"
     assert (
         RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
-        == "ffcd85c61fc0d99e07fa5b670572fc036fd4568468e1a211331ea51ab6a01d26"
+        == "7392f4f218801a97670ee3cfb511b778b23b2e2344ca7971816aefa2898e27d5"
     )
 
 
@@ -72,7 +72,7 @@ def test_rolling_completion_accepts_only_matching_approved_package_identity() ->
     assert retopology_direct_v2_completion_identity_valid(unknown, unknown) is False
 
 
-def test_public_create_contract_selects_v316_without_changing_route() -> None:
+def test_public_create_contract_selects_v317_without_changing_route() -> None:
     api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text(encoding="utf-8")
     assert '@app.post("/api/v1/assets/retopology/process")' in api
     assert '"schema_version": "retopology_input.direct-v2"' in api
@@ -83,7 +83,7 @@ def test_public_create_contract_selects_v316_without_changing_route() -> None:
     ).read_text("utf-8")
 
 
-def test_v316_no_broken_face_no_uv_fast_delivery_contract_is_wired() -> None:
+def test_v317_trained_generation_and_fast_delivery_contract_are_wired() -> None:
     entrypoint = (ROOT / "server" / "one_click_retopology.py").read_text("utf-8")
     worker = Path("apps/blender_worker/src/gpu_control_blender_worker/main.py").read_text(
         "utf-8"
@@ -100,7 +100,14 @@ def test_v316_no_broken_face_no_uv_fast_delivery_contract_is_wired() -> None:
     assert "开放边、非流形边、游离点边、重复点面和面朝向仅记录为诊断" in prompt
     assert "ATTEMPT_GUIDANCE" in prompt
     assert "semantic_measurements" in prompt
-    assert "禁止创建 `render_measurement_views.py`" in prompt
+    assert "$blender-retopology-compare-iterate" in prompt
+    assert "$blender-auto-retopo-align" in prompt
+    assert "禁止根据对象名、文件名或全局 AABB 猜测模型身份" in prompt
+    assert "用户已明确取消交付前的方向审查" in prompt
+    assert "不得运行训练技能的 pair audit、topology-flow audit" in prompt
+    assert "TOPOLOGY_SKILL_ID = \"blender-retopology-compare-iterate\"" in entrypoint
+    assert '"RETOPOLOGY_SKILL_ROOT": str(installed_topology_skill)' in entrypoint
+    assert '"RETOPOLOGY_ALIGNMENT_SKILL_ROOT": str(installed_skill)' in entrypoint
     assert "不得运行计划守卫" in prompt
     assert "最终有效 Blend 和无破面结果才是交付门禁" in prompt
     assert "guard_shape_authority_plan.py" not in prompt

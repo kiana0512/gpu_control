@@ -6,8 +6,8 @@
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
 当前生产基线为 GPU Control API/Scheduler `1.5.12`、Web `1.5.11-retopo-direct-v2`、Asset API
-`1.6.38-retopo-build-first-v1`、三台 Linux Blender Worker
-`1.4.38-retopo-build-first-v1`、数据库 `20260810_0013`。当前总状态为
+`1.6.39-retopo-trained-skill-v1`、三台 Linux Blender Worker
+`1.4.39-retopo-trained-skill-v1`、数据库 `20260810_0013`。当前总状态为
 `DEPLOYED_NOT_ACCEPTED`：第三次正式 100 VU、registry digest/SBOM、固定基准、完整故障矩阵和
 连续七天观察尚未闭环，禁止标记 `FROZEN` 或 `PRODUCTION_ACCEPTED`。
 
@@ -21,7 +21,9 @@ v3 同任务生成路径保留坐标恢复、保存后 Blend 拓扑指纹、身�
 `substance-baker-2026.08.03-v6`，均为 `ONLINE/HEALTHY`，用 PBR 成功 marker、逐命令证据和制品完整性
 消除 PowerShell 空 `ExitCode` 假失败，但不放行真实非零退出或缺少 marker。三节点 ComfyUI 仍是同一
 `projects-0.2.3` 镜像，健康、`RestartCount=0`；本轮未停止/重启 ComfyUI，也未调用 `/free` 或
-清理模型缓存。自动拓扑对齐包 v3.0.16 统一 FBX/GLB/GLTF/OBJ 的只读高模准备入口，预计算文本化
+清理模型缓存。自动拓扑对齐包 v3.0.17 统一 FBX/GLB/GLTF/OBJ 的只读高模准备入口，正式加载训练
+拓扑技能按真实高模轮廓、组件、开口和负空间建形，并由独立对齐技能恢复坐标；仍不增加方向审查、
+FBX 回读或 UV 门禁。准备阶段继续预计算文本化
 组件测量，并让 Codex generated-low 快速路径只读取一次完整 SKILL；四份原始参考资料仍完整保留、
 参与哈希校验，只是不再在每笔标准任务中重复展开。诊断计划不再进入生成关键路径，
 Codex 选择方法后直接构建，最终有效 Blend 和无破面结果才决定交付。服务器仍确定性执行

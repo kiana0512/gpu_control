@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-08-12 — Automatic retopology trained-skill routing v3.0.17
+
+- Fix Direct V2 task isolation so each job installs and invokes the approved
+  `blender-retopology-compare-iterate` training skill for geometry construction; retain
+  `blender-auto-retopo-align` only for coordinate restoration and server output.
+- Stop inferring asset identity from filenames or a global AABB. Generated lows must be based on
+  the real high mesh's silhouettes, sections, openings, negative space, components and attachments.
+- Preserve the user-selected fast-delivery policy: no low-model direction review, topology-flow
+  audit, silhouette scoring, FBX reimport, or UV generation was added to the publication path.
+- Release Asset API `1.6.39-retopo-trained-skill-v1`, Blender Worker
+  `1.4.39-retopo-trained-skill-v1`, and retopology package v3.0.17.
+
 ## 2026-08-12 — Automatic retopology build-first hotfix v3.0.16
 
 - Remove the shape-authority plan guard from the generated-low critical path after a real task

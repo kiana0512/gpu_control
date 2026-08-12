@@ -1,4 +1,4 @@
-# Blender 自动拓扑与原坐标对齐服务器包 v3.0.16
+# Blender 自动拓扑与原坐标对齐服务器包 v3.0.17
 
 本包合并两个正式技能：
 
@@ -7,12 +7,16 @@
 
 它用于替换现有 `blender-retopology-compare-iterate-server-package-v2.5.0`。旧单文件调用参数和成功状态保持兼容；成功后额外输出烘焙高低模 FBX 与对齐报告。
 
-## v3.0.16 行为
+## v3.0.17 行为
 
-- 标准 generated-low 任务只读取一次完整 `SKILL.md`，不再重复展开四份长参考资料；
-  参考资料仍完整保留并参与包哈希校验。
+- generated-low 任务同时安装两个职责分离的技能：`blender-retopology-compare-iterate`
+  按训练规则负责结构分析和建形，`blender-auto-retopo-align` 只负责坐标恢复和服务器输出。
+- 禁止再根据对象名或整体包围盒把任意模型猜成圆角盒、球、柱等通用代理；构建前必须直接读取
+  `SOURCE_HIGH` 的真实轮廓、截面、开口、负空间、组件和附件结构。
+- 用户取消的交付门禁保持取消：不执行低模方向审查、拓扑流审查、轮廓评分、FBX 回读或 UV
+  生成。一次有界高模只读分析只作为建形输入，不评分、不等待确认、不阻塞快速交付。
 - FBX/OBJ/GLB/GLTF 准备阶段预先写入文本化 `semantic_measurements`，Codex 不再重复
-  启动 Blender 测量，也不再生成无人消费的测量/方向图片。
+  启动坐标测量；当清单不足以表达形状时，生成器最多追加一次有界高模只读结构分析。
 - `result.json.timing_seconds` 记录准备、Codex、坐标恢复与发布分段耗时。
 - generated-low 不再让诊断计划及其字段校验阻断几何生成；Codex 选择方法后立即构建，
   最终有效 Blend 和无破面结果才是交付门禁。
@@ -102,8 +106,8 @@
 推荐把每个版本解压到独立 release 目录，再切换服务配置或符号链接，保留旧版用于回滚：
 
 ```bash
-unzip blender-auto-retopo-align-server-package-v3.0.16.zip -d /opt/li3d/releases/
-cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.16
+unzip blender-auto-retopo-align-server-package-v3.0.17.zip -d /opt/li3d/releases/
+cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.17
 python3 server/verify_package.py
 cp server/worker.env.example server/worker.env
 ```
@@ -223,7 +227,7 @@ python3 server/align_existing_low.py \
 docker build \
   --build-arg WORKER_IMAGE=现有Worker镜像@sha256:固定摘要 \
   -f Dockerfile.layer \
-  -t li3d/blender-auto-retopo-align:v3.0.16 .
+  -t li3d/blender-auto-retopo-align:v3.0.17 .
 ```
 
 本 Layer 不替换现有 HTTP、队列、存储、鉴权或 Worker entrypoint，只加入合并技能和兼容入口。

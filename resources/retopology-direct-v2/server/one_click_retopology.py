@@ -17,6 +17,7 @@ from pathlib import Path
 
 
 SKILL_ID = "blender-auto-retopo-align"
+TOPOLOGY_SKILL_ID = "blender-retopology-compare-iterate"
 EXPECTED_SKILL_FILES = {
     "SKILL.md",
     "agents/openai.yaml",
@@ -31,12 +32,22 @@ EXPECTED_SKILL_FILES = {
     "scripts/render_alignment_views.py",
     "scripts/validate_bake_pair.py",
 }
+EXPECTED_TOPOLOGY_SKILL_FILES = {
+    "SKILL.md",
+    "agents/openai.yaml",
+    "references/high-only-game-topology.md",
+    "references/n01-n08-training-lessons.md",
+    "references/production-runbook.md",
+    "references/validated-batch-retrospective.md",
+    "scripts/audit_batch_layout.py",
+    "scripts/audit_pair.py",
+    "scripts/audit_topology_flow.py",
+}
 DEFAULT_CODEX_ARGS = ["exec", "--full-auto", "--json", "-C", "{job_dir}", "-"]
 SUPPORTED_INPUTS = {".fbx", ".glb", ".gltf", ".obj", ".blend"}
 ALLOWED_METHODS = {
-    "controlled_direct_reduction",
     "semantic_reconstruction",
-    "per_component_hybrid",
+    "hybrid_per_component",
 }
 REQUIRED_BAKE_OUTPUTS = {
     "bake_alignment.blend",
@@ -93,25 +104,24 @@ def render_prompt(template: str, values: dict[str, str]) -> str:
         rendered = rendered.replace("{{" + key + "}}", value)
     if "{{" in rendered or "}}" in rendered:
         raise RuntimeError("agent prompt contains unresolved placeholders")
+    if "$blender-retopology-compare-iterate" not in rendered:
+        raise RuntimeError("agent prompt does not invoke the trained topology skill")
     if "$blender-auto-retopo-align" not in rendered:
-        raise RuntimeError("agent prompt does not invoke the merged skill")
+        raise RuntimeError("agent prompt does not retain the coordinate/output skill")
     return rendered
 
 
 def attempt_guidance(attempt_number: int) -> str:
     if attempt_number <= 1:
         return (
-            "这是首次生成。按实测结构选择方法，并确保新低模局部包围盒严格来自高模测量；"
-            "禁止使用通用代理尺寸或额外展示缩放。"
+            "这是首次生成。必须从 SOURCE_HIGH 的真实轮廓、截面、开口、负空间、附件和组件"
+            "结构选择训练技能方法；禁止根据文件名或全局包围盒生成通用代理。"
         )
     return (
-        "这是唯一一次有界重试；前一候选未通过拓扑或形体门禁，禁止原样重复低密度语义代理。"
-        "先重新读取 source-manifest.json 的 source_topology。若计划 guard 允许全物体受控降面，"
-        "优先从未修改的 SOURCE_HIGH 新副本执行 controlled_direct_reduction，保留足够密度使三轴"
-        "尺寸与主要轮廓来自高模本身，再执行本包规定的无破面收尾并保持 UV 原样；"
-        "绝不直接降面 SOURCE_HIGH。"
-        "若 guard 不允许全物体降面，则必须改用按实测截面重建的 per_component_hybrid，"
-        "不得再次使用会改变整体尺寸、把手/附件位置或外轮廓的简化代理。"
+        "这是唯一一次有界重试；前一次没有产生有效、有限且无退化面的 Blend。重新直接检查"
+        "SOURCE_HIGH 的真实网格后，继续修正同一个正式低模的构建脚本。只能使用"
+        "semantic_reconstruction 或 hybrid_per_component；禁止使用通用基础体、全物体 Decimate"
+        "或 remesh，也不得直接修改 SOURCE_HIGH。"
     )
 
 
@@ -558,12 +568,32 @@ def main() -> int:
 
     package_root = args.package_root.resolve()
     bundled_skill = package_root / SKILL_ID
+    topology_skill_root = Path(
+        os.environ.get(
+            "RETOPOLOGY_TRAINED_SKILL_ROOT",
+            os.environ.get(
+                "RETOPOLOGY_SKILL_ROOT",
+                str(
+                    package_root.parent
+                    / "retopology-v6"
+                    / "skill"
+                    / TOPOLOGY_SKILL_ID
+                ),
+            ),
+        )
+    ).resolve()
     prompt_template = package_root / "server" / "agent_prompt.md"
     source_inventory = skill_inventory(bundled_skill)
     if set(source_inventory) != EXPECTED_SKILL_FILES:
         raise SystemExit(
             "server package does not contain the exact merged skill: "
             + json.dumps(sorted(source_inventory), ensure_ascii=False)
+        )
+    topology_source_inventory = skill_inventory(topology_skill_root)
+    if set(topology_source_inventory) != EXPECTED_TOPOLOGY_SKILL_FILES:
+        raise SystemExit(
+            "server runtime does not contain the exact trained topology skill: "
+            + json.dumps(sorted(topology_source_inventory), ensure_ascii=False)
         )
 
     job_id = args.job_id or f"retopo-align-{int(time.time())}-{uuid.uuid4().hex[:8]}"
@@ -578,6 +608,7 @@ def main() -> int:
     result_path = job_dir / "result.json"
     codex_home = job_dir / "codex-home"
     installed_skill = codex_home / "skills" / SKILL_ID
+    installed_topology_skill = codex_home / "skills" / TOPOLOGY_SKILL_ID
     for directory in (
         input_copy.parent,
         working_blend.parent,
@@ -590,8 +621,15 @@ def main() -> int:
     shutil.copytree(
         bundled_skill, installed_skill, ignore=shutil.ignore_patterns("__pycache__", "*.pyc")
     )
+    shutil.copytree(
+        topology_skill_root,
+        installed_topology_skill,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
     if skill_inventory(installed_skill) != source_inventory:
-        raise SystemExit("job-local skill installation failed hash verification")
+        raise SystemExit("job-local coordinate/output skill installation failed hash verification")
+    if skill_inventory(installed_topology_skill) != topology_source_inventory:
+        raise SystemExit("job-local trained topology skill installation failed hash verification")
     timing_seconds["job_setup"] = time.monotonic() - workflow_started
 
     blender = os.environ.get("BLENDER_EXECUTABLE", "/opt/blender/blender")
@@ -643,7 +681,8 @@ def main() -> int:
         {
             "CODEX_HOME": str(codex_home),
             "BLENDER_EXECUTABLE": blender,
-            "RETOPOLOGY_SKILL_ROOT": str(installed_skill),
+            "RETOPOLOGY_SKILL_ROOT": str(installed_topology_skill),
+            "RETOPOLOGY_ALIGNMENT_SKILL_ROOT": str(installed_skill),
             "RETOPOLOGY_INPUT_SOURCE": str(input_copy),
             "RETOPOLOGY_INPUT_BLEND": str(working_blend),
             "RETOPOLOGY_OUTPUT_BLEND": str(generated_blend),
@@ -878,6 +917,8 @@ def main() -> int:
         "assets": generation_report["assets"],
         "skill_id": SKILL_ID,
         "skill_sha256": source_inventory,
+        "topology_skill_id": TOPOLOGY_SKILL_ID,
+        "topology_skill_sha256": topology_source_inventory,
         "coordinate_authority": "high_object_matrix_world",
         "alignment_mode": alignment_report["alignment_mode"],
         "topology_uv_preserved": True,

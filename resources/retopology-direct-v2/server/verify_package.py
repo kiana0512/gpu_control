@@ -12,6 +12,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_ID = "blender-auto-retopo-align"
 SKILL = ROOT / SKILL_ID
+TOPOLOGY_SKILL_ID = "blender-retopology-compare-iterate"
+TOPOLOGY_SKILL = ROOT.parent / "retopology-v6" / "skill" / TOPOLOGY_SKILL_ID
 EXPECTED_SKILL_FILES = {
     "SKILL.md",
     "agents/openai.yaml",
@@ -33,6 +35,17 @@ EXPECTED_SERVER_FILES = {
     "one_click_retopology.py",
     "verify_package.py",
     "worker.env.example",
+}
+EXPECTED_TOPOLOGY_SKILL_FILES = {
+    "SKILL.md",
+    "agents/openai.yaml",
+    "references/high-only-game-topology.md",
+    "references/n01-n08-training-lessons.md",
+    "references/production-runbook.md",
+    "references/validated-batch-retrospective.md",
+    "scripts/audit_batch_layout.py",
+    "scripts/audit_pair.py",
+    "scripts/audit_topology_flow.py",
 }
 
 
@@ -98,6 +111,15 @@ def main() -> int:
         errors.append(
             f"skill file mismatch: expected={sorted(EXPECTED_SKILL_FILES)} actual={sorted(actual_skill)}"
         )
+    actual_topology_skill = {
+        path.relative_to(TOPOLOGY_SKILL).as_posix() for path in clean_files(TOPOLOGY_SKILL)
+    }
+    if actual_topology_skill != EXPECTED_TOPOLOGY_SKILL_FILES:
+        errors.append(
+            "trained topology skill file mismatch: "
+            f"expected={sorted(EXPECTED_TOPOLOGY_SKILL_FILES)} "
+            f"actual={sorted(actual_topology_skill)}"
+        )
     actual_server = {path.name for path in (ROOT / "server").iterdir() if path.is_file()}
     if actual_server != EXPECTED_SERVER_FILES:
         errors.append(
@@ -130,22 +152,24 @@ def main() -> int:
     require_tokens(
         ROOT / "server" / "agent_prompt.md",
         (
+            "$blender-retopology-compare-iterate",
             "$blender-auto-retopo-align",
+            "用户已明确取消交付前的方向审查",
             "不得运行计划守卫",
             "最终有效 Blend 和无破面结果才是交付门禁",
             "source_high_local",
             "high_object_matrix_world",
             "presentation_offset_applied: false",
             "不得给低模保留展示平移",
-            "source_topology",
             "RETOPOLOGY_TOPOLOGY_INVALID",
-            "SOURCE_HIGH_NORMALIZED_WORK",
             "不生成 UV",
             "不执行 FBX 重新导入验证",
             "开放边、非流形边、游离点边、重复点面和面朝向仅记录为诊断",
             "ATTEMPT_GUIDANCE",
             "semantic_measurements",
-            "禁止创建 `render_measurement_views.py`",
+            "禁止根据对象名、文件名或全局 AABB 猜测模型身份",
+            "semantic_reconstruction",
+            "hybrid_per_component",
         ),
         "agent prompt",
         errors,
@@ -253,9 +277,11 @@ def main() -> int:
 
     payload = {
         "ok": not errors,
-        "package_version": "3.0.16",
+        "package_version": "3.0.17",
         "skill_id": SKILL_ID,
         "skill_file_count": len(actual_skill),
+        "topology_skill_id": TOPOLOGY_SKILL_ID,
+        "topology_skill_file_count": len(actual_topology_skill),
         "one_click_entrypoint": str(ROOT / "server" / "one_click_retopology.py"),
         "batch_entrypoint": str(ROOT / "server" / "batch_retopology.py"),
         "external_low_entrypoint": str(ROOT / "server" / "align_existing_low.py"),
