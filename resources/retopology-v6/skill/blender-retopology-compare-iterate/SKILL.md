@@ -94,6 +94,8 @@ Make and record this method decision before creating a candidate:
 
 Record `method_decision` as `controlled_direct_reduction`, `semantic_reconstruction`, or `hybrid_per_component`. A mixed asset must also record a `region_method_map` whose boundaries come from the high and whose methods distinguish complex soft surfaces, structured parts, and aggregate envelopes. Never infer a region from disconnected-island count or a face-count threshold alone.
 
+For layered mixed assets such as cloth over wood, classify complete face-connected components before geometry. A controlled-reduction region must be copied with its original adjacency intact; never cut it from a connected surface with coordinate thresholds or partial-face selection. Build an aggregate envelope only from components excluded from the soft region. Covered envelope sections stay behind the intact soft shell, while exposed ends follow a sparse irregular contour rather than rectangular AABB caps.
+
 ## Build deliberately
 
 - Use RetopoFlow interactively for complex surface drawing when available and appropriate.

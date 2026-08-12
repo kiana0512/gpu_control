@@ -105,6 +105,7 @@ Choose the method by construction:
 
 - For a structurally complex, genuinely integrated continuous object whose original high already has the correct macro surface, silhouette, openings, and attachment placement, duplicate the untouched high and run one controlled asset-specific reduction. Saddles, complex boots, cloth and leather regions are eligible when a coarse proxy would visibly lose identity. Do not rebuild a guessed primitive shell, reuse a rejected low, or decimate one reduced candidate again.
 - For dense aggregate regions such as stacked wood, rocks or debris, build a sparse polygon envelope from the high-derived outer contour when individual members and gaps do not control the primary read. Do not treat every disconnected island as an object.
+- For cloth/leather covering an aggregate, use whole face-connected components as the region-partition atom. Never select only spatially matching faces from inside one connected component: that destroys adjacency and produces torn spikes after reduction. Duplicate intact soft components, exclude them from aggregate samples, keep covered envelope sections behind them, and fit exposed ends to a sparse irregular outline instead of a rectangular bound.
 - Manual primitives, profile rings, patches, and separate closed shells for box-like, rotational, and multipart props.
 - RetopoFlow surface drawing for shapes that genuinely benefit from interactive strips or contours.
 - QuadriFlow only as an initial continuous cage for suitable organic or rounded forms.

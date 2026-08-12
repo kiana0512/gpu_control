@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-12 — Automatic retopology connected-component partition v3.0.22
+
+- Fix the real cloth-over-wood canary that passed numeric delivery checks but produced torn cloth
+  spikes and oversized solid end blocks: layered-region partitioning is now atomic at complete
+  face-connected components and may not clip a continuous surface with coordinate thresholds.
+- Preserve original adjacency before controlled reduction, exclude intact soft components from the
+  aggregate sample set, and require exposed aggregate ends to follow a sparse irregular silhouette
+  instead of rectangular AABB caps.
+- Keep publication policy unchanged: no new visual gate, direction review, FBX reimport, UV work, or
+  retry loop was added; the correction affects the first geometry build only.
+
 ## 2026-08-12 — Automatic retopology layered-region separation v3.0.21
 
 - Keep cloth/leather and the covered aggregate in mutually exclusive high-derived region sets before

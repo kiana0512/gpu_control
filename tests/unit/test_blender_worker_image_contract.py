@@ -11,7 +11,7 @@ def test_worker_image_runs_fail_closed_bootstrap_before_worker() -> None:
 def test_worker_image_carries_immutable_release_identity() -> None:
     dockerfile = Path("apps/blender_worker/Dockerfile").read_text(encoding="utf-8")
 
-    assert "ARG ASSET_WORKER_VERSION=1.4.43-retopo-layer-separation-v1" in dockerfile
+    assert "ARG ASSET_WORKER_VERSION=1.4.44-retopo-component-partition-v1" in dockerfile
     assert "ARG GPU_CONTROL_REVISION=unknown" in dockerfile
     assert 'org.opencontainers.image.version="${ASSET_WORKER_VERSION}"' in dockerfile
     assert 'org.opencontainers.image.revision="${GPU_CONTROL_REVISION}"' in dockerfile
@@ -36,13 +36,13 @@ def test_worker_release_defaults_are_aligned() -> None:
     control_compose = Path("deploy/control-plane/compose.yaml").read_text(encoding="utf-8")
     node_compose = Path("deploy/gpu-node/compose.yaml").read_text(encoding="utf-8")
 
-    assert "ASSET_WORKER_VERSION=1.4.43-retopo-layer-separation-v1" in environment
-    assert "ASSET_WORKER_IMAGE_TAG=1.4.43-retopo-layer-separation-v1" in environment
+    assert "ASSET_WORKER_VERSION=1.4.44-retopo-component-partition-v1" in environment
+    assert "ASSET_WORKER_IMAGE_TAG=1.4.44-retopo-component-partition-v1" in environment
     for compose in (control_compose, node_compose):
         assert (
-            "ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.43-retopo-layer-separation-v1}"
+            "ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.44-retopo-component-partition-v1}"
         ) in compose
         assert "GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}" in compose
         assert (
-            "li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.43-retopo-layer-separation-v1}"
+            "li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.44-retopo-component-partition-v1}"
         ) in compose
