@@ -100,6 +100,10 @@ WSL2 的 Docker 容器在 GPU 忙碌时无法稳定通过 NVML 返回温度和�
 - 9202 为容器后端，9201 为宿主代理统一入口；
 - 指标由 WSL 可用的 `/usr/lib/wsl/lib/nvidia-smi` 采集，Node Agent 心跳与指标探针彼此独立；
 - 指标暂时缺失不会把正在工作的节点投影为离线。
+- WSL2 Node Exporter 使用只读 rootfs bind（不请求 WSL 不支持的 `rslave` 传播），并由 9100 探针独立
+  接受 Prometheus 监控；GPU 指标仍以签名 Node Agent 为权威来源。
+- Windows 自愈脚本已归档为 `scripts/Update-4070WslRuntimeProxy.ps1`，固定维护 2222、8188、9100、
+  9201 四个 portproxy，并把运行端口防火墙仅开放给控制中心 `10.3.34.11`。
 
 现场已观察 4070Ti 在 GPU 负载下真实利用率、显存、温度、功率变化，并确认 WebUI 保持
 `ONLINE`。当前空闲快照为约 12 GB 总显存、34°C、15.9 W；这是时点数据，不是性能上限。
@@ -197,7 +201,10 @@ WebUI 已包含：
 - 最终全量 Python：`586 passed, 15 skipped, 0 failed`，耗时 282.86 秒；
 - Ruff 全仓通过；`git diff --check` 通过；关键脚本可编译；
 - 四节点真实审计 12/12 成功；
-- Web 生产容器健康并由 HTTPS 入口返回 200。
+- Web 生产容器健康并由 HTTPS 入口返回 200；
+- 最终观测审计发现并修复 4070Ti `NodeDown`：Node Exporter 因 WSL2 不支持 `rslave` 未能创建，且
+  Windows 未转发 9100。改为只读 root bind 后容器 `running / RestartCount=0`，加入持久化 9100
+  portproxy 和仅允许 `10.3.34.11/32` 的防火墙规则；Prometheus target 恢复 `up`，活动告警归零。
 
 新场景 `tests/load/scenarios/six_api_100_20260812.yaml` 定义 1→10→25→50→100 VU、总时长 1260 秒、
 公开六 API 混合、失败关闭和清场门禁。公开六项固定为：ImageClip 抠图、ModelView 局部重绘、
@@ -245,6 +252,11 @@ config 全部逐项一致，OCI revision label 全部绑定上述代码提交；
 Blender Worker 的运行 image ID 也全部等于 `c3e20f…`。4070Ti Node Agent 已滚动到 `1.5.13`，
 最终容器健康。HTTPS 首页返回 200，四个 Asset Worker 均为 `ONLINE`、0 当前任务，Codex/RetopoFlow
 探针均为 `HEALTHY`。
+
+4070Ti Windows 自愈脚本已现场更新并与仓库副本 SHA-256
+`b9c8413b5df2b118b2377649d84e7bee2a1ab65bbe44ba6c25c4e9b66db506cc` 一致；PowerShell parser
+`PARSE_ERRORS=0`。旧脚本可从
+`C:\ProgramData\GPUControl\Update-4070WslSshProxy.ps1.pre-node-exporter-20260812` 回滚。
 
 边界：本轮没有 registry push，因此 registry manifest digest 仍为 pending；打包使用
 `PENDING_PINNED_SBOM_GENERATOR`，不能宣称 registry-bound SBOM 已完成。这不影响本地/LFS 离线镜像
