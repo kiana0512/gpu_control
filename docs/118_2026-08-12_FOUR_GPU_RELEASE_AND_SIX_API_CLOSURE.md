@@ -104,6 +104,10 @@ WSL2 的 Docker 容器在 GPU 忙碌时无法稳定通过 NVML 返回温度和�
 现场已观察 4070Ti 在 GPU 负载下真实利用率、显存、温度、功率变化，并确认 WebUI 保持
 `ONLINE`。当前空闲快照为约 12 GB 总显存、34°C、15.9 W；这是时点数据，不是性能上限。
 
+正式 Node Agent `1.5.13` 滚动后再次通过带签名的 `/v1/gpu-metrics` 实测：利用率 0%、空闲显存
+9678 MiB / 总显存 12282 MiB、34°C、9.9 W、功率上限 285 W；代理 `/health/ready` 返回 ready，
+容器 `RestartCount=0`。温度和功率来自 WSL 宿主 `nvidia-smi`，不是 WebUI 估算值。
+
 Windows/WSL 重启后的持久化仍需要 IT 在 4070Ti 上执行一次：
 
 ```powershell
@@ -205,6 +209,33 @@ WebUI 已包含：
 正式镜像必须绑定本报告对应的完整 Git revision，不能把 `working-tree` 热修复镜像冒充正式归档。
 发布过程先提交并推送功能 revision，再从该干净 revision 构建镜像；镜像证据允许由后续仅文档提交回填，
 但 OCI label 中的 source revision 必须始终指向实际代码提交。
+
+代码 revision 已推送为 `94022a699b12a5928597664d0ecffdcee582d1b7`，分支
+`agent/four-gpu-4070ti-closure`，Draft PR：<https://github.com/kiana0512/gpu_control/pull/1>。
+
+| 镜像 | 本地/部署 image ID |
+|---|---|
+| `gpu-control-api:1.5.13` | `sha256:83e1f86f1fdf1e2d130d688f735634f72ec4b87e5652b53c1500704be993bb84` |
+| `gpu-control-scheduler:1.5.13` | `sha256:0322ad3d50331dd5c27bc68e38a5ec88203455a7ec951dd928bfcb6c1b571720` |
+| `unified-scheduler-asset-api:1.5.13` | `sha256:29a56671d8edf7642a51f822e392bd8c8db64766802aad0393adf8532881f84f` |
+| `gpu-control-web:1.5.13` | `sha256:23c13b92b94ea6aa844baefe8b7cfb4bc3315d4ea79a0cae8a9df9bfc550e9f5` |
+| `li3d/blender-worker:1.4.48` | `sha256:c3e20f206889fbb8fcdf2d9532b68130dc41ffa6fcc3ff0be2a6bf4e0d382698` |
+| `gpu-control-node-agent:1.5.13` | `sha256:1f8d1a43df8e7ba62875e438717355d0e81fc0434ccc753c3f6fae79fe55b093` |
+
+五镜像组合归档大小 837019163 字节，SHA-256
+`f57ac79e6ec937f8ca3d060f81d4ea72d6ffee03b724462f23b2dc3d1cbbf0d9`；Node Agent 独立归档
+大小 89212344 字节，SHA-256 `32f2ad35bff9a5ef00f0408517847f99dca9ea7fbef43fe8bcf4c200c8d93450`。
+拆分件和离线 provenance 位于 `artifacts/control-plane/1.5.13/release-parts/`。五镜像的 Docker/OCI
+config 全部逐项一致，OCI revision label 全部绑定上述代码提交；离线 provenance 已验证。
+
+零活动任务门禁确认后，API、Scheduler、Asset API、Web 和本机 Worker 已滚动到正式 tag；三台远端
+Blender Worker 的运行 image ID 也全部等于 `c3e20f…`。4070Ti Node Agent 已滚动到 `1.5.13`，
+最终容器健康。HTTPS 首页返回 200，四个 Asset Worker 均为 `ONLINE`、0 当前任务，Codex/RetopoFlow
+探针均为 `HEALTHY`。
+
+边界：本轮没有 registry push，因此 registry manifest digest 仍为 pending；打包使用
+`PENDING_PINNED_SBOM_GENERATOR`，不能宣称 registry-bound SBOM 已完成。这不影响本地/LFS 离线镜像
+恢复，但仍阻止 `PRODUCTION_ACCEPTED`。
 
 允许清理的范围：本轮明确创建的 `/tmp` 镜像归档、临时 env 副本、Pytest/Ruff/Mypy 缓存和 dangling
 image。禁止删除模型、ComfyUI output、生产任务归档、PostgreSQL/Redis 数据或执行
