@@ -61,18 +61,18 @@ APPROVED_SKILL_FILE_SHA256: Mapping[str, Mapping[str, str]] = {
         ),
     },
     "blender-retopology-compare-iterate": {
-        "SKILL.md": "6e281c7af1cf673fb3b96448e19cdd3c766cd84e8eb597997a42c701689d2d92",
+        "SKILL.md": "5df15e033d5e34d5e1fec8b05e7dcd51c048d84c28b0a7afddd355151860b52d",
         "agents/openai.yaml": (
-            "1fe705f8bb73c94457a6df5cc409e07b923f00b000d1dca530161405729b0d79"
+            "1b6047328ec5a05c87d909b75849a0ca65ff12c95e9660f357c6fb5e889e4656"
         ),
         "references/high-only-game-topology.md": (
-            "52fad35289dd798ae81543b01c87931a46753b794e2fd6b3e06f604ff4e0a8e3"
+            "f42547ef0cd7743b13328d522874f7996d05b6584c502560eae87e3467e8fed3"
         ),
         "references/n01-n08-training-lessons.md": (
             "edfdc92fe99e08ab6cc2ca7d63852ead42829ac03532147a3189c476301ac297"
         ),
         "references/production-runbook.md": (
-            "60493a1d4fd2e946fe7f947374002953262a3ac68bcb18976aeb1198b2d78de2"
+            "8c307df8796455f67414316d7becc6ed720813d88e729b458db41be0ac152e28"
         ),
         "references/validated-batch-retrospective.md": (
             "9af3d1ebbe4ac304d82c65729f1301bf786fe975c69019b2b071065d8ca99558"
