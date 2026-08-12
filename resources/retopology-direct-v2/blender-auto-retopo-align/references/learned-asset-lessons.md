@@ -299,3 +299,5 @@ are advisory: only zero-area/degenerate broken faces block delivery, and UV is d
 ## Final direct-output rule
 
 Apply these lessons before and during the single construction pass. Once the expected low exists, arrange it, save it, report counts, and stop. The user performs all visual judgment. Do not start any automatic examination, score, comparison, correction, or second attempt.
+
+For layered soft-over-aggregate scans, a high raw face-component count can be caused by GLB/FBX split vertices rather than real parts. Recover coincident-vertex adjacency for classification only, never by changing the source. Preserve whole soft surfaces at a conservative first-pass density and use smooth shading. A wood/rock/debris envelope is a non-circular polygon contour extrusion, not a set of fat cylinders or an AABB box. If that construction cannot be supported by measured exposed-end points, conservatively reduce the aggregate source region instead of guessing a primitive.

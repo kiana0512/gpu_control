@@ -75,6 +75,7 @@ Use this mode only when the user supplies a separately created low whose coordin
 - A qualified normalized work copy is only a topology-connected sampling duplicate of that same high. It may be reduced, but it never replaces the visible/authoritative high and must be removed from final delivery.
 - Produce exactly one low object for each requested high.
 - Spend polygons on silhouette, openings, section changes, negative space, and key connections; keep flat non-silhouette regions sparse.
+- For layered cloth/leather over wood, rocks or debris, treat high duplicate-vertex ratios as export fragmentation. Rebuild adjacency only for classification, copy complete recovered surfaces, retain at least 20 percent of deeply folded soft faces, and set soft faces to smooth shading without changing their shape. Build aggregate regions from paired non-circular polygon end contours; never substitute cylinders, capsules, cones, ellipses, AABB boxes or generic lobes. Fall back to conservative high-derived reduction if contour extrusion is unreliable.
 - Create the low in `source_high_local` coordinates and assign the same `matrix_world` as its high.
 - Do not create, delete, unwrap, repack, or otherwise modify UVs in the automatic-retopology stage. Preserve existing low UVs byte-for-byte when present; a low with no UV is also valid and UV work belongs to the separate UV stage.
 - Give the low an opaque yellow/orange display material or object color. Do not use transparency.

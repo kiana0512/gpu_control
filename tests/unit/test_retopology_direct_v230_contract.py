@@ -20,7 +20,7 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def test_approved_v322_package_is_complete() -> None:
+def test_approved_v323_package_is_complete() -> None:
     completed = subprocess.run(  # noqa: S603 - repository-owned verifier
         [sys.executable, str(ROOT / "server" / "verify_package.py")],
         capture_output=True,
@@ -31,12 +31,12 @@ def test_approved_v322_package_is_complete() -> None:
     assert (ROOT / "server" / "batch_retopology.py").is_file()
     assert (
         file_sha256(ROOT / "blender-auto-retopo-align" / "SKILL.md")
-        == "d2bcdb1dede2e5bddeb10a913cede28e3496e4bbfeb413b0bf6355248ec4376b"
+        == "9b195bc41bf50a516794ac728d8c3b4bc7cca2e27bb2fb21704fb3b0bb860bff"
     )
-    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.22"
+    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.23"
     assert (
         RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
-        == "052c7c32b037f0b793773480da002a3a84e6d7e51d8f637bd0bf28be3eca1d2c"
+        == "6e8c50706003edcb0a8dea1ed81bb598f483514ea237fa843f818c80ed5a267f"
     )
 
 
@@ -74,7 +74,7 @@ def test_rolling_completion_accepts_only_matching_approved_package_identity() ->
     assert retopology_direct_v2_completion_identity_valid(unknown, unknown) is False
 
 
-def test_public_create_contract_selects_v322_without_changing_route() -> None:
+def test_public_create_contract_selects_v323_without_changing_route() -> None:
     api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text(encoding="utf-8")
     assert '@app.post("/api/v1/assets/retopology/process")' in api
     assert '"schema_version": "retopology_input.direct-v2"' in api
@@ -85,7 +85,7 @@ def test_public_create_contract_selects_v322_without_changing_route() -> None:
     ).read_text("utf-8")
 
 
-def test_v322_region_method_routing_and_fast_delivery_contract_are_wired() -> None:
+def test_v323_region_method_routing_and_fast_delivery_contract_are_wired() -> None:
     entrypoint = (ROOT / "server" / "one_click_retopology.py").read_text("utf-8")
     worker = Path("apps/blender_worker/src/gpu_control_blender_worker/main.py").read_text(
         "utf-8"
@@ -117,12 +117,14 @@ def test_v322_region_method_routing_and_fast_delivery_contract_are_wired() -> No
     assert "布料、皮革" in prompt
     assert "region_method_map" in prompt
     assert "木堆、石堆、碎料堆" in prompt
-    assert "分区的原子单位是完整连通分量" in prompt
+    assert "duplicate_vertex_ratio > 0.20" in prompt
+    assert "classification-only" in prompt
+    assert "至少保留其原始面的 20%" in prompt
     assert "禁止用 `x/y/z` 范围、AABB 平面或逐面布尔条件" in prompt
-    assert "软表面区域的新副本必须保留所选完整分量的原始顶点/边/面邻接" in prompt
-    assert "聚合包络只能由排除全部软表面完整分量后的剩余高模几何生成" in prompt
-    assert "禁止直接使用矩形 AABB 端盖" in prompt
-    assert "不得遮挡、吞没、穿出或替代布料外表面" in prompt
+    assert "不得把这个临时焊接写回 `SOURCE_HIGH` 或最终低模" in prompt
+    assert "聚合包络只能由排除全部软表面后的高模聚合点生成" in prompt
+    assert "禁止用 cylinder、cone、sphere、capsule" in prompt
+    assert "不得遮挡、吞没、穿出或替代布料" in prompt
     assert "该约束属于一次建形规则，不新增低模渲染、视觉评分或交付门禁" in prompt
     assert "disconnected mesh island 数量绝不等于语义组件数量" in prompt
     assert "禁止用面数阈值" in prompt

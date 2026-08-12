@@ -283,7 +283,7 @@ def main() -> int:
 
     payload = {
         "ok": not errors,
-        "package_version": "3.0.22",
+        "package_version": "3.0.23",
         "skill_id": SKILL_ID,
         "skill_file_count": len(actual_skill),
         "topology_skill_id": TOPOLOGY_SKILL_ID,

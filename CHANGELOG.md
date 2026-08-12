@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-08-12 — Automatic retopology export-fragment recovery v3.0.23
+
+- Treat GLB/FBX duplicate vertices caused by normals, UV seams and export splits as
+  classification-only adjacency instead of thousands of semantic components; the temporary
+  adjacency never welds or edits the source or delivered low model.
+- Preserve substantially more geometry on deeply folded cloth/leather during the first controlled
+  reduction and use smooth shading without shape-changing smoothing.
+- Replace circular/cylindrical aggregate proxies with sparse non-circular contour extrusion derived
+  from the aggregate region; fall back to conservative high-derived reduction when that contour is
+  unreliable.
+- Keep delivery policy unchanged: no new visual gate, direction review, FBX reimport, UV operation,
+  retry loop or pre-delivery audit was added.
+
 ## 2026-08-12 — Automatic retopology connected-component partition v3.0.22
 
 - Fix the real cloth-over-wood canary that passed numeric delivery checks but produced torn cloth

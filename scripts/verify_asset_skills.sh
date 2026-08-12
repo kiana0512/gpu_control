@@ -79,15 +79,15 @@ verify_file "blender-pbr-uv/scripts/mof_unwrap.py" \
 verify_file "blender-pbr-uv/scripts/preflight_mof.py" \
   "d4639ebd34128b02496599eef55c21ed1eab295c6117fc234c819003e491db40"
 verify_file "blender-retopology-compare-iterate/SKILL.md" \
-  "71683855eb7cc093c3da676b196c094210bb851ed3b2d365e1cf377015b73cb1"
+  "6e281c7af1cf673fb3b96448e19cdd3c766cd84e8eb597997a42c701689d2d92"
 verify_file "blender-retopology-compare-iterate/agents/openai.yaml" \
   "1fe705f8bb73c94457a6df5cc409e07b923f00b000d1dca530161405729b0d79"
 verify_file "blender-retopology-compare-iterate/references/high-only-game-topology.md" \
-  "97ce9486480678c8f08c04c8994f6e90aa135811d8afe7eb33ce332ec828dc7d"
+  "52fad35289dd798ae81543b01c87931a46753b794e2fd6b3e06f604ff4e0a8e3"
 verify_file "blender-retopology-compare-iterate/references/n01-n08-training-lessons.md" \
   "edfdc92fe99e08ab6cc2ca7d63852ead42829ac03532147a3189c476301ac297"
 verify_file "blender-retopology-compare-iterate/references/production-runbook.md" \
-  "fdc63c8f4639817955e04d1f43a1d932d486a5fcfe28343c61bb544208345716"
+  "60493a1d4fd2e946fe7f947374002953262a3ac68bcb18976aeb1198b2d78de2"
 verify_file "blender-retopology-compare-iterate/references/validated-batch-retrospective.md" \
   "9af3d1ebbe4ac304d82c65729f1301bf786fe975c69019b2b071065d8ca99558"
 verify_file "blender-retopology-compare-iterate/scripts/audit_pair.py" \
