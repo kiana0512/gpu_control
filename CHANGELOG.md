@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-08-12 — Automatic retopology layered-region separation v3.0.21
+
+- Keep cloth/leather and the covered aggregate in mutually exclusive high-derived region sets before
+  building a mixed low; aggregate envelopes may no longer use a union bound that includes the soft
+  covering.
+- Require the aggregate envelope to remain behind the covering in covered sections while preserving
+  the cloth top span, side drape, lower hem and major folds; keep uncovered end silhouettes sparse.
+- Preserve the existing fast-delivery contract: this is a first-build construction rule, not a new
+  render, visual score, FBX reimport, UV operation or publication gate.
+
 ## 2026-08-12 — Automatic retopology user-intent routing v3.0.20
 
 - Forward the bounded `user_request` from the immutable Direct V2 input bundle into the task-local

@@ -20,7 +20,7 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def test_approved_v320_package_is_complete() -> None:
+def test_approved_v321_package_is_complete() -> None:
     completed = subprocess.run(  # noqa: S603 - repository-owned verifier
         [sys.executable, str(ROOT / "server" / "verify_package.py")],
         capture_output=True,
@@ -33,10 +33,10 @@ def test_approved_v320_package_is_complete() -> None:
         file_sha256(ROOT / "blender-auto-retopo-align" / "SKILL.md")
         == "d2bcdb1dede2e5bddeb10a913cede28e3496e4bbfeb413b0bf6355248ec4376b"
     )
-    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.20"
+    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.21"
     assert (
         RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
-        == "961f55bc459ecff20e2b4f46a507ce7efd4948eb610e8675bc09f511759e7a9c"
+        == "ad53f68c9ce81916d3cc4152ae31d45b2adbdc37de8ea8e3bb5163fb2e4f4668"
     )
 
 
@@ -74,7 +74,7 @@ def test_rolling_completion_accepts_only_matching_approved_package_identity() ->
     assert retopology_direct_v2_completion_identity_valid(unknown, unknown) is False
 
 
-def test_public_create_contract_selects_v320_without_changing_route() -> None:
+def test_public_create_contract_selects_v321_without_changing_route() -> None:
     api = Path("apps/asset_api/src/gpu_control_asset_api/main.py").read_text(encoding="utf-8")
     assert '@app.post("/api/v1/assets/retopology/process")' in api
     assert '"schema_version": "retopology_input.direct-v2"' in api
@@ -85,7 +85,7 @@ def test_public_create_contract_selects_v320_without_changing_route() -> None:
     ).read_text("utf-8")
 
 
-def test_v320_region_method_routing_and_fast_delivery_contract_are_wired() -> None:
+def test_v321_region_method_routing_and_fast_delivery_contract_are_wired() -> None:
     entrypoint = (ROOT / "server" / "one_click_retopology.py").read_text("utf-8")
     worker = Path("apps/blender_worker/src/gpu_control_blender_worker/main.py").read_text(
         "utf-8"
@@ -117,6 +117,9 @@ def test_v320_region_method_routing_and_fast_delivery_contract_are_wired() -> No
     assert "布料、皮革" in prompt
     assert "region_method_map" in prompt
     assert "木堆、石堆、碎料堆" in prompt
+    assert "包络只能由排除软表面区域后的剩余高模几何生成" in prompt
+    assert "不得遮挡、吞没、穿出或替代布料外表面" in prompt
+    assert "该约束属于一次建形规则，不新增低模渲染、视觉评分或交付门禁" in prompt
     assert "disconnected mesh island 数量绝不等于语义组件数量" in prompt
     assert "禁止用面数阈值" in prompt
     assert "一次且仅一次有界高模只读分析" in prompt

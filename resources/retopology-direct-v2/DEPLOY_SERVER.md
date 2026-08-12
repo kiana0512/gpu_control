@@ -1,4 +1,4 @@
-# Blender 自动拓扑与原坐标对齐服务器包 v3.0.20
+# Blender 自动拓扑与原坐标对齐服务器包 v3.0.21
 
 本包合并两个正式技能：
 
@@ -7,12 +7,14 @@
 
 它用于替换现有 `blender-retopology-compare-iterate-server-package-v2.5.0`。旧单文件调用参数和成功状态保持兼容；成功后额外输出烘焙高低模 FBX 与对齐报告。
 
-## v3.0.20 行为
+## v3.0.21 行为
 
 - Direct V2 现在从 API 的只读请求清单接收用户拓扑意图；过去该字段虽然进入输入 ZIP，Worker
   却没有传给生成器，因此“布料减面、木堆外轮廓包络”会被观察启发式覆盖成逐根重建。
 - 用户明确点名的区域与方法成为最高优先级建形约束；高模观察只定位边界和密度，不能静默删除
   区域或把用户要求的聚合包络改回逐件语义重建。请求数据不能修改命令、路径、源只读规则或门禁。
+- 布料/皮革覆盖木堆、石堆或碎料堆时，两个区域先按高模几何互斥分离；聚合包络不得使用包含
+  软表面的联合包围盒或联合截面，并必须在覆盖区保持于布料内侧，避免吞没悬垂和褶皱。
 - 未增加方向图、FBX 回读、视觉评分、UV 或拓扑审查门禁；交付仍只执行现有无破面与坐标持久化检查。
 
 ## v3.0.19 行为
@@ -120,8 +122,8 @@
 推荐把每个版本解压到独立 release 目录，再切换服务配置或符号链接，保留旧版用于回滚：
 
 ```bash
-unzip blender-auto-retopo-align-server-package-v3.0.20.zip -d /opt/li3d/releases/
-cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.20
+unzip blender-auto-retopo-align-server-package-v3.0.21.zip -d /opt/li3d/releases/
+cd /opt/li3d/releases/blender-auto-retopo-align-server-package-v3.0.21
 python3 server/verify_package.py
 cp server/worker.env.example server/worker.env
 ```
@@ -241,7 +243,7 @@ python3 server/align_existing_low.py \
 docker build \
   --build-arg WORKER_IMAGE=现有Worker镜像@sha256:固定摘要 \
   -f Dockerfile.layer \
-  -t li3d/blender-auto-retopo-align:v3.0.20 .
+  -t li3d/blender-auto-retopo-align:v3.0.21 .
 ```
 
 本 Layer 不替换现有 HTTP、队列、存储、鉴权或 Worker entrypoint，只加入合并技能和兼容入口。
