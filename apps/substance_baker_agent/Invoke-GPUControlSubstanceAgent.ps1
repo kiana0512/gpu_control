@@ -157,6 +157,7 @@ function Assert-ComfyUiProcessStable([string]$ExpectedIdentity = '') {
 function Clear-ComfyUiModelsForBaker([string]$ExpectedIdentity) {
     $python = @'
 import json
+import time
 import urllib.request
 
 base = "http://127.0.0.1:8188"
@@ -174,16 +175,28 @@ request = urllib.request.Request(
 )
 with urllib.request.urlopen(request, timeout=10) as response:
     response.read()
-with urllib.request.urlopen(base + "/system_stats", timeout=5) as response:
-    stats = json.load(response)
-devices = stats.get("devices") or []
-if not devices:
-    raise SystemExit("COMFY_VRAM_EVIDENCE_MISSING")
-total_mb = float(devices[0].get("vram_total", 0)) / 1048576
-free_mb = float(devices[0].get("vram_free", 0)) / 1048576
-ratio = free_mb / total_mb if total_mb > 0 else 0
-if free_mb < 6144 or ratio < 0.60:
-    raise SystemExit("COMFY_VRAM_RECOVERY_UNSAFE")
+
+# Model eviction is asynchronous. Keep the queue fenced while waiting for
+# ComfyUI's own allocator evidence to reach the Baker safety threshold.
+deadline = time.monotonic() + 30
+while True:
+    with urllib.request.urlopen(base + "/queue", timeout=5) as response:
+        queue = json.load(response)
+    if queue.get("queue_running", []) or queue.get("queue_pending", []):
+        raise SystemExit("COMFY_QUEUE_NOT_EMPTY")
+    with urllib.request.urlopen(base + "/system_stats", timeout=5) as response:
+        stats = json.load(response)
+    devices = stats.get("devices") or []
+    if not devices:
+        raise SystemExit("COMFY_VRAM_EVIDENCE_MISSING")
+    total_mb = float(devices[0].get("vram_total", 0)) / 1048576
+    free_mb = float(devices[0].get("vram_free", 0)) / 1048576
+    ratio = free_mb / total_mb if total_mb > 0 else 0
+    if free_mb >= 6144 and ratio >= 0.60:
+        break
+    if time.monotonic() >= deadline:
+        raise SystemExit("COMFY_VRAM_RECOVERY_UNSAFE")
+    time.sleep(0.5)
 print(json.dumps({
     "queue_empty": True,
     "models_unloaded": True,
@@ -195,7 +208,7 @@ print(json.dumps({
     $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($python))
     $pythonCommand = "import base64;exec(base64.b64decode('$encoded'))"
     $probeLines = @(& $WslExe -d $WslDistribution -u gpucontrol -- $WslDockerExe exec -i `
-        $WslComfyContainer python -c $pythonCommand 2>&1 | ForEach-Object {
+        $WslComfyContainer /opt/python/bin/python3 -c $pythonCommand 2>&1 | ForEach-Object {
             $_.ToString().Trim()
         } | Where-Object { $_ })
     if ($LASTEXITCODE -ne 0) {

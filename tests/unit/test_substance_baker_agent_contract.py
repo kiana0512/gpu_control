@@ -41,6 +41,14 @@ def test_substance_baker_fence_preserves_process_and_safely_evicts_models() -> N
     assert "comfyui_cache_policy = 'queue_drained_models_unloaded_vram_verified'" in source
     assert "comfyui_container_restarted = $false" in source
     assert "SUBSTANCE_COMFYUI_CONTINUITY_FAILED" in source
+    assert (
+        "$WslComfyContainer /opt/python/bin/python3 -c $pythonCommand" in source
+    )
+    assert "$WslComfyContainer python -c $pythonCommand" not in source
+    assert "deadline = time.monotonic() + 30" in source
+    assert "while True:" in source
+    assert source.count('base + "/queue"') == 2
+    assert "time.sleep(0.5)" in source
 
 
 def test_long_substance_commands_renew_the_lease_and_worker_heartbeat() -> None:

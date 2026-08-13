@@ -3869,6 +3869,175 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             "cancel_requested": job.cancel_requested,
         }
 
+    @app.post("/admin/asset-jobs/{job_id}/retry")
+    async def admin_retry_substance_asset_job(
+        job_id: str,
+        body: RetryRequest,
+        request: Request,
+        principal: Annotated[Principal, Depends(require_operator)],
+        db: Annotated[AsyncSession, Depends(session)],
+    ) -> dict[str, Any]:
+        """Retry one failed Substance job only after durable host recovery evidence."""
+        if not body.confirm:
+            raise HTTPException(409, detail={"code": "CONFIRMATION_REQUIRED"})
+        job = await db.get(AssetJob, job_id, with_for_update=True)
+        if job is None:
+            raise HTTPException(404, detail={"code": "ASSET_JOB_NOT_FOUND"})
+        if (
+            job.job_type != "SUBSTANCE_BAKE_V1"
+            or job.status != "FAILED"
+            or job.stage != "RECOVERY_REQUIRED"
+            or job.error_code != "SUBSTANCE_COMFYUI_CONTINUITY_FAILED"
+            or job.attempt_count >= cfg.asset_job_max_attempts
+        ):
+            raise HTTPException(409, detail={"code": "ASSET_JOB_NOT_RETRYABLE"})
+        if not Path(job.input_path).is_file():
+            raise HTTPException(409, detail={"code": "ASSET_RETRY_INPUT_MISSING"})
+        artifact_count = int(
+            await db.scalar(
+                select(func.count(AssetArtifact.id)).where(AssetArtifact.job_id == job.id)
+            )
+            or 0
+        )
+        if artifact_count:
+            raise HTTPException(409, detail={"code": "ASSET_RETRY_ARTIFACT_CONFLICT"})
+
+        active_bakes = int(
+            await db.scalar(
+                select(func.count(AssetJob.id)).where(
+                    AssetJob.id != job.id,
+                    AssetJob.job_type == "SUBSTANCE_BAKE_V1",
+                    AssetJob.status.not_in(TERMINAL_ASSET_WORK_STATUSES),
+                )
+            )
+            or 0
+        )
+        now = datetime.now(UTC)
+        node = await db.scalar(
+            select(Node).where(Node.id == SUBSTANCE_GPU_NODE_ID).with_for_update()
+        )
+        node_heartbeat = (
+            node.last_heartbeat_at.replace(tzinfo=UTC)
+            if node is not None and node.last_heartbeat_at is not None
+            and node.last_heartbeat_at.tzinfo is None
+            else (node.last_heartbeat_at if node is not None else None)
+        )
+        node_safe = bool(
+            node is not None
+            and node.health == "ONLINE"
+            and node.mode == "ACTIVE"
+            and node.current_jobs == 0
+            and not node.manual_reserved
+            and not node.external_busy
+            and not node.foreign_queue_detected
+            and node_heartbeat is not None
+            and (now - node_heartbeat).total_seconds() <= cfg.node_heartbeat_timeout_seconds
+            and not substance_gpu_interlock(node, now)["active"]
+        )
+        worker_rows = list(
+            (
+                await db.scalars(
+                    select(AssetWorker)
+                    .where(AssetWorker.id.like(f"{SUBSTANCE_WORKER_ID_PREFIX}%"))
+                    .order_by(AssetWorker.id)
+                    .with_for_update()
+                )
+            ).all()
+        )
+        expected_workers = {
+            f"{SUBSTANCE_WORKER_ID_PREFIX}{index:02d}"
+            for index in range(1, SUBSTANCE_MAX_PARALLEL + 1)
+        }
+        workers_safe = {worker.id for worker in worker_rows} == expected_workers
+        for worker in worker_rows:
+            heartbeat = worker.last_heartbeat_at
+            if heartbeat is not None and heartbeat.tzinfo is None:
+                heartbeat = heartbeat.replace(tzinfo=UTC)
+            probe_checked = worker.substance_process_probe_checked_at
+            if probe_checked is not None and probe_checked.tzinfo is None:
+                probe_checked = probe_checked.replace(tzinfo=UTC)
+            workers_safe = workers_safe and bool(
+                worker.status == "ONLINE"
+                and worker.skill_version == "substance-baker-2026.08.12-v7"
+                and worker.current_jobs == 0
+                and worker.agent_instance_id
+                and heartbeat is not None
+                and (now - heartbeat).total_seconds()
+                <= cfg.asset_worker_heartbeat_timeout_seconds
+                and worker.substance_process_probe_status == "HEALTHY"
+                and worker.substance_active_processes == 0
+                and probe_checked is not None
+                and (now - probe_checked).total_seconds()
+                <= cfg.asset_worker_heartbeat_timeout_seconds
+            )
+        if active_bakes or not node_safe or not workers_safe:
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "SUBSTANCE_ADMIN_RETRY_UNSAFE",
+                    "active_bakes": active_bakes,
+                    "node_safe": node_safe,
+                    "workers_safe": workers_safe,
+                },
+            )
+
+        previous = {
+            "status": job.status,
+            "stage": job.stage,
+            "attempt_count": job.attempt_count,
+            "worker_id": job.worker_id,
+            "worker_instance_id": job.worker_instance_id,
+            "error_code": job.error_code,
+            "error_message": job.error_message,
+        }
+        job.status = "QUEUED"
+        job.stage = "RETRY_QUEUED"
+        job.stage_message = "管理员确认宿主恢复，任务已安全返回烘焙队列"
+        job.progress = 0
+        job.estimated_remaining_seconds = None
+        job.worker_id = None
+        job.worker_instance_id = None
+        job.lease_token_hash = None
+        job.lease_expires_at = None
+        job.cancel_requested = False
+        job.error_code = None
+        job.error_message = None
+        job.started_at = None
+        job.finished_at = None
+        job.last_progress_at = now
+        await append_admin_asset_event(
+            db,
+            job,
+            event="asset.admin_retry",
+            details={
+                "reason": body.reason,
+                "actor": principal.id,
+                "previous": previous,
+            },
+        )
+        await audit(
+            db,
+            request,
+            principal,
+            "asset_job.retry",
+            "asset_job",
+            job.id,
+            previous,
+            {
+                "status": job.status,
+                "stage": job.stage,
+                "attempt_count": job.attempt_count,
+                "reason": body.reason,
+            },
+        )
+        await db.commit()
+        return {
+            "job_id": job.id,
+            "status": job.status,
+            "stage": job.stage,
+            "attempt_count": job.attempt_count,
+        }
+
     @app.get("/admin/asset-jobs/{job_id}/artifacts/{artifact_id}")
     async def admin_asset_artifact_file(
         job_id: str,
