@@ -104,6 +104,9 @@ SHA-256：`6036f895350115d7f5c325a255ef8cc6c4e3c1d3d650fd0bf07632009d63bd2b`
 | Ruff | `PASS` |
 | Git diff whitespace | `PASS` |
 | 动画管家客户端 | `47 passed` |
+| 三工作流 × 四节点兼容矩阵 | `12/12 compatible=true`，reasons 均为空 |
+| Prometheus 抓取目标 | `10/10 UP`，down=0 |
+| 四节点 identity/GPU metrics | Scheduler 连续 HTTP 200 |
 
 ## 8. 稳定版镜像
 
