@@ -38,6 +38,9 @@ UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重
 **动画管家修复事实回执：** `docs/121_2026-08-13_ASSETCLAW_GPU_CONTROL_1_5_14_FIX_RECEIPT.md`。
 它固定生产抠图只走 GPU Control、禁用本机静默回退，并记录三笔故障任务的恢复映射和 47 项客户端测试。
 
+**1.5.15 稳定版发布入口：** `docs/122_2026-08-13_GPU_CONTROL_1_5_15_STABLE_RELEASE.md`。
+它记录 5 分钟烘焙保护、空闲手动解除、最终镜像/LFS、生产部署、回归和发布边界。
+
 **当前四节点审计入口：** `docs/118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md`。它覆盖四 GPU 架构、调度定则、工作流身份、4070Ti WSL2 指标、真实任务、镜像/Git 和验收；下列旧文档只作专项或历史参考。
 
 **当前 Substance v7 热修专项入口：** `docs/119_2026-08-13_SUBSTANCE_V7_PYTHON_PATH_HOTFIX.md`。
