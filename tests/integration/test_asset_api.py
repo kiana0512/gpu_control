@@ -1168,6 +1168,48 @@ async def test_substance_heartbeat_with_unowned_baker_process_is_drained(
         assert claimed.json()["job"] is None
 
 
+async def test_healthy_substance_heartbeat_releases_expired_owned_soft_drain(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        now = datetime.now(UTC)
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            node.mode = "DRAINING"
+            node.current_jobs = 0
+            node.manual_reserved = False
+            node.external_busy = False
+            node.foreign_queue_detected = False
+            node.labels = {
+                "substance_bake_drain_owner": "asset-api",
+                # Simulate a pre-1.5.15 15-minute label. Read-time policy
+                # clamps it to started_at + 5 minutes.
+                "gpu_specialization": {
+                    "key": "substance-bake",
+                    "owner": "asset-api",
+                    "started_at": (now - timedelta(minutes=6)).isoformat(),
+                    "expires_at": (now + timedelta(minutes=9)).isoformat(),
+                },
+            }
+            await db.commit()
+
+        heartbeat = await register_substance_worker(
+            client,
+            settings,
+            "asset-worker-3090-b-windows-01",
+            active_baker_processes=0,
+        )
+        assert heartbeat.json() == {"accepted": True, "status": "ONLINE"}
+
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "ACTIVE"
+            assert "gpu_specialization" not in node.labels
+            assert "substance_bake_drain_owner" not in node.labels
+
+
 async def test_substance_worker_heartbeat_rejects_wrong_physical_node(
     tmp_path: Path,
 ) -> None:

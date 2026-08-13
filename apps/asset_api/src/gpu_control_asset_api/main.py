@@ -2573,6 +2573,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 cfg.asset_worker_heartbeat_timeout_seconds,
                 locked_node=substance_heartbeat_node,
             )
+            # A healthy native Baker heartbeat is the durable idle/process
+            # authority even when no new bake is being claimed. Reconcile the
+            # physical GPU reservation here so an expired five-minute soft
+            # specialization cannot leave the 3090-B row stuck in DRAINING
+            # until a future claim or a manual operator action. Active fences,
+            # pending jobs and recovery-required evidence remain fail-closed
+            # inside the reconciler.
+            if worker.status == "ONLINE" and substance_heartbeat_node is not None:
+                await reconcile_substance_gpu_reservation(
+                    db,
+                    substance_heartbeat_node,
+                    cfg.substance_pending_reservation_seconds,
+                    cfg.asset_worker_heartbeat_timeout_seconds,
+                    now=heartbeat_at,
+                )
         await db.commit()
         return {"accepted": True, "status": worker.status}
 

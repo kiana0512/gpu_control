@@ -494,10 +494,15 @@ def clear_idle_substance_specialization_on_manual_active(
         return False
     if substance_gpu_interlock(node, now)["active"]:
         return False
-    specialization, _ = gpu_specialization(node.labels, now)
-    if specialization != SUBSTANCE_SPECIALIZATION_KEY:
-        return False
     labels = dict(node.labels or {})
+    raw_specialization = labels.get(GPU_SPECIALIZATION_LABEL)
+    if (
+        not isinstance(raw_specialization, dict)
+        or raw_specialization.get("key") != SUBSTANCE_SPECIALIZATION_KEY
+    ):
+        return False
+    # Remove both a live idle hold and an already-expired stale label. The
+    # hard interlock checks above remain authoritative in either case.
     labels.pop(GPU_SPECIALIZATION_LABEL, None)
     node.labels = labels
     return True

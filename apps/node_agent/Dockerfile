@@ -7,7 +7,7 @@ COPY apps/node_agent/src ./apps/node_agent/src
 RUN python -m pip install --no-cache-dir --upgrade pip==26.2.1 \
     && python -m pip install --no-cache-dir .
 
-ARG GPU_CONTROL_VERSION=1.5.15
+ARG GPU_CONTROL_VERSION=1.5.16
 ARG GPU_CONTROL_REVISION=unknown
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

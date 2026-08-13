@@ -40,6 +40,19 @@ function specialization(node: NodeInfo): Specialization | null {
   };
 }
 
+function automaticRecoveryTime(active: Specialization) {
+  return active.expiresAt.toLocaleTimeString("zh-CN", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function hasSubstanceOwnedDrain(node: NodeInfo) {
+  return node.labels?.substance_bake_drain_owner === "asset-api";
+}
+
 function hasLiveSubstanceInterlock(node: NodeInfo) {
   const labels = node.labels ?? {};
   const fences = labels.substance_bake_fence_job_ids;
@@ -72,7 +85,13 @@ function nodePolicyTitle(node: NodeInfo) {
   }
   if (node.id === "worker-3090-b") {
     if (active?.key === "substance-bake")
-      return `烘焙保护中 · 约 ${active.remainingMinutes} 分钟`;
+      return `烘焙保护中 · 预计 ${automaticRecoveryTime(active)} 自动恢复`;
+    if (
+      node.mode === "DRAINING" &&
+      hasSubstanceOwnedDrain(node) &&
+      !hasLiveSubstanceInterlock(node)
+    )
+      return "烘焙保护回收中 · 下一次健康心跳自动恢复";
     return "唯一 Substance 烘焙节点 · 当前为普通 GPU 状态";
   }
   return "普通共享 GPU 节点";
@@ -92,6 +111,12 @@ function nodePolicyDetail(node: NodeInfo) {
       return node.current_jobs
         ? "停止领取新抠图，等待当前帧自然完成后清显存并切换 Windows Baker。"
         : "GPU 保留给生产烘焙；5 分钟无新烘焙后自动恢复，空闲时也可由管理员立即解除。";
+    if (
+      node.mode === "DRAINING" &&
+      hasSubstanceOwnedDrain(node) &&
+      !hasLiveSubstanceInterlock(node)
+    )
+      return "软保护已到期，Asset API 正在清理过期标签并回写 ACTIVE；无需人工等待。";
     return "可接普通推理；生产烘焙到达后获得下一 GPU 执行权。";
   }
   return "按兼容性、缓存亲和与公平队列参与抠图、局部重绘和粗糙度。";
