@@ -11,7 +11,8 @@
 工作流 SHA、4070Ti 指标、真实任务、代码审计和次日验收的唯一最新记录见
 `118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md`；v7 热修、Admin Retry 与真实制品证据见
 `119_2026-08-13_SUBSTANCE_V7_PYTHON_PATH_HOTFIX.md`；动画管家最新对接合同见
-`120_2026-08-13_ASSETCLAW_FOUR_GPU_1_5_14_ALIGNMENT_HANDOFF.md`。此前 1.5.11 执行与证据见
+`120_2026-08-13_ASSETCLAW_FOUR_GPU_1_5_14_ALIGNMENT_HANDOFF.md`；动画管家修复后的事实回执见
+`121_2026-08-13_ASSETCLAW_GPU_CONTROL_1_5_14_FIX_RECEIPT.md`。此前 1.5.11 执行与证据见
 `98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`；最新自动拓扑热修复见
 `104_2026-08-11_RETOPOLOGY_DEGENERATE_DELIVERY_HOTFIX.md`；拓扑低模进入 UV 后的 FBX 米制单位修复见
 `105_2026-08-11_UV_FBX_METER_UNIT_HOTFIX.md`；一键烘焙 GLB 输入 422 修复见
@@ -33,6 +34,9 @@ UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重
 
 **动画管家最新入口：** `docs/120_2026-08-13_ASSETCLAW_FOUR_GPU_1_5_14_ALIGNMENT_HANDOFF.md`。
 它覆盖四 GPU 架构、六 API 请求/结果合同、部分成功补算、调度保护、工作流身份、探针和联合测试。
+
+**动画管家修复事实回执：** `docs/121_2026-08-13_ASSETCLAW_GPU_CONTROL_1_5_14_FIX_RECEIPT.md`。
+它固定生产抠图只走 GPU Control、禁用本机静默回退，并记录三笔故障任务的恢复映射和 47 项客户端测试。
 
 **当前四节点审计入口：** `docs/118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md`。它覆盖四 GPU 架构、调度定则、工作流身份、4070Ti WSL2 指标、真实任务、镜像/Git 和验收；下列旧文档只作专项或历史参考。
 

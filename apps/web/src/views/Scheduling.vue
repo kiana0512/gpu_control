@@ -531,7 +531,9 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             </div>
             <dl>
               <dt>保护窗口</dt>
-              <dd>最后一次新烘焙到达后 15 分钟；积压队列继续保留执行权</dd>
+              <dd>
+                最后一次新烘焙到达后 5 分钟；积压队列继续保留执行权，空闲时可由管理员立即解除
+              </dd>
               <dt>影响</dt>
               <dd>仅 3090-B GPU 单槽</dd>
             </dl>

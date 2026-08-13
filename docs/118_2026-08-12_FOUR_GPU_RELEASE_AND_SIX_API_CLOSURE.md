@@ -17,7 +17,7 @@
 - ImageClip 抠图、ModelView 局部重绘、PBR 粗糙度对齐到批准的生产工作流版本；
 - 四台 Linux/WSL Blender Worker 对齐到 `asset-skills-auto-retopo-align-v3.0.25`；
 - UV 和自动拓扑 CPU 任务仍与 GPU 保护窗口相互独立；
-- 4070Ti 负责局部重绘响应优先，3090-B 保留唯一 Substance 烘焙能力；两个 15 分钟窗口都按“有受保护任务才续期、硬过期后恢复共享”执行；
+- 4070Ti 负责局部重绘响应优先，保留 15 分钟窗口；3090-B 保留唯一 Substance 烘焙能力，空闲保护缩短为 5 分钟；两者都按“有受保护任务才续期、硬过期后恢复共享”执行；
 - WebUI 已显示四台设备、四主机 Codex 探针、专用 GPU 策略、真实 WSL 指标和 CPU/GPU 槽位关系；
 - 修复拓扑审计三处控制面漂移：当前 Worker 被错误排除、固定脚本 SHA 过期、Worker/API 仍使用旧审计参数/schema；
 - 全量前端回归、Python 回归、静态检查和真实四节点 canary 证据见后文。
@@ -62,8 +62,9 @@ ImageClip 帧，则只中断并重新排队该帧，其他节点可重新领取�
 ### 3.3 3090-B 烘焙优先
 
 生产烘焙任务到达后，3090-B 不再领取新 ImageClip 帧；已经开始的 ImageClip 帧必须自然完成，随后
-排空 ComfyUI、释放模型缓存，再把物理 GPU 交给 Windows Baker。新的烘焙会刷新 15 分钟窗口；没有
-受保护任务且到达硬过期时间后，3090-B 恢复普通 GPU 调度。
+排空 ComfyUI、释放模型缓存，再把物理 GPU 交给 Windows Baker。新的烘焙会刷新 5 分钟窗口；没有
+受保护任务且到达硬过期时间后，3090-B 恢复普通 GPU 调度。若 Baker、待领取烘焙和恢复门禁均为空，
+管理员在 WebUI 点击“解除烘焙保护”或重新“投入使用”会立即清除软保护，不再等待倒计时结束。
 
 不得为了烘焙抢占而杀死当前 ImageClip 帧，也不得让过期标签永久阻止普通任务。CPU Asset Worker
 始终独立于这一物理 GPU 围栏。

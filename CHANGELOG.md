@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.5.15 — Work-conserving Baker release and AssetClaw closure — 2026-08-13
+
+- Shorten the 3090-B post-arrival Substance GPU specialization from 15 minutes to five minutes;
+  retain the 4070Ti inpaint response lane at 15 minutes.
+- Clamp pre-upgrade 15-minute Substance labels to `started_at + 5 minutes` during rolling updates.
+- Let an explicit administrator ACTIVE action release only an idle Substance soft hold; pending
+  reservations, live Baker fences, recovery-required state and occupied/foreign GPU activity remain
+  non-bypassable.
+- Add the WebUI “解除烘焙保护” action and update scheduling explanations without freezing CPU Asset
+  slots.
+- Archive AssetClaw's byte-identical 1.5.14 fix receipt: production matting is GPU-Control-only,
+  local/hybrid/OOM fallback is forbidden, and the three recovery batches are mapped for audit.
+
 ## 1.5.14 — Substance Baker v7 recovery and safe Admin Retry — 2026-08-13
 
 - Pin the v7 Windows Baker Agent's ComfyUI fencing probe to
@@ -28,8 +41,9 @@
   observable while ComfyUI is busy; node liveness no longer depends on Docker NVML behavior in WSL.
 - Lock ImageClip, ModelView inpaint and roughness to the approved production manifests and exact
   model/custom-node/output contracts without changing external workflow semantics.
-- Enforce work-conserving 15-minute GPU specialization: 4070Ti protects inpaint response and 3090-B
-  protects its unique Substance channel, while CPU UV/retopology work remains independent.
+- Enforce work-conserving GPU specialization: 4070Ti keeps a 15-minute inpaint response lane;
+  3090-B uses a five-minute Substance lane and an audited idle-only operator release, while active
+  Baker fences/reservations/recovery gates remain non-bypassable and CPU Asset slots stay independent.
 - Restore public retopology audit capacity on current Direct V2 Workers, align the packaged audit
   script SHA, remove retired `--reference` arguments and accept both legacy schema v2 and current
   schema v3 completion payloads.

@@ -16,7 +16,11 @@ SUBSTANCE_GPU_NODE_ID = "worker-3090-b"
 SUBSTANCE_WORKER_ID = "asset-worker-3090-b-windows"
 SUBSTANCE_WORKER_ID_PREFIX = f"{SUBSTANCE_WORKER_ID}-"
 SUBSTANCE_MAX_PARALLEL = 4
-SPECIALIZED_GPU_HOLD_SECONDS = 15 * 60
+MODELVIEW_INPAINT_GPU_HOLD_SECONDS = 15 * 60
+SUBSTANCE_GPU_HOLD_SECONDS = 5 * 60
+# Backward-compatible name for callers that only know the original inpaint
+# window. New specialization code must select the duration by workflow key.
+SPECIALIZED_GPU_HOLD_SECONDS = MODELVIEW_INPAINT_GPU_HOLD_SECONDS
 GPU_SPECIALIZATION_LABEL = "gpu_specialization"
 GPU_CACHE_DRAIN_FAILED_LABEL = "gpu_cache_drain_failed"
 MODELVIEW_INPAINT_NODE_ID = "worker-4070ti-animation-host-01"
@@ -142,6 +146,28 @@ def gpu_specialization(
         if expires_at.tzinfo is None
         else expires_at.astimezone(UTC)
     )
+    # Clamp old 15-minute Substance labels to the current five-minute policy.
+    # This is intentionally read-time compatible so a rolling deployment does
+    # not leave pre-upgrade labels blocking 3090-B until their legacy expiry.
+    if key == SUBSTANCE_SPECIALIZATION_KEY:
+        raw_started = raw.get("started_at")
+        if isinstance(raw_started, str):
+            try:
+                started_at = datetime.fromisoformat(
+                    raw_started.replace("Z", "+00:00")
+                )
+            except ValueError:
+                started_at = None
+            if started_at is not None:
+                started_at = (
+                    started_at.replace(tzinfo=UTC)
+                    if started_at.tzinfo is None
+                    else started_at.astimezone(UTC)
+                )
+                expires_at = min(
+                    expires_at,
+                    started_at + timedelta(seconds=SUBSTANCE_GPU_HOLD_SECONDS),
+                )
     current = now if now.tzinfo else now.replace(tzinfo=UTC)
     if expires_at <= current:
         return None, expires_at
@@ -155,10 +181,20 @@ def refresh_gpu_specialization(
     *,
     owner: str,
 ) -> datetime:
-    """Start or refresh the fixed 15-minute specialized-GPU window."""
+    """Start or refresh the workflow-specific specialized-GPU window.
+
+    4070Ti keeps the original 15-minute inpaint response lane. 3090-B uses a
+    shorter five-minute post-arrival Substance lane because an active Baker
+    fence already provides the non-expiring physical-GPU safety boundary.
+    """
 
     current = now if now.tzinfo else now.replace(tzinfo=UTC)
-    expires_at = current + timedelta(seconds=SPECIALIZED_GPU_HOLD_SECONDS)
+    hold_seconds = (
+        SUBSTANCE_GPU_HOLD_SECONDS
+        if key == SUBSTANCE_SPECIALIZATION_KEY
+        else MODELVIEW_INPAINT_GPU_HOLD_SECONDS
+    )
+    expires_at = current + timedelta(seconds=hold_seconds)
     labels = dict(getattr(node, "labels", {}) or {})
     labels[GPU_SPECIALIZATION_LABEL] = {
         "key": key,

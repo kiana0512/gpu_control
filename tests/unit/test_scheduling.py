@@ -193,7 +193,9 @@ def test_substance_specialization_blocks_only_gpu_and_hard_expires(
     assert excluded[node.id] == "substance_specialization"
     assert linux_asset_claim_allowed(node, now)
 
-    after_expiry = now + timedelta(minutes=15, seconds=1)
+    assert gpu_specialization(node.labels, now)[1] == now + timedelta(minutes=5)
+
+    after_expiry = now + timedelta(minutes=5, seconds=1)
     node.last_heartbeat_at = after_expiry
     chosen, excluded = choose_node(
         [node],
@@ -204,6 +206,28 @@ def test_substance_specialization_blocks_only_gpu_and_hard_expires(
     )
     assert chosen is node
     assert excluded == {}
+
+
+def test_legacy_substance_specialization_is_clamped_to_five_minutes() -> None:
+    now = datetime.now(UTC)
+    node = FakeNode("worker-3090-b", "PRIMARY", "ACTIVE", last_heartbeat_at=now)
+    node.labels = {
+        "gpu_specialization": {
+            "key": "substance-bake",
+            "owner": "asset-api",
+            "started_at": now.isoformat(),
+            "expires_at": (now + timedelta(minutes=15)).isoformat(),
+        }
+    }
+
+    assert gpu_specialization(node.labels, now) == (
+        SUBSTANCE_SPECIALIZATION_KEY,
+        now + timedelta(minutes=5),
+    )
+    assert gpu_specialization(node.labels, now + timedelta(minutes=5)) == (
+        None,
+        now + timedelta(minutes=5),
+    )
 
 
 def test_cache_drain_failure_is_a_hard_gpu_interlock(tmp_path: Path) -> None:

@@ -88,6 +88,7 @@ from packages.gpu_control_core.models import (
 )
 from packages.gpu_control_core.repository import ACTIVE_STATUSES, transition_job
 from packages.gpu_control_core.scheduling import (
+    GPU_SPECIALIZATION_LABEL,
     IMAGECLIP_INPAINT_PREEMPTION_CODE,
     IMAGECLIP_WORKFLOW_KEY,
     MODELVIEW_INPAINT_NODE_ID,
@@ -97,8 +98,10 @@ from packages.gpu_control_core.scheduling import (
     SUBSTANCE_GPU_NODE_ID,
     SUBSTANCE_MAX_PARALLEL,
     SUBSTANCE_RECOVERY_REQUIRED_LABEL,
+    SUBSTANCE_SPECIALIZATION_KEY,
     SUBSTANCE_WORKER_ID,
     SUBSTANCE_WORKER_ID_PREFIX,
+    gpu_specialization,
     linux_asset_claim_allowed,
     refresh_gpu_specialization,
     substance_fence_job_ids,
@@ -472,6 +475,32 @@ def take_operator_drain_ownership(node: Node) -> bool:
     labels.pop(SUBSTANCE_DRAIN_OWNER_LABEL, None)
     node.labels = labels
     return owned
+
+
+def clear_idle_substance_specialization_on_manual_active(
+    node: Node, now: datetime
+) -> bool:
+    """Let an explicit operator ACTIVE action end only the soft Baker hold.
+
+    Pending reservations, active Baker fences, recovery-required state and an
+    occupied/externally busy GPU remain authoritative. This gives operators a
+    work-conserving escape hatch after a completed bake without weakening the
+    physical-GPU mutual exclusion that protects ComfyUI and Substance.
+    """
+
+    if node.id != SUBSTANCE_GPU_NODE_ID or node.current_jobs:
+        return False
+    if node.external_busy or node.foreign_queue_detected:
+        return False
+    if substance_gpu_interlock(node, now)["active"]:
+        return False
+    specialization, _ = gpu_specialization(node.labels, now)
+    if specialization != SUBSTANCE_SPECIALIZATION_KEY:
+        return False
+    labels = dict(node.labels or {})
+    labels.pop(GPU_SPECIALIZATION_LABEL, None)
+    node.labels = labels
+    return True
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -4587,10 +4616,23 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         node = await db.get(Node, node_id, with_for_update=True)
         if node is None:
             raise HTTPException(404, detail={"code": "NODE_NOT_FOUND"})
-        before = {"mode": node.mode, "manual_reserved": node.manual_reserved}
+        before = {
+            "mode": node.mode,
+            "manual_reserved": node.manual_reserved,
+            "gpu_specialization": dict(node.labels or {}).get(
+                GPU_SPECIALIZATION_LABEL
+            ),
+        }
         substance_owner_transferred = take_operator_drain_ownership(node)
         node.mode = body.mode.value
         node.manual_reserved = body.mode == NodeMode.RESERVED
+        substance_specialization_released = False
+        if body.mode == NodeMode.ACTIVE:
+            substance_specialization_released = (
+                clear_idle_substance_specialization_on_manual_active(
+                    node, datetime.now(UTC)
+                )
+            )
         await audit(
             db,
             request,
@@ -4602,6 +4644,9 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             {
                 "mode": node.mode,
                 "substance_owner_transferred": substance_owner_transferred,
+                "substance_specialization_released": (
+                    substance_specialization_released
+                ),
                 "reason": body.reason,
             },
         )

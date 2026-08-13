@@ -2,16 +2,17 @@
 
 > 今天部署请先打开 [文档总入口](docs/00_START_HERE.md)；动画管家当前对接以
 > [四 GPU / 六 API 生产对接合同](docs/120_2026-08-13_ASSETCLAW_FOUR_GPU_1_5_14_ALIGNMENT_HANDOFF.md)
-> 为准；完整审计见 [2026-08-12 四 GPU 收口报告](docs/118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md)，
+> 为准；动画管家完成修复后的事实证据见
+> [AssetClaw 1.5.14 修复回执](docs/121_2026-08-13_ASSETCLAW_GPU_CONTROL_1_5_14_FIX_RECEIPT.md)；完整审计见 [2026-08-12 四 GPU 收口报告](docs/118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md)，
 > 3090-B v7 修复与成功 Retry 见 [2026-08-13 专项记录](docs/119_2026-08-13_SUBSTANCE_V7_PYTHON_PATH_HOTFIX.md)。
 
 面向 RTX 4090 控制中心、两台 RTX 3090 和一台 RTX 4070Ti 的统一任务调度、运维与可观测平台；GPU
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
-当前源码目标基线为 GPU Control API/Scheduler/Asset API/Web/Node Agent `1.5.14`、Blender Worker
+当前源码目标基线为 GPU Control API/Scheduler/Asset API/Web/Node Agent `1.5.15`、Blender Worker
 `1.4.48`、数据库 `20260810_0013`。当前总状态为
 `FUNCTIONAL_RECOVERY_CONFIRMED / STABILITY_TESTING`：六 API 均已有真实功能成功证据；正式
-1.5.14 镜像/LFS、第三次正式 100 VU、registry digest/SBOM、固定基准、完整故障矩阵和连续七天观察
+1.5.15 镜像/LFS、第三次正式 100 VU、registry digest/SBOM、固定基准、完整故障矩阵和连续七天观察
 仍按发布门禁收口，未完成前不标记 `FROZEN` 或 `PRODUCTION_ACCEPTED`。
 
 生产 `UV_QA_ENFORCEMENT=advisory` 和旧版 `RETOPOLOGY_QA_ENFORCEMENT=advisory` 仍保留兼容语义；

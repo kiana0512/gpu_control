@@ -1,11 +1,11 @@
 services:
   node-agent:
-    image: gpu-control-node-agent:${NODE_AGENT_IMAGE_TAG:-1.5.14}
+    image: gpu-control-node-agent:${NODE_AGENT_IMAGE_TAG:-1.5.15}
     build:
       context: ../..
       dockerfile: apps/node_agent/Dockerfile
       args:
-        GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.14}
+        GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.15}
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
     restart: unless-stopped
     network_mode: host

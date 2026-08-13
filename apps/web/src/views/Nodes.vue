@@ -40,6 +40,29 @@ function specialization(node: NodeInfo): Specialization | null {
   };
 }
 
+function hasLiveSubstanceInterlock(node: NodeInfo) {
+  const labels = node.labels ?? {};
+  const fences = labels.substance_bake_fence_job_ids;
+  const recovery = labels.substance_bake_recovery_required;
+  const pending = labels.substance_bake_pending_reservation;
+  const pendingValue =
+    pending && typeof pending === "object"
+      ? (pending as Record<string, unknown>)
+      : null;
+  const pendingExpiry =
+    typeof pendingValue?.expires_at === "string"
+      ? new Date(pendingValue.expires_at).getTime()
+      : 0;
+  return Boolean(
+    labels.substance_bake_fence_job_id ||
+      (Array.isArray(fences) && fences.length) ||
+      (Array.isArray(recovery) && recovery.length) ||
+      (Array.isArray(pendingValue?.job_ids) &&
+        pendingValue.job_ids.length &&
+        pendingExpiry > Date.now()),
+  );
+}
+
 function nodePolicyTitle(node: NodeInfo) {
   const active = specialization(node);
   if (node.id === "worker-4070ti-animation-host-01") {
@@ -68,7 +91,7 @@ function nodePolicyDetail(node: NodeInfo) {
     if (active?.key === "substance-bake")
       return node.current_jobs
         ? "停止领取新抠图，等待当前帧自然完成后清显存并切换 Windows Baker。"
-        : "GPU 保留给生产烘焙；15 分钟无新烘焙后自动恢复普通推理。";
+        : "GPU 保留给生产烘焙；5 分钟无新烘焙后自动恢复，空闲时也可由管理员立即解除。";
     return "可接普通推理；生产烘焙到达后获得下一 GPU 执行权。";
   }
   return "按兼容性、缓存亲和与公平队列参与抠图、局部重绘和粗糙度。";
@@ -103,6 +126,21 @@ async function mode(node: NodeInfo, value: NodeInfo["mode"]) {
   );
   await api.setMode(node.id, value, `管理员执行：${labels[value]}`);
   ElMessage.success(`${node.display_name} 已${labels[value]}`);
+  await load();
+}
+
+async function releaseSubstanceProtection(node: NodeInfo) {
+  await ElMessageBox.confirm(
+    `确认立即解除 ${node.display_name} 的空闲烘焙保护并恢复普通 GPU 接单吗？活动 Baker、待领取烘焙或恢复门禁存在时后端仍会拒绝解除。`,
+    "解除空闲烘焙保护",
+    { type: "warning" },
+  );
+  await api.setMode(
+    node.id,
+    "ACTIVE",
+    "管理员确认当前无活动烘焙，立即解除空闲烘焙保护",
+  );
+  ElMessage.success("3090-B 已恢复普通 GPU 接单");
   await load();
 }
 
@@ -198,7 +236,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
       <div>
         <strong>3090-B 保证唯一烘焙通道</strong>
         <span
-          >烘焙排队后不再接新抠图，当前帧自然结束再切换；15
+          >烘焙排队后不再接新抠图，当前帧自然结束再切换；5
           分钟无新任务会硬过期。</span
         >
       </div>
@@ -265,7 +303,20 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 
           <div v-if="node.health === 'ONLINE'" class="node-primary-actions">
             <button
-              v-if="node.mode !== 'ACTIVE'"
+              v-if="
+                node.id === 'worker-3090-b' &&
+                node.mode === 'ACTIVE' &&
+                node.current_jobs === 0 &&
+                specialization(node)?.key === 'substance-bake' &&
+                !hasLiveSubstanceInterlock(node)
+              "
+              class="primary"
+              @click="releaseSubstanceProtection(node)"
+            >
+              解除烘焙保护
+            </button>
+            <button
+              v-else-if="node.mode !== 'ACTIVE'"
               class="primary"
               @click="mode(node, 'ACTIVE')"
             >

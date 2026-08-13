@@ -2042,6 +2042,83 @@ async def test_operator_mode_change_takes_drain_ownership_without_dropping_gpu_f
             assert node.labels["substance_bake_recovery_required"]
 
 
+async def test_operator_active_releases_only_idle_substance_specialization(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            node.mode = "DRAINING"
+            node.current_jobs = 0
+            node.external_busy = False
+            node.foreign_queue_detected = False
+            node.labels = {
+                "substance_bake_drain_owner": "asset-api",
+                "gpu_specialization": {
+                    "key": "substance-bake",
+                    "owner": "asset-api",
+                    "started_at": datetime.now(UTC).isoformat(),
+                    "expires_at": (
+                        datetime.now(UTC) + timedelta(minutes=5)
+                    ).isoformat(),
+                },
+            }
+            await db.commit()
+
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        changed = await client.put(
+            "/admin/nodes/worker-3090-b/mode",
+            headers=auth,
+            json={
+                "mode": "ACTIVE",
+                "reason": "operator releases completed bake hold",
+                "confirm": True,
+            },
+        )
+        assert changed.status_code == 200, changed.text
+
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "ACTIVE"
+            assert "gpu_specialization" not in node.labels
+            assert "substance_bake_drain_owner" not in node.labels
+
+            node.labels = {
+                "substance_bake_fence_job_ids": ["active-bake"],
+                "gpu_specialization": {
+                    "key": "substance-bake",
+                    "owner": "asset-api",
+                    "started_at": datetime.now(UTC).isoformat(),
+                    "expires_at": (
+                        datetime.now(UTC) + timedelta(minutes=5)
+                    ).isoformat(),
+                },
+            }
+            await db.commit()
+
+        blocked = await client.put(
+            "/admin/nodes/worker-3090-b/mode",
+            headers=auth,
+            json={
+                "mode": "ACTIVE",
+                "reason": "must not bypass active Baker fence",
+                "confirm": True,
+            },
+        )
+        assert blocked.status_code == 200, blocked.text
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.labels["substance_bake_fence_job_ids"] == ["active-bake"]
+            assert node.labels["gpu_specialization"]["key"] == "substance-bake"
+
+
 async def test_maintenance_action_is_blocked_by_substance_interlock_and_takes_drain_owner(
     tmp_path: Path,
 ) -> None:
