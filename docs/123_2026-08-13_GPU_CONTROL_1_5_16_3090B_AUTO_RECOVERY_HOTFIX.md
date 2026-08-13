@@ -34,6 +34,10 @@ Substance 标签，但数据库的 Node mode 和旧标签不一定被主动回�
 - Web：18/18、ESLint、生产构建通过；
 - 零 GPU Job、零 Asset Job 安全窗口滚动；四个控制服务均 healthy；
 - 生产 Baker 心跳已自动清除 3090-B 的过期 specialization；
+- 部署后两笔真实生产烘焙 `da048bb0-152c-4e33-8d9c-9d0b428ce505`、
+  `fb306dc5-4d68-4f7d-9f79-8b889c6da72f` 同时执行，fence 从 2 自动归零；
+- 最后一笔到达时间 12:07:53，对应保护截止 12:12:53；12:12:52 节点仍正确保持 `DRAINING`，
+  12:12:57 下一次健康心跳自动回写 `ACTIVE` 并同时删除 specialization/drain owner，期间没有人工点击；
 - 发布后四个 GPU 节点均 `ONLINE/ACTIVE`，四个 GPU current_jobs 均为 0；
 - API 与 Asset API 均返回 `1.5.16`、revision 精确匹配、`version_aligned=true`、
   `provenance_complete=true`；Web HTTPS 返回 200。
