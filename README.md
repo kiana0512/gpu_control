@@ -6,6 +6,7 @@
 > [AssetClaw 1.5.14 修复回执](docs/121_2026-08-13_ASSETCLAW_GPU_CONTROL_1_5_14_FIX_RECEIPT.md)；完整审计见 [2026-08-12 四 GPU 收口报告](docs/118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md)，
 > 3090-B v7 修复与成功 Retry 见 [2026-08-13 专项记录](docs/119_2026-08-13_SUBSTANCE_V7_PYTHON_PATH_HOTFIX.md)。
 > 1.5.15 稳定版镜像、部署与验收见 [稳定版发布记录](docs/122_2026-08-13_GPU_CONTROL_1_5_15_STABLE_RELEASE.md)。
+> 3090-B 烘焙排空自动恢复修复见 [1.5.16 热修记录](docs/123_2026-08-13_GPU_CONTROL_1_5_16_3090B_AUTO_RECOVERY_HOTFIX.md)。
 
 面向 RTX 4090 控制中心、两台 RTX 3090 和一台 RTX 4070Ti 的统一任务调度、运维与可观测平台；GPU
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。

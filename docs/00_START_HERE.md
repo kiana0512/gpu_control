@@ -41,6 +41,9 @@ UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重
 **1.5.15 稳定版发布入口：** `docs/122_2026-08-13_GPU_CONTROL_1_5_15_STABLE_RELEASE.md`。
 它记录 5 分钟烘焙保护、空闲手动解除、最终镜像/LFS、生产部署、回归和发布边界。
 
+**1.5.16 自动恢复热修：** `docs/123_2026-08-13_GPU_CONTROL_1_5_16_3090B_AUTO_RECOVERY_HOTFIX.md`。
+它修复 3090-B 烘焙软保护到期后仍显示排空的问题，并记录健康 Baker 心跳自动回写 ACTIVE 的证据。
+
 **当前四节点审计入口：** `docs/118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md`。它覆盖四 GPU 架构、调度定则、工作流身份、4070Ti WSL2 指标、真实任务、镜像/Git 和验收；下列旧文档只作专项或历史参考。
 
 **当前 Substance v7 热修专项入口：** `docs/119_2026-08-13_SUBSTANCE_V7_PYTHON_PATH_HOTFIX.md`。
