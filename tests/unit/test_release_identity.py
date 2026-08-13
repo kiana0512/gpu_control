@@ -16,14 +16,14 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 
 def test_source_release_versions_match_current_component_versions() -> None:
     assert source_versions(REPOSITORY) == {
-        "python": "1.5.13",
-        "web": "1.5.13",
-        "web_lock": "1.5.13",
+        "python": "1.5.14",
+        "web": "1.5.14",
+        "web_lock": "1.5.14",
     }
 
 
 def test_control_plane_build_defaults_match_release_version() -> None:
-    expected_version = "1.5.13"
+    expected_version = "1.5.14"
     for dockerfile in (
         "apps/api/Dockerfile",
         "apps/scheduler/Dockerfile",

@@ -1,15 +1,18 @@
 # 统一调度中心（GPU Control）
 
-> 今天部署请先打开 [文档总入口](docs/00_START_HERE.md)；四 GPU 现状、4070Ti 接入、六 API
-> 验证与发布证据以 [2026-08-12 四 GPU 收口报告](docs/118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md) 为准。
+> 今天部署请先打开 [文档总入口](docs/00_START_HERE.md)；动画管家当前对接以
+> [四 GPU / 六 API 生产对接合同](docs/120_2026-08-13_ASSETCLAW_FOUR_GPU_1_5_14_ALIGNMENT_HANDOFF.md)
+> 为准；完整审计见 [2026-08-12 四 GPU 收口报告](docs/118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md)，
+> 3090-B v7 修复与成功 Retry 见 [2026-08-13 专项记录](docs/119_2026-08-13_SUBSTANCE_V7_PYTHON_PATH_HOTFIX.md)。
 
 面向 RTX 4090 控制中心、两台 RTX 3090 和一台 RTX 4070Ti 的统一任务调度、运维与可观测平台；GPU
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
-当前源码发布基线为 GPU Control API/Scheduler/Asset API/Web `1.5.13`、Blender Worker
+当前源码目标基线为 GPU Control API/Scheduler/Asset API/Web/Node Agent `1.5.14`、Blender Worker
 `1.4.48`、数据库 `20260810_0013`。当前总状态为
-`DEPLOYED_NOT_ACCEPTED`：第三次正式 100 VU、registry digest/SBOM、固定基准、完整故障矩阵和
-连续七天观察尚未闭环，禁止标记 `FROZEN` 或 `PRODUCTION_ACCEPTED`。
+`FUNCTIONAL_RECOVERY_CONFIRMED / STABILITY_TESTING`：六 API 均已有真实功能成功证据；正式
+1.5.14 镜像/LFS、第三次正式 100 VU、registry digest/SBOM、固定基准、完整故障矩阵和连续七天观察
+仍按发布门禁收口，未完成前不标记 `FROZEN` 或 `PRODUCTION_ACCEPTED`。
 
 生产 `UV_QA_ENFORCEMENT=advisory` 和旧版 `RETOPOLOGY_QA_ENFORCEMENT=advisory` 仍保留兼容语义；
 v3 同任务生成路径保留坐标恢复、保存后 Blend 拓扑指纹、身份、manifest、文件完整性和 SHA 硬门禁；
@@ -17,9 +20,9 @@ v3 同任务生成路径保留坐标恢复、保存后 Blend 拓扑指纹、身�
 缺失、空文件、非法 JSON、身份、租约或 SHA 失败仍硬拒绝。四台 Linux/WSL Worker 使用同一镜像、
 同一源码和同一批准包 SHA；统一 registry digest/SBOM 仍待补齐。
 
-3090-B 上四个 Windows Substance Baker Agent 当前仍为
-`substance-baker-2026.08.03-v6 / DRAINING`；控制面要求 `2026.08.12-v7`，因此烘焙在完成 Windows
-升级前保持 fail-closed，不能标记六 API 全部接受。四节点 ComfyUI 使用同一
+3090-B 上四个 Windows Substance Baker Agent 当前为
+`substance-baker-2026.08.12-v7 / ONLINE`；容器 Python 路径和异步显存释放轮询热修已同步，原任务经
+受控 Admin Retry 在 attempt 3 成功并发布 12 个通过 SHA 校验的制品。四节点 ComfyUI 使用同一
 `projects-0.2.3` 镜像。自动拓扑对齐包 v3.0.25 统一 FBX/GLB/GLTF/OBJ 的只读高模准备入口，并把 API 中
 用户明确指定的分区建形意图传入生成器；布料覆盖木堆等分层资产先用只读的同坐标邻接恢复被
 法线/UV 导出缝拆开的完整几何表面，再进行区域分类，禁止把导出碎片误当语义组件；当导入资产

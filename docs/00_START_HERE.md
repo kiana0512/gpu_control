@@ -2,12 +2,16 @@
 
 本页是仓库文档导航。今天部署时不要从 30 多份文档逐一翻找，按下面的“现场主线”执行即可；其余文档是遇到具体问题时的细节手册。
 
-2026-08-12 的四节点候选基线为 GPU Control `1.5.13`、Blender Worker `1.4.48`、数据库
-`20260810_0013`，节点为 4090、3090-A、3090-B 和 Windows/WSL2 4070Ti。五个 API 已取得
-真实成功证据；3090-B Windows Substance Agent 仍为 v6，因 v7 版本门禁而处于 `DRAINING`，所以
-当前状态必须保持 `DEPLOYED_NOT_ACCEPTED`，不得宣称六 API 正式通过。四节点架构、固定路由、
+2026-08-13 的四节点目标基线为 GPU Control `1.5.14`、Blender Worker `1.4.48`、数据库
+`20260810_0013`，节点为 4090、3090-A、3090-B 和 Windows/WSL2 4070Ti。六个 API 均已取得
+真实功能成功证据；3090-B Windows Substance Agent v7 已同步容器 Python 路径和异步显存释放轮询
+热修，原任务经受控 Admin Retry 在 attempt 3 成功并发布 12 个通过 SHA 校验的制品。当前进入
+`FUNCTIONAL_RECOVERY_CONFIRMED / STABILITY_TESTING`，正式 1.5.14 镜像/LFS/综合测试证据仍按发布
+门禁收口。四节点架构、固定路由、
 工作流 SHA、4070Ti 指标、真实任务、代码审计和次日验收的唯一最新记录见
-`118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md`。此前 1.5.11 执行与证据见
+`118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md`；v7 热修、Admin Retry 与真实制品证据见
+`119_2026-08-13_SUBSTANCE_V7_PYTHON_PATH_HOTFIX.md`；动画管家最新对接合同见
+`120_2026-08-13_ASSETCLAW_FOUR_GPU_1_5_14_ALIGNMENT_HANDOFF.md`。此前 1.5.11 执行与证据见
 `98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`；最新自动拓扑热修复见
 `104_2026-08-11_RETOPOLOGY_DEGENERATE_DELIVERY_HOTFIX.md`；拓扑低模进入 UV 后的 FBX 米制单位修复见
 `105_2026-08-11_UV_FBX_METER_UNIT_HOTFIX.md`；一键烘焙 GLB 输入 422 修复见
@@ -18,7 +22,7 @@
 
 生产 UV 和旧 Retopology QA 保留 `advisory` 兼容语义；v3 同任务生成不运行旧自动视觉 QA，但坐标、
 拓扑/UV 指纹、FBX 回读、身份、manifest、文件完整性、租约和 SHA 仍为硬门禁。四个 Windows
-Substance Baker Agent v6 均为
+Substance Baker Agent v7 均为
 `ONLINE/HEALTHY`。三节点 ComfyUI 使用同一 `projects-0.2.3` 镜像，健康、`RestartCount=0`，本轮未
 停止/重启 ComfyUI，也未清理模型缓存。没有注入额外合成流量；现有真实任务已完成 PBR、UV warning、
 UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重 SHA、registry/SBOM、固定基准、
@@ -27,7 +31,13 @@ UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重
 
 ## 1. 当前现场主线
 
-**当前四节点唯一入口：** `docs/118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md`。它覆盖四 GPU 架构、调度定则、工作流身份、4070Ti WSL2 指标、真实五 API 证据、Windows v7 门禁、镜像/Git 和明日验收；下列旧文档只作专项或历史参考。
+**动画管家最新入口：** `docs/120_2026-08-13_ASSETCLAW_FOUR_GPU_1_5_14_ALIGNMENT_HANDOFF.md`。
+它覆盖四 GPU 架构、六 API 请求/结果合同、部分成功补算、调度保护、工作流身份、探针和联合测试。
+
+**当前四节点审计入口：** `docs/118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md`。它覆盖四 GPU 架构、调度定则、工作流身份、4070Ti WSL2 指标、真实任务、镜像/Git 和验收；下列旧文档只作专项或历史参考。
+
+**当前 Substance v7 热修专项入口：** `docs/119_2026-08-13_SUBSTANCE_V7_PYTHON_PATH_HOTFIX.md`。
+它固定最终修复、热修前后 SHA、原失败 attempt、受控 Retry、四 Agent 运行态和回滚边界。
 
 1. 根目录 `GPU_CONTROL_成品部署联调与核心逻辑手册.pdf`：产品结构、核心算法、历史三机命令、联调、日志、压测和故障定位的单文件版本。
 2. `docs/USER_INPUT_REQUIRED.md`：先补齐真实 IP、SSH 用户、模型、API 工作流和业务限制。

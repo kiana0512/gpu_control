@@ -2780,6 +2780,108 @@ async def test_admin_retry_clears_previous_execution_and_keeps_error_audit(
             }
 
 
+async def test_admin_substance_retry_requires_and_preserves_recovery_evidence(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        input_path = tmp_path / "substance-retry-input.zip"
+        input_path.write_bytes(b"substance-retry-input")
+        job_id = str(uuid.uuid4())
+        now = datetime.now(UTC)
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            node.mode = "ACTIVE"
+            node.health = "ONLINE"
+            node.labels = {}
+            node.current_jobs = 0
+            node.manual_reserved = False
+            node.external_busy = False
+            node.foreign_queue_detected = False
+            node.last_heartbeat_at = now
+            for index in range(1, 5):
+                db.add(
+                    AssetWorker(
+                        id=f"asset-worker-3090-b-windows-{index:02d}",
+                        display_name=f"3090-B Baker {index}",
+                        node_id="worker-3090-b",
+                        hostname="3090-b",
+                        status="ONLINE",
+                        blender_version="substance-15.1.0",
+                        skill_version="substance-baker-2026.08.12-v7",
+                        max_concurrency=1,
+                        current_jobs=0,
+                        cpu_count=1,
+                        agent_instance_id=f"agent-{index}",
+                        substance_process_probe_status="HEALTHY",
+                        substance_process_probe_checked_at=now,
+                        substance_active_processes=0,
+                        last_heartbeat_at=now,
+                    )
+                )
+            db.add(
+                AssetJob(
+                    id=job_id,
+                    client_id="tenant",
+                    external_asset_id="test:substance:retry:001",
+                    job_type="SUBSTANCE_BAKE_V1",
+                    status="FAILED",
+                    source_filename="substance-retry-input.zip",
+                    input_path=str(input_path),
+                    input_sha256=hashlib.sha256(input_path.read_bytes()).hexdigest(),
+                    input_size_bytes=input_path.stat().st_size,
+                    options={"profile": "li3d-pbr-full-v2"},
+                    request_hash="a" * 64,
+                    request_id="substance-retry-request",
+                    attempt_count=1,
+                    progress=10,
+                    stage="RECOVERY_REQUIRED",
+                    stage_message="ComfyUI continuity failed before Baker startup",
+                    error_code="SUBSTANCE_COMFYUI_CONTINUITY_FAILED",
+                    error_message="container python was not found",
+                    started_at=now,
+                    finished_at=now,
+                )
+            )
+            await db.commit()
+
+        login = await client.post(
+            "/admin/auth/login", json={"username": "admin", "password": "correct-password"}
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        retried = await client.post(
+            f"/admin/asset-jobs/{job_id}/retry",
+            headers=auth,
+            json={"reason": "v7 agent and host recovery verified", "confirm": True},
+        )
+        assert retried.status_code == 200, retried.text
+        assert retried.json() == {
+            "job_id": job_id,
+            "status": "QUEUED",
+            "stage": "RETRY_QUEUED",
+            "attempt_count": 1,
+        }
+
+        async with app.state.db.session() as db:
+            job = await db.get(AssetJob, job_id)
+            assert job is not None
+            assert job.worker_id is None and job.worker_instance_id is None
+            assert job.error_code is None and job.error_message is None
+            assert job.started_at is None and job.finished_at is None
+            assert job.options["admin_retry_count"] == 1
+            assert job.options["admin_retry_last_reason"] == (
+                "v7 agent and host recovery verified"
+            )
+
+        second_retry = await client.post(
+            f"/admin/asset-jobs/{job_id}/retry",
+            headers=auth,
+            json={"reason": "must not retry twice", "confirm": True},
+        )
+        assert second_retry.status_code == 409
+        assert second_retry.json()["detail"]["code"] == "ASSET_JOB_NOT_RETRYABLE"
+
+
 async def test_source_ip_auto_enrolls_without_api_key(tmp_path: Path) -> None:
     async for app, client in prepared_app(tmp_path):
         response = await client.get("/api/v1/workflows")

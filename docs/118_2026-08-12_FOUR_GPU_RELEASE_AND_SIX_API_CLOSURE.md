@@ -4,8 +4,9 @@
 
 分支：`agent/four-gpu-4070ti-closure`
 
-目标版本：GPU Control `1.5.13`、Blender Worker `1.4.48`
-结论口径：五个 API 已有真实成功证据；Substance 烘焙因 Windows Agent 仍为 v6，被 v7 安全门禁阻止。因此本报告不得写成“六 API 全部生产接受”。
+原发布版本：GPU Control `1.5.13`、Blender Worker `1.4.48`
+2026-08-13 追加收口：控制面目标 `1.5.14`；六个 API 均已有真实功能成功证据，正式综合稳定性与
+1.5.14 镜像/LFS 证据继续按发布门禁生成。
 
 ## 1. 结论摘要
 
@@ -21,9 +22,9 @@
 - 修复拓扑审计三处控制面漂移：当前 Worker 被错误排除、固定脚本 SHA 过期、Worker/API 仍使用旧审计参数/schema；
 - 全量前端回归、Python 回归、静态检查和真实四节点 canary 证据见后文。
 
-唯一未闭环项是 3090-B Windows 原生 Substance Agent。四个实例心跳新鲜，但运行版本是
-`substance-baker-2026.08.03-v6`，控制面要求 `substance-baker-2026.08.12-v7`，所以它们被正确投影为
-`DRAINING`。这是安全阻断，不是调度器卡死。
+2026-08-13，3090-B Windows 原生 Substance 已闭环。四个实例均运行
+`substance-baker-2026.08.12-v7`；最终 Agent 同时固定绝对 Python 路径和最长 30 秒异步显存释放
+轮询。原失败任务通过受控 Admin Retry 生成 attempt 3，原生 Baker 真实执行成功并交付 12 个制品。
 
 ## 2. 四节点生产拓扑
 
@@ -162,25 +163,30 @@ PNG 均已校验。分配结果：4090 228 帧、3090-A 108 帧、3090-B 92 帧�
 
 ### 6.6 Substance PBR 烘焙
 
-未通过本轮最终 canary。任务 `db6b2eb1-4f21-4c4f-88d9-38156133e0c9` 因四个 Windows Agent 仍为
-v6 而未获领取，随后被安全取消。控制面和候选 v7 包没有绕过门禁。
+`db6b2eb1-4f21-4c4f-88d9-38156133e0c9` 是 v7 上线前因版本门禁未获领取并安全取消的历史任务。
+四个 Windows Agent 随后已升级到 `substance-baker-2026.08.12-v7`，不再处于版本 `DRAINING`。
 
-IT 需要在 Windows 用户/管理员 PowerShell 中执行：
+第一笔真实 v7 领取 `867d53b9-cfb6-49d5-b1d2-0007777e8072` 已由
+`asset-worker-3090-b-windows-01` 领取并完成约 58.5 MB 输入下载，但在 GPU fencing 的 ComfyUI
+模型卸载阶段失败：Agent 在容器内调用了不存在的 `python`，OCI 返回 exit 127，原生 Baker 尚未启动。
+任务按 `SUBSTANCE_COMFYUI_CONTINUITY_FAILED / RECOVERY_REQUIRED` 进入不可重试失败终态；必须保留
+这条 attempt 审计记录，禁止直接改数据库或把它伪装成成功。
 
-```powershell
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
-  -File D:\GPUControl\candidate-closure-20260812-v7\Install-GPUControlSubstanceAgent.ps1 `
-  -InstallRoot D:\GPUControl\agent `
-  -InstanceCount 4 `
-  -ConfirmNoActiveBakes
-```
+最终修复把容器命令改为 `/opt/python/bin/python3 -c`，并在 `/free` 后最长 30 秒轮询权威显存释放，
+轮询期间每 0.5 秒复查 ComfyUI 队列。它不修改烘焙参数、输入、贴图类型、Baker 二进制或 ComfyUI
+连续性门禁。3090-B 候选、实装文件和仓库文件当前字节一致：
 
-候选已复制到该目录；候选 Agent SHA-256 为 `91f83e0b…`。升级后必须看到 `-01`～`-04` 四个实例均为
-`ONLINE`、`skill_version=substance-baker-2026.08.12-v7`，再提交真实烘焙 canary 并校验全部制品 SHA。
+- Agent SHA-256：`06fcb4cefb9aeb7e53693faf9f87a36a113324ba8df162738e416afdb9e4b399`；
+- Installer SHA-256：`5385a5576f2f0519a95915133e7db3bb5fac1dc2a798618fe21929fbd133700b`；
+- 四个 v7 Agent 均为 `ONLINE`、`HEALTHY`、`current_jobs=0`，心跳新鲜且
+  `substance_active_processes=0`。
 
-最终只读审计时，用户烘焙任务 `867d53b9-cfb6-49d5-b1d2-0007777e8072` 仍为 `QUEUED / UNASSIGNED`。
-该任务未被取消、重写或绕过版本门禁；IT 完成 v7 后应先观察它被唯一 3090-B Baker 正常领取并交付。
-在它结束且全局活动任务归零前，正式 100 VU 场景也会被清场门禁拒绝。
+同一任务经 Admin Retry 生成 attempt 3，由 `asset-worker-3090-b-windows-03` 成功执行：GPU fencing
+确认队列为空、模型已卸载、空闲显存 23222/24576 MiB；原生 Baker 10 条命令均有成功标记；控制面
+接收 AO、Base Color、Curvature、Metallic、两种 Normal、Position、Roughness、Thickness、World
+Normal、`baker.log` 和 `baker_result.json` 共 12 个制品。任务终态 `SUCCEEDED`，结束后四个 Agent
+仍在线、0 当前任务、0 Baker 进程。完整 SHA 和回滚边界见
+`119_2026-08-13_SUBSTANCE_V7_PYTHON_PATH_HOTFIX.md`。
 
 ## 7. WebUI 与 Codex 探针
 
@@ -213,10 +219,9 @@ WebUI 已包含：
 新场景 `tests/load/scenarios/six_api_100_20260812.yaml` 定义 1→10→25→50→100 VU、总时长 1260 秒、
 公开六 API 混合、失败关闭和清场门禁。公开六项固定为：ImageClip 抠图、ModelView 局部重绘、
 PBR 粗糙度、Blender PBR UV、Direct V2 自动拓扑和 Substance PBR 烘焙；拓扑独立审计属于内部
-验证合同，保留 12/12 真实成功证据，但不挤占用户可见的六项综合压测名额。由于正式场景要求六 API
-容量完整、源码 revision 已发布、运行镜像与 release evidence 完全一致，而 Windows Baker v7 尚未上线，
-本轮没有伪造或强行执行“六 API 正式
-100 VU 通过”。计划文件可以审计，但正式综合压力必须在 v7 canary 成功后运行。
+验证合同，保留 12/12 真实成功证据，但不挤占用户可见的六项综合压测名额。Substance v7 单项真实
+canary 已于 2026-08-13 通过；正式 100 VU 综合压力仍要求 1.5.14 源码 revision、运行镜像与 release
+evidence 完全一致，并通过清场和生产保护门禁。单项功能恢复不能冒充容量验收通过。
 
 最终回归前还发现旧负载场景把内部 `retopology_audit` 当作第六项，导致用户可见的
 `modelview_inpaint` 没进入综合集合。现已同时修正场景、Locust 调度器、会话碰撞检测、异常清场、
@@ -277,8 +282,8 @@ image。禁止删除模型、ComfyUI output、生产任务归档、PostgreSQL/Re
 3. 在 ImageClip 运行时提交局部重绘，确认 4070Ti 安全让出抠图帧、清缓存并优先响应；
 4. 确认 15 分钟无新局部重绘后 4070Ti 自动恢复普通 GPU 接单；
 5. 提交 UV 和自动拓扑，确认 CPU 槽不受 GPU 保护影响；
-6. IT 完成 Windows v7 后提交真实 Substance canary；
-7. 仅当六个 API canary、release binding、备份和清场全部通过时，执行正式 100 VU 场景；
+6. Substance v7 真实 Retry 已完成；复核 fencing、Baker 日志和 12 个制品 SHA；
+7. 仅当 1.5.14 release binding、备份和清场全部通过时，执行正式 100 VU 场景；
 8. 归档 summary、明细 CSV、任务 ID、镜像 digest、Git revision 和所有 SHA。
 
 ## 11. 不得误判的边界
@@ -288,4 +293,4 @@ image。禁止删除模型、ComfyUI output、生产任务归档、PostgreSQL/Re
 - CPU 拓扑/UV 与 GPU 专用窗口独立；
 - WebUI 的 `1/1` 是 GPU 槽，Asset Worker 的 2/3/4 槽另算；
 - 本轮没有改 ImageClip/ModelView 的业务管线语义；
-- 五 API 成功不能写成六 API 正式通过；Windows v7 和正式综合压力仍是明确门禁。
+- 六 API 单项功能成功不能写成综合容量通过；正式 1.5.14 发布绑定和综合压力仍是明确门禁。

@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.5.14 — Substance Baker v7 recovery and safe Admin Retry — 2026-08-13
+
+- Pin the v7 Windows Baker Agent's ComfyUI fencing probe to
+  `/opt/python/bin/python3`; the production ComfyUI container does not expose a bare `python` in
+  `PATH`.
+- After `/free`, poll authoritative VRAM release for up to 30 seconds while continuously rechecking
+  the ComfyUI queue; fail closed if either condition regresses.
+- Bind the synchronized repository, 3090-B candidate and installed Agent to SHA-256
+  `06fcb4cefb9aeb7e53693faf9f87a36a113324ba8df162738e416afdb9e4b399` and add regression
+  contracts for the absolute Python path and asynchronous release loop.
+- Add a bounded, audited Admin Retry for failed Substance continuity/execution jobs. Retry is
+  admitted only when 3090-B is online, active and idle, all four v7 Agents are fresh and healthy,
+  no Baker process/interlock exists, and the original input still exists with no published result.
+- Accept both the legacy and v7 verified GPU-fencing result policies while requiring non-empty
+  drain evidence for the v7 policy.
+- Retry job `867d53b9-cfb6-49d5-b1d2-0007777e8072` succeeded on attempt 3 with 12 verified
+  artifacts, 10 Baker success markers and ComfyUI process continuity preserved.
+- Expose the safe Admin Retry action in the Asset Web UI and publish the four-GPU/six-API animation
+  manager handoff contract.
+
 ## 1.5.13 — Four-GPU scheduling, WSL telemetry and six-API closure — 2026-08-12
 
 - Add the RTX 4070Ti WSL2 node to scheduling, Web UI, Asset Worker and Codex runtime views while

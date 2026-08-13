@@ -146,6 +146,19 @@ export const api = {
         }),
       },
     ),
+  retryAssetJob: (id: string) =>
+    request<{
+      job_id: string;
+      status: string;
+      stage: string;
+      attempt_count: number;
+    }>(`/admin/asset-jobs/${encodeURIComponent(id)}/retry`, {
+      method: "POST",
+      body: JSON.stringify({
+        reason: "管理员确认 3090-B 宿主恢复后重试烘焙任务",
+        confirm: true,
+      }),
+    }),
   assetArtifact: (jobId: string, artifactId: string) =>
     download(
       `/admin/asset-jobs/${encodeURIComponent(jobId)}/artifacts/${encodeURIComponent(artifactId)}`,
