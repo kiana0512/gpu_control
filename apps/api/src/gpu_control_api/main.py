@@ -3883,12 +3883,17 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         job = await db.get(AssetJob, job_id, with_for_update=True)
         if job is None:
             raise HTTPException(404, detail={"code": "ASSET_JOB_NOT_FOUND"})
+        admin_retry_count = int((job.options or {}).get("admin_retry_count", 0))
         if (
             job.job_type != "SUBSTANCE_BAKE_V1"
             or job.status != "FAILED"
-            or job.stage != "RECOVERY_REQUIRED"
-            or job.error_code != "SUBSTANCE_COMFYUI_CONTINUITY_FAILED"
-            or job.attempt_count >= cfg.asset_job_max_attempts
+            or job.stage not in {"RECOVERY_REQUIRED", "FAILED"}
+            or job.error_code
+            not in {
+                "SUBSTANCE_COMFYUI_CONTINUITY_FAILED",
+                "SUBSTANCE_EXECUTION_FAILED",
+            }
+            or admin_retry_count >= 1
         ):
             raise HTTPException(409, detail={"code": "ASSET_JOB_NOT_RETRYABLE"})
         if not Path(job.input_path).is_file():
@@ -4002,6 +4007,11 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         job.cancel_requested = False
         job.error_code = None
         job.error_message = None
+        job.options = {
+            **dict(job.options or {}),
+            "admin_retry_count": admin_retry_count + 1,
+            "admin_retry_last_reason": body.reason,
+        }
         job.started_at = None
         job.finished_at = None
         job.last_progress_at = now

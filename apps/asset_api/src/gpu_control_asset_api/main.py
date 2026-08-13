@@ -4434,6 +4434,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 and execution.get("exit_code") == (0 if all_exit_codes_observed else None)
                 and log_text.count("Bake finished successfully") >= expected_command_count
             )
+            cache_policy = execution.get("comfyui_cache_policy")
+            drain_evidence = execution.get("comfyui_drain_evidence")
             if (
                 not (legacy_exit_evidence_valid or command_evidence_valid)
                 or result_payload.get("job_id") != snapshot.id
@@ -4442,7 +4444,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or tool.get("version") != "15.1.0"
                 or tool.get("exe_sha256")
                 != "7B920FC6EE6005FAAB072C9280B1772F03D694FF04AA91C5A4DB516F7C9FEC6D"
-                or execution.get("comfyui_cache_policy") != "no_explicit_eviction_process_preserved"
+                or cache_policy
+                not in {
+                    "no_explicit_eviction_process_preserved",
+                    "queue_drained_models_unloaded_vram_verified",
+                }
+                or (
+                    cache_policy == "queue_drained_models_unloaded_vram_verified"
+                    and (not isinstance(drain_evidence, str) or not drain_evidence.strip())
+                )
                 or execution.get("comfyui_container_restarted") is not False
                 or execution.get("comfyui_process_continuity_verified") is not True
                 or any(
