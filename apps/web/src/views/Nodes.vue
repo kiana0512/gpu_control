@@ -78,10 +78,13 @@ function hasLiveSubstanceInterlock(node: NodeInfo) {
 
 function nodePolicyTitle(node: NodeInfo) {
   const active = specialization(node);
-  if (node.id === "worker-4070ti-animation-host-01") {
+  if (node.id === "control-4090") {
     if (active?.key === "modelview-inpaint")
       return `局部重绘保护中 · 约 ${active.remainingMinutes} 分钟`;
-    return "局部重绘优先 · 当前为四卡共享状态";
+    return "局部重绘首选 · 当前为共享状态";
+  }
+  if (node.id === "worker-4070ti-animation-host-01") {
+    return "12 GiB 普通推理节点 · 不参与局部重绘";
   }
   if (node.id === "worker-3090-b") {
     if (active?.key === "substance-bake")
@@ -99,12 +102,15 @@ function nodePolicyTitle(node: NodeInfo) {
 
 function nodePolicyDetail(node: NodeInfo) {
   const active = specialization(node);
-  if (node.id === "worker-4070ti-animation-host-01") {
+  if (node.id === "control-4090") {
     if (active?.key === "modelview-inpaint")
       return node.current_jobs
         ? "局部重绘已取得优先权；冲突的抠图帧会安全中断并改派其它物理 GPU。"
-        : "只领取局部重绘；每次新任务刷新窗口，硬过期后自动恢复抠图与粗糙度。";
-    return "可接抠图、局部重绘、粗糙度；不具备 Substance 烘焙能力。";
+        : "保留局部重绘优先权和 INT8 热缓存；没有局部重绘排队时继续领取兼容普通任务。";
+    return "局部重绘默认首选；没有局部重绘排队时继续参与抠图、粗糙度等兼容任务。";
+  }
+  if (node.id === "worker-4070ti-animation-host-01") {
+    return "可接兼容的普通推理；局部重绘需要 24 GiB，本节点被硬排除。";
   }
   if (node.id === "worker-3090-b") {
     if (active?.key === "substance-bake")
@@ -245,17 +251,16 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 
     <section class="gpu-specialization-guide">
       <div>
-        <strong>四卡共享，不是单机绑定</strong>
+        <strong>普通任务四卡共享</strong>
         <span
-          >空闲时，抠图与局部重绘都可分配到
-          4090、3090-A、3090-B、4070Ti；粗糙度按兼容性使用空闲 GPU。</span
+          >局部重绘只分配到 4090、3090-A、3090-B 三台 24 GiB GPU；
+          4070Ti 继续参与其它兼容任务。</span
         >
       </div>
       <div>
-        <strong>4070Ti 保证局部重绘响应</strong>
+        <strong>4090 保证局部重绘响应</strong>
         <span
-          >与抠图冲突时让出抠图帧并改派其它 GPU；进入可续期的 15
-          分钟局部重绘保护。</span
+          >有局部重绘时优先并保留 10 分钟 INT8 热缓存；没有局部重绘排队时继续接兼容普通任务，不再空转。</span
         >
       </div>
       <div>
@@ -373,7 +378,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           class="node-policy-strip"
           :class="{
             specialist: specialization(node),
-            inpaint: node.id === 'worker-4070ti-animation-host-01',
+            inpaint: node.id === 'control-4090',
             bake: node.id === 'worker-3090-b',
           }"
         >

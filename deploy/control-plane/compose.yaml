@@ -31,11 +31,11 @@ services:
       context: ../..
       dockerfile: apps/api/Dockerfile
       args:
-        GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.16}
+        GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.18}
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
       sbom: true
       provenance: mode=max
-    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-api:${APP_IMAGE_TAG:-1.5.16}
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-api:${APP_IMAGE_TAG:-1.5.18}
     # Starlette spools large multipart uploads before the endpoint streams the
     # archive into its batch layout. Keep that temporary file on the mounted
     # job filesystem instead of the container overlay.
@@ -80,9 +80,9 @@ services:
       dockerfile: apps/blender_worker/Dockerfile
       args:
         BLENDER_BASE_IMAGE: ${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}
-        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.48}
+        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.50-uv-local-stretch-v1}
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
-    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.48}
+    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.50-uv-local-stretch-v1}
     restart: unless-stopped
     # Codex workspace-write uses bubblewrap inside the already isolated Worker
     # container. SYS_ADMIN plus unconfined seccomp/AppArmor are required for
@@ -129,11 +129,11 @@ services:
       context: ../..
       dockerfile: apps/scheduler/Dockerfile
       args:
-        GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.16}
+        GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.18}
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
       sbom: true
       provenance: mode=max
-    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-scheduler:${SCHEDULER_IMAGE_TAG:-1.5.16}
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-scheduler:${SCHEDULER_IMAGE_TAG:-1.5.18}
     volumes:
       - ${JOB_ROOT:-/srv/gpu-control/jobs}:/srv/gpu-control/jobs
       - /run/gpu-control:/run/gpu-control:ro
@@ -143,12 +143,12 @@ services:
     healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9108/metrics',timeout=2)"], interval: 15s, timeout: 3s, retries: 5}
 
   web:
-    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-web:${WEB_IMAGE_TAG:-1.5.16}
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-web:${WEB_IMAGE_TAG:-1.5.18}
     build:
       context: ../../apps/web
       args:
         VITE_MODELVIEW_PROMPT_ENABLED: ${VITE_MODELVIEW_PROMPT_ENABLED:-false}
-        GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.16}
+        GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.18}
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
       sbom: true
       provenance: mode=max
@@ -257,7 +257,7 @@ services:
 
   comfyui-4090:
     container_name: comfyui-4090
-    image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:projects-0.2.3}
+    image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:projects-0.2.5}
     profiles: ["4090-gpu"]
     restart: unless-stopped
     ports: ["8188:8188"]
@@ -274,7 +274,7 @@ services:
       - /srv/comfyui/4090/temp:/opt/comfyui/temp
       - /srv/comfyui/4090/user:/opt/comfyui/user
       - ${IMAGECLIP_ROOT:-/opt/imageclip}/ImageClip.json:/opt/comfyui/user/default/workflows/ImageClip.json:ro
-      - ${MODELVIEW_ROOT:-/opt/modelviewcreator}/flux_fill_inpaint.json:/opt/comfyui/user/default/workflows/ModelViewCreator_flux_fill_inpaint.json:ro
+      - "${MODELVIEW_ROOT:-/opt/modelviewcreator}/Flux2 Klein TrueV3-双图材质编辑-精简测试.json:/opt/comfyui/user/default/workflows/ModelViewCreator_flux_fill_inpaint.json:ro"
     healthcheck: {test: ["CMD", "python3.11", "/usr/local/bin/comfy-healthcheck"], interval: 20s, timeout: 5s, start_period: 120s, retries: 6}
     logging: *default-logging
     networks: [backend]

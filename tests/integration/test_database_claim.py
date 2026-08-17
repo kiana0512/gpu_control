@@ -800,10 +800,10 @@ async def test_incompatible_workflow_is_not_claimed(tmp_path: Path) -> None:
     await database.close()
 
 
-async def test_4070_specialization_filters_normal_gpu_work_and_hard_expires(
+async def test_4090_specialization_does_not_idle_when_no_inpaint_is_queued(
     tmp_path: Path,
 ) -> None:
-    database = await make_database(tmp_path / "4070-specialization.db")
+    database = await make_database(tmp_path / "4090-specialization.db")
     await seed(database)
     now = datetime.now(UTC)
     async with database.session() as session:
@@ -811,9 +811,9 @@ async def test_4070_specialization_filters_normal_gpu_work_and_hard_expires(
         assert version is not None
         node = Node(
             id=MODELVIEW_INPAINT_NODE_ID,
-            display_name="4070Ti",
-            base_url="http://fake-4070",
-            pool="PRIMARY",
+            display_name="4090",
+            base_url="http://fake-4090",
+            pool="OVERFLOW",
             mode="ACTIVE",
             health="ONLINE",
             labels={
@@ -821,13 +821,13 @@ async def test_4070_specialization_filters_normal_gpu_work_and_hard_expires(
                     "key": MODELVIEW_INPAINT_WORKFLOW_KEY,
                     "owner": "gpu-api",
                     "started_at": now.isoformat(),
-                    "expires_at": (now + timedelta(minutes=15)).isoformat(),
+                    "expires_at": (now + timedelta(minutes=10)).isoformat(),
                 }
             },
             max_concurrency=1,
             current_jobs=0,
-            free_vram_mb=11000,
-            total_vram_mb=12288,
+            free_vram_mb=22000,
+            total_vram_mb=24576,
             last_heartbeat_at=now,
         )
         session.add(node)
@@ -842,22 +842,6 @@ async def test_4070_specialization_filters_normal_gpu_work_and_hard_expires(
         )
         await session.commit()
 
-    async with database.session() as session:
-        async with session.begin():
-            assert await claim_next_job(session, MODELVIEW_INPAINT_NODE_ID, 300) is None
-
-    async with database.session() as session:
-        node = await session.get(Node, MODELVIEW_INPAINT_NODE_ID)
-        assert node is not None
-        labels = dict(node.labels)
-        labels[GPU_SPECIALIZATION_LABEL] = {
-            "key": MODELVIEW_INPAINT_WORKFLOW_KEY,
-            "owner": "gpu-api",
-            "started_at": (now - timedelta(minutes=16)).isoformat(),
-            "expires_at": (now - timedelta(seconds=1)).isoformat(),
-        }
-        node.labels = labels
-        await session.commit()
     async with database.session() as session:
         async with session.begin():
             claimed = await claim_next_job(session, MODELVIEW_INPAINT_NODE_ID, 300)

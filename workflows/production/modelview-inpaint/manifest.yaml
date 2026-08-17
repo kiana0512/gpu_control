@@ -1,5 +1,5 @@
 workflow_key: modelview-inpaint
-version: 2026.08.12-8c37f07-seedvr2-12g-r1
+version: 2026.08.17-a9dbbca-flux2-klein-truev3-3input-r2
 template_file: template.api.json
 parameter_schema:
   type: object
@@ -8,55 +8,61 @@ parameter_schema:
       type: string
       minLength: 1
       maxLength: 512
+    material_image_filename:
+      type: string
+      minLength: 1
+      maxLength: 512
+    viewport_reference_filename:
+      type: string
+      minLength: 1
+      maxLength: 512
     prompt:
       type: string
       maxLength: 4096
   required:
     - image_filename
+    - material_image_filename
+    - viewport_reference_filename
   additionalProperties: false
 bindings:
-  image_filename: 127.inputs.image
-  prompt: 94.inputs.prompt
+  image_filename: 4.inputs.image
+  material_image_filename: 5.inputs.image
+  viewport_reference_filename: 26.inputs.image
+  prompt: 9.inputs.text
 allowed_class_types:
-  - BatchImagesNode
+  - BasicGuider
+  - BasicScheduler
+  - CherryAlignReference
+  - CherryInferenceSizeBucket
+  - CLIPLoader
   - CLIPTextEncode
-  - ConditioningZeroOut
-  - DifferentialDiffusion
-  - DualCLIPLoader
-  - FluxGuidance
-  - GrowMaskWithBlur
-  - InpaintCropImproved
-  - InpaintModelConditioning
-  - InpaintStitchImproved
-  - KSampler
+  - EmptyFlux2LatentImage
+  - ImageResize+
+  - ImageScale
+  - KSamplerSelect
   - LoadImage
   - LoraLoaderModelOnly
-  - MaskToImage
-  - NunchakuFluxDiTLoader
-  - Qwen3 VL Plus
+  - RandomNoise
+  - ReferenceLatent
+  - SamplerCustomAdvanced
   - SaveImage
-  - SeedVR2LoadDiTModel
-  - SeedVR2LoadVAEModel
-  - SeedVR2VideoUpscaler
+  - UNETLoader
   - VAEDecode
+  - VAEEncode
   - VAELoader
+  - easy imageColorMatch
 required_models:
-  - clip/clip_l.safetensors
-  - clip/t5xxl_fp16.safetensors
-  - lora/flux-turbo-alpha-8tp.safetensors
-  - unet/Nunchaku-svdq-int4_r32-flux.1-fill-dev.safetensors
-  - vae/ae.safetensors
-  - SEEDVR2/seedvr2_ema_7b_sharp-Q4_K_M.gguf
-  - SEEDVR2/ema_vae_fp16.safetensors
+  - text_encoders/qwen_3_8b_fp8mixed.safetensors
+  - unet/Flux2-Klein-9B-True-V3-int8mixedrow.safetensors
+  - vae/flux2-vae.safetensors
+  - lora/baimo_shangcaizhi_klein_v1_000005500.safetensors
 required_custom_nodes:
-  - ComfyUI-Inpaint-CropAndStitch
-  - ComfyUI-KJNodes
-  - ComfyUI-Nunchaku
-  - ComfyUI-SeedVR2_VideoUpscaler@690cc39379c1481159ddd451368dbf2295930fc6
-  - haoze-LiClick@8c37f07
-min_vram_mb: 12000
+  - Cherry_KleinWorkflowTools@a9dbbca846ee80734d0a6123ac32d8a8e51c7fcd
+  - ComfyUI-Easy-Use@b5e31ef12ad9d0b187b545c2707735cc7d581c52
+  - ComfyUI_essentials@9d9f4bedfc9f0321c19faf71855e228c93bd0dc9
+min_vram_mb: 24000
 timeout_seconds: 2400
 node_labels: {}
 output_nodes:
-  - "9"
+  - "32"
 enabled: true

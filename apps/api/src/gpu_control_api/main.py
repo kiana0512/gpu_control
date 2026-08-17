@@ -101,7 +101,6 @@ from packages.gpu_control_core.scheduling import (
     SUBSTANCE_SPECIALIZATION_KEY,
     SUBSTANCE_WORKER_ID,
     SUBSTANCE_WORKER_ID_PREFIX,
-    gpu_specialization,
     linux_asset_claim_allowed,
     refresh_gpu_specialization,
     substance_fence_job_ids,
@@ -1094,6 +1093,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         callback_url: str | None,
         *,
         pinned: bool = False,
+        additional_images: tuple[tuple[str, UploadFile], ...] = (),
     ) -> JSONResponse:
         if len(parameters_raw.encode("utf-8")) > 65_536:
             raise HTTPException(
@@ -1153,7 +1153,15 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         root = storage.create_staging_layout(job_id)
         file_hashes: list[tuple[str, str]] = []
         image_dimensions: dict[str, tuple[int, int]] = {}
-        for field_name, upload in (("image", input_image), ("mask", mask)):
+        upload_fields = (("image", input_image), ("mask", mask), *additional_images)
+        field_names = [field_name for field_name, upload in upload_fields if upload is not None]
+        if len(field_names) != len(set(field_names)):
+            storage.remove_tree(root)
+            raise HTTPException(
+                500,
+                detail={"code": "UPLOAD_BINDING_INVALID", "message": "上传字段绑定重复"},
+            )
+        for field_name, upload in upload_fields:
             if upload is None:
                 continue
             name = safe_filename(upload.filename or f"{field_name}.bin")
@@ -1353,9 +1361,9 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         db.add(job)
         await db.flush()
         if workflow_key == MODELVIEW_INPAINT_WORKFLOW_KEY and not is_load_test:
-            # The arrival itself renews 4070Ti's guaranteed response lane.
-            # This does not pin the job: all four compatible idle GPUs may
-            # still claim inpaint work in parallel.
+            # The arrival itself renews the control 4090's guaranteed response
+            # lane. This does not pin the job: both compatible 24 GiB 3090
+            # nodes may still claim inpaint work in parallel.
             inpaint_guard_node = await db.scalar(
                 select(Node)
                 .where(Node.id == MODELVIEW_INPAINT_NODE_ID)
@@ -1388,7 +1396,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 if active_imageclip is not None:
                     active_imageclip.error_code = IMAGECLIP_INPAINT_PREEMPTION_CODE
                     active_imageclip.error_message = (
-                        "4070Ti 局部重绘优先：当前抠图执行尝试将安全中断并改派其他 GPU"
+                        "4090 局部重绘优先：当前抠图执行尝试将安全中断并改派其他 GPU"
                     )
         await transition_job(db, job, JobStatus.VALIDATING, "api.validated")
         await transition_job(db, job, JobStatus.QUEUED, "api.queued")
@@ -1524,6 +1532,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         image: UploadFile,
         parameters: str,
         idempotency_key: str | None,
+        *,
+        additional_images: tuple[tuple[str, UploadFile], ...] = (),
     ) -> FileResponse:
         workflow = await db.scalar(
             select(WorkflowVersion)
@@ -1560,6 +1570,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 None,
                 None,
                 pinned=pinned,
+                additional_images=additional_images,
             )
         job_id = str(json.loads(bytes(queued.body))["job_id"])
         deadline = asyncio.get_running_loop().time() + workflow.timeout_seconds + 60
@@ -1637,6 +1648,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         principal: Annotated[Principal, Depends(api_principal)],
         db: Annotated[AsyncSession, Depends(session)],
         image: Annotated[UploadFile, File()],
+        material_image: Annotated[UploadFile, File()],
+        viewport_reference: Annotated[UploadFile, File()],
         parameters: Annotated[str, Form()] = "{}",
         prompt: Annotated[str | None, Form(max_length=4096)] = None,
         idempotency_key: Annotated[
@@ -1658,6 +1671,10 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             image,
             parameters,
             idempotency_key,
+            additional_images=(
+                ("material_image", material_image),
+                ("viewport_reference", viewport_reference),
+            ),
         )
 
     @app.post("/api/v1/services/modelview-roughness", response_class=FileResponse)

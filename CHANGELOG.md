@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.5.18 — TrueV3 inpaint and ImageClip color-correct output — 2026-08-17
+
+- Promote the 4090 to the preferred ten-minute INT8 local-inpaint lane while keeping 3090-A and
+  3090-B as 24 GiB fallbacks; the 4070Ti remains available for compatible non-inpaint work.
+- Keep 4090 work-conserving during the protection window: when no inpaint job is queued it continues
+  to claim ImageClip, roughness and other compatible work instead of idling.
+- Replace ImageClip's API sink that bypassed color correction with the existing
+  `CherrySelfComposite -> 122_ColorMatchToSource -> CherryAlphaDenoise -> SaveImage` chain.
+- Cancel the two pre-fix animation batches so no remaining frame can be produced by the invalid
+  output path; enable only `2026.08.17-c39ed0b-colorfix-r1` for new ImageClip submissions.
+- Add the three-image ModelView API binding, synchronized WebUI policy text, four-node canaries and
+  production handoff documents 126 and 127.
+
 ## 1.5.15 — Work-conserving Baker release and AssetClaw closure — 2026-08-13
 
 - Shorten the 3090-B post-arrival Substance GPU specialization from 15 minutes to five minutes;

@@ -1,5 +1,5 @@
 workflow_key: imageclip-rgba
-version: 2026.08.12-c39ed0b-fp8-r1
+version: 2026.08.17-c39ed0b-colorfix-r1
 template_file: template.api.json
 parameter_schema:
   type: object
@@ -14,9 +14,12 @@ parameter_schema:
 bindings:
   image_filename: 108.inputs.image
 allowed_class_types:
+  - 122_ColorMatchToSource
   - CLIPLoader
   - CLIPTextEncode
+  - CherryAlphaDenoise
   - CherryHoldoutSimple
+  - CherrySelfComposite
   - ConditioningZeroOut
   - EmptyFlux2LatentImage
   - GetImageSize
@@ -45,5 +48,5 @@ node_labels:
   imageclip_commit: c39ed0b3b637f0a1435bbe10e5a3acf6bfca07bd
   imageclip_pipeline_sha256: 07928d57852ed56ed37527960ec9955d867c0090456fda687fbcd12fecf1775c
 output_nodes:
-  - "102"
+  - "109"
 enabled: true

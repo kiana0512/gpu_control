@@ -296,16 +296,19 @@ async def claim_next_job(
     )
     if not jobs:
         return None
-    # 4070Ti is a guaranteed low-latency inpaint lane while its renewable
-    # 15-minute window is live. The same inpaint jobs remain compatible with
-    # and schedulable on every other idle GPU; this is not node pinning.
+    # The control 4090 is the preferred low-latency inpaint lane while its
+    # renewable ten-minute window is live. Never leave the physical slot idle:
+    # if no compatible inpaint job is queued, ordinary compatible GPU work may
+    # use it and will be preempted/reassigned when a new inpaint request arrives.
     if node.id == MODELVIEW_INPAINT_NODE_ID and specialization is not None:
         if specialization != MODELVIEW_INPAINT_WORKFLOW_KEY:
             return None
-        jobs = [
+        inpaint_jobs = [
             job for job in jobs
             if job.workflow_key == MODELVIEW_INPAINT_WORKFLOW_KEY
         ]
+        if inpaint_jobs:
+            jobs = inpaint_jobs
     if not jobs:
         return None
     workflow_rows = list(

@@ -1,4 +1,34 @@
-from scripts.build_imageclip_api_workflow import build_prompt, control_after_generate
+from scripts.build_imageclip_api_workflow import (
+    adapt_final_image_to_save_image,
+    build_prompt,
+    control_after_generate,
+)
+
+
+def test_final_ui_image_sink_can_be_adapted_to_standard_save_image() -> None:
+    prompt = {
+        "119": {"class_type": "CherryAlphaDenoise", "inputs": {}},
+        "109": {
+            "class_type": "CherryMirrorSave",
+            "inputs": {
+                "图像": ["119", 0],
+                "输出根目录": "D:/output",
+                "格式": "PNG",
+            },
+        },
+    }
+
+    adapted = adapt_final_image_to_save_image(prompt, 109, "imageclip-rgba")
+
+    assert adapted["109"] == {
+        "inputs": {
+            "filename_prefix": "imageclip-rgba",
+            "images": ["119", 0],
+        },
+        "class_type": "SaveImage",
+        "_meta": {"title": "ImageClip API Final RGBA"},
+    }
+    assert adapted["119"] == prompt["119"]
 
 
 def test_control_after_generate_accepts_boolean_and_fixed_modes() -> None:

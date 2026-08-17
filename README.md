@@ -7,12 +7,15 @@
 > 3090-B v7 修复与成功 Retry 见 [2026-08-13 专项记录](docs/119_2026-08-13_SUBSTANCE_V7_PYTHON_PATH_HOTFIX.md)。
 > 1.5.15 稳定版镜像、部署与验收见 [稳定版发布记录](docs/122_2026-08-13_GPU_CONTROL_1_5_15_STABLE_RELEASE.md)。
 > 3090-B 烘焙排空自动恢复修复见 [1.5.16 热修记录](docs/123_2026-08-13_GPU_CONTROL_1_5_16_3090B_AUTO_RECOVERY_HOTFIX.md)。
+> TrueV3 三输入局部重绘对接见 [局部重绘 API 文档](docs/126_2026-08-17_MODELVIEW_INT8_THREE_INPUT_API_HANDOFF.md)；
+> ImageClip 校色输出修复与四节点验收见 [1.5.18 校色热修记录](docs/127_2026-08-17_IMAGECLIP_COLOR_OUTPUT_HOTFIX.md)。
+> 4070 Ti 开启 HAGS 后的 WSL2/portproxy 恢复见 [4070 重启恢复记录](docs/128_2026-08-17_4070TI_HAGS_REBOOT_RECOVERY.md)。
 
 面向 RTX 4090 控制中心、两台 RTX 3090 和一台 RTX 4070Ti 的统一任务调度、运维与可观测平台；GPU
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
-当前源码目标基线为 GPU Control API/Scheduler/Asset API/Web/Node Agent `1.5.16`、Blender Worker
-`1.4.48`、数据库 `20260810_0013`。当前总状态为
+当前源码目标基线为 GPU Control API/Scheduler/Web `1.5.18`、Asset API/Node Agent 既有稳定版本、Blender Worker
+`1.4.50-uv-local-stretch-v1`、数据库 `20260810_0013`。当前总状态为
 `FUNCTIONAL_RECOVERY_CONFIRMED / STABILITY_TESTING`：六 API 均已有真实功能成功证据；正式
 1.5.15 镜像/LFS、第三次正式 100 VU、registry digest/SBOM、固定基准、完整故障矩阵和连续七天观察
 仍按发布门禁收口，未完成前不标记 `FROZEN` 或 `PRODUCTION_ACCEPTED`。
@@ -26,7 +29,7 @@ v3 同任务生成路径保留坐标恢复、保存后 Blend 拓扑指纹、身�
 3090-B 上四个 Windows Substance Baker Agent 当前为
 `substance-baker-2026.08.12-v7 / ONLINE`；容器 Python 路径和异步显存释放轮询热修已同步，原任务经
 受控 Admin Retry 在 attempt 3 成功并发布 12 个通过 SHA 校验的制品。四节点 ComfyUI 使用同一
-`projects-0.2.3` 镜像。自动拓扑对齐包 v3.0.25 统一 FBX/GLB/GLTF/OBJ 的只读高模准备入口，并把 API 中
+`projects-0.2.5` 镜像。自动拓扑对齐包 v3.0.25 统一 FBX/GLB/GLTF/OBJ 的只读高模准备入口，并把 API 中
 用户明确指定的分区建形意图传入生成器；布料覆盖木堆等分层资产先用只读的同坐标邻接恢复被
 法线/UV 导出缝拆开的完整几何表面，再进行区域分类，禁止把导出碎片误当语义组件；当导入资产
 实际融合成一张无法安全分区的表面时，直接使用打包好的单次 50% 高模副本受控减面，保留导出缝

@@ -24,6 +24,10 @@ class UVUnwrapOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     algorithm: Literal["legacy_pbr", "mof_low_seam"] = "legacy_pbr"
+    # MOF is intentionally opt-in for structurally complex organic/soft-surface
+    # assets.  Geometry statistics cannot reliably distinguish hard-surface
+    # intent, so callers must declare the semantic profile explicitly.
+    asset_profile: Literal["general", "complex_non_hardsurface"] = "general"
     resolution: Literal[1024, 2048, 4096, 8192] = 2048
     padding_px: int = Field(default=10, ge=2, le=128)
     hard_edge_angle_degrees: float = Field(default=75.0, ge=1.0, le=179.0)

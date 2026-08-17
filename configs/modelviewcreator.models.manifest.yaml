@@ -18,12 +18,18 @@ models:
   - path: lora/roughness_qwen2511_v1_000006000.safetensors
     size_bytes: 590058840
     sha256: 5aa41c1035efb088d361e2de982612d3f9f940148fe9368885ad588959cd0e5c
+  - path: lora/baimo_shangcaizhi_klein_v1_000005500.safetensors
+    size_bytes: 165704408
+    sha256: 5352ada24a83b36e7bf8b3004eae5f6b1676479f93e0d002c9f521d133804fb9
   - path: unet/Nunchaku-svdq-int4_r32-flux.1-fill-dev.safetensors
     size_bytes: 6770275936
     sha256: 8ef7c319ec6634ad80358482000abe3761b6ed195c48c68ce0393ed6b866af68
   - path: unet/qwen-image-edit-2511-Q4_K_M.gguf
     size_bytes: 12990544480
     sha256: f2feaf9267a65d198cb4751db5dd8f5e69cb7bf53a924bdd36327ee167447638
+  - path: unet/Flux2-Klein-9B-True-V3-int8mixedrow.safetensors
+    size_bytes: 9439884768
+    sha256: 6d23ea6946f410a496bf706b136b17bea5e1cdd1a6ba17a1b5f23c64d30c7088
   - path: vae/ae.safetensors
     size_bytes: 335304388
     sha256: afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38

@@ -2976,12 +2976,36 @@ async def test_direct_image_service_reports_missing_workflow(tmp_path: Path) -> 
             "/api/v1/services/modelview-inpaint",
             "/api/v1/services/modelview-roughness",
         ):
-            response = await client.post(
-                endpoint,
-                files={"image": ("input.png", b"not-an-image", "image/png")},
-            )
+            files = {"image": ("input.png", b"not-an-image", "image/png")}
+            if endpoint.endswith("modelview-inpaint"):
+                files.update(
+                    {
+                        "material_image": (
+                            "six-view.png",
+                            b"not-an-image",
+                            "image/png",
+                        ),
+                        "viewport_reference": (
+                            "viewport.png",
+                            b"not-an-image",
+                            "image/png",
+                        ),
+                    }
+                )
+            response = await client.post(endpoint, files=files)
             assert response.status_code == 404
             assert response.json()["detail"]["code"] == "WORKFLOW_NOT_FOUND"
+
+
+async def test_modelview_inpaint_requires_exactly_three_image_roles(tmp_path: Path) -> None:
+    async for _, client in prepared_app(tmp_path):
+        response = await client.post(
+            "/api/v1/services/modelview-inpaint",
+            files={"image": ("white-model.png", b"not-an-image", "image/png")},
+        )
+        assert response.status_code == 422
+        missing = {item["loc"][-1] for item in response.json()["detail"]}
+        assert missing == {"material_image", "viewport_reference"}
 
 
 async def test_callback_url_allowlist_and_one_time_secret(tmp_path: Path) -> None:

@@ -79,6 +79,10 @@ image-metadata.json
 apps/web/dist/
 output/deploy/
 output/pdf/
+# Host-local TrueV3 benchmark captures and the multi-gigabyte ComfyUI image
+# export are runtime evidence, not source artifacts. The release document keeps
+# the reproducible workflow/version/hash references instead.
+artifacts/modelview-truev3-20260817/
 # Host-local Asset Worker runtime. It contains the Codex executable, exact
 # externally-owned Skill snapshots and per-node runtime state; none belongs in
 # the GPU Control source repository.

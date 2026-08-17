@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-image="${COMFY_IMAGE:-gpu-control/comfyui:projects-0.2.3}"
+image="${COMFY_IMAGE:-gpu-control/comfyui:projects-0.2.5}"
 container="${COMFY_CONTAINER:-comfyui-4090}"
 bind_ip="${COMFY_BIND_IP:-0.0.0.0}"
 port="${COMFY_PORT:-8188}"
@@ -11,19 +11,21 @@ imageclip_root="${IMAGECLIP_ROOT:-/opt/imageclip}"
 modelview_root="${MODELVIEW_ROOT:-/opt/modelviewcreator}"
 model_root="${MODEL_ROOT:-${imageclip_root}/models}"
 data_root="${COMFY_DATA_ROOT:-/srv/comfyui/4090}"
+reserve_vram_gb="${COMFY_RESERVE_VRAM_GB:-2.0}"
 
 usage() {
   cat <<'EOF'
 用法: scripts/comfyui-server.sh start|stop|restart|status|logs|shell
 
 可选环境变量：
-  COMFY_IMAGE       镜像名，默认 gpu-control/comfyui:projects-0.2.3
+  COMFY_IMAGE       镜像名，默认 gpu-control/comfyui:projects-0.2.5
   COMFY_CONTAINER   容器名，默认 comfyui-4090
   COMFY_BIND_IP     监听地址，默认 0.0.0.0
   COMFY_PORT        宿主端口，默认 8188
   COMFY_GPU         Docker GPU 选择，默认 all
   MODEL_ROOT        模型目录，默认 /opt/imageclip/models
   COMFY_DATA_ROOT   数据目录，默认 /srv/comfyui/4090
+  COMFY_RESERVE_VRAM_GB 保留显存（GiB），默认 2.0
   IMAGECLIP_ROOT    ImageClip Git 仓库，默认 /opt/imageclip
   MODELVIEW_ROOT    ModelViewCreator Git/LFS 仓库，默认 /opt/modelviewcreator
 EOF
@@ -46,8 +48,8 @@ prepare_directories() {
     echo "缺少 Cherry_lizi 节点: ${imageclip_root}/Cherry_lizi" >&2
     return 1
   }
-  [[ -f "${modelview_root}/flux_fill_inpaint.json" ]] || {
-    echo "缺少 ModelViewCreator 工作流: ${modelview_root}/flux_fill_inpaint.json" >&2
+  [[ -f "${modelview_root}/Flux2 Klein TrueV3-双图材质编辑-精简测试.json" ]] || {
+    echo "缺少 ModelViewCreator 工作流: ${modelview_root}/Flux2 Klein TrueV3-双图材质编辑-精简测试.json" >&2
     return 1
   }
   [[ -f "${modelview_root}/custom_nodes/haoze-LiClick/__init__.py" ]] || {
@@ -119,8 +121,8 @@ start_server() {
       -v "${data_root}/temp:/opt/comfyui/temp" \
       -v "${data_root}/user:/opt/comfyui/user" \
       -v "${imageclip_root}/ImageClip.json:/opt/comfyui/user/default/workflows/ImageClip.json:ro" \
-      -v "${modelview_root}/flux_fill_inpaint.json:/opt/comfyui/user/default/workflows/ModelViewCreator_flux_fill_inpaint.json:ro" \
-      "${image}" >/dev/null
+      -v "${modelview_root}/Flux2 Klein TrueV3-双图材质编辑-精简测试.json:/opt/comfyui/user/default/workflows/ModelViewCreator_flux_fill_inpaint.json:ro" \
+      "${image}" --reserve-vram "${reserve_vram_gb}" >/dev/null
   fi
   connect_control_network
   wait_until_ready

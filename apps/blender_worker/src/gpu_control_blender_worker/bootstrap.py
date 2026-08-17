@@ -48,7 +48,7 @@ APPROVED_SKILL_FILE_SHA256: Mapping[str, Mapping[str, str]] = {
             "fc22d8de0ac3a217b4c63e975037691382395e4e9c9d588ee418640913a86aec"
         ),
         "scripts/unwrap_fbx.py": (
-            "ebfa3546d61c548a11c0e7561c75f93b6ef93308d8da9f27788bf35643303758"
+            "03cdb0d9ca1f971313927603cb800acccc81f4dea79db04e79496aa9956e0ca4"
         ),
         "scripts/qa_uv.py": (
             "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"

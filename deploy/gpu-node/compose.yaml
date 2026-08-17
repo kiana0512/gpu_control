@@ -5,8 +5,12 @@ x-logging: &default-logging
 
 services:
   comfyui:
-    image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:projects-0.2.3}
+    image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:projects-0.2.5}
     restart: unless-stopped
+    # The approved INT8 TrueV3 workflow peaks near 22.4 GiB on a 24 GiB card.
+    # Reserve 2 GiB so ComfyUI's dynamic loader offloads before CUDA reaches
+    # the physical limit. The 12 GiB 4070Ti overlay keeps its stricter flags.
+    command: ["--reserve-vram", "${COMFY_RESERVE_VRAM_GB:-2.0}"]
     ports: ["${NODE_BIND_IP:-0.0.0.0}:8188:8188"]
     deploy: {resources: {reservations: {devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]}}}
     volumes:
@@ -21,7 +25,7 @@ services:
       - /srv/comfyui/runtime/temp:/opt/comfyui/temp
       - /srv/comfyui/runtime/user:/opt/comfyui/user
       - ${IMAGECLIP_ROOT:-/opt/imageclip}/ImageClip.json:/opt/comfyui/user/default/workflows/ImageClip.json:ro
-      - ${MODELVIEW_ROOT:-/opt/modelviewcreator}/flux_fill_inpaint.json:/opt/comfyui/user/default/workflows/ModelViewCreator_flux_fill_inpaint.json:ro
+      - "${MODELVIEW_ROOT:-/opt/modelviewcreator}/Flux2 Klein TrueV3-双图材质编辑-精简测试.json:/opt/comfyui/user/default/workflows/ModelViewCreator_flux_fill_inpaint.json:ro"
     healthcheck: {test: ["CMD", "python3.11", "/usr/local/bin/comfy-healthcheck"], interval: 20s, timeout: 5s, start_period: 120s, retries: 6}
     logging: *default-logging
 
@@ -56,9 +60,9 @@ services:
       dockerfile: apps/blender_worker/Dockerfile
       args:
         BLENDER_BASE_IMAGE: ${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}
-        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.48}
+        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.50-uv-local-stretch-v1}
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
-    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.48}
+    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.50-uv-local-stretch-v1}
     restart: unless-stopped
     # Required for Codex's nested bubblewrap workspace sandbox.
     cap_add: [SYS_ADMIN]

@@ -16,14 +16,14 @@ SUBSTANCE_GPU_NODE_ID = "worker-3090-b"
 SUBSTANCE_WORKER_ID = "asset-worker-3090-b-windows"
 SUBSTANCE_WORKER_ID_PREFIX = f"{SUBSTANCE_WORKER_ID}-"
 SUBSTANCE_MAX_PARALLEL = 4
-MODELVIEW_INPAINT_GPU_HOLD_SECONDS = 15 * 60
+MODELVIEW_INPAINT_GPU_HOLD_SECONDS = 10 * 60
 SUBSTANCE_GPU_HOLD_SECONDS = 5 * 60
 # Backward-compatible name for callers that only know the original inpaint
 # window. New specialization code must select the duration by workflow key.
 SPECIALIZED_GPU_HOLD_SECONDS = MODELVIEW_INPAINT_GPU_HOLD_SECONDS
 GPU_SPECIALIZATION_LABEL = "gpu_specialization"
 GPU_CACHE_DRAIN_FAILED_LABEL = "gpu_cache_drain_failed"
-MODELVIEW_INPAINT_NODE_ID = "worker-4070ti-animation-host-01"
+MODELVIEW_INPAINT_NODE_ID = "control-4090"
 MODELVIEW_INPAINT_WORKFLOW_KEY = "modelview-inpaint"
 IMAGECLIP_WORKFLOW_KEY = "imageclip-rgba"
 IMAGECLIP_INPAINT_PREEMPTION_CODE = "IMAGECLIP_PREEMPTED_FOR_INPAINT"
@@ -183,7 +183,7 @@ def refresh_gpu_specialization(
 ) -> datetime:
     """Start or refresh the workflow-specific specialized-GPU window.
 
-    4070Ti keeps the original 15-minute inpaint response lane. 3090-B uses a
+    The control 4090 keeps a renewable ten-minute inpaint response lane. 3090-B uses a
     shorter five-minute post-arrival Substance lane because an active Baker
     fence already provides the non-expiring physical-GPU safety boundary.
     """
@@ -341,6 +341,7 @@ def rank_nodes(
     heartbeat_timeout_seconds: int,
     now: datetime | None = None,
     preferred_node_ids: set[str] | None = None,
+    promoted_node_ids: set[str] | None = None,
 ) -> tuple[list[NodeLike], dict[str, str]]:
     """Return every currently eligible node in scheduling order.
 
@@ -378,9 +379,14 @@ def rank_nodes(
 
     order(primary)
     order(overflow)
-    # Preserve the existing primary-before-overflow policy while still making
-    # overflow a compatibility fallback when no primary can claim queued work.
-    return [*primary, *overflow], exclusions
+    # Preserve the existing primary-before-overflow policy by default. A
+    # narrowly scoped service lane may explicitly promote an already eligible
+    # node across pools; the node must still pass every base/overflow guard.
+    ranked = [*primary, *overflow]
+    promoted = promoted_node_ids or set()
+    if promoted:
+        ranked.sort(key=lambda node: 0 if node.id in promoted else 1)
+    return ranked, exclusions
 
 
 def choose_node(
@@ -390,6 +396,7 @@ def choose_node(
     heartbeat_timeout_seconds: int,
     now: datetime | None = None,
     preferred_node_ids: set[str] | None = None,
+    promoted_node_ids: set[str] | None = None,
 ) -> tuple[NodeLike | None, dict[str, str]]:
     candidates, exclusions = rank_nodes(
         nodes,
@@ -398,5 +405,6 @@ def choose_node(
         heartbeat_timeout_seconds,
         now,
         preferred_node_ids,
+        promoted_node_ids,
     )
     return (candidates[0] if candidates else None), exclusions

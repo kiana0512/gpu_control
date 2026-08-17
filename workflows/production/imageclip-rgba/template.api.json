@@ -1,20 +1,317 @@
 {
-  "100": {"_meta": {"title": "PrimitiveInt"}, "class_type": "PrimitiveInt", "inputs": {"value": 750812915616887}},
-  "101": {"_meta": {"title": "Int"}, "class_type": "Int", "inputs": {"Number": "6"}},
-  "102": {"_meta": {"title": "单"}, "class_type": "SaveImage", "inputs": {"filename_prefix": "single", "images": ["116", 0]}},
-  "108": {"_meta": {"title": "LoadImage"}, "class_type": "LoadImage", "inputs": {"image": "0000 - 副本.png"}},
-  "116": {"_meta": {"title": "CherryHoldoutSimple"}, "class_type": "CherryHoldoutSimple", "inputs": {"Alpha增益": 1, "白底不均匀": true, "白底图": ["108", 0], "白底阈值": 240, "背景自动校正": 1, "边缘收缩": 0, "边缘羽化": 0, "黑底图": ["98", 0]}},
-  "84": {"_meta": {"title": "VAELoader"}, "class_type": "VAELoader", "inputs": {"vae_name": "flux2-vae.safetensors"}},
-  "85": {"_meta": {"title": "EmptyFlux2LatentImage"}, "class_type": "EmptyFlux2LatentImage", "inputs": {"batch_size": 1, "height": ["87", 1], "width": ["87", 0]}},
-  "86": {"_meta": {"title": "VAEEncode"}, "class_type": "VAEEncode", "inputs": {"pixels": ["108", 0], "vae": ["84", 0]}},
-  "87": {"_meta": {"title": "GetImageSize"}, "class_type": "GetImageSize", "inputs": {"image": ["108", 0]}},
-  "88": {"_meta": {"title": "CLIPLoader"}, "class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_3_8b_fp8mixed.safetensors", "device": "default", "type": "flux2"}},
-  "89": {"_meta": {"title": "LoraLoaderModelOnly"}, "class_type": "LoraLoaderModelOnly", "inputs": {"lora_name": "Koutu_Flux2klein_v2_000007250.safetensors", "model": ["96", 0], "strength_model": 1}},
-  "90": {"_meta": {"title": "CLIP Text Encode (Positive Prompt)"}, "class_type": "CLIPTextEncode", "inputs": {"clip": ["88", 0], "text": "Replace the white background with pure black. Keep the main shape, color, edges,  and all details unchanged."}},
-  "91": {"_meta": {"title": "ReferenceLatent"}, "class_type": "ReferenceLatent", "inputs": {"conditioning": ["92", 0], "latent": ["86", 0]}},
-  "92": {"_meta": {"title": "ConditioningZeroOut"}, "class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["90", 0]}},
-  "93": {"_meta": {"title": "ReferenceLatent"}, "class_type": "ReferenceLatent", "inputs": {"conditioning": ["90", 0], "latent": ["86", 0]}},
-  "96": {"_meta": {"title": "UNETLoader"}, "class_type": "UNETLoader", "inputs": {"unet_name": "flux-2-klein-9b-fp8.safetensors", "weight_dtype": "default"}},
-  "97": {"_meta": {"title": "KSampler"}, "class_type": "KSampler", "inputs": {"cfg": 1, "denoise": 1, "latent_image": ["85", 0], "model": ["89", 0], "negative": ["91", 0], "positive": ["93", 0], "sampler_name": "euler", "scheduler": "simple", "seed": ["100", 0], "steps": ["101", 0]}},
-  "98": {"_meta": {"title": "VAEDecode"}, "class_type": "VAEDecode", "inputs": {"samples": ["97", 0], "vae": ["84", 0]}}
+  "100": {
+    "_meta": {
+      "title": "PrimitiveInt"
+    },
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 750812915616887
+    }
+  },
+  "101": {
+    "_meta": {
+      "title": "Int"
+    },
+    "class_type": "Int",
+    "inputs": {
+      "Number": "6"
+    }
+  },
+  "105": {
+    "_meta": {
+      "title": "CherrySelfComposite"
+    },
+    "class_type": "CherrySelfComposite",
+    "inputs": {
+      "叠加次数": 2,
+      "图像": [
+        "116",
+        0
+      ]
+    }
+  },
+  "108": {
+    "_meta": {
+      "title": "LoadImage"
+    },
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "0000 - 副本.png"
+    }
+  },
+  "109": {
+    "_meta": {
+      "title": "ImageClip API Final RGBA"
+    },
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "imageclip-rgba",
+      "images": [
+        "119",
+        0
+      ]
+    }
+  },
+  "116": {
+    "_meta": {
+      "title": "CherryHoldoutSimple"
+    },
+    "class_type": "CherryHoldoutSimple",
+    "inputs": {
+      "Alpha增益": 1,
+      "白底不均匀": true,
+      "白底图": [
+        "108",
+        0
+      ],
+      "白底阈值": 240,
+      "背景自动校正": 1,
+      "边缘收缩": 0,
+      "边缘羽化": 0,
+      "黑底图": [
+        "98",
+        0
+      ]
+    }
+  },
+  "119": {
+    "_meta": {
+      "title": "CherryAlphaDenoise"
+    },
+    "class_type": "CherryAlphaDenoise",
+    "inputs": {
+      "图像": [
+        "123",
+        0
+      ],
+      "平滑半径": 0,
+      "蒙版": [
+        "123",
+        1
+      ],
+      "阈值": 0.06
+    }
+  },
+  "123": {
+    "_meta": {
+      "title": "122_ColorMatchToSource"
+    },
+    "class_type": "122_ColorMatchToSource",
+    "inputs": {
+      "内部抄色": true,
+      "匹配强度": 1,
+      "原图": [
+        "108",
+        0
+      ],
+      "抄色内缩像素": 10,
+      "抄色羽化": 2,
+      "投影亮度下限": 0.28,
+      "投影色度上限": 0.12,
+      "抠完的图": [
+        "105",
+        0
+      ],
+      "清除背景投影": true,
+      "采样alpha阈值": 0.9
+    }
+  },
+  "84": {
+    "_meta": {
+      "title": "VAELoader"
+    },
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "flux2-vae.safetensors"
+    }
+  },
+  "85": {
+    "_meta": {
+      "title": "EmptyFlux2LatentImage"
+    },
+    "class_type": "EmptyFlux2LatentImage",
+    "inputs": {
+      "batch_size": 1,
+      "height": [
+        "87",
+        1
+      ],
+      "width": [
+        "87",
+        0
+      ]
+    }
+  },
+  "86": {
+    "_meta": {
+      "title": "VAEEncode"
+    },
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "108",
+        0
+      ],
+      "vae": [
+        "84",
+        0
+      ]
+    }
+  },
+  "87": {
+    "_meta": {
+      "title": "GetImageSize"
+    },
+    "class_type": "GetImageSize",
+    "inputs": {
+      "image": [
+        "108",
+        0
+      ]
+    }
+  },
+  "88": {
+    "_meta": {
+      "title": "CLIPLoader"
+    },
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+      "device": "default",
+      "type": "flux2"
+    }
+  },
+  "89": {
+    "_meta": {
+      "title": "LoraLoaderModelOnly"
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "Koutu_Flux2klein_v2_000007250.safetensors",
+      "model": [
+        "96",
+        0
+      ],
+      "strength_model": 1
+    }
+  },
+  "90": {
+    "_meta": {
+      "title": "CLIP Text Encode (Positive Prompt)"
+    },
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "88",
+        0
+      ],
+      "text": "Replace the white background with pure black. Keep the main shape, color, edges,  and all details unchanged."
+    }
+  },
+  "91": {
+    "_meta": {
+      "title": "ReferenceLatent"
+    },
+    "class_type": "ReferenceLatent",
+    "inputs": {
+      "conditioning": [
+        "92",
+        0
+      ],
+      "latent": [
+        "86",
+        0
+      ]
+    }
+  },
+  "92": {
+    "_meta": {
+      "title": "ConditioningZeroOut"
+    },
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": [
+        "90",
+        0
+      ]
+    }
+  },
+  "93": {
+    "_meta": {
+      "title": "ReferenceLatent"
+    },
+    "class_type": "ReferenceLatent",
+    "inputs": {
+      "conditioning": [
+        "90",
+        0
+      ],
+      "latent": [
+        "86",
+        0
+      ]
+    }
+  },
+  "96": {
+    "_meta": {
+      "title": "UNETLoader"
+    },
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "flux-2-klein-9b-fp8.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "97": {
+    "_meta": {
+      "title": "KSampler"
+    },
+    "class_type": "KSampler",
+    "inputs": {
+      "cfg": 1,
+      "denoise": 1,
+      "latent_image": [
+        "85",
+        0
+      ],
+      "model": [
+        "89",
+        0
+      ],
+      "negative": [
+        "91",
+        0
+      ],
+      "positive": [
+        "93",
+        0
+      ],
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "seed": [
+        "100",
+        0
+      ],
+      "steps": [
+        "101",
+        0
+      ]
+    }
+  },
+  "98": {
+    "_meta": {
+      "title": "VAEDecode"
+    },
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "97",
+        0
+      ],
+      "vae": [
+        "84",
+        0
+      ]
+    }
+  }
 }

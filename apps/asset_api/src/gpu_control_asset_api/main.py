@@ -220,6 +220,10 @@ def fsync_completion_staging(staging: Path) -> None:
 
 SUBSTANCE_VERSION = "substance-15.1.0"
 SUBSTANCE_SKILL_VERSION = "substance-baker-2026.08.12-v7"
+MOF_WORKER_ID = "asset-worker-4070ti-mof-01"
+MOF_NODE_ID = "worker-4070ti-animation-host-01"
+MOF_BLENDER_VERSION = "5.2.0"
+MOF_SKILL_VERSION = "mof-windows-1.0.9-2026.08.17-v2"
 RETOPOLOGY_AUDIT_ARTIFACTS = {
     "audit": ("retopology_audit.json", "application/json"),
     "manifest": ("retopology_manifest.json", "application/json"),
@@ -378,6 +382,10 @@ def is_substance_worker_id(worker_id: str | None) -> bool:
         worker_id
         and (worker_id == SUBSTANCE_WORKER_ID or worker_id.startswith(SUBSTANCE_WORKER_ID_PREFIX))
     )
+
+
+def is_mof_worker_id(worker_id: str | None) -> bool:
+    return worker_id == MOF_WORKER_ID
 
 
 def substance_process_counts_consistent(
@@ -1580,6 +1588,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job_type: str,
         idempotency_key: str,
         request_hash_builder: Callable[[str], str],
+        rejected_prior_artifact_kinds: frozenset[str] = frozenset(),
     ) -> JSONResponse:
         staging = cfg.asset_root / f".staging-{uuid.uuid4().hex}"
         staging.mkdir(parents=True, exist_ok=False)
@@ -1613,6 +1622,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if replay is not None:
                 return replay
             await enforce_new_asset_admission(principal, db)
+            if rejected_prior_artifact_kinds:
+                rejected_artifact = await db.scalar(
+                    select(AssetArtifact)
+                    .where(
+                        AssetArtifact.sha256 == input_sha,
+                        AssetArtifact.kind.in_(rejected_prior_artifact_kinds),
+                    )
+                    .limit(1)
+                )
+                if rejected_artifact is not None:
+                    raise HTTPException(
+                        422,
+                        detail={
+                            "code": "UV_RETOPOLOGY_HIGH_INPUT",
+                            "message": (
+                                "UV 只应处理拓扑低模；当前文件是自动拓扑任务的 high_fbx "
+                                "烘焙高模。请改传同一任务 kind=fbx 的 GAME_LOW 文件。"
+                            ),
+                        },
+                    )
             duplicate_external = await db.scalar(
                 select(AssetJob).where(
                     AssetJob.client_id == principal.id,
@@ -2170,19 +2199,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 422, detail={"code": "ASSET_INPUT_INVALID", "message": str(exc)}
             ) from exc
         if parsed.options.algorithm == "mof_low_seam":
-            # No licensed, preflight-approved Windows MOF Worker is currently
-            # registered.  Fail before persisting the upload instead of
-            # queueing an unclaimable job or silently changing algorithms.
-            raise HTTPException(
-                503,
-                detail={
-                    "code": "UV_MOF_CAPACITY_UNAVAILABLE",
-                    "message": (
-                        "mof_low_seam requires an online licensed Windows Worker "
-                        "that passed the MOF runtime preflight"
-                    ),
-                },
+            if parsed.options.asset_profile != "complex_non_hardsurface":
+                raise HTTPException(
+                    422,
+                    detail={
+                        "code": "UV_MOF_ASSET_PROFILE_REQUIRED",
+                        "message": (
+                            "mof_low_seam is restricted to assets explicitly classified "
+                            "as complex_non_hardsurface; hard-surface and general assets "
+                            "must use legacy_pbr"
+                        ),
+                    },
+                )
+            heartbeat_cutoff = datetime.now(UTC) - timedelta(
+                seconds=cfg.asset_worker_heartbeat_timeout_seconds
             )
+            mof_worker = await db.scalar(
+                select(AssetWorker)
+                .join(Node, Node.id == AssetWorker.node_id)
+                .where(
+                    AssetWorker.id == MOF_WORKER_ID,
+                    AssetWorker.node_id == MOF_NODE_ID,
+                    AssetWorker.status == "ONLINE",
+                    AssetWorker.blender_version == MOF_BLENDER_VERSION,
+                    AssetWorker.skill_version == MOF_SKILL_VERSION,
+                    AssetWorker.last_heartbeat_at >= heartbeat_cutoff,
+                    Node.mode == "ACTIVE",
+                    Node.manual_reserved.is_(False),
+                    Node.external_busy.is_(False),
+                    Node.foreign_queue_detected.is_(False),
+                )
+            )
+            if mof_worker is None:
+                # Fail before persisting the upload instead of queueing an
+                # unclaimable job or silently changing algorithms.
+                raise HTTPException(
+                    503,
+                    detail={
+                        "code": "UV_MOF_CAPACITY_UNAVAILABLE",
+                        "message": (
+                            "mof_low_seam requires an online licensed Windows Worker "
+                            "that passed the MOF runtime preflight"
+                        ),
+                    },
+                )
         return await create_uploaded_job(
             request=request,
             principal=principal,
@@ -2194,6 +2254,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job_type="UV_PROCESS_V2",
             idempotency_key=idempotency_key,
             request_hash_builder=lambda input_sha: uv_process_request_hash(parsed, input_sha),
+            rejected_prior_artifact_kinds=frozenset({"high_fbx"}),
         )
 
     @app.get("/api/v1/assets/jobs/{job_id}")
@@ -2381,6 +2442,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 409,
                 detail={"code": "SUBSTANCE_WORKER_NODE_MISMATCH"},
             )
+        if is_mof_worker_id(body.worker_id) and body.node_id != MOF_NODE_ID:
+            raise HTTPException(
+                409,
+                detail={"code": "UV_MOF_WORKER_NODE_MISMATCH"},
+            )
         substance_heartbeat_node: Node | None = None
         if is_substance_worker_id(body.worker_id):
             substance_heartbeat_node = await db.scalar(
@@ -2515,12 +2581,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             body.available_memory_mb >= cfg.asset_worker_min_available_memory_mb
             and body.load_1m / body.cpu_count <= cfg.asset_worker_max_load_per_cpu
         )
-        runtime_version_ok = (
-            body.blender_version == SUBSTANCE_VERSION
-            and body.skill_version == SUBSTANCE_SKILL_VERSION
-            if is_substance_worker_id(body.worker_id)
-            else body.blender_version == "5.1.2"
-        )
+        if is_substance_worker_id(body.worker_id):
+            runtime_version_ok = (
+                body.blender_version == SUBSTANCE_VERSION
+                and body.skill_version == SUBSTANCE_SKILL_VERSION
+            )
+        elif is_mof_worker_id(body.worker_id):
+            runtime_version_ok = (
+                body.blender_version == MOF_BLENDER_VERSION
+                and body.skill_version == MOF_SKILL_VERSION
+            )
+        else:
+            runtime_version_ok = body.blender_version == "5.1.2"
         process_checked_at = (
             as_utc(body.substance_process_probe_checked_at)
             if body.substance_process_probe_checked_at is not None
@@ -2599,7 +2671,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> JSONResponse:
         await verify_worker(request, await request.body(), body.worker_id)
         substance_claim = is_substance_worker_id(body.worker_id)
+        mof_claim = is_mof_worker_id(body.worker_id)
         if not substance_claim and (body.node_id is None or body.agent_instance_id is None):
+            return JSONResponse({"job": None}, 200)
+        if mof_claim and body.uv_algorithms != ["mof_low_seam"]:
             return JSONResponse({"job": None}, 200)
         if substance_claim:
             # Serialize a Baker claim with every new-work admission before
@@ -2866,6 +2941,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             claim_query = claim_query.where(AssetJob.job_type == "SUBSTANCE_BAKE_V1")
             if pending_substance_job_ids:
                 claim_query = claim_query.where(AssetJob.id.in_(pending_substance_job_ids))
+        elif is_mof_worker_id(worker.id):
+            claim_query = claim_query.where(
+                AssetJob.job_type == "UV_PROCESS_V2",
+                func.coalesce(
+                    AssetJob.options["algorithm"].as_string(), "legacy_pbr"
+                )
+                == "mof_low_seam",
+                AssetJob.options["asset_profile"].as_string()
+                == "complex_non_hardsurface",
+            )
         else:
             durable_codex_assignment = await db.scalar(
                 select(AssetJob.id)
@@ -2881,7 +2966,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or_(
                     AssetJob.job_type != "UV_PROCESS_V2",
                     func.coalesce(AssetJob.options["algorithm"].as_string(), "legacy_pbr").in_(
-                        body.uv_algorithms
+                        [
+                            algorithm
+                            for algorithm in body.uv_algorithms
+                            if algorithm == "legacy_pbr"
+                        ]
                     ),
                 )
             )

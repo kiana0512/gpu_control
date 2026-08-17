@@ -1,39 +1,33 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-INPUT_IMAGE="${1:-}"
-OUTPUT_IMAGE="${2:-/tmp/modelview-inpaint-result.png}"
+WHITE_MODEL_IMAGE="${1:-}"
+MATERIAL_IMAGE="${2:-}"
+VIEWPORT_REFERENCE_IMAGE="${3:-}"
+OUTPUT_IMAGE="${4:-/tmp/modelview-inpaint-result.png}"
 API_URL="${GPU_CONTROL_URL:-https://10.3.34.11}/api/v1/services/modelview-inpaint"
+CA_FILE="${GPU_CONTROL_CA:-deploy/control-plane/nginx/certs/lan-ca.crt}"
 HEADERS_FILE="${OUTPUT_IMAGE}.headers"
 
-if [[ -z "${INPUT_IMAGE}" || ! -f "${INPUT_IMAGE}" ]]; then
-  echo "usage: $0 /path/to/input.png [/path/to/result.png]" >&2
-  exit 2
-fi
+for required in "${WHITE_MODEL_IMAGE}" "${MATERIAL_IMAGE}" "${VIEWPORT_REFERENCE_IMAGE}"; do
+  if [[ -z "${required}" || ! -f "${required}" ]]; then
+    echo "usage: $0 WHITE_MODEL SIX_VIEW VIEWPORT_REFERENCE [/path/to/result.png]" >&2
+    exit 2
+  fi
+done
 
-restore_reserved() {
-  docker exec gpu-control-postgres-1 sh -lc \
-    'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -c "update nodes set mode='"'"'RESERVED'"'"', manual_reserved=true where id='"'"'control-4090'"'"';"' \
-    >/dev/null 2>&1 || true
-}
-trap restore_reserved EXIT INT TERM
+[[ -f "${CA_FILE}" ]] || { echo "missing CA file: ${CA_FILE}" >&2; exit 2; }
 
-echo "[1/4] unloading stale ComfyUI models"
-docker exec gpu-control-api-1 python -c \
-  'import httpx; r=httpx.post("http://comfyui-4090:8188/free", json={"unload_models": True, "free_memory": True}, timeout=30); r.raise_for_status()'
-
-echo "[2/4] temporarily enabling the 4090 scheduler slot"
-docker exec gpu-control-postgres-1 sh -lc \
-  'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -c "update nodes set mode='"'"'ACTIVE'"'"', manual_reserved=false where id='"'"'control-4090'"'"';"' \
-  >/dev/null
-
-echo "[3/4] submitting a real image and waiting for the final image"
-HTTP_CODE="$(curl -ksS \
+echo "[1/2] submitting the three public inputs and waiting for the final image"
+HTTP_CODE="$(curl --fail-with-body --silent --show-error \
+  --cacert "${CA_FILE}" \
   -D "${HEADERS_FILE}" \
   -o "${OUTPUT_IMAGE}" \
   -w '%{http_code}' \
   -H "Idempotency-Key: modelview-e2e-$(date +%s)" \
-  -F "image=@${INPUT_IMAGE}" \
+  -F "image=@${WHITE_MODEL_IMAGE}" \
+  -F "material_image=@${MATERIAL_IMAGE}" \
+  -F "viewport_reference=@${VIEWPORT_REFERENCE_IMAGE}" \
   "${API_URL}")"
 
 if [[ "${HTTP_CODE}" != "200" ]]; then
@@ -42,7 +36,7 @@ if [[ "${HTTP_CODE}" != "200" ]]; then
   exit 1
 fi
 
-echo "[4/4] validating the returned artifact"
+echo "[2/2] validating the returned artifact"
 file "${OUTPUT_IMAGE}"
 sha256sum "${OUTPUT_IMAGE}"
 grep -iE '^(x-job-id|x-client-id|content-type):' "${HEADERS_FILE}" || true

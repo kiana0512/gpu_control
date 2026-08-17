@@ -72,7 +72,11 @@ files=(
   deploy/gpu-node/compose.wsl.yaml
   scripts/deploy_node.sh
   scripts/verify_comfy_projects.sh
+  scripts/install_modelview_truev3_inputs.sh
+  scripts/verify_modelview_truev3_runtime.sh
   docker/comfyui/custom_nodes.lock.yaml
+  docker/comfyui/requirements.essentials.lock.txt
+  workflows/production/modelview-inpaint/custom_nodes/Cherry_KleinWorkflowTools/UPSTREAM.sha256
 )
 local_digest="$(cd "${root}" && sha256sum "${files[@]}" | sha256sum | awk '{print $1}')"
 remote_digest="$(ssh "${ssh_options[@]}" "${user}@${host}" "cd /opt/gpu-control && sha256sum ${files[*]} | sha256sum | awk '{print \$1}'")"

@@ -16,6 +16,7 @@ from packages.gpu_control_core.scheduling import (
     choose_node,
     gpu_specialization,
     linux_asset_claim_allowed,
+    rank_nodes,
     refresh_gpu_specialization,
 )
 from packages.gpu_control_core.settings import Settings
@@ -87,6 +88,36 @@ def test_warm_cache_affinity_is_preferred_but_never_blocks_fallback(tmp_path: Pa
     assert excluded["3090-b"] == "no_slot"
 
 
+def test_inpaint_lane_can_promote_eligible_4090_across_pools(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    available = nodes(now)
+    available[2].mode = "ACTIVE"
+    ranked, excluded = rank_nodes(
+        available,
+        QueueSnapshot(1, 0),
+        guard(tmp_path),
+        20,
+        now,
+        preferred_node_ids={"4090"},
+        promoted_node_ids={"4090"},
+    )
+    assert not excluded
+    assert [node.id for node in ranked] == ["4090", "3090-a", "3090-b"]
+
+    available[2].current_jobs = 1
+    ranked, excluded = rank_nodes(
+        available,
+        QueueSnapshot(1, 0),
+        guard(tmp_path),
+        20,
+        now,
+        preferred_node_ids={"4090"},
+        promoted_node_ids={"4090"},
+    )
+    assert [node.id for node in ranked] == ["3090-a", "3090-b"]
+    assert excluded["4090"] == "no_slot"
+
+
 def test_4090_reserved_never_schedules(tmp_path: Path) -> None:
     now = datetime.now(UTC)
     available = nodes(now)
@@ -140,8 +171,8 @@ def test_drain_foreign_queue_and_expired_heartbeat_block_node(tmp_path: Path) ->
 def test_gpu_specialization_refreshes_to_exact_hard_expiry() -> None:
     now = datetime.now(UTC)
     node = FakeNode(
-        "worker-4070ti-animation-host-01",
-        "PRIMARY",
+        "control-4090",
+        "OVERFLOW",
         "ACTIVE",
         last_heartbeat_at=now,
     )
@@ -151,21 +182,21 @@ def test_gpu_specialization_refreshes_to_exact_hard_expiry() -> None:
         now,
         owner="gpu-api",
     )
-    assert first_expiry == now + timedelta(minutes=15)
+    assert first_expiry == now + timedelta(minutes=10)
     assert gpu_specialization(node.labels, now) == (
         MODELVIEW_INPAINT_WORKFLOW_KEY,
         first_expiry,
     )
     assert gpu_specialization(node.labels, first_expiry) == (None, first_expiry)
 
-    refreshed_at = now + timedelta(minutes=10)
+    refreshed_at = now + timedelta(minutes=7)
     second_expiry = refresh_gpu_specialization(
         node,
         MODELVIEW_INPAINT_WORKFLOW_KEY,
         refreshed_at,
         owner="gpu-api",
     )
-    assert second_expiry == refreshed_at + timedelta(minutes=15)
+    assert second_expiry == refreshed_at + timedelta(minutes=10)
     assert second_expiry > first_expiry
 
 

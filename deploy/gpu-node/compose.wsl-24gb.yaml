@@ -1,0 +1,23 @@
+# WSL2 overlay for the 24 GiB worker-3090-b node.
+#
+# NVIDIA documents a restricted pinned-system-memory budget under WSL2. The
+# production host was measured at roughly 1 GiB of cumulative
+# cudaHostRegister capacity, while ComfyUI 0.30.2 tried to register tens of
+# GiB based on visible guest RAM. Disabling ComfyUI's registration pool avoids
+# repeated Pin errors; the approved workflow, models, precision and sampling
+# parameters remain unchanged.
+services:
+  comfyui:
+    command:
+      - --reserve-vram
+      - "${COMFY_RESERVE_VRAM_GB:-2.0}"
+      - --disable-pinned-memory
+
+  node-exporter:
+    # WSL2 does not expose the root mount as shared/slave.
+    volumes:
+      - /:/host:ro
+
+  dcgm-exporter:
+    # WSL GPU telemetry comes from the signed Node Agent.
+    profiles: ["dcgm"]

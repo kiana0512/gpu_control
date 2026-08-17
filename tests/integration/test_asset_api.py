@@ -4080,6 +4080,76 @@ async def test_uv_process_v2_preserves_stem_and_publishes_five_verified_artifact
         }
 
 
+async def test_uv_process_v2_rejects_known_retopology_high_artifact(
+    tmp_path: Path,
+) -> None:
+    high_payload = b"known-retopology-bake-high"
+    high_sha256 = hashlib.sha256(high_payload).hexdigest()
+    source_job_id = str(uuid.uuid4())
+    async for _, client in prepared_asset_app(tmp_path):
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            db.add(
+                AssetJob(
+                    id=source_job_id,
+                    client_id="asset-client",
+                    external_asset_id="asset:retopo:source-for-uv-guard",
+                    job_type="RETOPOLOGY_PROCESS_V2",
+                    status="SUCCEEDED",
+                    source_filename="retopology_input.zip",
+                    input_path=str(tmp_path / "retopology_input.zip"),
+                    input_sha256="a" * 64,
+                    input_size_bytes=1,
+                    options={},
+                    request_hash="b" * 64,
+                    request_id="retopo-source-request",
+                    progress=100,
+                    stage="SUCCEEDED",
+                )
+            )
+            await db.flush()
+            db.add(
+                AssetArtifact(
+                    id=str(uuid.uuid4()),
+                    job_id=source_job_id,
+                    kind="high_fbx",
+                    filename="asset_BAKE_HIGH.fbx",
+                    path=str(tmp_path / "asset_BAKE_HIGH.fbx"),
+                    content_type="application/octet-stream",
+                    size_bytes=len(high_payload),
+                    sha256=high_sha256,
+                )
+            )
+            await db.commit()
+
+        response = await client.post(
+            "/api/v1/assets/uv/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "uv-known-high-rejected",
+            },
+            files={
+                "asset": ("renamed-reto-result.fbx", high_payload, "application/octet-stream"),
+                "metadata": (
+                    None,
+                    json.dumps(
+                        {
+                            "external_asset_id": "asset:uv:known-high-rejected",
+                            "options": {},
+                        }
+                    ),
+                ),
+            },
+        )
+
+        assert response.status_code == 422, response.text
+        assert response.json()["detail"]["code"] == "UV_RETOPOLOGY_HIGH_INPUT"
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            uv_jobs = await db.scalar(
+                select(func.count(AssetJob.id)).where(AssetJob.job_type == "UV_PROCESS_V2")
+            )
+            assert uv_jobs == 0
+
+
 async def test_uv_process_v2_dual_mode_is_explicit_and_never_silently_falls_back(
     tmp_path: Path,
 ) -> None:
@@ -4106,6 +4176,28 @@ async def test_uv_process_v2_dual_mode_is_explicit_and_never_silently_falls_back
         assert invalid.status_code == 422, invalid.text
         assert invalid.json()["detail"]["code"] == "UV_ALGORITHM_INVALID"
 
+        wrong_profile = await client.post(
+            "/api/v1/assets/uv/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "uv-mof-wrong-profile",
+            },
+            files={
+                "asset": ("asset.fbx", b"asset", "application/octet-stream"),
+                "metadata": (
+                    None,
+                    json.dumps(
+                        {
+                            "external_asset_id": "uv-mof-wrong-profile",
+                            "options": {"algorithm": "mof_low_seam"},
+                        }
+                    ),
+                ),
+            },
+        )
+        assert wrong_profile.status_code == 422, wrong_profile.text
+        assert wrong_profile.json()["detail"]["code"] == "UV_MOF_ASSET_PROFILE_REQUIRED"
+
         unavailable = await client.post(
             "/api/v1/assets/uv/process",
             headers={
@@ -4119,7 +4211,10 @@ async def test_uv_process_v2_dual_mode_is_explicit_and_never_silently_falls_back
                     json.dumps(
                         {
                             "external_asset_id": "uv-mof-unavailable",
-                            "options": {"algorithm": "mof_low_seam"},
+                            "options": {
+                                "algorithm": "mof_low_seam",
+                                "asset_profile": "complex_non_hardsurface",
+                            },
                         }
                     ),
                 ),
@@ -4149,6 +4244,140 @@ async def test_uv_process_v2_dual_mode_is_explicit_and_never_silently_falls_back
         )
         assert defaulted.status_code == 202, defaulted.text
         assert defaulted.json()["options"]["algorithm"] == "legacy_pbr"
+        assert defaulted.json()["options"]["asset_profile"] == "general"
+
+
+async def test_mof_worker_enables_capacity_and_can_claim_only_mof_uv(
+    tmp_path: Path,
+) -> None:
+    worker_id = "asset-worker-4070ti-mof-01"
+    node_id = "worker-4070ti-animation-host-01"
+    async for settings, client in prepared_asset_app(tmp_path):
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            db.add(
+                Node(
+                    id=node_id,
+                    display_name="4070 Ti",
+                    base_url="http://10.3.34.238:8188",
+                    pool="PRIMARY",
+                    mode="ACTIVE",
+                    health="ONLINE",
+                    current_jobs=0,
+                    max_concurrency=1,
+                    labels={},
+                )
+            )
+            await db.commit()
+
+        heartbeat = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/workers/heartbeat",
+            {
+                "worker_id": worker_id,
+                "node_id": node_id,
+                "display_name": "4070 Ti Windows MOF UV Worker",
+                "hostname": "worker-4070ti-wsl",
+                "blender_version": "5.2.0",
+                "skill_version": "mof-windows-1.0.9-2026.08.17-v2",
+                "cpu_count": 24,
+                "max_concurrency": 1,
+                "current_jobs": 0,
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                **asset_worker_generation(worker_id),
+            },
+        )
+        assert heartbeat.status_code == 200, heartbeat.text
+        assert heartbeat.json()["status"] == "ONLINE"
+
+        created = await client.post(
+            "/api/v1/assets/uv/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "uv-mof-capacity-online",
+            },
+            files={
+                "asset": ("mof.source.fbx", b"mof-asset", "application/octet-stream"),
+                "metadata": (
+                    None,
+                    json.dumps(
+                        {
+                            "external_asset_id": "uv-mof-capacity-online",
+                            "options": {
+                                "algorithm": "mof_low_seam",
+                                "asset_profile": "complex_non_hardsurface",
+                            },
+                        }
+                    ),
+                ),
+            },
+        )
+        assert created.status_code == 202, created.text
+        assert created.json()["options"]["algorithm"] == "mof_low_seam"
+        assert (
+            created.json()["options"]["asset_profile"] == "complex_non_hardsurface"
+        )
+
+        await register_asset_worker(client, settings)
+        legacy_attempt = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(),
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                "uv_algorithms": ["legacy_pbr", "mof_low_seam"],
+            },
+        )
+        assert legacy_attempt.status_code == 200, legacy_attempt.text
+        assert legacy_attempt.json()["job"] is None
+
+        claimed = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(worker_id, node_id),
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                "accepts_codex_jobs": False,
+                "uv_algorithms": ["mof_low_seam"],
+            },
+        )
+        assert claimed.status_code == 200, claimed.text
+        job = claimed.json()["job"]
+        assert job["job_id"] == created.json()["job_id"]
+        assert job["job_type"] == "UV_PROCESS_V2"
+        assert job["options"]["algorithm"] == "mof_low_seam"
+        assert job["options"]["asset_profile"] == "complex_non_hardsurface"
+
+
+async def test_mof_worker_heartbeat_rejects_wrong_physical_node(tmp_path: Path) -> None:
+    worker_id = "asset-worker-4070ti-mof-01"
+    async for settings, client in prepared_asset_app(tmp_path):
+        response = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/workers/heartbeat",
+            {
+                "worker_id": worker_id,
+                "node_id": "worker-3090-b",
+                "display_name": "misbound MOF Worker",
+                "hostname": "wrong-host",
+                "blender_version": "5.2.0",
+                "skill_version": "mof-windows-1.0.9-2026.08.17-v2",
+                "cpu_count": 24,
+                "max_concurrency": 1,
+                "current_jobs": 0,
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                **asset_worker_generation(worker_id),
+            },
+        )
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["code"] == "UV_MOF_WORKER_NODE_MISMATCH"
 
 
 async def create_and_claim_uv_process_v2(

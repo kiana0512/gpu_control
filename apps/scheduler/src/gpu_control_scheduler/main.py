@@ -2992,9 +2992,9 @@ class Scheduler:
                     == target_workflow
                 }
                 if target_workflow == MODELVIEW_INPAINT_WORKFLOW_KEY:
-                    # 4070Ti is the latency guarantee, not an exclusive pin.
-                    # The remaining candidates stay in the list and can claim
-                    # additional inpaint jobs during the same scheduling pass.
+                    # The control 4090 is the preferred low-latency lane, not
+                    # an exclusive pin. Compatible 24 GiB 3090 nodes remain
+                    # available for parallel/fallback inpaint work.
                     warm_nodes.add(MODELVIEW_INPAINT_NODE_ID)
                 candidates, exclusions = rank_nodes(
                     nodes,
@@ -3002,6 +3002,11 @@ class Scheduler:
                     guard,
                     self.settings.node_heartbeat_timeout_seconds,
                     preferred_node_ids=warm_nodes,
+                    promoted_node_ids=(
+                        {MODELVIEW_INPAINT_NODE_ID}
+                        if target_workflow == MODELVIEW_INPAINT_WORKFLOW_KEY
+                        else None
+                    ),
                 )
                 if not candidates:
                     logger().debug(
