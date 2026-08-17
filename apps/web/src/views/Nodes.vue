@@ -80,7 +80,7 @@ function nodePolicyTitle(node: NodeInfo) {
   const active = specialization(node);
   if (node.id === "control-4090") {
     if (active?.key === "modelview-inpaint")
-      return `局部重绘保护中 · 约 ${active.remainingMinutes} 分钟`;
+      return `局部重绘优先窗口 · 约 ${active.remainingMinutes} 分钟`;
     return "局部重绘首选 · 当前为共享状态";
   }
   if (node.id === "worker-4070ti-animation-host-01") {
@@ -106,7 +106,7 @@ function nodePolicyDetail(node: NodeInfo) {
     if (active?.key === "modelview-inpaint")
       return node.current_jobs
         ? "局部重绘已取得优先权；冲突的抠图帧会安全中断并改派其它物理 GPU。"
-        : "保留局部重绘优先权和 INT8 热缓存；没有局部重绘排队时继续领取兼容普通任务。";
+        : "局部重绘到达时优先抢占；没有局部重绘排队时继续领取兼容普通任务，不预留空闲 GPU。";
     return "局部重绘默认首选；没有局部重绘排队时继续参与抠图、粗糙度等兼容任务。";
   }
   if (node.id === "worker-4070ti-animation-host-01") {
@@ -260,7 +260,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
       <div>
         <strong>4090 保证局部重绘响应</strong>
         <span
-          >有局部重绘时优先并保留 10 分钟 INT8 热缓存；没有局部重绘排队时继续接兼容普通任务，不再空转。</span
+          >局部重绘到达时优先抢占；没有局部重绘排队时继续接兼容普通任务，不预留空闲 GPU。</span
         >
       </div>
       <div>

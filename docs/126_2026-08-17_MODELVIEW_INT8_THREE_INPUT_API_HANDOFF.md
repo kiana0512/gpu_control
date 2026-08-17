@@ -2,7 +2,7 @@
 
 ## 1. 版本与不变项
 
-- GPU Control：`1.5.17`
+- GPU Control：`1.5.18`（Scheduler drainfix-r1）
 - 工作流：`2026.08.17-a9dbbca-flux2-klein-truev3-3input-r2`
 - ModelViewCreator 批准提交：`a9dbbca846ee80734d0a6123ac32d8a8e51c7fcd`
 - 主模型：`Flux2-Klein-9B-True-V3-int8mixedrow.safetensors`
@@ -171,23 +171,35 @@ export async function runModelViewInpaint(inputs: ModelViewInputs) {
 - 只有 `control-4090`、`worker-3090-a`、`worker-3090-b` 兼容此工作流。
 - `worker-4070ti-animation-host-01` 总显存不足 24,000 MiB，在兼容表中硬失败，
   不会领取局部重绘。
-- 4090 是跨算力池首选；新局部重绘到达时刷新可续期的 10 分钟保护窗口。
+- 4090 是跨算力池首选；新局部重绘到达时刷新可续期的 10 分钟优先窗口。该窗口
+  不是空闲预留：没有局部重绘排队时，4090 继续领取兼容普通任务。
 - 从其它模型家族切入前，Scheduler 必须等待 ComfyUI 队列清空，调用 `/free`，并验证
   显存已恢复；不达标则节点自动 `DRAINING`，不提交新 prompt。
+- ComfyUI 不同版本的 `/interrupt` 成功响应可能是空 body、纯文本或 JSON。Scheduler
+  以 HTTP 2xx 作为中断受理证据，并继续轮询 `/queue` 作为排空权威；不得因成功响应
+  不是 JSON 而把 4090 永久排除。
 - 三台 24 GiB ComfyUI 使用 `--reserve-vram 2.0`。4090 与 3090-A 已按默认 12 步分别
   完成冷/热实测，均无 OOM；4090 峰值 22,156 MiB，3090-A 峰值 20,989 MiB。
 - 4070 Ti 只被排除在本局部重绘工作流之外，仍可正常领取抠图、粗糙度等兼容任务。
 
 ## 9. 已完成的 API 联调验收
 
-- 生产 API 版本：`1.5.17`
+- 生产 API 版本：`1.5.18`
 - 成功任务：`634b3745-a5a0-4498-92a8-9934ee1aa99e`
 - 调度节点：`control-4090`
 - 输入：三个独立文件字段，数据库记录的文件名和工作流绑定全部一致
 - 输出：单张 `2048 x 2048` RGB PNG
 - 输出 SHA-256：`59c5c0507f6fbcb977c03cbf2f30861f616b271fd0914bda6c89209b8af3b928`
 - 缺少 `material_image` 或 `viewport_reference` 的请求已验证返回 HTTP `422`
-- 4090 局部重绘保护窗口实测为准确的 10 分钟；4070 Ti 未被错误打上保护标签
+- 4090 局部重绘优先窗口实测为准确的 10 分钟；4070 Ti 未被错误打上优先标签
+
+2026-08-17 drainfix 生产回归：任务 `5eff92b0-dbb4-4884-af4d-0a2538680249`
+在 ImageClip 四卡满载期间到达，4090 上冲突帧被安全中断并改派，局部重绘在约
+`2.14 s` 内由 `control-4090` 领取；端到端 `41.219 s`、GPU 阶段 `37.923 s`，
+成功返回 `2048×2048 RGB PNG`，SHA-256 为
+`360e91a0dcfaa998cc39b92ed9025b8f8ca005d5e87d8643a669c817569c3bab`。
+本次无 OOM、无 `gpu_cache_drain_failed`。调度归属已经通过，但该次生产争用下时延
+仍高于 30 秒目标，因此不能把 41.219 秒记为性能达标。
 
 这组验收证明本章接口已经可以供前端对接。3090-B 的 WSL2 性能治理属于后端节点
 优化，不改变请求字段、响应格式或外部 URL。

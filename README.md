@@ -10,6 +10,7 @@
 > TrueV3 三输入局部重绘对接见 [局部重绘 API 文档](docs/126_2026-08-17_MODELVIEW_INT8_THREE_INPUT_API_HANDOFF.md)；
 > ImageClip 校色输出修复与四节点验收见 [1.5.18 校色热修记录](docs/127_2026-08-17_IMAGECLIP_COLOR_OUTPUT_HOTFIX.md)。
 > 4070 Ti 开启 HAGS 后的 WSL2/portproxy 恢复见 [4070 重启恢复记录](docs/128_2026-08-17_4070TI_HAGS_REBOOT_RECOVERY.md)。
+> 4090 局部重绘错误互锁修复与真实抢占回归见 [调度 drainfix 记录](docs/129_2026-08-17_4090_INPAINT_DRAIN_INTERLOCK_HOTFIX.md)。
 
 面向 RTX 4090 控制中心、两台 RTX 3090 和一台 RTX 4070Ti 的统一任务调度、运维与可观测平台；GPU
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
