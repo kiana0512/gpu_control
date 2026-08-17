@@ -21,6 +21,8 @@ ImageClip。Scheduler 向 ComfyUI `/interrupt` 发出抢占请求，服务返回
    `/free`、校验显存恢复。队列或显存未在期限内恢复时仍 fail closed。
 4. WebUI 将“局部重绘保护中”改成“局部重绘优先窗口”，明确没有局部重绘时继续
    接普通任务，不预留空闲 GPU。
+5. 故障时被错误标记失败的 ImageClip 第 104 帧通过正式 Admin Retry 恢复成功；
+   批次聚合器在 `failed_items=0` 后清除已经解决的逐帧错误，避免界面继续显示旧故障。
 
 ## 生产回归
 

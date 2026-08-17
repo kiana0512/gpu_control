@@ -2217,6 +2217,18 @@ class Scheduler:
             batch.succeeded_items = status_counts[BatchItemStatus.SUCCEEDED.value]
             batch.failed_items = status_counts[BatchItemStatus.FAILED.value]
             batch.cancelled_items = status_counts[BatchItemStatus.CANCELLED.value]
+            # An operator retry can recover the last failed child while the
+            # batch is still running.  Do not keep publishing that resolved
+            # frame failure after the authoritative item counts reach zero.
+            # Non-frame batch errors (validation, assembly, identity drift)
+            # have different messages and remain fail-closed.
+            if (
+                batch.failed_items == 0
+                and isinstance(batch.error_message, str)
+                and batch.error_message.startswith("帧 ")
+            ):
+                batch.error_code = None
+                batch.error_message = None
             batch.progress = monotonic_batch_progress(
                 batch.progress,
                 batch.total_items,
