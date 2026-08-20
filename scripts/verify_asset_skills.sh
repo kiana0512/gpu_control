@@ -63,31 +63,31 @@ verify_file "blender-align-bake-models/scripts/render_alignment_views.py" \
 verify_file "blender-align-bake-models/scripts/validate_bake_pair.py" \
   "d8ee19f1fa0e3c93fbf6aa3f846afe1df7162f9569baabbdfaa9fea9f07ed358"
 verify_file "blender-pbr-uv/SKILL.md" \
-  "255bbeb16b99bb15c37ab085e57dbc26ce3f8c9f58083753423fe0bbe13d20a8"
+  "2c099600e1281434cb067ef6cd22f92a93decd4cb5632a87646a2e4704b9685c"
 verify_file "blender-pbr-uv/agents/openai.yaml" \
   "8c2940dcf2a9d0058ff5b8bec03e99185f3758a0f0b3ea60e7ce9345f243d5ac"
 verify_file "blender-pbr-uv/references/pbr-uv-standard.md" \
   "06872924e99f2e856c36e3e5e0aefce23c06554e6809125a4fa7ec41970c75cb"
 verify_file "blender-pbr-uv/references/mof-wrapper-notes.md" \
-  "fc22d8de0ac3a217b4c63e975037691382395e4e9c9d588ee418640913a86aec"
+  "5264b8f81a40b4604a092cbcb6253bc976d2a03ee815244867d9ecd8696050a1"
 verify_file "blender-pbr-uv/scripts/unwrap_fbx.py" \
-  "ebfa3546d61c548a11c0e7561c75f93b6ef93308d8da9f27788bf35643303758"
+  "04c09e0907ad8ad3838be2ece177b8c9c4b4d33c151633849bfd6262a70748c9"
 verify_file "blender-pbr-uv/scripts/qa_uv.py" \
-  "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
+  "a263d0fc05947d70988317972f9b0bb38e7c85a165274756d3c4dbf4e05f91c3"
 verify_file "blender-pbr-uv/scripts/mof_unwrap.py" \
-  "a45a10ebcae868ba82c1c14bddb6d82beb907961114dad6a4462e40ace7e409d"
+  "70e98027f64b4389ec1f7086bb363e5d4a7a686b9472d17fa840ecb01dbd946d"
 verify_file "blender-pbr-uv/scripts/preflight_mof.py" \
   "d4639ebd34128b02496599eef55c21ed1eab295c6117fc234c819003e491db40"
 verify_file "blender-retopology-compare-iterate/SKILL.md" \
-  "5df15e033d5e34d5e1fec8b05e7dcd51c048d84c28b0a7afddd355151860b52d"
+  "7decec51b40620bc053e30d3643bd2f64c37705877a43a22573ffd38ab17b593"
 verify_file "blender-retopology-compare-iterate/agents/openai.yaml" \
-  "1fe705f8bb73c94457a6df5cc409e07b923f00b000d1dca530161405729b0d79"
+  "1b6047328ec5a05c87d909b75849a0ca65ff12c95e9660f357c6fb5e889e4656"
 verify_file "blender-retopology-compare-iterate/references/high-only-game-topology.md" \
-  "f42547ef0cd7743b13328d522874f7996d05b6584c502560eae87e3467e8fed3"
+  "9944e4d8c6b35d90454fa4aaa6401f7e4457c8918b264e3dbdaa5021861485f7"
 verify_file "blender-retopology-compare-iterate/references/n01-n08-training-lessons.md" \
   "edfdc92fe99e08ab6cc2ca7d63852ead42829ac03532147a3189c476301ac297"
 verify_file "blender-retopology-compare-iterate/references/production-runbook.md" \
-  "8c307df8796455f67414316d7becc6ed720813d88e729b458db41be0ac152e28"
+  "9c7fdfedd8d0132199fc5b64acd27b1165503663b24456fcef3fa33d16c46cac"
 verify_file "blender-retopology-compare-iterate/references/validated-batch-retrospective.md" \
   "9af3d1ebbe4ac304d82c65729f1301bf786fe975c69019b2b071065d8ca99558"
 verify_file "blender-retopology-compare-iterate/scripts/audit_pair.py" \

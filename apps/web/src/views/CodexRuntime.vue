@@ -107,7 +107,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
       <div>
         <div class="eyebrow">AGENT RUNTIME OBSERVABILITY</div>
         <h1>Codex 运行中心</h1>
-        <p>独立查看三台主机的安装、认证、真实调用与资产任务上下文</p>
+        <p>独立查看四台主机的安装、认证、真实调用与资产任务上下文</p>
       </div>
       <div class="heading-actions">
         <span class="refresh-state"

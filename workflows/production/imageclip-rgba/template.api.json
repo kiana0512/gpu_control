@@ -1,5 +1,122 @@
 {
-  "1": {
+  "100": {
+    "_meta": {
+      "title": "PrimitiveInt"
+    },
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 750812915616887
+    }
+  },
+  "101": {
+    "_meta": {
+      "title": "Int"
+    },
+    "class_type": "Int",
+    "inputs": {
+      "Number": "6"
+    }
+  },
+  "105": {
+    "_meta": {
+      "title": "CherrySelfComposite"
+    },
+    "class_type": "CherrySelfComposite",
+    "inputs": {
+      "叠加次数": 2,
+      "图像": [
+        "116",
+        0
+      ]
+    }
+  },
+  "108": {
+    "_meta": {
+      "title": "LoadImage"
+    },
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "0000 - 副本.png"
+    }
+  },
+  "109": {
+    "_meta": {
+      "title": "ImageClip API Final RGBA"
+    },
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "imageclip-rgba",
+      "images": [
+        "119",
+        0
+      ]
+    }
+  },
+  "116": {
+    "_meta": {
+      "title": "CherryHoldoutSimple"
+    },
+    "class_type": "CherryHoldoutSimple",
+    "inputs": {
+      "Alpha增益": 1,
+      "白底不均匀": true,
+      "白底图": [
+        "108",
+        0
+      ],
+      "白底阈值": 240,
+      "背景自动校正": 1,
+      "边缘收缩": 0,
+      "边缘羽化": 0,
+      "黑底图": [
+        "98",
+        0
+      ]
+    }
+  },
+  "119": {
+    "_meta": {
+      "title": "CherryAlphaDenoise"
+    },
+    "class_type": "CherryAlphaDenoise",
+    "inputs": {
+      "图像": [
+        "123",
+        0
+      ],
+      "平滑半径": 0,
+      "蒙版": [
+        "123",
+        1
+      ],
+      "阈值": 0.06
+    }
+  },
+  "123": {
+    "_meta": {
+      "title": "122_ColorMatchToSource"
+    },
+    "class_type": "122_ColorMatchToSource",
+    "inputs": {
+      "内部抄色": true,
+      "匹配强度": 1,
+      "原图": [
+        "108",
+        0
+      ],
+      "抄色内缩像素": 10,
+      "抄色羽化": 2,
+      "投影亮度下限": 0.28,
+      "投影色度上限": 0.12,
+      "抠完的图": [
+        "105",
+        0
+      ],
+      "清除背景投影": true,
+      "采样alpha阈值": 0.9
+    }
+  },
+  "84": {
     "_meta": {
       "title": "VAELoader"
     },
@@ -8,96 +125,7 @@
       "vae_name": "flux2-vae.safetensors"
     }
   },
-  "10": {
-    "_meta": {
-      "title": "UnetLoaderGGUF"
-    },
-    "class_type": "UnetLoaderGGUF",
-    "inputs": {
-      "unet_name": "flux-2-klein-9b-Q6_K.gguf"
-    }
-  },
-  "11": {
-    "_meta": {
-      "title": "GetImageSize"
-    },
-    "class_type": "GetImageSize",
-    "inputs": {
-      "image": [
-        "28",
-        0
-      ]
-    }
-  },
-  "12": {
-    "_meta": {
-      "title": "CLIPTextEncode"
-    },
-    "class_type": "CLIPTextEncode",
-    "inputs": {
-      "clip": [
-        "4",
-        0
-      ],
-      "text": "Replace the white background with pure black. Keep the main shape, color, edges,  and all details unchanged."
-    }
-  },
-  "13": {
-    "_meta": {
-      "title": "CherrySelfComposite"
-    },
-    "class_type": "CherrySelfComposite",
-    "inputs": {
-      "叠加次数": 2,
-      "图像": [
-        "30",
-        0
-      ]
-    }
-  },
-  "16": {
-    "_meta": {
-      "title": "KSampler"
-    },
-    "class_type": "KSampler",
-    "inputs": {
-      "cfg": 1,
-      "denoise": 1,
-      "latent_image": [
-        "2",
-        0
-      ],
-      "model": [
-        "26",
-        0
-      ],
-      "negative": [
-        "5",
-        0
-      ],
-      "positive": [
-        "7",
-        0
-      ],
-      "sampler_name": "euler",
-      "scheduler": "simple",
-      "seed": 212962527391224,
-      "steps": [
-        "18",
-        0
-      ]
-    }
-  },
-  "18": {
-    "_meta": {
-      "title": "PrimitiveInt"
-    },
-    "class_type": "PrimitiveInt",
-    "inputs": {
-      "value": 6
-    }
-  },
-  "2": {
+  "85": {
     "_meta": {
       "title": "EmptyFlux2LatentImage"
     },
@@ -105,68 +133,55 @@
     "inputs": {
       "batch_size": 1,
       "height": [
-        "11",
+        "87",
         1
       ],
       "width": [
-        "11",
+        "87",
         0
       ]
     }
   },
-  "23": {
+  "86": {
     "_meta": {
-      "title": "122_ColorMatchToSource"
+      "title": "VAEEncode"
     },
-    "class_type": "122_ColorMatchToSource",
+    "class_type": "VAEEncode",
     "inputs": {
-      "内部抄色": true,
-      "匹配强度": 1,
-      "原图": [
-        "28",
+      "pixels": [
+        "108",
         0
       ],
-      "抄色内缩像素": 10,
-      "抄色羽化": 2,
-      "抠完的图": [
-        "13",
-        0
-      ],
-      "采样alpha阈值": 0.9
-    }
-  },
-  "24": {
-    "_meta": {
-      "title": "CherryAlphaDenoise"
-    },
-    "class_type": "CherryAlphaDenoise",
-    "inputs": {
-      "图像": [
-        "23",
-        0
-      ],
-      "平滑半径": 0,
-      "蒙版": [
-        "23",
-        1
-      ],
-      "阈值": 0.06
-    }
-  },
-  "25": {
-    "_meta": {
-      "title": "SaveImage"
-    },
-    "class_type": "SaveImage",
-    "inputs": {
-      "filename_prefix": "ComfyUI",
-      "images": [
-        "57",
+      "vae": [
+        "84",
         0
       ]
     }
   },
-  "26": {
+  "87": {
+    "_meta": {
+      "title": "GetImageSize"
+    },
+    "class_type": "GetImageSize",
+    "inputs": {
+      "image": [
+        "108",
+        0
+      ]
+    }
+  },
+  "88": {
+    "_meta": {
+      "title": "CLIPLoader"
+    },
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+      "device": "default",
+      "type": "flux2"
+    }
+  },
+  "89": {
     "_meta": {
       "title": "LoraLoaderModelOnly"
     },
@@ -174,137 +189,80 @@
     "inputs": {
       "lora_name": "Koutu_Flux2klein_v2_000007250.safetensors",
       "model": [
-        "10",
+        "96",
         0
       ],
       "strength_model": 1
     }
   },
-  "28": {
+  "90": {
     "_meta": {
-      "title": "LoadImage"
-    },
-    "class_type": "LoadImage",
-    "inputs": {
-      "image": "img_v3_0213r_a9d2f8fa-7d4c-40f1-953f-8c1f291ec76g_MIDDLE.webp"
-    }
-  },
-  "29": {
-    "_meta": {
-      "title": "VAEDecodeTiled"
-    },
-    "class_type": "VAEDecodeTiled",
-    "inputs": {
-      "overlap": 64,
-      "samples": [
-        "16",
-        0
-      ],
-      "temporal_overlap": 8,
-      "temporal_size": 64,
-      "tile_size": 512,
-      "vae": [
-        "1",
-        0
-      ]
-    }
-  },
-  "3": {
-    "_meta": {
-      "title": "VAEEncode"
-    },
-    "class_type": "VAEEncode",
-    "inputs": {
-      "pixels": [
-        "28",
-        0
-      ],
-      "vae": [
-        "1",
-        0
-      ]
-    }
-  },
-  "30": {
-    "_meta": {
-      "title": "CherryHoldoutSimple"
-    },
-    "class_type": "CherryHoldoutSimple",
-    "inputs": {
-      "Alpha增益": 1,
-      "白底不均匀": true,
-      "白底图": [
-        "28",
-        0
-      ],
-      "白底阈值": 240,
-      "背景自动校正": true,
-      "边缘收缩": 0,
-      "边缘羽化": 0,
-      "黑底图": [
-        "29",
-        0
-      ]
-    }
-  },
-  "31": {
-    "_meta": {
-      "title": "CLIPTextEncode"
+      "title": "CLIP Text Encode (Positive Prompt)"
     },
     "class_type": "CLIPTextEncode",
     "inputs": {
       "clip": [
-        "4",
+        "88",
         0
       ],
-      "text": "Recolor only the soft gray drop shadow under the character's feet to pure black (#000000), keeping the shadow's exact shape and soft edges. Everything else must stay exactly the same: the background stays pure white, the character stays unchanged. Do not paint the floor."
+      "text": "Replace the white background with pure black. Keep the main shape, color, edges,  and all details unchanged."
     }
   },
-  "32": {
+  "91": {
+    "_meta": {
+      "title": "ReferenceLatent"
+    },
+    "class_type": "ReferenceLatent",
+    "inputs": {
+      "conditioning": [
+        "92",
+        0
+      ],
+      "latent": [
+        "86",
+        0
+      ]
+    }
+  },
+  "92": {
     "_meta": {
       "title": "ConditioningZeroOut"
     },
     "class_type": "ConditioningZeroOut",
     "inputs": {
       "conditioning": [
-        "31",
+        "90",
         0
       ]
     }
   },
-  "33": {
+  "93": {
     "_meta": {
       "title": "ReferenceLatent"
     },
     "class_type": "ReferenceLatent",
     "inputs": {
       "conditioning": [
-        "31",
+        "90",
         0
       ],
       "latent": [
-        "3",
+        "86",
         0
       ]
     }
   },
-  "34": {
+  "96": {
     "_meta": {
-      "title": "ReferenceLatent"
+      "title": "UNETLoader"
     },
-    "class_type": "ReferenceLatent",
+    "class_type": "UNETLoader",
     "inputs": {
-      "conditioning": [
-        "32",
-        0
-      ],
-      "latent": [
-        "3",
-        0
-      ]
+      "unet_name": "flux-2-klein-9b-fp8.safetensors",
+      "weight_dtype": "default"
     }
   },
-  "35": {
+  "97": {
     "_meta": {
       "title": "KSampler"
     },
@@ -313,481 +271,45 @@
       "cfg": 1,
       "denoise": 1,
       "latent_image": [
-        "2",
+        "85",
         0
       ],
       "model": [
-        "10",
+        "89",
         0
       ],
       "negative": [
-        "34",
+        "91",
         0
       ],
       "positive": [
-        "33",
+        "93",
         0
       ],
       "sampler_name": "euler",
       "scheduler": "simple",
-      "seed": 42,
-      "steps": 8
+      "seed": [
+        "100",
+        0
+      ],
+      "steps": [
+        "101",
+        0
+      ]
     }
   },
-  "36": {
+  "98": {
     "_meta": {
-      "title": "VAEDecodeTiled"
+      "title": "VAEDecode"
     },
-    "class_type": "VAEDecodeTiled",
+    "class_type": "VAEDecode",
     "inputs": {
-      "overlap": 64,
       "samples": [
-        "35",
-        0
-      ],
-      "temporal_overlap": 8,
-      "temporal_size": 64,
-      "tile_size": 512,
-      "vae": [
-        "1",
-        0
-      ]
-    }
-  },
-  "4": {
-    "_meta": {
-      "title": "CLIPLoader"
-    },
-    "class_type": "CLIPLoader",
-    "inputs": {
-      "clip_name": "qwen_3_8b_fp8mixed.safetensors",
-      "device": "cpu",
-      "type": "flux2"
-    }
-  },
-  "40": {
-    "_meta": {
-      "title": "122_FootRegionCrop"
-    },
-    "class_type": "122_FootRegionCrop",
-    "inputs": {
-      "区域上边距": 24,
-      "原图亮度阈值": 0.65,
-      "白底原图": [
-        "28",
-        0
-      ],
-      "角色RGBA": [
-        "24",
-        0
-      ],
-      "角色实心阈值": 0.6,
-      "阴影定位": "黑化图",
-      "阴影黑化图": [
-        "36",
-        0
-      ]
-    }
-  },
-  "41": {
-    "_meta": {
-      "title": "GetImageSize"
-    },
-    "class_type": "GetImageSize",
-    "inputs": {
-      "image": [
-        "40",
-        0
-      ]
-    }
-  },
-  "42": {
-    "_meta": {
-      "title": "VAEEncode"
-    },
-    "class_type": "VAEEncode",
-    "inputs": {
-      "pixels": [
-        "40",
+        "97",
         0
       ],
       "vae": [
-        "1",
-        0
-      ]
-    }
-  },
-  "43": {
-    "_meta": {
-      "title": "EmptyFlux2LatentImage"
-    },
-    "class_type": "EmptyFlux2LatentImage",
-    "inputs": {
-      "batch_size": 1,
-      "height": [
-        "41",
-        1
-      ],
-      "width": [
-        "41",
-        0
-      ]
-    }
-  },
-  "44": {
-    "_meta": {
-      "title": "ReferenceLatent"
-    },
-    "class_type": "ReferenceLatent",
-    "inputs": {
-      "conditioning": [
-        "12",
-        0
-      ],
-      "latent": [
-        "42",
-        0
-      ]
-    }
-  },
-  "45": {
-    "_meta": {
-      "title": "ReferenceLatent"
-    },
-    "class_type": "ReferenceLatent",
-    "inputs": {
-      "conditioning": [
-        "6",
-        0
-      ],
-      "latent": [
-        "42",
-        0
-      ]
-    }
-  },
-  "46": {
-    "_meta": {
-      "title": "KSampler"
-    },
-    "class_type": "KSampler",
-    "inputs": {
-      "cfg": 1,
-      "denoise": 1,
-      "latent_image": [
-        "43",
-        0
-      ],
-      "model": [
-        "26",
-        0
-      ],
-      "negative": [
-        "45",
-        0
-      ],
-      "positive": [
-        "44",
-        0
-      ],
-      "sampler_name": "euler",
-      "scheduler": "simple",
-      "seed": 212962527391224,
-      "steps": 6
-    }
-  },
-  "47": {
-    "_meta": {
-      "title": "VAEDecodeTiled"
-    },
-    "class_type": "VAEDecodeTiled",
-    "inputs": {
-      "overlap": 64,
-      "samples": [
-        "46",
-        0
-      ],
-      "temporal_overlap": 8,
-      "temporal_size": 64,
-      "tile_size": 512,
-      "vae": [
-        "1",
-        0
-      ]
-    }
-  },
-  "48": {
-    "_meta": {
-      "title": "CherryHoldoutSimple"
-    },
-    "class_type": "CherryHoldoutSimple",
-    "inputs": {
-      "Alpha增益": 1,
-      "白底不均匀": true,
-      "白底图": [
-        "40",
-        0
-      ],
-      "白底阈值": 240,
-      "背景自动校正": true,
-      "边缘收缩": 0,
-      "边缘羽化": 0,
-      "黑底图": [
-        "47",
-        0
-      ]
-    }
-  },
-  "49": {
-    "_meta": {
-      "title": "CherrySelfComposite"
-    },
-    "class_type": "CherrySelfComposite",
-    "inputs": {
-      "叠加次数": 2,
-      "图像": [
-        "48",
-        0
-      ]
-    }
-  },
-  "5": {
-    "_meta": {
-      "title": "ReferenceLatent"
-    },
-    "class_type": "ReferenceLatent",
-    "inputs": {
-      "conditioning": [
-        "6",
-        0
-      ],
-      "latent": [
-        "3",
-        0
-      ]
-    }
-  },
-  "50": {
-    "_meta": {
-      "title": "122_ColorMatchToSource"
-    },
-    "class_type": "122_ColorMatchToSource",
-    "inputs": {
-      "内部抄色": true,
-      "匹配强度": 1,
-      "原图": [
-        "40",
-        0
-      ],
-      "抄色内缩像素": 10,
-      "抄色羽化": 2,
-      "抠完的图": [
-        "49",
-        0
-      ],
-      "采样alpha阈值": 0.9
-    }
-  },
-  "51": {
-    "_meta": {
-      "title": "CherryAlphaDenoise"
-    },
-    "class_type": "CherryAlphaDenoise",
-    "inputs": {
-      "图像": [
-        "50",
-        0
-      ],
-      "平滑半径": 0,
-      "蒙版": [
-        "50",
-        1
-      ],
-      "阈值": 0.06
-    }
-  },
-  "52": {
-    "_meta": {
-      "title": "122_FootRegionPaste"
-    },
-    "class_type": "122_FootRegionPaste",
-    "inputs": {
-      "外部判定": [
-        "53",
-        0
-      ],
-      "接缝过渡": 8,
-      "替换范围收缩": 80,
-      "白底原图": [
-        "28",
-        0
-      ],
-      "脚部RGBA": [
-        "51",
-        0
-      ],
-      "角色RGBA": [
-        "24",
-        0
-      ],
-      "起始Y": [
-        "40",
-        1
-      ],
-      "阴影不透明度上限": 0.85,
-      "阴影分支": "自动",
-      "阴影定位": "黑化图",
-      "阴影整体不透明度": 0.5,
-      "阴影浓度增益": 3.5,
-      "黑判定阈值": 0.15,
-      "黑化截取图": [
-        "40",
-        0
-      ]
-    }
-  },
-  "53": {
-    "_meta": {
-      "title": "122_ShadowBranchDecide"
-    },
-    "class_type": "122_ShadowBranchDecide",
-    "inputs": {
-      "模式": "自动",
-      "白底原图": [
-        "28",
-        0
-      ],
-      "角色RGBA": [
-        "24",
-        0
-      ]
-    }
-  },
-  "54": {
-    "_meta": {
-      "title": "CodexShoePixelProtectV41"
-    },
-    "class_type": "CodexShoePixelProtectV41",
-    "inputs": {
-      "内部缺口闭合": 8,
-      "原图强实体Alpha": 0.55,
-      "原始角色RGBA": [
-        "24",
-        0
-      ],
-      "实体Alpha阈值": 0.6,
-      "实体保护半径": 8,
-      "脚部贴回结果": [
-        "52",
-        0
-      ],
-      "起始Y": [
-        "40",
-        1
-      ],
-      "软边保护半径": 2,
-      "鞋底向下容差": 2
-    }
-  },
-  "55": {
-    "_meta": {
-      "title": "CodexFootPasteGuardV42"
-    },
-    "class_type": "CodexFootPasteGuardV42",
-    "inputs": {
-      "原始角色RGBA": [
-        "24",
-        0
-      ],
-      "最大向下外扩像素": 48,
-      "最大实体面积倍率": 1.6,
-      "最大实体高度倍率": 1.6,
-      "最大远离主体新增像素": 512,
-      "最小实体IoU": 0.62,
-      "白底原图": [
-        "28",
-        0
-      ],
-      "脚部处理结果": [
-        "54",
-        0
-      ],
-      "起始Y": [
-        "40",
-        1
-      ],
-      "阴影不透明度上限": 0.85,
-      "阴影整体不透明度": 0.5,
-      "阴影浓度增益": 3.5,
-      "黑化截取图": [
-        "40",
-        0
-      ]
-    }
-  },
-  "56": {
-    "_meta": {
-      "title": "CodexExistingBlackShadowJudgeV43"
-    },
-    "class_type": "CodexExistingBlackShadowJudgeV43",
-    "inputs": {
-      "人物排除半径": 4,
-      "去噪后角色RGBA": [
-        "24",
-        0
-      ],
-      "最少横向宽度比例": 0.025,
-      "最少阴影像素": 180,
-      "近黑RGB上限": 0.12,
-      "近黑色度上限": 0.05,
-      "阴影Alpha上限": 0.6,
-      "阴影Alpha下限": 0.02
-    }
-  },
-  "57": {
-    "_meta": {
-      "title": "CodexLazyShadowBypassV43"
-    },
-    "class_type": "CodexLazyShadowBypassV43",
-    "inputs": {
-      "原始去噪RGBA": [
-        "24",
-        0
-      ],
-      "生成阴影结果": [
-        "55",
-        0
-      ],
-      "需要生成阴影": [
-        "56",
-        0
-      ]
-    }
-  },
-  "6": {
-    "_meta": {
-      "title": "ConditioningZeroOut"
-    },
-    "class_type": "ConditioningZeroOut",
-    "inputs": {
-      "conditioning": [
-        "12",
-        0
-      ]
-    }
-  },
-  "7": {
-    "_meta": {
-      "title": "ReferenceLatent"
-    },
-    "class_type": "ReferenceLatent",
-    "inputs": {
-      "conditioning": [
-        "12",
-        0
-      ],
-      "latent": [
-        "3",
+        "84",
         0
       ]
     }

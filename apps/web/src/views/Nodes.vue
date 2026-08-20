@@ -10,14 +10,123 @@ import { formatGpuPower, formatGpuTemperature } from "../nodePresentation";
 const nodes = ref<NodeInfo[]>([]);
 const error = ref("");
 const maintenanceNode = ref<NodeInfo | null>(null);
-const connectedNodes = computed(() =>
-  nodes.value.filter(
-    (node) => node.last_heartbeat_at || node.health !== "OFFLINE",
-  ),
-);
 const onlineCount = computed(
-  () => connectedNodes.value.filter((node) => node.health === "ONLINE").length,
+  () => nodes.value.filter((node) => node.health !== "OFFLINE").length,
 );
+
+function metricAvailable(node: NodeInfo) {
+  return node.health !== "OFFLINE";
+}
+
+type Specialization = {
+  key: string;
+  expiresAt: Date;
+  remainingMinutes: number;
+};
+
+function specialization(node: NodeInfo): Specialization | null {
+  const raw = node.labels?.gpu_specialization;
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Record<string, unknown>;
+  if (typeof value.key !== "string" || typeof value.expires_at !== "string")
+    return null;
+  const expiresAt = new Date(value.expires_at);
+  const remainingMs = expiresAt.getTime() - Date.now();
+  if (!Number.isFinite(expiresAt.getTime()) || remainingMs <= 0) return null;
+  return {
+    key: value.key,
+    expiresAt,
+    remainingMinutes: Math.max(1, Math.ceil(remainingMs / 60_000)),
+  };
+}
+
+function automaticRecoveryTime(active: Specialization) {
+  return active.expiresAt.toLocaleTimeString("zh-CN", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function hasSubstanceOwnedDrain(node: NodeInfo) {
+  return node.labels?.substance_bake_drain_owner === "asset-api";
+}
+
+function hasLiveSubstanceInterlock(node: NodeInfo) {
+  const labels = node.labels ?? {};
+  const fences = labels.substance_bake_fence_job_ids;
+  const recovery = labels.substance_bake_recovery_required;
+  const pending = labels.substance_bake_pending_reservation;
+  const pendingValue =
+    pending && typeof pending === "object"
+      ? (pending as Record<string, unknown>)
+      : null;
+  const pendingExpiry =
+    typeof pendingValue?.expires_at === "string"
+      ? new Date(pendingValue.expires_at).getTime()
+      : 0;
+  return Boolean(
+    labels.substance_bake_fence_job_id ||
+      (Array.isArray(fences) && fences.length) ||
+      (Array.isArray(recovery) && recovery.length) ||
+      (Array.isArray(pendingValue?.job_ids) &&
+        pendingValue.job_ids.length &&
+        pendingExpiry > Date.now()),
+  );
+}
+
+function nodePolicyTitle(node: NodeInfo) {
+  const active = specialization(node);
+  if (node.id === "control-4090") {
+    if (active?.key === "modelview-inpaint")
+      return `局部重绘优先窗口 · 约 ${active.remainingMinutes} 分钟`;
+    return "局部重绘首选 · 当前为共享状态";
+  }
+  if (node.id === "worker-4070ti-animation-host-01") {
+    return "12 GiB 普通推理节点 · 不参与局部重绘";
+  }
+  if (node.id === "worker-3090-b") {
+    if (active?.key === "substance-bake")
+      return `烘焙保护中 · 预计 ${automaticRecoveryTime(active)} 自动恢复`;
+    if (
+      node.mode === "DRAINING" &&
+      hasSubstanceOwnedDrain(node) &&
+      !hasLiveSubstanceInterlock(node)
+    )
+      return "烘焙保护回收中 · 下一次健康心跳自动恢复";
+    return "唯一 Substance 烘焙节点 · 当前为普通 GPU 状态";
+  }
+  return "普通共享 GPU 节点";
+}
+
+function nodePolicyDetail(node: NodeInfo) {
+  const active = specialization(node);
+  if (node.id === "control-4090") {
+    if (active?.key === "modelview-inpaint")
+      return node.current_jobs
+        ? "局部重绘已取得优先权；冲突的抠图帧会安全中断并改派其它物理 GPU。"
+        : "局部重绘到达时优先抢占；没有局部重绘排队时继续领取兼容普通任务，不预留空闲 GPU。";
+    return "局部重绘默认首选；没有局部重绘排队时继续参与抠图、粗糙度等兼容任务。";
+  }
+  if (node.id === "worker-4070ti-animation-host-01") {
+    return "可接兼容的普通推理；局部重绘需要 24 GiB，本节点被硬排除。";
+  }
+  if (node.id === "worker-3090-b") {
+    if (active?.key === "substance-bake")
+      return node.current_jobs
+        ? "停止领取新抠图，等待当前帧自然完成后清显存并切换 Windows Baker。"
+        : "GPU 保留给生产烘焙；5 分钟无新烘焙后自动恢复，空闲时也可由管理员立即解除。";
+    if (
+      node.mode === "DRAINING" &&
+      hasSubstanceOwnedDrain(node) &&
+      !hasLiveSubstanceInterlock(node)
+    )
+      return "软保护已到期，Asset API 正在清理过期标签并回写 ACTIVE；无需人工等待。";
+    return "可接普通推理；生产烘焙到达后获得下一 GPU 执行权。";
+  }
+  return "按兼容性、缓存亲和与公平队列参与抠图、局部重绘和粗糙度。";
+}
 async function load() {
   error.value = "";
   try {
@@ -48,6 +157,21 @@ async function mode(node: NodeInfo, value: NodeInfo["mode"]) {
   );
   await api.setMode(node.id, value, `管理员执行：${labels[value]}`);
   ElMessage.success(`${node.display_name} 已${labels[value]}`);
+  await load();
+}
+
+async function releaseSubstanceProtection(node: NodeInfo) {
+  await ElMessageBox.confirm(
+    `确认立即解除 ${node.display_name} 的空闲烘焙保护并恢复普通 GPU 接单吗？活动 Baker、待领取烘焙或恢复门禁存在时后端仍会拒绝解除。`,
+    "解除空闲烘焙保护",
+    { type: "warning" },
+  );
+  await api.setMode(
+    node.id,
+    "ACTIVE",
+    "管理员确认当前无活动烘焙，立即解除空闲烘焙保护",
+  );
+  ElMessage.success("3090-B 已恢复普通 GPU 接单");
   await load();
 }
 
@@ -125,12 +249,42 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
       ><button @click="run">重试</button>
     </div>
 
+    <section class="gpu-specialization-guide">
+      <div>
+        <strong>普通任务四卡共享</strong>
+        <span
+          >局部重绘只分配到 4090、3090-A、3090-B 三台 24 GiB GPU；
+          4070Ti 继续参与其它兼容任务。</span
+        >
+      </div>
+      <div>
+        <strong>4090 保证局部重绘响应</strong>
+        <span
+          >局部重绘到达时优先抢占；没有局部重绘排队时继续接兼容普通任务，不预留空闲 GPU。</span
+        >
+      </div>
+      <div>
+        <strong>3090-B 保证唯一烘焙通道</strong>
+        <span
+          >烘焙排队后不再接新抠图，当前帧自然结束再切换；5
+          分钟无新任务会硬过期。</span
+        >
+      </div>
+      <p>
+        GPU 保护只影响 GPU 单槽；各节点 CPU 拓扑、拆 UV 等 Asset Worker
+        槽位不受影响。
+      </p>
+    </section>
+
     <div class="node-list">
       <section
-        v-for="node in connectedNodes"
+        v-for="node in nodes"
         :key="node.id"
         class="node-card"
-        :class="{ offline: node.health !== 'ONLINE' }"
+        :class="{
+          offline: node.health === 'OFFLINE',
+          degraded: node.health === 'DEGRADED',
+        }"
       >
         <div class="node-main-row">
           <div class="node-identity">
@@ -150,7 +304,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <div>
               <span>GPU 利用率</span
               ><strong>{{
-                node.health === "ONLINE" ? `${node.gpu_util_percent}%` : "—"
+                metricAvailable(node) ? `${node.gpu_util_percent}%` : "—"
               }}</strong>
             </div>
             <div>
@@ -162,7 +316,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <div>
               <span>可用显存</span
               ><strong>{{
-                node.health === "ONLINE"
+                metricAvailable(node)
                   ? `${(node.free_vram_mb / 1024).toFixed(1)} GB`
                   : "—"
               }}</strong>
@@ -170,7 +324,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <div>
               <span>执行槽位</span
               ><strong>{{
-                node.health === "ONLINE"
+                metricAvailable(node)
                   ? `${node.current_jobs} / ${node.max_concurrency}`
                   : "—"
               }}</strong>
@@ -179,7 +333,20 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 
           <div v-if="node.health === 'ONLINE'" class="node-primary-actions">
             <button
-              v-if="node.mode !== 'ACTIVE'"
+              v-if="
+                node.id === 'worker-3090-b' &&
+                node.mode === 'ACTIVE' &&
+                node.current_jobs === 0 &&
+                specialization(node)?.key === 'substance-bake' &&
+                !hasLiveSubstanceInterlock(node)
+              "
+              class="primary"
+              @click="releaseSubstanceProtection(node)"
+            >
+              解除烘焙保护
+            </button>
+            <button
+              v-else-if="node.mode !== 'ACTIVE'"
               class="primary"
               @click="mode(node, 'ACTIVE')"
             >
@@ -195,15 +362,32 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
               维护操作
             </button>
           </div>
-          <div v-else class="offline-node-note">
-            设备心跳离线，恢复上报后可操作
+          <div
+            v-else
+            class="offline-node-note"
+            :class="{ degraded: node.health === 'DEGRADED' }"
+          >
+            {{
+              node.health === "DEGRADED"
+                ? "Node Agent 在线 · ComfyUI 忙碌，指标由独立探针持续上报"
+                : "设备与 Node Agent 心跳离线，恢复上报后可操作"
+            }}
           </div>
         </div>
+        <div
+          class="node-policy-strip"
+          :class="{
+            specialist: specialization(node),
+            inpaint: node.id === 'control-4090',
+            bake: node.id === 'worker-3090-b',
+          }"
+        >
+          <strong>{{ nodePolicyTitle(node) }}</strong>
+          <span>{{ nodePolicyDetail(node) }}</span>
+          <small>GPU 1 槽 · CPU Asset 独立</small>
+        </div>
       </section>
-      <div
-        v-if="!connectedNodes.length && !refreshing"
-        class="empty-state action-empty"
-      >
+      <div v-if="!nodes.length && !refreshing" class="empty-state action-empty">
         <strong>尚无 GPU 节点接入</strong
         ><span>节点首次上报真实心跳后会自动显示在这里。</span>
       </div>

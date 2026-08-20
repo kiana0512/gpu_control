@@ -56,15 +56,18 @@ NON_RETRYABLE_ASSET_FAILURE_CODES = frozenset(
     }
 )
 
-UV_UNWRAP_SCRIPT_SHA256 = "ebfa3546d61c548a11c0e7561c75f93b6ef93308d8da9f27788bf35643303758"
-UV_QA_SCRIPT_SHA256 = "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
+UV_UNWRAP_SCRIPT_SHA256 = "04c09e0907ad8ad3838be2ece177b8c9c4b4d33c151633849bfd6262a70748c9"
+UV_QA_SCRIPT_SHA256 = "a263d0fc05947d70988317972f9b0bb38e7c85a165274756d3c4dbf4e05f91c3"
 ALIGN_BAKE_MODELS_SCRIPT_SHA256 = "ea0588e81fa50772080bc19ff096ee29cb5b6dbc67cdb303b9d32cdbf6a99a78"
-UV_QA_ADAPTER_SHA256 = "8e6bc5dc20a49fac5be2e92accd518d9da9fa629e878f51dc151baa80ad3359a"
+UV_QA_ADAPTER_SHA256 = "14c1c2d121bc72d2d4df2111da78295a48938e6250c71acac4c6e555cea67502"
 UV_FBX_UNITS_SCRIPT_SHA256 = "67e98dc5db415a83736ee154856b2c3b54f057e69440d1edbc76e43873afa24e"
+UV_AUTO_CLASSIFIER_SCRIPT_SHA256 = (
+    "f18c6d1e359f7264f1e5c62bc8edbcb69e2243a28b4bb94401c10a3dd1e69849"
+)
 RETOPOLOGY_BAKE_POSTPROCESS_SCRIPT_SHA256 = (
     "bc14804d9c0bde6610360aacc8de3d80cf6847368e26eff5c29abb0b0c0c6797"
 )
-RETOPOLOGY_AUDIT_SCRIPT_SHA256 = "a6575902cfacd7b8106f9c887069d717a880d870fc48a6295431cdcf717a9dc4"
+RETOPOLOGY_AUDIT_SCRIPT_SHA256 = "bbc9990a045284be799df2f56f29b4a52f066c923eda0c65f2a88fe2d3128f1b"
 RETOPOLOGY_PROCESS_SCRIPT_SHA256 = (
     "f18ceebcc5f47279ee1f11c5bcfcec9c76cec8ebdd7247c74b9412b26aa47501"
 )
@@ -97,6 +100,9 @@ class WorkerSettings(BaseSettings):
     alignment_skill_root: Path = Path("/opt/codex/skills/blender-align-bake-models")
     uv_qa_adapter_script: Path = Path("/app/packages/asset_processing/blender_uv_qa_adapter.py")
     uv_fbx_units_script: Path = Path("/app/packages/asset_processing/blender_uv_fbx_units.py")
+    uv_auto_classifier_script: Path = Path(
+        "/app/packages/asset_processing/blender_uv_auto_classify.py"
+    )
     retopology_skill_root: Path = Path("/opt/codex/skills/blender-retopology-compare-iterate")
     retopology_v6_root: Path = Path("/opt/li3d/retopology-v6")
     retopology_direct_v2_root: Path = Path("/opt/li3d/retopology-direct-v2")
@@ -2396,6 +2402,7 @@ def uv_qa_blender_arguments(
         str(source),
         "--output",
         str(qa_path),
+        "--require-max-compatible-shells",
     ]
     # UV_PROCESS_V2 must upload the measured QA reports even when geometry
     # quality does not pass. Asset API is the authoritative strict/advisory
@@ -2403,6 +2410,72 @@ def uv_qa_blender_arguments(
     if job_type != "UV_PROCESS_V2":
         arguments.append("--strict")
     return arguments
+
+
+async def resolve_automatic_uv_algorithm(
+    client: httpx.AsyncClient,
+    settings: WorkerSettings,
+    job_id: str,
+    lease_headers: dict[str, str],
+    input_path: Path,
+) -> dict[str, Any] | None:
+    classifier_script = verified_script(
+        settings.uv_auto_classifier_script,
+        UV_AUTO_CLASSIFIER_SCRIPT_SHA256,
+    )
+    classification_path = input_path.parent / ".uv-auto-classification.json"
+    process = await start_blender(
+        settings,
+        "--background",
+        "--factory-startup",
+        "--disable-autoexec",
+        "--python-exit-code",
+        "1",
+        "--python",
+        str(classifier_script),
+        "--",
+        "--input",
+        str(input_path),
+        "--output",
+        str(classification_path),
+    )
+    await wait_for_blender(
+        client,
+        job_id,
+        lease_headers,
+        process,
+        2,
+        4,
+        "UV_CLASSIFYING",
+        "后台正在分析网格结构与软硬表面特征",
+        45,
+    )
+    try:
+        classification = json.loads(classification_path.read_text("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("UV automatic classifier did not produce valid JSON") from exc
+    if not isinstance(classification, dict):
+        raise RuntimeError("UV automatic classifier output is not a JSON object")
+    response = await client.post(
+        f"/internal/v1/assets/jobs/{job_id}/uv-auto-classify",
+        headers=lease_headers,
+        json=classification,
+    )
+    if response.is_error:
+        raise RuntimeError(
+            "UV automatic classification was rejected "
+            f"with HTTP {response.status_code}: {response.text[-3000:]}"
+        )
+    resolution = response.json()
+    action = resolution.get("action")
+    if action == "continue":
+        resolved_options = resolution.get("options")
+        if not isinstance(resolved_options, dict):
+            raise RuntimeError("UV auto resolution omitted resolved options")
+        return resolved_options
+    if action in {"requeued", "failed", "cancelled"}:
+        return None
+    raise RuntimeError(f"UV auto resolution returned unsupported action: {action}")
 
 
 async def run_uv_skill(
@@ -2414,8 +2487,20 @@ async def run_uv_skill(
     output_dir: Path,
     options: dict[str, Any],
     job_type: str,
-) -> dict[str, str]:
+) -> dict[str, str] | None:
     algorithm = str(options.get("algorithm") or "legacy_pbr")
+    if algorithm == "auto":
+        resolved_options = await resolve_automatic_uv_algorithm(
+            client,
+            settings,
+            job_id,
+            lease_headers,
+            input_path,
+        )
+        if resolved_options is None:
+            return None
+        options = resolved_options
+        algorithm = str(options.get("algorithm") or "legacy_pbr")
     if algorithm != "legacy_pbr":
         raise RuntimeError(
             "UV_MOF_RUNTIME_UNAVAILABLE: this Linux Worker advertises only legacy_pbr"
@@ -2620,8 +2705,6 @@ async def run_retopology_audit(
         "--",
         "--high",
         str(options["high_object"]),
-        "--reference",
-        str(options["reference_object"]),
         "--low",
         str(options["low_object"]),
         "--output",
@@ -2717,10 +2800,6 @@ async def run_retopology_process(
         "--",
         "--high",
         high,
-        "--reference",
-        reference,
-        "--low",
-        current,
         "--output",
         str(baseline_path),
     ]
@@ -2846,8 +2925,6 @@ async def run_retopology_process(
         "--",
         "--high",
         high,
-        "--reference",
-        reference,
         "--low",
         generated,
         "--output",
@@ -3055,7 +3132,7 @@ async def process_job(
         output_dir = root / "output"
         contract: dict[str, str]
         if job["job_type"] in {"UV_UNWRAP", "UV_PROCESS_V2"}:
-            contract = await run_uv_skill(
+            uv_contract = await run_uv_skill(
                 client,
                 settings,
                 job_id,
@@ -3065,6 +3142,9 @@ async def process_job(
                 job["options"],
                 str(job["job_type"]),
             )
+            if uv_contract is None:
+                return
+            contract = uv_contract
         elif job["job_type"] == "RETOPOLOGY_AUDIT":
             await run_retopology_audit(
                 client,
@@ -3298,7 +3378,7 @@ async def worker_loop(settings: WorkerSettings) -> None:
                                 "load_1m": os.getloadavg()[0],
                                 "available_memory_mb": available_memory_mb(),
                                 "accepts_codex_jobs": worker_accepts_codex_jobs(running),
-                                "uv_algorithms": ["legacy_pbr"],
+                                "uv_algorithms": ["legacy_pbr", "auto_v2"],
                             },
                         )
                         response.raise_for_status()

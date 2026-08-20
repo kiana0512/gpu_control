@@ -26,6 +26,9 @@ from .models import (
     WorkflowVersion,
 )
 from .scheduling import (
+    GPU_SPECIALIZATION_LABEL,
+    MODELVIEW_INPAINT_NODE_ID,
+    MODELVIEW_INPAINT_WORKFLOW_KEY,
     SUBSTANCE_DRAIN_OWNER_LABEL,
     SUBSTANCE_FENCE_LABEL,
     SUBSTANCE_LEGACY_FENCE_LABEL,
@@ -33,6 +36,7 @@ from .scheduling import (
     OverflowGuard,
     QueueSnapshot,
     base_exclusion,
+    gpu_specialization,
     overflow_exclusion,
     substance_owned_drain_is_expired,
 )
@@ -224,6 +228,15 @@ async def claim_next_job(
         node.labels = labels
         if node.mode == NodeMode.DRAINING.value and not node.manual_reserved:
             node.mode = NodeMode.ACTIVE.value
+    specialization, _ = gpu_specialization(node.labels, now)
+    if (
+        specialization is None
+        and isinstance(node.labels, dict)
+        and GPU_SPECIALIZATION_LABEL in node.labels
+    ):
+        labels = dict(node.labels)
+        labels.pop(GPU_SPECIALIZATION_LABEL, None)
+        node.labels = labels
     if node.current_jobs >= node.max_concurrency:
         return None
     if queue_snapshot is not None:
@@ -283,6 +296,21 @@ async def claim_next_job(
     )
     if not jobs:
         return None
+    # The control 4090 is the preferred low-latency inpaint lane while its
+    # renewable ten-minute window is live. Never leave the physical slot idle:
+    # if no compatible inpaint job is queued, ordinary compatible GPU work may
+    # use it and will be preempted/reassigned when a new inpaint request arrives.
+    if node.id == MODELVIEW_INPAINT_NODE_ID and specialization is not None:
+        if specialization != MODELVIEW_INPAINT_WORKFLOW_KEY:
+            return None
+        inpaint_jobs = [
+            job for job in jobs
+            if job.workflow_key == MODELVIEW_INPAINT_WORKFLOW_KEY
+        ]
+        if inpaint_jobs:
+            jobs = inpaint_jobs
+    if not jobs:
+        return None
     workflow_rows = list(
         (
             await session.scalars(
@@ -312,15 +340,17 @@ async def claim_next_job(
     # Frame retries must move away from every physical node already used by
     # that child.  This prevents a poisoned/warm-corrupt worker from consuming
     # all attempts for the same ordinal and gives a three-node fleet A -> B -> C.
-    retried_batch_job_ids = {
-        job.id for job in jobs if job.batch_id is not None and job.attempt_count > 0
+    retried_imageclip_job_ids = {
+        job.id
+        for job in jobs
+        if job.workflow_key == "imageclip-rgba" and job.attempt_count > 0
     }
-    if retried_batch_job_ids:
+    if retried_imageclip_job_ids:
         attempted_on_node = set(
             (
                 await session.scalars(
                     select(JobAttempt.job_id).where(
-                        JobAttempt.job_id.in_(retried_batch_job_ids),
+                        JobAttempt.job_id.in_(retried_imageclip_job_ids),
                         JobAttempt.node_id == node_id,
                     )
                 )

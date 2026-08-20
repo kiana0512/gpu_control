@@ -1,0 +1,77 @@
+schema_version: "1.0"
+
+# Four-GPU bounded production pressure profile for the 2026-08-12 closure.
+# The fixed business-pipeline identities below are copied from the enabled
+# production registry.  The harness remains fail-closed: it must refuse the
+# run if any identity, release, backup, node, worker, or maintenance-window
+# gate differs from the live deployment.
+weights_confirmed: true
+weights:
+  imageclip_batch: 29
+  modelview_inpaint: 5
+  modelview_roughness: 4
+  uv_process: 12
+  retopology_process: 35
+  substance_bake: 15
+
+stages:
+  - users: 1
+    spawn_rate: 1
+    duration_seconds: 60
+  - users: 10
+    spawn_rate: 2
+    duration_seconds: 120
+  - users: 25
+    spawn_rate: 5
+    duration_seconds: 180
+  - users: 50
+    spawn_rate: 10
+    duration_seconds: 300
+  - users: 100
+    spawn_rate: 20
+    duration_seconds: 600
+
+poll_interval_seconds: 3
+max_retries: 4
+lifecycle_mode: bounded_stress
+max_backup_age_hours: 24
+operation_timeout_seconds:
+  imageclip_batch: 21600
+  modelview_inpaint: 2700
+  modelview_roughness: 2100
+  uv_process: 3600
+  retopology_process: 21600
+  substance_bake: 7200
+
+approved_workflows:
+  imageclip-rgba:
+    version: "2026.08.12-c39ed0b-fp8-r1"
+    template_sha256: "ce4d23c39363d489e48a32a20295bf83837829651f10e46a537de635031c6846"
+    pipeline_commit: "c39ed0b3b637f0a1435bbe10e5a3acf6bfca07bd"
+    pipeline_sha256: "07928d57852ed56ed37527960ec9955d867c0090456fda687fbcd12fecf1775c"
+    output_node: "SaveImage #102"
+  modelview-inpaint:
+    version: "2026.08.12-8c37f07-seedvr2-12g-r1"
+    template_sha256: "df13ca08fab5a20cb57aaa07ef81d78ca1e9aaa3e541715e4ba03eeb3bf86ccd"
+  modelview-roughness:
+    version: "2026.08.12-d318bb39-roughness-12g-r1"
+    template_sha256: "bbc80df2c8fc8eb148c671ea1b97a3d77ed2bd1f64593701c68d3bba1438d42f"
+    pipeline_commit: "d318bb392040e2d5f6bbd10ae61d832d36d3cb4a"
+    pipeline_sha256: "8a52740b90ac47e77919b460a0e35241c94d91fde035effb3285600642e2ea38"
+
+preflight:
+  maximum_preexisting_gpu_jobs: 0
+  maximum_preexisting_asset_jobs: 0
+  minimum_healthy_gpu_nodes: 4
+  minimum_online_asset_workers: 4
+  minimum_cpu_slots: 1
+  minimum_substance_slots: 1
+
+thresholds:
+  http_failure_rate_percent: 1.0
+  submit_p95_ms: 3000
+  sync_e2e_p95_ms: 600000
+  poll_p95_ms: 1500
+  artifact_p95_ms: 30000
+  queue_p95_ms: 900000
+  retry_rate_percent: 5.0

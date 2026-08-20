@@ -9,7 +9,7 @@ RUN curl --fail --show-error --location --retry 3 "https://www.python.org/ftp/py
 FROM ${CUDA_IMAGE} AS comfy-builder
 ARG DEBIAN_FRONTEND=noninteractive
 ARG COMFYUI_REPOSITORY=https://github.com/Comfy-Org/ComfyUI.git
-ARG COMFYUI_COMMIT=700821e1364eaab0e8f21c538a2131719fec57bf
+ARG COMFYUI_COMMIT=dec5d9450a5290bcf63430409ea41018e67f41c3
 COPY --from=python-builder /opt/python /opt/python
 ENV PATH=/opt/python/bin:$PATH
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates git libgl1 libglib2.0-0 && rm -rf /var/lib/apt/lists/*
@@ -19,15 +19,17 @@ COPY docker/comfyui/requirements.lock.txt /tmp/requirements.lock.txt
 RUN python3.11 -m pip install --no-cache-dir --requirement /tmp/requirements.lock.txt
 COPY docker/comfyui/ /tmp/comfyui-build/
 RUN python3.11 /tmp/comfyui-build/install_custom_nodes.py /tmp/comfyui-build/custom_nodes.lock.yaml /opt/comfyui/custom_nodes
+COPY workflows/production/modelview-inpaint/custom_nodes/Cherry_KleinWorkflowTools /opt/comfyui/custom_nodes/Cherry_KleinWorkflowTools
 
 FROM ${CUDA_IMAGE} AS runtime
-ARG BUILD_DATE=unknown
-ARG VCS_REF=unknown
-ARG COMFYUI_COMMIT=700821e1364eaab0e8f21c538a2131719fec57bf
-ARG LOCK_SHA256=unknown
-LABEL org.opencontainers.image.title="GPU Control ComfyUI" org.opencontainers.image.created="${BUILD_DATE}" org.opencontainers.image.revision="${VCS_REF}" io.gpu-control.comfyui-commit="${COMFYUI_COMMIT}" io.gpu-control.lock-sha256="${LOCK_SHA256}"
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates gcc libc6-dev libgl1 libglib2.0-0 tini && rm -rf /var/lib/apt/lists/* && groupadd --gid 10001 comfy && useradd --uid 10001 --gid comfy --home-dir /opt/comfyui comfy
+ARG BUILD_DATE=unknown
+ARG VCS_REF=unknown
+ARG COMFYUI_COMMIT=dec5d9450a5290bcf63430409ea41018e67f41c3
+ARG LOCK_SHA256=unknown
+ARG BUNDLE_SHA256=unknown
+LABEL org.opencontainers.image.title="GPU Control ComfyUI" org.opencontainers.image.created="${BUILD_DATE}" org.opencontainers.image.revision="${VCS_REF}" io.gpu-control.comfyui-commit="${COMFYUI_COMMIT}" io.gpu-control.lock-sha256="${LOCK_SHA256}" io.gpu-control.bundle-sha256="${BUNDLE_SHA256}"
 COPY --from=comfy-builder /opt/python /opt/python
 COPY --from=comfy-builder --chown=comfy:comfy /opt/comfyui /opt/comfyui
 COPY --chown=comfy:comfy docker/comfyui/entrypoint.sh /usr/local/bin/comfy-entrypoint

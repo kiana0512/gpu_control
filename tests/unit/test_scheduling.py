@@ -3,14 +3,21 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from packages.gpu_control_core.scheduling import (
+    GPU_CACHE_DRAIN_FAILED_LABEL,
+    MODELVIEW_INPAINT_WORKFLOW_KEY,
     SUBSTANCE_DRAIN_OWNER,
     SUBSTANCE_DRAIN_OWNER_LABEL,
     SUBSTANCE_FENCE_LABEL,
     SUBSTANCE_PENDING_RESERVATION_LABEL,
     SUBSTANCE_RECOVERY_REQUIRED_LABEL,
+    SUBSTANCE_SPECIALIZATION_KEY,
     OverflowGuard,
     QueueSnapshot,
     choose_node,
+    gpu_specialization,
+    linux_asset_claim_allowed,
+    rank_nodes,
+    refresh_gpu_specialization,
 )
 from packages.gpu_control_core.settings import Settings
 
@@ -81,6 +88,36 @@ def test_warm_cache_affinity_is_preferred_but_never_blocks_fallback(tmp_path: Pa
     assert excluded["3090-b"] == "no_slot"
 
 
+def test_inpaint_lane_can_promote_eligible_4090_across_pools(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    available = nodes(now)
+    available[2].mode = "ACTIVE"
+    ranked, excluded = rank_nodes(
+        available,
+        QueueSnapshot(1, 0),
+        guard(tmp_path),
+        20,
+        now,
+        preferred_node_ids={"4090"},
+        promoted_node_ids={"4090"},
+    )
+    assert not excluded
+    assert [node.id for node in ranked] == ["4090", "3090-a", "3090-b"]
+
+    available[2].current_jobs = 1
+    ranked, excluded = rank_nodes(
+        available,
+        QueueSnapshot(1, 0),
+        guard(tmp_path),
+        20,
+        now,
+        preferred_node_ids={"4090"},
+        promoted_node_ids={"4090"},
+    )
+    assert [node.id for node in ranked] == ["3090-a", "3090-b"]
+    assert excluded["4090"] == "no_slot"
+
+
 def test_4090_reserved_never_schedules(tmp_path: Path) -> None:
     now = datetime.now(UTC)
     available = nodes(now)
@@ -129,6 +166,115 @@ def test_drain_foreign_queue_and_expired_heartbeat_block_node(tmp_path: Path) ->
         "3090-b": "foreign_comfy_queue",
         "4090": "heartbeat_expired",
     }
+
+
+def test_gpu_specialization_refreshes_to_exact_hard_expiry() -> None:
+    now = datetime.now(UTC)
+    node = FakeNode(
+        "control-4090",
+        "OVERFLOW",
+        "ACTIVE",
+        last_heartbeat_at=now,
+    )
+    first_expiry = refresh_gpu_specialization(
+        node,
+        MODELVIEW_INPAINT_WORKFLOW_KEY,
+        now,
+        owner="gpu-api",
+    )
+    assert first_expiry == now + timedelta(minutes=10)
+    assert gpu_specialization(node.labels, now) == (
+        MODELVIEW_INPAINT_WORKFLOW_KEY,
+        first_expiry,
+    )
+    assert gpu_specialization(node.labels, first_expiry) == (None, first_expiry)
+
+    refreshed_at = now + timedelta(minutes=7)
+    second_expiry = refresh_gpu_specialization(
+        node,
+        MODELVIEW_INPAINT_WORKFLOW_KEY,
+        refreshed_at,
+        owner="gpu-api",
+    )
+    assert second_expiry == refreshed_at + timedelta(minutes=10)
+    assert second_expiry > first_expiry
+
+
+def test_substance_specialization_blocks_only_gpu_and_hard_expires(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(UTC)
+    node = FakeNode(
+        "worker-3090-b",
+        "PRIMARY",
+        "DRAINING",
+        last_heartbeat_at=now,
+        labels={SUBSTANCE_DRAIN_OWNER_LABEL: SUBSTANCE_DRAIN_OWNER},
+    )
+    refresh_gpu_specialization(
+        node,
+        SUBSTANCE_SPECIALIZATION_KEY,
+        now,
+        owner=SUBSTANCE_DRAIN_OWNER,
+    )
+    chosen, excluded = choose_node(
+        [node], QueueSnapshot(1, 0), guard(tmp_path), 20, now
+    )
+    assert chosen is None
+    assert excluded[node.id] == "substance_specialization"
+    assert linux_asset_claim_allowed(node, now)
+
+    assert gpu_specialization(node.labels, now)[1] == now + timedelta(minutes=5)
+
+    after_expiry = now + timedelta(minutes=5, seconds=1)
+    node.last_heartbeat_at = after_expiry
+    chosen, excluded = choose_node(
+        [node],
+        QueueSnapshot(1, 0),
+        guard(tmp_path),
+        20,
+        after_expiry,
+    )
+    assert chosen is node
+    assert excluded == {}
+
+
+def test_legacy_substance_specialization_is_clamped_to_five_minutes() -> None:
+    now = datetime.now(UTC)
+    node = FakeNode("worker-3090-b", "PRIMARY", "ACTIVE", last_heartbeat_at=now)
+    node.labels = {
+        "gpu_specialization": {
+            "key": "substance-bake",
+            "owner": "asset-api",
+            "started_at": now.isoformat(),
+            "expires_at": (now + timedelta(minutes=15)).isoformat(),
+        }
+    }
+
+    assert gpu_specialization(node.labels, now) == (
+        SUBSTANCE_SPECIALIZATION_KEY,
+        now + timedelta(minutes=5),
+    )
+    assert gpu_specialization(node.labels, now + timedelta(minutes=5)) == (
+        None,
+        now + timedelta(minutes=5),
+    )
+
+
+def test_cache_drain_failure_is_a_hard_gpu_interlock(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    node = FakeNode("4070", "PRIMARY", "ACTIVE", last_heartbeat_at=now)
+    node.labels = {
+        GPU_CACHE_DRAIN_FAILED_LABEL: {
+            "observed_at": now.isoformat(),
+            "message": "unsafe VRAM recovery",
+        }
+    }
+    chosen, excluded = choose_node(
+        [node], QueueSnapshot(1, 0), guard(tmp_path), 20, now
+    )
+    assert chosen is None
+    assert excluded[node.id] == "gpu_cache_drain_failed"
 
 
 def test_pending_substance_reservation_blocks_until_its_deadline(tmp_path: Path) -> None:

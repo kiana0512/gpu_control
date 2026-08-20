@@ -1,5 +1,68 @@
 # Changelog
 
+## 1.5.18 — TrueV3 inpaint and ImageClip color-correct output — 2026-08-17
+
+- Promote the 4090 to the preferred ten-minute INT8 local-inpaint lane while keeping 3090-A and
+  3090-B as 24 GiB fallbacks; the 4070Ti remains available for compatible non-inpaint work.
+- Keep 4090 work-conserving during the protection window: when no inpaint job is queued it continues
+  to claim ImageClip, roughness and other compatible work instead of idling.
+- Replace ImageClip's API sink that bypassed color correction with the existing
+  `CherrySelfComposite -> 122_ColorMatchToSource -> CherryAlphaDenoise -> SaveImage` chain.
+- Cancel the two pre-fix animation batches so no remaining frame can be produced by the invalid
+  output path; enable only `2026.08.17-c39ed0b-colorfix-r1` for new ImageClip submissions.
+- Add the three-image ModelView API binding, synchronized WebUI policy text, four-node canaries and
+  production handoff documents 126 and 127.
+
+## 1.5.15 — Work-conserving Baker release and AssetClaw closure — 2026-08-13
+
+- Shorten the 3090-B post-arrival Substance GPU specialization from 15 minutes to five minutes;
+  retain the 4070Ti inpaint response lane at 15 minutes.
+- Clamp pre-upgrade 15-minute Substance labels to `started_at + 5 minutes` during rolling updates.
+- Let an explicit administrator ACTIVE action release only an idle Substance soft hold; pending
+  reservations, live Baker fences, recovery-required state and occupied/foreign GPU activity remain
+  non-bypassable.
+- Add the WebUI “解除烘焙保护” action and update scheduling explanations without freezing CPU Asset
+  slots.
+- Archive AssetClaw's byte-identical 1.5.14 fix receipt: production matting is GPU-Control-only,
+  local/hybrid/OOM fallback is forbidden, and the three recovery batches are mapped for audit.
+
+## 1.5.14 — Substance Baker v7 recovery and safe Admin Retry — 2026-08-13
+
+- Pin the v7 Windows Baker Agent's ComfyUI fencing probe to
+  `/opt/python/bin/python3`; the production ComfyUI container does not expose a bare `python` in
+  `PATH`.
+- After `/free`, poll authoritative VRAM release for up to 30 seconds while continuously rechecking
+  the ComfyUI queue; fail closed if either condition regresses.
+- Bind the synchronized repository, 3090-B candidate and installed Agent to SHA-256
+  `06fcb4cefb9aeb7e53693faf9f87a36a113324ba8df162738e416afdb9e4b399` and add regression
+  contracts for the absolute Python path and asynchronous release loop.
+- Add a bounded, audited Admin Retry for failed Substance continuity/execution jobs. Retry is
+  admitted only when 3090-B is online, active and idle, all four v7 Agents are fresh and healthy,
+  no Baker process/interlock exists, and the original input still exists with no published result.
+- Accept both the legacy and v7 verified GPU-fencing result policies while requiring non-empty
+  drain evidence for the v7 policy.
+- Retry job `867d53b9-cfb6-49d5-b1d2-0007777e8072` succeeded on attempt 3 with 12 verified
+  artifacts, 10 Baker success markers and ComfyUI process continuity preserved.
+- Expose the safe Admin Retry action in the Asset Web UI and publish the four-GPU/six-API animation
+  manager handoff contract.
+
+## 1.5.13 — Four-GPU scheduling, WSL telemetry and six-API closure — 2026-08-12
+
+- Add the RTX 4070Ti WSL2 node to scheduling, Web UI, Asset Worker and Codex runtime views while
+  retaining one physical GPU slot and two independent CPU Asset slots.
+- Add signed WSL host telemetry proxy support so GPU utilization, VRAM, temperature and power remain
+  observable while ComfyUI is busy; node liveness no longer depends on Docker NVML behavior in WSL.
+- Lock ImageClip, ModelView inpaint and roughness to the approved production manifests and exact
+  model/custom-node/output contracts without changing external workflow semantics.
+- Enforce work-conserving GPU specialization: 4070Ti keeps a 15-minute inpaint response lane;
+  3090-B uses a five-minute Substance lane and an audited idle-only operator release, while active
+  Baker fences/reservations/recovery gates remain non-bypassable and CPU Asset slots stay independent.
+- Restore public retopology audit capacity on current Direct V2 Workers, align the packaged audit
+  script SHA, remove retired `--reference` arguments and accept both legacy schema v2 and current
+  schema v3 completion payloads.
+- Align first-party release identity to GPU Control `1.5.13` and Blender Worker `1.4.48`; detailed
+  production evidence and remaining fail-closed Substance v7 gate are recorded in document 118.
+
 ## 2026-08-12 — Automatic retopology fused-surface fallback v3.0.24
 
 - Detect the real cloth-over-wood failure mode where classification-only adjacency recovers one

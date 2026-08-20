@@ -1,27 +1,49 @@
 # 统一调度中心（GPU Control）
 
-> 今天部署请先打开 [文档总入口](docs/00_START_HERE.md)，再按 [三机当天部署手册](docs/28_TODAY_DEPLOYMENT_MANUAL.md) 和 [现场勾选表](docs/30_TODAY_ONSITE_CHECKLIST.md) 执行。单文件离线版位于仓库根目录 `GPU_CONTROL_成品部署联调与核心逻辑手册.pdf`。
+> 今天部署请先打开 [文档总入口](docs/00_START_HERE.md)；动画管家当前对接以
+> [四 GPU / 六 API 生产对接合同](docs/120_2026-08-13_ASSETCLAW_FOUR_GPU_1_5_14_ALIGNMENT_HANDOFF.md)
+> 为准；动画管家完成修复后的事实证据见
+> [AssetClaw 1.5.14 修复回执](docs/121_2026-08-13_ASSETCLAW_GPU_CONTROL_1_5_14_FIX_RECEIPT.md)；完整审计见 [2026-08-12 四 GPU 收口报告](docs/118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md)，
+> 3090-B v7 修复与成功 Retry 见 [2026-08-13 专项记录](docs/119_2026-08-13_SUBSTANCE_V7_PYTHON_PATH_HOTFIX.md)。
+> 1.5.15 稳定版镜像、部署与验收见 [稳定版发布记录](docs/122_2026-08-13_GPU_CONTROL_1_5_15_STABLE_RELEASE.md)。
+> 3090-B 烘焙排空自动恢复修复见 [1.5.16 热修记录](docs/123_2026-08-13_GPU_CONTROL_1_5_16_3090B_AUTO_RECOVERY_HOTFIX.md)。
+> TrueV3 三输入局部重绘对接见 [局部重绘 API 文档](docs/126_2026-08-17_MODELVIEW_INT8_THREE_INPUT_API_HANDOFF.md)；
+> ImageClip 校色输出修复与四节点验收见 [1.5.18 校色热修记录](docs/127_2026-08-17_IMAGECLIP_COLOR_OUTPUT_HOTFIX.md)。
+> 4070 Ti 开启 HAGS 后的 WSL2/portproxy 恢复见 [4070 重启恢复记录](docs/128_2026-08-17_4070TI_HAGS_REBOOT_RECOVERY.md)。
+> 4090 局部重绘错误互锁修复与真实抢占回归见 [调度 drainfix 记录](docs/129_2026-08-17_4090_INPAINT_DRAIN_INTERLOCK_HOTFIX.md)。
+> 自动 UV 后台判定、Windows 原生 MOF 路由与 `44.fbx` 真实验收见
+> [自动 MOF 路由记录](docs/133_2026-08-18_UV_AUTOMATIC_NATIVE_MOF_ROUTING.md)。
+> 复杂多 Mesh FBX 整单 MOF 路由与物体边界保留见
+> [多 Mesh MOF 路由记录](docs/134_2026-08-19_UV_MULTI_MESH_NATIVE_MOF_ROUTING.md)。
+> 全部 Markdown 与 Skill 的分类入口见
+> [文档分类目录](docs/00_DOCUMENT_CATALOG.md) 和 [Asset Skills 目录](docs/00_ASSET_SKILLS_CATALOG.md)。
 
-面向两台 RTX 3090 工作节点和一台 RTX 4090 控制中心的统一任务调度、运维与可观测平台；GPU
+面向 RTX 4090 控制中心、两台 RTX 3090 和一台 RTX 4070Ti 的统一任务调度、运维与可观测平台；GPU
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
-当前生产基线为 GPU Control API/Scheduler `1.5.12`、Web `1.5.11-retopo-direct-v2`、Asset API
-`1.6.46-retopo-fused-fallback-v1`、三台 Linux Blender Worker
-`1.4.46-retopo-fused-fallback-v1`、数据库 `20260810_0013`。当前总状态为
-`DEPLOYED_NOT_ACCEPTED`：第三次正式 100 VU、registry digest/SBOM、固定基准、完整故障矩阵和
-连续七天观察尚未闭环，禁止标记 `FROZEN` 或 `PRODUCTION_ACCEPTED`。
+当前源码目标基线为 GPU Control API/Scheduler/Web `1.5.18`、Asset API/Node Agent 既有稳定版本、Blender Worker
+`1.4.55-uv-multimesh-mof-v1`、数据库 `20260810_0013`。当前总状态为
+`FUNCTIONAL_RECOVERY_CONFIRMED / STABILITY_TESTING`：六 API 均已有真实功能成功证据；正式
+1.5.15 镜像/LFS、第三次正式 100 VU、registry digest/SBOM、固定基准、完整故障矩阵和连续七天观察
+仍按发布门禁收口，未完成前不标记 `FROZEN` 或 `PRODUCTION_ACCEPTED`。
 
-生产 `UV_QA_ENFORCEMENT=advisory` 和旧版 `RETOPOLOGY_QA_ENFORCEMENT=advisory` 仍保留兼容语义；
+生产自动展 UV 在请求未显式指定算法时，由后台先读取网格连通结构、面平滑、曲率/折角、硬边、
+Modifier 和 Shape Key 等联合证据；复杂多 Mesh FBX 作为一项 MOF 任务处理并保留原物体边界，
+单 Mesh 则仅在“多结构块、复杂曲面、无明显硬表面特征”时转交 Windows 原生 MOF；简单模型、
+存在 Modifier/Shape Key 或证据不足时保守使用 `legacy_pbr`。显式指定
+`legacy_pbr`/`mof_low_seam` 的调用仍保持原语义，且绝不只凭面数启用 MOF。原版路径对已通过严格安全门的 FBX 导出裂点在
+交付副本中真实焊接，使 3ds Max 接收连续 UV 壳，同时执行 `UV_QA_ENFORCEMENT=strict`
+双回读和 Max 拓扑壳一致性门禁；
+旧版 `RETOPOLOGY_QA_ENFORCEMENT=advisory` 仍保留兼容语义；
 v3 同任务生成路径保留坐标恢复、保存后 Blend 拓扑指纹、身份、manifest、文件完整性和 SHA 硬门禁；
 方向检查、FBX 回读与自动 UV 已按当前用户策略取消；
-缺失、空文件、非法 JSON、身份、租约或 SHA 失败仍硬拒绝。三台 Linux Worker 使用同一镜像、
+缺失、空文件、非法 JSON、身份、租约或 SHA 失败仍硬拒绝。四台 Linux/WSL Worker 使用同一镜像、
 同一源码和同一批准包 SHA；统一 registry digest/SBOM 仍待补齐。
 
-3090-B 上四个 Windows Substance Baker Agent 已更新为
-`substance-baker-2026.08.03-v6`，均为 `ONLINE/HEALTHY`，用 PBR 成功 marker、逐命令证据和制品完整性
-消除 PowerShell 空 `ExitCode` 假失败，但不放行真实非零退出或缺少 marker。三节点 ComfyUI 仍是同一
-`projects-0.2.3` 镜像，健康、`RestartCount=0`；本轮未停止/重启 ComfyUI，也未调用 `/free` 或
-清理模型缓存。自动拓扑对齐包 v3.0.24 统一 FBX/GLB/GLTF/OBJ 的只读高模准备入口，并把 API 中
+3090-B 上四个 Windows Substance Baker Agent 当前为
+`substance-baker-2026.08.12-v7 / ONLINE`；容器 Python 路径和异步显存释放轮询热修已同步，原任务经
+受控 Admin Retry 在 attempt 3 成功并发布 12 个通过 SHA 校验的制品。四节点 ComfyUI 使用同一
+`projects-0.2.5` 镜像。自动拓扑对齐包 v3.0.25 统一 FBX/GLB/GLTF/OBJ 的只读高模准备入口，并把 API 中
 用户明确指定的分区建形意图传入生成器；布料覆盖木堆等分层资产先用只读的同坐标邻接恢复被
 法线/UV 导出缝拆开的完整几何表面，再进行区域分类，禁止把导出碎片误当语义组件；当导入资产
 实际融合成一张无法安全分区的表面时，直接使用打包好的单次 50% 高模副本受控减面，保留导出缝
@@ -74,12 +96,14 @@ flowchart LR
   N -.唤醒/事件.-> R[("Redis")]
   S["asyncio Scheduler\n单主 advisory lock"] --> P
   S --> A["3090-A / ComfyUI"]
-  S --> B["3090-B / ComfyUI"]
+  S --> B["3090-B / ComfyUI + Windows Baker"]
+  S --> T["4070Ti / ComfyUI"]
+  N --> M["4070Ti Windows 原生 MOF Agent"]
   S -.OVERFLOW guards.-> G["4090 / ComfyUI"]
-  A & B & G --> L["Alloy → Loki / Prometheus → Grafana"]
+  A & B & T & G --> L["Alloy → Loki / Prometheus → Grafana"]
 ```
 
-当前三台 GPU 节点均为 `ONLINE`，合计最多 3 个受控 GPU 执行槽位；节点 mode 会随运维排空和
+当前四台 GPU 节点均为 `ONLINE`，合计最多 4 个受控 GPU 执行槽位；节点 mode 会随运维排空和
 3090-B Substance 物理 GPU 互斥门禁在 `ACTIVE / OVERFLOW / DRAINING` 间受控变化，不能把一次快照写死
 为永久模式。每个 ComfyUI 只保留一个本系统任务。
 
@@ -93,7 +117,7 @@ flowchart LR
 | Redis | 非持久唤醒、实时事件和限流；中断不会丢任务 |
 | ComfyUI client/Fake | 上传、提交、WS、历史、下载、取消、释放模型；无 GPU 可测 |
 | Vue 3 管理台 | 动画管家对齐的任务/API 分类、真实阶段时间、性能分析、可解释调度、节点、日志和审计 |
-| Alloy/Loki/Grafana | 三机日志集中、指标、仪表盘与告警 |
+| Alloy/Loki/Grafana | 四节点日志集中、指标、仪表盘与告警 |
 | Node Agent / `gpuctl` | HMAC 受限运维与统一启动器；不挂 Docker Socket |
 
 ## 5 分钟无 GPU 开发验证
@@ -121,7 +145,10 @@ Windows PowerShell 使用 `.\.venv\Scripts\python.exe -m pytest -q`。完整本�
 
 需要审阅真实渲染的管理台时，可用 `scripts/seed_demo.py` 向单独的 SQLite 库写入明确标记的演示数据，再用同一个 `DATABASE_URL` 启动 API。该脚本拒绝 PostgreSQL URL，不会写入生产库，也不会伪造真实工作流或模型。
 
-今天直接部署请只读 [三机当天部署与联调手册](docs/28_TODAY_DEPLOYMENT_MANUAL.md)；成品功能、算法和测试证据见 [成品报告](docs/29_PRODUCT_RELEASE_AND_TEST_REPORT.md)。旧的分章节文档保留作深入参考。
+历史三机从空机部署仍按 [三机当天部署与联调手册](docs/28_TODAY_DEPLOYMENT_MANUAL.md)；当前四节点和
+Windows 原生 MOF 增量必须先读 [当前总入口](docs/00_START_HERE.md) 与
+[多 Mesh MOF 路由记录](docs/134_2026-08-19_UV_MULTI_MESH_NATIVE_MOF_ROUTING.md)。
+成品功能、算法和测试证据见 [成品报告](docs/29_PRODUCT_RELEASE_AND_TEST_REPORT.md)。
 
 单文件可打印版本：[成品部署、联调与核心逻辑 PDF](GPU_CONTROL_成品部署联调与核心逻辑手册.pdf)。
 

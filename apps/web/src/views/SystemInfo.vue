@@ -163,7 +163,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           <span
             ><strong>ModelView 局部重绘</strong
             ><small
-              >POST · image 必填 ·
+              >POST · image + material_image + viewport_reference 必填 ·
               {{
                 modelviewPromptEnabled
                   ? "prompt 可选"

@@ -16,14 +16,15 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 
 def test_source_release_versions_match_current_component_versions() -> None:
     assert source_versions(REPOSITORY) == {
-        "python": "1.5.12",
-        "web": "1.5.11",
-        "web_lock": "1.5.11",
+        "python": "1.5.18",
+        "web": "1.5.18",
+        "web_lock": "1.5.18",
     }
 
 
 def test_control_plane_build_defaults_match_release_version() -> None:
-    expected_version = "1.5.12"
+    expected_version = "1.5.18"
+    expected_asset_version = "1.5.16"
     for dockerfile in (
         "apps/api/Dockerfile",
         "apps/scheduler/Dockerfile",
@@ -32,7 +33,7 @@ def test_control_plane_build_defaults_match_release_version() -> None:
         contents = (REPOSITORY / dockerfile).read_text(encoding="utf-8")
         assert f"ARG GPU_CONTROL_VERSION={expected_version}" in contents
     asset_api = (REPOSITORY / "apps/asset_api/Dockerfile").read_text(encoding="utf-8")
-    assert "ARG GPU_CONTROL_VERSION=1.6.46-retopo-fused-fallback-v1" in asset_api
+    assert f"ARG GPU_CONTROL_VERSION={expected_asset_version}" in asset_api
 
     environment = (REPOSITORY / ".env.example").read_text(encoding="utf-8")
     assert f"APP_IMAGE_TAG={expected_version}" in environment
@@ -40,16 +41,18 @@ def test_control_plane_build_defaults_match_release_version() -> None:
 
     compose = (REPOSITORY / "deploy/control-plane/compose.yaml").read_text(encoding="utf-8")
     assert compose.count(f"GPU_CONTROL_VERSION: ${{GPU_CONTROL_VERSION:-{expected_version}}}") == 3
-    assert compose.count(f"APP_IMAGE_TAG:-{expected_version}") == 2
-    assert "GPU_CONTROL_VERSION: ${ASSET_API_VERSION:-1.6.46-retopo-fused-fallback-v1}" in compose
-    assert "ASSET_API_IMAGE_TAG:-1.6.46-retopo-fused-fallback-v1" in compose
+    assert f"gpu-control-api:${{APP_IMAGE_TAG:-{expected_version}}}" in compose
+    assert f"gpu-control-scheduler:${{SCHEDULER_IMAGE_TAG:-{expected_version}}}" in compose
+    assert f"gpu-control-web:${{WEB_IMAGE_TAG:-{expected_version}}}" in compose
+    assert f"GPU_CONTROL_VERSION: ${{ASSET_API_VERSION:-{expected_asset_version}}}" in compose
+    assert f"ASSET_API_IMAGE_TAG:-{expected_asset_version}" in compose
     api_service = compose.split("\n  api:\n", 1)[1].split("\n  asset-api:\n", 1)[0]
     asset_api_service = compose.split("\n  asset-api:\n", 1)[1].split(
         "\n  asset-worker-control:\n", 1
     )[0]
     assert "ASSET_API_VERSION" not in api_service
-    assert "GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.12}" in api_service
-    assert "ASSET_API_VERSION:-1.6.46-retopo-fused-fallback-v1" in asset_api_service
+    assert f"GPU_CONTROL_VERSION: ${{GPU_CONTROL_VERSION:-{expected_version}}}" in api_service
+    assert f"ASSET_API_VERSION:-{expected_asset_version}" in asset_api_service
 
 
 def test_worker_release_versions_and_evidence_contract_are_aligned() -> None:

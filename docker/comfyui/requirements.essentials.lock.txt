@@ -1,0 +1,4 @@
+# ImageResize+ imports only ComfyUI core, Pillow, NumPy, Torch, TorchVision and
+# Kornia, all of which are pinned by requirements.lock.txt. The remaining
+# upstream requirements are lazy optional dependencies for unused nodes; adding
+# them would upgrade the production NumPy/Pillow/Scipy ABI set.

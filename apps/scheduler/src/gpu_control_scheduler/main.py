@@ -74,7 +74,16 @@ from packages.gpu_control_core.repository import (
     release_lease,
     transition_job,
 )
-from packages.gpu_control_core.scheduling import OverflowGuard, QueueSnapshot, rank_nodes
+from packages.gpu_control_core.scheduling import (
+    GPU_CACHE_DRAIN_FAILED_LABEL,
+    IMAGECLIP_INPAINT_PREEMPTION_CODE,
+    IMAGECLIP_WORKFLOW_KEY,
+    MODELVIEW_INPAINT_NODE_ID,
+    MODELVIEW_INPAINT_WORKFLOW_KEY,
+    OverflowGuard,
+    QueueSnapshot,
+    rank_nodes,
+)
 from packages.gpu_control_core.security import (
     derive_callback_secret,
     sign_agent_request,
@@ -120,6 +129,22 @@ CALLBACK_ATTEMPTS = Counter(
 CALLBACK_FAILURES = Counter(
     "gpu_control_callback_failures_total", "Callback deliveries that exhausted retries"
 )
+NODE_TELEMETRY_GRACE = timedelta(minutes=3)
+
+
+def node_has_recent_telemetry(node: Node, now: datetime) -> bool:
+    """Keep a loaded node degraded, not offline, through transient probe stalls."""
+
+    observed_at = node.last_heartbeat_at
+    if observed_at is None:
+        return False
+    observed_at = (
+        observed_at.replace(tzinfo=UTC)
+        if observed_at.tzinfo is None
+        else observed_at.astimezone(UTC)
+    )
+    current = now if now.tzinfo else now.replace(tzinfo=UTC)
+    return current - observed_at <= NODE_TELEMETRY_GRACE
 BUILD_INFO = Info(
     "gpu_control_scheduler_build",
     "Scheduler package, immutable build version and source revision",
@@ -203,6 +228,9 @@ WSL_PERFORMANCE_PROBE_INTERVAL_SECONDS = 30.0
 WSL_PERFORMANCE_MIN_SAMPLES = 3
 WSL_PERFORMANCE_RECENT_SAMPLES = 5
 WSL_PERFORMANCE_SLOWDOWN_THRESHOLD = 2.0
+GPU_CACHE_DRAIN_TIMEOUT_SECONDS = 20.0
+GPU_CACHE_MIN_FREE_MB = 6 * 1024
+GPU_CACHE_MIN_FREE_RATIO = 0.60
 
 WslPerformanceRow = tuple[str, int, int, datetime, float]
 
@@ -680,11 +708,200 @@ class Scheduler:
         # five-second health pass: ComfyUI's system_stats remains the fallback
         # source for VRAM while this bounded retry window is active.
         self.gpu_metrics_retry_at: dict[str, float] = {}
-        self.wsl_system_metrics_retry_at = 0.0
-        self.wsl_system_metrics_checked_at = 0.0
-        self.wsl_system_metrics_cache: dict[str, str | int | float | None] | None = None
-        self.wsl_boot_id: str | None = None
+        self.wsl_system_metrics_retry_at: dict[str, float] = {}
+        self.wsl_system_metrics_checked_at: dict[str, float] = {}
+        self.wsl_system_metrics_cache: dict[
+            str, dict[str, str | int | float | None]
+        ] = {}
+        self.wsl_boot_ids: dict[str, str] = {}
         self.wsl_performance_checked_at = 0.0
+
+    @staticmethod
+    def imageclip_preemption_requested(job: Job) -> bool:
+        return bool(
+            job.workflow_key == IMAGECLIP_WORKFLOW_KEY
+            and job.node_id == MODELVIEW_INPAINT_NODE_ID
+            and job.error_code == IMAGECLIP_INPAINT_PREEMPTION_CODE
+        )
+
+    @staticmethod
+    def queue_depth(payload: dict[str, Any]) -> int:
+        return sum(
+            len(payload.get(section, []))
+            for section in ("queue_running", "queue_pending")
+            if isinstance(payload.get(section, []), list)
+        )
+
+    @staticmethod
+    def validated_vram_recovery(payload: dict[str, Any]) -> dict[str, float]:
+        devices = payload.get("devices")
+        if not isinstance(devices, list) or not devices or not isinstance(devices[0], dict):
+            raise ComfyError(
+                "GPU_CACHE_DRAIN_FAILED",
+                "ComfyUI /system_stats 未返回可验证的 GPU 显存数据",
+            )
+        total_mb = float(devices[0].get("vram_total", 0)) / (1024 * 1024)
+        free_mb = float(devices[0].get("vram_free", 0)) / (1024 * 1024)
+        ratio = free_mb / total_mb if total_mb > 0 else 0.0
+        if free_mb < GPU_CACHE_MIN_FREE_MB or ratio < GPU_CACHE_MIN_FREE_RATIO:
+            raise ComfyError(
+                "GPU_CACHE_DRAIN_FAILED",
+                "模型卸载后显存恢复未达到安全阈值",
+                {
+                    "free_vram_mb": round(free_mb),
+                    "total_vram_mb": round(total_mb),
+                    "free_ratio": round(ratio, 4),
+                    "required_free_vram_mb": GPU_CACHE_MIN_FREE_MB,
+                    "required_free_ratio": GPU_CACHE_MIN_FREE_RATIO,
+                },
+            )
+        return {
+            "free_vram_mb": round(free_mb),
+            "total_vram_mb": round(total_mb),
+            "free_ratio": round(ratio, 4),
+        }
+
+    async def drain_free_and_validate(
+        self,
+        client: ComfyClient,
+        *,
+        interrupt: bool,
+    ) -> dict[str, Any]:
+        if interrupt:
+            await asyncio.wait_for(client.interrupt(), timeout=5)
+        deadline = asyncio.get_running_loop().time() + GPU_CACHE_DRAIN_TIMEOUT_SECONDS
+        while True:
+            queue = await client.queue()
+            if self.queue_depth(queue) == 0:
+                break
+            if asyncio.get_running_loop().time() >= deadline:
+                raise ComfyError(
+                    "GPU_CACHE_DRAIN_FAILED",
+                    "ComfyUI 队列在安全切换截止时间内未排空",
+                    {"queue_depth": self.queue_depth(queue)},
+                )
+            await asyncio.sleep(0.25)
+        free_result = await client.free()
+        # ComfyUI acknowledges /free before CUDA/extension-owned allocations
+        # are necessarily visible as released. Poll the authoritative VRAM
+        # counters inside the same bounded drain window; a single immediate
+        # read both produces false failures and can race the next model family.
+        while True:
+            stats = await client.system_stats()
+            try:
+                vram = self.validated_vram_recovery(stats)
+                break
+            except ComfyError:
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise
+                await asyncio.sleep(0.25)
+        return {
+            "queue_empty": True,
+            "free": free_result,
+            "vram": vram,
+        }
+
+    async def mark_cache_drain_failed(
+        self,
+        node_id: str,
+        job_id: str,
+        exc: Exception,
+    ) -> None:
+        async with self.db.session() as session:
+            await self.assert_scheduler_epoch(session)
+            node = await session.scalar(
+                select(Node).where(Node.id == node_id).with_for_update()
+            )
+            if node is not None:
+                labels = dict(node.labels or {})
+                labels.pop("warm_workflow", None)
+                labels.pop("warm_workflow_at", None)
+                labels[GPU_CACHE_DRAIN_FAILED_LABEL] = {
+                    "job_id": job_id,
+                    "observed_at": datetime.now(UTC).isoformat(),
+                    "error_type": type(exc).__name__,
+                    "message": str(exc)[:500],
+                }
+                node.labels = labels
+                if not node.manual_reserved:
+                    node.mode = NodeMode.DRAINING.value
+            await self.commit_as_leader(session)
+
+    async def requeue_preempted_imageclip(
+        self,
+        job_id: str,
+        client: ComfyClient,
+    ) -> None:
+        try:
+            evidence = await self.drain_free_and_validate(client, interrupt=True)
+        except Exception as exc:
+            await self.mark_cache_drain_failed(
+                MODELVIEW_INPAINT_NODE_ID,
+                job_id,
+                exc,
+            )
+            raise
+        async with self.db.session() as session:
+            job = await self.lock_job_as_leader(session, job_id)
+            if job is None or JobStatus(job.status) in TERMINAL_JOB_STATUSES:
+                await self.commit_as_leader(session)
+                return
+            if not self.imageclip_preemption_requested(job):
+                await self.commit_as_leader(session)
+                return
+            previous_node_id = job.node_id
+            await transition_job(
+                session,
+                job,
+                JobStatus.RETRY_WAIT,
+                "scheduler.imageclip_preempted_for_inpaint",
+                {
+                    "node_id": previous_node_id,
+                    "replacement_rule": "different_physical_gpu",
+                    "queue_empty": evidence["queue_empty"],
+                    "vram": evidence["vram"],
+                },
+            )
+            await release_lease(
+                session,
+                job,
+                attempt_status=JobStatus.CANCELLED,
+                attempt_error={
+                    "code": IMAGECLIP_INPAINT_PREEMPTION_CODE,
+                    "node_id": previous_node_id,
+                    "business_failure": False,
+                },
+            )
+            # Scheduler attempts are still historically numbered, but a
+            # policy preemption never consumes the business retry budget.
+            job.max_attempts += 1
+            await transition_job(
+                session,
+                job,
+                JobStatus.QUEUED,
+                "scheduler.imageclip_requeued_after_inpaint_preemption",
+                {"excluded_attempt_node_id": previous_node_id},
+            )
+            job.node_id = None
+            job.prompt_id = None
+            job.submission_client_id = None
+            job.submission_intent_at = None
+            job.claimed_at = None
+            job.started_at = None
+            job.finished_at = None
+            job.progress = 0
+            job.cancel_requested = False
+            job.not_before = None
+            job.error_code = None
+            job.error_message = None
+            await self.commit_as_leader(session)
+        await self.publish(
+            {
+                "event": "job.requeued",
+                "job_id": job_id,
+                "reason": IMAGECLIP_INPAINT_PREEMPTION_CODE,
+            }
+        )
 
     async def update_wsl_performance_probe(self) -> None:
         now_monotonic = asyncio.get_running_loop().time()
@@ -1171,15 +1388,16 @@ class Scheduler:
     ) -> dict[str, str | int | float | None] | None:
         """Collect advisory WSL state without affecting node eligibility."""
 
-        if node.id != WSL_PERFORMANCE_TARGET_NODE_ID or not node.agent_url:
+        if not (node.labels or {}).get("wsl_runtime") or not node.agent_url:
             return None
         now_monotonic = asyncio.get_running_loop().time()
         if (
-            self.wsl_system_metrics_cache is not None
-            and now_monotonic - self.wsl_system_metrics_checked_at < 10.0
+            node.id in self.wsl_system_metrics_cache
+            and now_monotonic - self.wsl_system_metrics_checked_at.get(node.id, 0.0)
+            < 10.0
         ):
-            return self.wsl_system_metrics_cache
-        if now_monotonic < self.wsl_system_metrics_retry_at:
+            return self.wsl_system_metrics_cache[node.id]
+        if now_monotonic < self.wsl_system_metrics_retry_at.get(node.id, 0.0):
             return None
 
         path = "/v1/system-metrics"
@@ -1206,7 +1424,7 @@ class Scheduler:
                 response.raise_for_status()
             snapshot = wsl_system_state_snapshot(response.json())
         except (httpx.HTTPError, ValueError, TypeError) as exc:
-            self.wsl_system_metrics_retry_at = now_monotonic + 30.0
+            self.wsl_system_metrics_retry_at[node.id] = now_monotonic + 30.0
             WSL_SYSTEM_PROBE_UP.labels(node.id).set(0)
             logger().warning(
                 "node.wsl_system_probe_failed",
@@ -1215,9 +1433,9 @@ class Scheduler:
             )
             return None
 
-        self.wsl_system_metrics_retry_at = 0.0
-        self.wsl_system_metrics_checked_at = now_monotonic
-        self.wsl_system_metrics_cache = snapshot
+        self.wsl_system_metrics_retry_at.pop(node.id, None)
+        self.wsl_system_metrics_checked_at[node.id] = now_monotonic
+        self.wsl_system_metrics_cache[node.id] = snapshot
         WSL_SYSTEM_PROBE_UP.labels(node.id).set(1)
         WSL_BOOT_UPTIME.labels(node.id).set(cast(float, snapshot["uptime_seconds"]))
         WSL_MEMORY_AVAILABLE.labels(node.id).set(
@@ -1243,16 +1461,17 @@ class Scheduler:
             )
 
         boot_id = cast(str, snapshot["boot_id"])
-        if self.wsl_boot_id is not None and boot_id != self.wsl_boot_id:
+        previous_boot_id = self.wsl_boot_ids.get(node.id)
+        if previous_boot_id is not None and boot_id != previous_boot_id:
             WSL_BOOT_CHANGES.labels(node.id).inc()
             logger().warning(
                 "node.wsl_boot_changed",
                 node_id=node.id,
-                previous_boot_id=self.wsl_boot_id,
+                previous_boot_id=previous_boot_id,
                 boot_id=boot_id,
                 uptime_seconds=snapshot["uptime_seconds"],
             )
-        self.wsl_boot_id = boot_id
+        self.wsl_boot_ids[node.id] = boot_id
         if snapshot["platform"] != "wsl2":
             logger().warning(
                 "node.wsl_platform_unexpected",
@@ -1260,6 +1479,19 @@ class Scheduler:
                 platform=snapshot["platform"],
             )
         return snapshot
+
+    async def node_agent_fallback_evidence(
+        self, node: Node
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, Exception | None]:
+        """Return independent host liveness and telemetry after a Comfy failure."""
+
+        try:
+            identity = await self.node_agent_identity(node)
+            if identity is None:
+                return None, None, None
+            return identity, await self.node_agent_gpu_metrics(node), None
+        except Exception as exc:
+            return None, None, exc
 
     async def update_node_health(self) -> None:
         while not self.stop_event.is_set():
@@ -1357,6 +1589,9 @@ class Scheduler:
                                 )
                                 current.last_heartbeat_at = probe_completed_at
                                 labels = dict(current.labels or {})
+                                labels.pop("comfy_probe_status", None)
+                                labels.pop("comfy_probe_error_type", None)
+                                labels.pop("comfy_probe_failed_at", None)
                                 if gpu_metrics is not None:
                                     current.gpu_util_percent = gpu_metrics[
                                         "gpu_util_percent"
@@ -1451,9 +1686,18 @@ class Scheduler:
                                     float(value) if value is not None else float("nan")
                                 )
                     except Exception as exc:
-                        # Failure writes use the same short locked transaction
-                        # and deliberately touch health only, never labels or
-                        # administrative mode.
+                        # ComfyUI can briefly serialize its HTTP loop while a
+                        # large model is loading or sampling.  That is a
+                        # service degradation, not proof that the WSL host is
+                        # offline.  Re-probe the independently supervised Node
+                        # Agent and retain/update its GPU telemetry.  Only an
+                        # Agent failure is allowed to mark a worker OFFLINE.
+                        (
+                            agent_identity,
+                            fallback_gpu_metrics,
+                            agent_error,
+                        ) = await self.node_agent_fallback_evidence(node)
+                        fallback_at = datetime.now(UTC)
                         async with self.db.session() as write_session:
                             async with write_session.begin():
                                 await self.assert_scheduler_epoch(write_session)
@@ -1461,13 +1705,61 @@ class Scheduler:
                                     select(Node).where(Node.id == node.id).with_for_update()
                                 )
                                 if current is not None:
-                                    current.health = NodeHealth.OFFLINE.value
+                                    recent_telemetry = node_has_recent_telemetry(
+                                        current, fallback_at
+                                    )
+                                    if agent_identity is not None or recent_telemetry:
+                                        current.health = NodeHealth.DEGRADED.value
+                                        if agent_identity is not None:
+                                            current.last_heartbeat_at = fallback_at
+                                        labels = dict(current.labels or {})
+                                        labels["comfy_probe_status"] = "BUSY_OR_UNAVAILABLE"
+                                        labels["comfy_probe_error_type"] = type(exc).__name__
+                                        labels["comfy_probe_failed_at"] = fallback_at.isoformat()
+                                        labels["agent_probe_status"] = (
+                                            "ONLINE"
+                                            if agent_identity is not None
+                                            else "TRANSIENT_FAILURE_USING_RECENT_TELEMETRY"
+                                        )
+                                        if fallback_gpu_metrics is not None:
+                                            current.gpu_util_percent = fallback_gpu_metrics[
+                                                "gpu_util_percent"
+                                            ]
+                                            current.free_vram_mb = fallback_gpu_metrics[
+                                                "free_vram_mb"
+                                            ]
+                                            current.total_vram_mb = fallback_gpu_metrics[
+                                                "total_vram_mb"
+                                            ]
+                                            for label_key in (
+                                                "gpu_temperature_c",
+                                                "gpu_power_w",
+                                                "gpu_power_limit_w",
+                                            ):
+                                                value = fallback_gpu_metrics.get(label_key)
+                                                if value is None:
+                                                    labels.pop(label_key, None)
+                                                else:
+                                                    labels[label_key] = value
+                                            labels["gpu_metrics_observed_at"] = (
+                                                fallback_at.isoformat()
+                                            )
+                                        current.labels = labels
+                                    else:
+                                        current.health = NodeHealth.OFFLINE.value
                         NODE_HEALTH.labels(node.id).set(0)
                         logger().warning(
                             "node.health_failed",
                             node_id=node.id,
-                            error_code="COMFY_HEALTH_FAILED",
+                            error_code=(
+                                "COMFY_HEALTH_DEGRADED_AGENT_ONLINE"
+                                if agent_identity is not None
+                                else "COMFY_AND_AGENT_PROBE_FAILED"
+                            ),
                             error_type=type(exc).__name__,
+                            agent_error_type=(
+                                type(agent_error).__name__ if agent_error is not None else None
+                            ),
                             comfy_error_code=(
                                 exc.code if isinstance(exc, ComfyError) else None
                             ),
@@ -1925,6 +2217,18 @@ class Scheduler:
             batch.succeeded_items = status_counts[BatchItemStatus.SUCCEEDED.value]
             batch.failed_items = status_counts[BatchItemStatus.FAILED.value]
             batch.cancelled_items = status_counts[BatchItemStatus.CANCELLED.value]
+            # An operator retry can recover the last failed child while the
+            # batch is still running.  Do not keep publishing that resolved
+            # frame failure after the authoritative item counts reach zero.
+            # Non-frame batch errors (validation, assembly, identity drift)
+            # have different messages and remain fail-closed.
+            if (
+                batch.failed_items == 0
+                and isinstance(batch.error_message, str)
+                and batch.error_message.startswith("帧 ")
+            ):
+                batch.error_code = None
+                batch.error_message = None
             batch.progress = monotonic_batch_progress(
                 batch.progress,
                 batch.total_items,
@@ -2699,12 +3003,22 @@ class Scheduler:
                     and str((candidate.labels or {}).get("warm_workflow", ""))
                     == target_workflow
                 }
+                if target_workflow == MODELVIEW_INPAINT_WORKFLOW_KEY:
+                    # The control 4090 is the preferred low-latency lane, not
+                    # an exclusive pin. Compatible 24 GiB 3090 nodes remain
+                    # available for parallel/fallback inpaint work.
+                    warm_nodes.add(MODELVIEW_INPAINT_NODE_ID)
                 candidates, exclusions = rank_nodes(
                     nodes,
                     snapshot,
                     guard,
                     self.settings.node_heartbeat_timeout_seconds,
                     preferred_node_ids=warm_nodes,
+                    promoted_node_ids=(
+                        {MODELVIEW_INPAINT_NODE_ID}
+                        if target_workflow == MODELVIEW_INPAINT_WORKFLOW_KEY
+                        else None
+                    ),
                 )
                 if not candidates:
                     logger().debug(
@@ -2820,6 +3134,15 @@ class Scheduler:
                     )
                 )
                 try:
+                    current_job = await self.lock_job_as_leader(session, job.id)
+                    if current_job is None:
+                        return
+                    job = current_job
+                    if self.imageclip_preemption_requested(job):
+                        await self.commit_as_leader(session)
+                        await self.requeue_preempted_imageclip(job.id, client)
+                        return
+                    await self.commit_as_leader(session)
                     if recovering and not job.prompt_id and job.submission_intent_at:
                         recovery_attempt = job.attempt_count
                         client_id = job.submission_client_id or prompt_client_id(
@@ -3020,7 +3343,19 @@ class Scheduler:
                             # Large model families cannot coexist on a 24 GiB 3090.
                             # Release only on a family switch (or cold start); same-
                             # workflow jobs keep their hot cache for lower latency.
-                            free_result = await client.free()
+                            try:
+                                free_result = await self.drain_free_and_validate(
+                                    client,
+                                    interrupt=False,
+                                )
+                            except Exception as exc:
+                                await session.rollback()
+                                await self.mark_cache_drain_failed(
+                                    node.id,
+                                    job.id,
+                                    exc,
+                                )
+                                raise
                             logger().info(
                                 "executor.memory_released",
                                 job_id=job.id,
@@ -3055,6 +3390,10 @@ class Scheduler:
                         if refreshed_job is None:
                             return
                         job = refreshed_job
+                        if self.imageclip_preemption_requested(job):
+                            await self.commit_as_leader(session)
+                            await self.requeue_preempted_imageclip(job.id, client)
+                            return
                         if job.cancel_requested or job.status == JobStatus.CANCELLING.value:
                             await self.cancel_locked_job(
                                 session,
@@ -3168,6 +3507,10 @@ class Scheduler:
                         if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
                             await self.commit_as_leader(session)
                             return
+                        if self.imageclip_preemption_requested(job):
+                            await self.commit_as_leader(session)
+                            await self.requeue_preempted_imageclip(job.id, client)
+                            return
                         await persist_prompt_id(session, job, submitted_prompt_id)
                         self.storage.atomic_json(
                             root / "comfy" / "submit.response.json",
@@ -3219,6 +3562,10 @@ class Scheduler:
                     job = current_job
                     if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
                         await self.commit_as_leader(session)
+                        return
+                    if self.imageclip_preemption_requested(job):
+                        await self.commit_as_leader(session)
+                        await self.requeue_preempted_imageclip(job.id, client)
                         return
                     if job.cancel_requested or job.status == JobStatus.CANCELLING.value:
                         # Interrupt is an external side effect; epoch -> Job
@@ -3334,6 +3681,10 @@ class Scheduler:
                     if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
                         await self.commit_as_leader(session)
                         return
+                    if self.imageclip_preemption_requested(job):
+                        await self.commit_as_leader(session)
+                        await self.requeue_preempted_imageclip(job.id, client)
+                        return
                     if job.cancel_requested:
                         await self.cancel_locked_job(
                             session,
@@ -3376,10 +3727,16 @@ class Scheduler:
             await asyncio.sleep(0.5)
             async with self.db.session() as session:
                 await self.assert_scheduler_epoch(session)
-                cancel_requested = await session.scalar(
-                    select(Job.cancel_requested).where(Job.id == job_id)
+                intent = (
+                    await session.execute(
+                        select(Job.cancel_requested, Job.error_code).where(Job.id == job_id)
+                    )
+                ).one_or_none()
+                cancel_requested = bool(intent and intent[0])
+                inpaint_preemption = bool(
+                    intent and intent[1] == IMAGECLIP_INPAINT_PREEMPTION_CODE
                 )
-                if cancel_requested:
+                if cancel_requested or inpaint_preemption:
                     try:
                         await asyncio.wait_for(client.interrupt(), timeout=5)
                     except Exception as exc:

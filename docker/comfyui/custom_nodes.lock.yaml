@@ -14,16 +14,22 @@ custom_nodes:
     security_notes: 官方公开仓库；固定提交；用于 Image Comparer (rgthree)。
   - name: ComfyUI-Easy-Use
     repository: https://github.com/yolain/ComfyUI-Easy-Use.git
-    commit: 54d080bf6a4f52da287e984f305243c10db097f5
+    commit: b5e31ef12ad9d0b187b545c2707735cc7d581c52
     enabled: true
     requirements_lock: requirements.easy-use.lock.txt
-    security_notes: 官方公开仓库；固定提交；ImageClip 当前仅使用 easy float。
+    security_notes: 官方公开仓库；固定 v1.3.6 标签提交；用于 easy imageColorMatch，并继续兼容 ImageClip easy float。
+  - name: ComfyUI_essentials
+    repository: https://github.com/cubiq/ComfyUI_essentials.git
+    commit: 9d9f4bedfc9f0321c19faf71855e228c93bd0dc9
+    enabled: true
+    requirements_lock: requirements.essentials.lock.txt
+    security_notes: 官方公开仓库；固定工作流记录提交；仅使用 ImageResize+，不安装该插件其余节点的可选推理依赖，避免升级基础 Torch/NumPy/Pillow/Scipy 锁。
   - name: ComfyUI-nunchaku
     repository: https://github.com/nunchaku-ai/ComfyUI-nunchaku.git
-    commit: d329ebab041199eee4d70689da17495df629bd64
+    commit: e9f7eec800ed5c3eaa87c5598614f31eef65bcbb
     enabled: true
     requirements_lock: requirements.nunchaku.lock.txt
-    security_notes: 官方公开仓库；固定 v1.0.1 提交；后端固定 v1.0.0/torch2.7/cp311 Linux wheel；用于 ModelViewCreator NunchakuFluxDiTLoader。
+    security_notes: 官方公开仓库；固定 v1.2.1 提交；后端固定 v1.2.1/cu13.0/torch2.11/cp311 Linux wheel；用于 ModelViewCreator NunchakuFluxDiTLoader。
   - name: ComfyUI-Inpaint-CropAndStitch
     repository: https://github.com/lquesada/ComfyUI-Inpaint-CropAndStitch.git
     commit: daa7e85a69248f09dbc34269839a81bcc8c13589

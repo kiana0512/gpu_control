@@ -61,6 +61,27 @@ async def test_comfy_client_accepts_empty_free_response() -> None:
         await client.close()
 
 
+async def test_comfy_client_accepts_empty_or_text_interrupt_acknowledgement() -> None:
+    responses = iter(
+        [
+            httpx.Response(200, content=b""),
+            httpx.Response(200, text="Prompt interrupted"),
+        ]
+    )
+
+    async def interrupt_ack(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/interrupt"
+        return next(responses)
+
+    client = ComfyClient("http://fake", transport=httpx.MockTransport(interrupt_ack))
+    try:
+        assert await client.interrupt() == {}
+        assert await client.interrupt() == {}
+    finally:
+        await client.close()
+
+
 async def test_prompt_submission_recovery_finds_queue_and_history_without_resubmit() -> None:
     state = State(behavior=Behavior(duration_seconds=60))
     client = ComfyClient(

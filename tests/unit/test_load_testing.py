@@ -91,6 +91,10 @@ def scenario_payload(*, weights_confirmed: bool = True) -> dict:
                 "pipeline_sha256": "3" * 64,
                 "output_node": "SaveImage #25",
             },
+            "modelview-inpaint": {
+                "version": "approved-inpaint",
+                "template_sha256": "5" * 64,
+            },
             "modelview-roughness": {
                 "version": "approved-roughness",
                 "template_sha256": "4" * 64,
@@ -140,6 +144,7 @@ def fixture_manifest(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     simple_files = {
+        "inpaint.png": b"png",
         "roughness.png": b"png",
         "asset.fbx": b"fbx",
         "audit.blend": b"blend",
@@ -188,14 +193,11 @@ def fixture_manifest(tmp_path: Path) -> Path:
                     "archive": str(archive_path),
                     "manifest": str(manifest_path),
                 },
+                "modelview_inpaint": {"image": str(tmp_path / "inpaint.png")},
                 "modelview_roughness": {"image": str(tmp_path / "roughness.png")},
                 "uv_process": {
                     "asset": str(tmp_path / "asset.fbx"),
                     "metadata": str(tmp_path / "uv.json"),
-                },
-                "retopology_audit": {
-                    "project": str(tmp_path / "audit.blend"),
-                    "metadata": str(tmp_path / "audit.json"),
                 },
                 "retopology_process": {
                     "project": str(tmp_path / "process.blend"),
@@ -241,8 +243,7 @@ def add_target_release_identity(environment: dict[str, str]) -> None:
             "LOAD_TEST_WORKER_IMAGE_DIGEST": f"sha256:{'5' * 64}",
             "LOAD_TEST_RELEASE_EVIDENCE_COMMIT": "b" * 40,
             "LOAD_TEST_RELEASE_EVIDENCE_PATH": (
-                "artifacts/control-plane/1.5.9/deployment/"
-                "live-deployment-receipt.json"
+                "artifacts/control-plane/1.5.9/deployment/live-deployment-receipt.json"
             ),
             "LOAD_TEST_RELEASE_EVIDENCE_SHA256": "c" * 64,
             "LOAD_TEST_SUBSTANCE_AGENT_SHA256": "d" * 64,
@@ -373,6 +374,7 @@ def test_default_runtime_is_plan_only_and_has_no_credentials() -> None:
 def test_six_api_artifact_contracts_match_server_contracts() -> None:
     assert FIXED_LOAD_ARTIFACT_KINDS == {
         "imageclip_batch": frozenset({"result_archive"}),
+        "modelview_inpaint": frozenset({"output"}),
         "modelview_roughness": frozenset({"output"}),
         "uv_process": frozenset({"blend", "fbx", "report", "qa", "fbx_qa"}),
         "retopology_audit": frozenset({"audit", "manifest"}),
@@ -391,9 +393,12 @@ def test_six_api_artifact_contracts_match_server_contracts() -> None:
             "wrapper_events",
         }
     )
-    assert expected_load_artifact_kinds(
-        "retopology_process", metadata={"reference_views": [{"filename": "front.png"}]}
-    ) == RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS
+    assert (
+        expected_load_artifact_kinds(
+            "retopology_process", metadata={"reference_views": [{"filename": "front.png"}]}
+        )
+        == RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS
+    )
     assert (
         expected_load_artifact_kinds("retopology_process", metadata={"reference_views": []})
         == RETOPOLOGY_PROCESS_LOAD_ARTIFACT_KINDS
@@ -656,9 +661,7 @@ def candidate_evidence_blob(runtime: RuntimeSettings) -> bytes:
             "reference": f"{repository}:{version}",
             "local_image_id": digest,
             "oci_image_manifest_digest": manifest_digest,
-            "local_image_id_semantics": (
-                "ENGINE_LOCAL_CONTENT_ID_NOT_ASSUMED_CONFIG_DIGEST"
-            ),
+            "local_image_id_semantics": ("ENGINE_LOCAL_CONTENT_ID_NOT_ASSUMED_CONFIG_DIGEST"),
             "oci_config_digest": config_digest,
             "docker_archive_config_digest": config_digest,
             "docker_oci_config_match": True,
@@ -667,9 +670,7 @@ def candidate_evidence_blob(runtime: RuntimeSettings) -> bytes:
                 "org.opencontainers.image.title": title,
                 "org.opencontainers.image.version": version,
                 "org.opencontainers.image.revision": runtime.source_revision,
-                "org.opencontainers.image.source": (
-                    "https://github.com/kiana0512/gpu_control.git"
-                ),
+                "org.opencontainers.image.source": ("https://github.com/kiana0512/gpu_control.git"),
             },
         }
         offline[evidence_key] = {
@@ -723,9 +724,7 @@ def live_deployment_receipt_blob(
             "oci_config_digest": image["oci_config_digest"],
         }
     substance_agent = dict(runtime.target_release_identity["substance_agent"])
-    substance_agent["repository_script_sha256"] = hashlib.sha256(
-        substance_script_blob
-    ).hexdigest()
+    substance_agent["repository_script_sha256"] = hashlib.sha256(substance_script_blob).hexdigest()
     payload = {
         "schema_version": "gpu-control-live-deployment.v1",
         "deployment_status": "DEPLOYED_NOT_ACCEPTED",
@@ -737,10 +736,7 @@ def live_deployment_receipt_blob(
             "revision": runtime.source_revision,
         },
         "candidate_evidence": {
-            "path": (
-                "artifacts/control-plane/1.5.9/release-parts/"
-                "release-candidate-evidence.json"
-            ),
+            "path": ("artifacts/control-plane/1.5.9/release-parts/release-candidate-evidence.json"),
             "sha256": hashlib.sha256(candidate_blob).hexdigest(),
         },
         "components": components,
@@ -766,9 +762,7 @@ def test_production_release_identity_is_anchored_to_remote_git_evidence(
         candidate_blob,
         SUBSTANCE_SCRIPT_BLOB,
     )
-    environment["LOAD_TEST_RELEASE_EVIDENCE_SHA256"] = hashlib.sha256(
-        receipt_blob
-    ).hexdigest()
+    environment["LOAD_TEST_RELEASE_EVIDENCE_SHA256"] = hashlib.sha256(receipt_blob).hexdigest()
     runtime = RuntimeSettings.from_environment(environment)
     commands: list[list[str]] = []
 
@@ -848,8 +842,7 @@ def test_remote_release_evidence_rejects_candidate_as_live_authority(
     environment = allowed_environment(tmp_path)
     add_target_release_identity(environment)
     environment["LOAD_TEST_RELEASE_EVIDENCE_PATH"] = (
-        "artifacts/control-plane/1.5.9/release-parts/"
-        "release-candidate-evidence.json"
+        "artifacts/control-plane/1.5.9/release-parts/release-candidate-evidence.json"
     )
     runtime = RuntimeSettings.from_environment(environment)
 
@@ -880,9 +873,7 @@ def test_remote_release_evidence_rejects_environment_digest_self_assertion(
         candidate_blob,
         SUBSTANCE_SCRIPT_BLOB,
     )
-    environment["LOAD_TEST_RELEASE_EVIDENCE_SHA256"] = hashlib.sha256(
-        receipt_blob
-    ).hexdigest()
+    environment["LOAD_TEST_RELEASE_EVIDENCE_SHA256"] = hashlib.sha256(receipt_blob).hexdigest()
     environment["LOAD_TEST_WORKER_IMAGE_DIGEST"] = f"sha256:{'f' * 64}"
     runtime = RuntimeSettings.from_environment(environment)
 
@@ -1088,6 +1079,13 @@ def test_session_collision_scan_uses_exact_current_tenant_identities() -> None:
                 "status": "SUCCEEDED",
             },
             {
+                "kind": "job",
+                "job_id": "inpaint-job-1",
+                "tenant_id": "tenant-a",
+                "request_id": f"lt:{session_id}:mvi:00000003",
+                "status": "SUCCEEDED",
+            },
+            {
                 "kind": "batch",
                 "batch_id": "ignored-cross-tenant",
                 "tenant_id": "business",
@@ -1113,6 +1111,7 @@ def test_session_collision_scan_uses_exact_current_tenant_identities() -> None:
     assert {(item["plane"], item["task_id"]) for item in collisions} == {
         ("gpu", "batch-1"),
         ("gpu", "job-1"),
+        ("gpu", "inpaint-job-1"),
         ("asset", "asset-1"),
     }
 
@@ -1277,22 +1276,22 @@ def test_locust_uses_status_scoped_recovery_and_sync_e2e_route_name() -> None:
         for node in module.body
         if isinstance(node, ast.FunctionDef) and node.name == "discover_teardown_records"
     )
-    roughness = next(
+    sync_image = next(
         node
         for node in ast.walk(module)
-        if isinstance(node, ast.FunctionDef) and node.name == "run_modelview_roughness"
+        if isinstance(node, ast.FunctionDef) and node.name == "run_sync_image_service"
     )
 
     active_query_source = ast.get_source_segment(source, active_query) or ""
     status_sender_source = ast.get_source_segment(source, status_sender) or ""
     discovery_source = ast.get_source_segment(source, discovery) or ""
-    roughness_source = ast.get_source_segment(source, roughness) or ""
+    sync_image_source = ast.get_source_segment(source, sync_image) or ""
     assert "client_kind={client_kind}&active_only=true&limit=500" in status_sender_source
     assert "execute_bounded_teardown_cancel" in active_query_source
     assert "ADMIN_STATUS_QUERY_THROTTLE_SECONDS" in active_query_source
     assert 'client_kind="test"' in discovery_source
     assert "passes=2" in discovery_source
-    assert 'operation="sync-e2e"' in roughness_source
+    assert 'operation="sync-e2e"' in sync_image_source
 
 
 def test_formal_preflight_rejects_distributed_locust_before_network_preflight() -> None:
@@ -1345,9 +1344,17 @@ def test_locust_virtual_users_fence_cycles_submissions_and_retries() -> None:
     assert "except LoadTestPreempted" in methods["business_cycle"]
     assert ':submit")' in methods["submit_async_asset"]
     assert ':submit")' in methods["run_imageclip_batch"]
-    assert ':submit")' in methods["run_modelview_roughness"]
-    assert "X-Artifact-SHA256" in methods["run_modelview_roughness"]
-    assert "hashlib.sha256(response.content).hexdigest()" in methods["run_modelview_roughness"]
+    assert ':submit")' in methods["run_sync_image_service"]
+    assert "X-Artifact-SHA256" in methods["run_sync_image_service"]
+    assert "hashlib.sha256(response.content).hexdigest()" in methods["run_sync_image_service"]
+    assert (
+        'self.run_sync_image_service("modelview_inpaint", ordinal)'
+        in methods["run_modelview_inpaint"]
+    )
+    assert (
+        'self.run_sync_image_service("modelview_roughness", ordinal)'
+        in methods["run_modelview_roughness"]
+    )
     for method_name in ("request_with_retry", "post_multipart"):
         assert ':request")' in methods[method_name]
         assert ':retry")' in methods[method_name]
@@ -1961,6 +1968,16 @@ def test_scoped_teardown_discovery_recovers_only_exact_run_owned_work() -> None:
                 "created_at": "2026-07-30T12:00:01Z",
             },
             {
+                "kind": "job",
+                "job_id": "inpaint-job",
+                "tenant_id": "tenant-b",
+                "client_kind": "test",
+                "workflow_key": "modelview-inpaint",
+                "request_id": "lt:run-01:mvi:00000004",
+                "status": "RUNNING",
+                "created_at": "2026-07-30T12:00:01Z",
+            },
+            {
                 "kind": "batch",
                 "job_id": "imageclip-batch",
                 "tenant_id": "tenant-b",
@@ -1990,13 +2007,17 @@ def test_scoped_teardown_discovery_recovers_only_exact_run_owned_work() -> None:
             }
         ],
         tenant_key_indices={"tenant-a": 0, "tenant-b": 1},
-        roughness_request_key_indices={"lt:run-01:mvr:00000003": 0},
+        roughness_request_key_indices={
+            "lt:run-01:mvr:00000003": 0,
+            "lt:run-01:mvi:00000004": 1,
+        },
         session_id="run-01",
         started_at="2026-07-30T12:00:00Z",
     )
 
     assert [(item["api"], item["id"], item["api_key_index"]) for item in discovered] == [
         ("imageclip_batch", "imageclip-batch", 1),
+        ("modelview_inpaint", "inpaint-job", 1),
         ("modelview_roughness", "roughness-job", 0),
         ("retopology_process", "retopo-job", 0),
     ]
@@ -2404,8 +2425,7 @@ def test_production_six_api_profile_requires_100_to_120_users_and_finishes_at_pe
     )
 
     assert (
-        any("peak between 100 and 120 users" in blocker for blocker in blockers)
-        is profile_blocked
+        any("peak between 100 and 120 users" in blocker for blocker in blockers) is profile_blocked
     )
     if users > 120:
         assert any("safety cap of 120" in blocker for blocker in blockers)
@@ -2648,8 +2668,8 @@ def test_plan_redacts_secrets_and_exposes_resource_mix(tmp_path: Path) -> None:
     assert plan["secret_inventory"]["unique_api_key_count"] == 2
     assert plan["target_release_identity"] == runtime.target_release_identity
     assert plan["scenario"]["resource_mix"] == {
-        "gpu_consuming": 0.5,
-        "cpu": 0.5,
+        "gpu_consuming": 0.666667,
+        "cpu": 0.333333,
     }
 
 
@@ -2670,9 +2690,9 @@ def test_result_manifest_cannot_claim_external_acceptance_before_git_publish(
 def test_locust_records_terminal_json_artifact_sha_evidence_and_release_identity() -> None:
     source_path = Path(__file__).resolve().parents[2] / "tests/load/locustfile.py"
     source = source_path.read_text(encoding="utf-8")
-    runner_source = (
-        Path(__file__).resolve().parents[2] / "scripts/run_six_api_load.py"
-    ).read_text(encoding="utf-8")
+    runner_source = (Path(__file__).resolve().parents[2] / "scripts/run_six_api_load.py").read_text(
+        encoding="utf-8"
+    )
 
     for required_field in (
         "raw_terminal_status_json",
@@ -2759,7 +2779,10 @@ def test_thresholds_separate_sync_final_e2e_from_async_submit() -> None:
     assert result["passed"] is True
     assert result["observed"]["submit_p95_ms"] == 2500
     assert result["observed"]["sync_e2e_p95_ms"] == 467000
-    assert result["route_classification"]["sync_end_to_end_api_names"] == ["modelview_roughness"]
+    assert result["route_classification"]["sync_end_to_end_api_names"] == [
+        "modelview_inpaint",
+        "modelview_roughness",
+    ]
 
     backward_compatible = dict(thresholds)
     backward_compatible.pop("sync_e2e_p95_ms")

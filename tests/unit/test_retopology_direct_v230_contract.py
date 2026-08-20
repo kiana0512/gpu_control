@@ -31,12 +31,12 @@ def test_approved_v324_package_is_complete() -> None:
     assert (ROOT / "server" / "batch_retopology.py").is_file()
     assert (
         file_sha256(ROOT / "blender-auto-retopo-align" / "SKILL.md")
-        == "54ea80372beb6ec8de97f816cd4f32d1140f3e409fbcfbeb90d1a826ed3a4b3c"
+        == "ef74ece4b1a373b35f999daa5890b71bc7b45ebf661baad943e807efb8132fd9"
     )
-    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.24"
+    assert RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION == "3.0.25"
     assert (
         RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256
-        == "e6bdc11ded860cfc71381af3eed16b2db2df424393779e84b1da7c548672d169"
+        == "d415d93b0153634e96ac263d0f25c61feeea2bb8f270596ed1395154f40ec1a1"
     )
 
 
@@ -119,7 +119,9 @@ def test_v324_region_method_routing_and_fast_delivery_contract_are_wired() -> No
     assert "木堆、石堆、碎料堆" in prompt
     assert "duplicate_vertex_ratio > 0.20" in prompt
     assert "classification-only" in prompt
-    assert "至少保留其原始面的 20%" in prompt
+    assert "几何是否融合只描述能否安全分区，绝不等于资产是否复杂" in prompt
+    assert "不得使用固定百分比" in prompt
+    assert "adaptive_shape_budget" in (ROOT / "blender-auto-retopo-align/scripts/controlled_reduction_fallback.py").read_text("utf-8")
     assert "禁止用 `x/y/z` 范围、AABB 平面或逐面布尔条件" in prompt
     assert "不得把这个临时焊接写回 `SOURCE_HIGH` 或最终低模" in prompt
     assert "聚合包络只能由排除全部软表面后的高模聚合点生成" in prompt
@@ -139,9 +141,9 @@ def test_v324_region_method_routing_and_fast_delivery_contract_are_wired() -> No
         ROOT
         / "blender-auto-retopo-align/scripts/controlled_reduction_fallback.py"
     ).read_text("utf-8")
-    assert 'modifier.ratio = args.ratio' in fallback
+    assert "modifier.ratio = ratio" in fallback
     assert '"--prefer-normalized-work"' in fallback
-    assert '"uv_policy": "no_uv_generation_or_modification"' in fallback
+    assert '"uv_policy": "preserve_existing_no_generation_or_relayout"' in fallback
     assert "guard_shape_authority_plan.py" not in prompt
     assert '"timing_seconds"' in entrypoint
     prepare = (

@@ -29,6 +29,7 @@ const jobType = ref<
 const jobState = ref<"ALL" | "ACTIVE" | "SUCCEEDED" | "FAILED">("ALL");
 const jobSearch = ref("");
 const selectedJob = ref<AssetJobInfo | null>(null);
+const retryingJobId = ref("");
 const cancellingJobId = ref("");
 
 const workers = computed(() => {
@@ -382,6 +383,38 @@ function canCancel(job: AssetJobInfo) {
   ].includes(job.status);
 }
 
+function canRetrySubstance(job: AssetJobInfo) {
+  return (
+    job.job_type === "SUBSTANCE_BAKE_V1" &&
+    job.status === "FAILED" &&
+    job.stage === "RECOVERY_REQUIRED"
+  );
+}
+
+async function retrySubstanceJob(job: AssetJobInfo) {
+  try {
+    await ElMessageBox.confirm(
+      `确认重试烘焙任务 ${job.external_asset_id}？系统会重新检查 3090-B、四个 v7 Agent 和原生 Baker 进程。`,
+      "安全重试烘焙任务",
+      {
+        type: "warning",
+        confirmButtonText: "确认 Admin Retry",
+        cancelButtonText: "返回",
+      },
+    );
+    retryingJobId.value = job.job_id;
+    await api.retryAssetJob(job.job_id);
+    ElMessage.success("烘焙任务已安全返回队列");
+    await run();
+  } catch (cause) {
+    if (cause !== "cancel" && cause !== "close") {
+      ElMessage.error(cause instanceof Error ? cause.message : "烘焙任务重试失败");
+    }
+  } finally {
+    retryingJobId.value = "";
+  }
+}
+
 async function cancelAssetJob(job: AssetJobInfo) {
   try {
     await ElMessageBox.confirm(
@@ -729,6 +762,14 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           <div class="asset-job-actions">
             <button class="secondary compact" @click="openJob(job)">
               查看
+            </button>
+            <button
+              v-if="canRetrySubstance(job)"
+              class="secondary compact"
+              :disabled="retryingJobId === job.job_id"
+              @click="retrySubstanceJob(job)"
+            >
+              {{ retryingJobId === job.job_id ? "重试中" : "Admin Retry" }}
             </button>
             <button
               v-if="canCancel(job)"
