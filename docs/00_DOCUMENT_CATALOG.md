@@ -57,5 +57,6 @@
 ## 发布制品说明
 
 - `artifacts/**/README.md` 与 `artifacts/**/evidence/tests/*.md`：已跟踪的小型发布清单和验证文字；历史 LFS 分片保持不变。
+- `artifacts/asset-release/uv-multimesh-mof-20260820/`：当前 Asset API/Blender Worker 的源码锁定镜像身份、测试结果和零新增 LFS 策略。
 - 新的模型、Canary FBX/Blend、Docker tar 和本地测试输出不得加入 Git 或 Git LFS。发布只提交源码、哈希、镜像身份和可复现命令。
 - `resources/` 是可复现业务资源；`runtime/asset-skills/` 只保存批准的 Skill 文本/脚本；其他 `runtime/`、`output/` 和依赖目录均为本机生成内容。
