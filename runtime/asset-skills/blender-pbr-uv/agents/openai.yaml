@@ -1,0 +1,4 @@
+interface:
+  display_name: "Blender PBR UV"
+  short_description: "按硬边与隐藏缝规则展开、打直并质检 Blender PBR UV"
+  default_prompt: "使用 $blender-pbr-uv 为这个 FBX 模型制作并质检 PBR UV。"

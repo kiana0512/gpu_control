@@ -2517,6 +2517,7 @@ async def test_uv_asset_job_contract_worker_concurrency_and_atomic_artifacts(
     metadata = {
         "external_asset_id": "asset:chair:g1",
         "options": {
+            "algorithm": "legacy_pbr",
             "resolution": 2048,
             "padding_px": 10,
             "hard_edge_angle_degrees": 75,
@@ -2760,6 +2761,7 @@ async def claim_asset_job(
             "load_1m": 1.0,
             "available_memory_mb": 100000,
             "accepts_codex_jobs": accepts_codex_jobs,
+            "uv_algorithms": ["legacy_pbr", "auto_v2"],
         },
     )
     assert response.status_code == 200, response.text
@@ -3995,6 +3997,7 @@ async def test_uv_process_v2_preserves_stem_and_publishes_five_verified_artifact
     metadata = {
         "external_asset_id": "asset:chair:uv:v2",
         "options": {
+            "algorithm": "legacy_pbr",
             "resolution": 2048,
             "padding_px": 10,
             "hard_edge_angle_degrees": 75,
@@ -4150,7 +4153,7 @@ async def test_uv_process_v2_rejects_known_retopology_high_artifact(
             assert uv_jobs == 0
 
 
-async def test_uv_process_v2_dual_mode_is_explicit_and_never_silently_falls_back(
+async def test_uv_process_v2_auto_routes_omitted_algorithm_and_preserves_explicit_gates(
     tmp_path: Path,
 ) -> None:
     async for _, client in prepared_asset_app(tmp_path):
@@ -4227,7 +4230,7 @@ async def test_uv_process_v2_dual_mode_is_explicit_and_never_silently_falls_back
             "/api/v1/assets/uv/process",
             headers={
                 "X-API-Key": "gpc_assetkey_secret",
-                "Idempotency-Key": "uv-default-legacy",
+                "Idempotency-Key": "uv-default-auto",
             },
             files={
                 "asset": ("asset.fbx", b"asset", "application/octet-stream"),
@@ -4235,7 +4238,7 @@ async def test_uv_process_v2_dual_mode_is_explicit_and_never_silently_falls_back
                     None,
                     json.dumps(
                         {
-                            "external_asset_id": "uv-default-legacy",
+                            "external_asset_id": "uv-default-auto",
                             "options": {},
                         }
                     ),
@@ -4243,8 +4246,31 @@ async def test_uv_process_v2_dual_mode_is_explicit_and_never_silently_falls_back
             },
         )
         assert defaulted.status_code == 202, defaulted.text
-        assert defaulted.json()["options"]["algorithm"] == "legacy_pbr"
-        assert defaulted.json()["options"]["asset_profile"] == "general"
+        assert defaulted.json()["options"]["algorithm"] == "auto"
+        assert defaulted.json()["options"]["asset_profile"] == "auto"
+
+        explicit_legacy = await client.post(
+            "/api/v1/assets/uv/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "uv-explicit-legacy",
+            },
+            files={
+                "asset": ("asset.fbx", b"asset", "application/octet-stream"),
+                "metadata": (
+                    None,
+                    json.dumps(
+                        {
+                            "external_asset_id": "uv-explicit-legacy",
+                            "options": {"algorithm": "legacy_pbr"},
+                        }
+                    ),
+                ),
+            },
+        )
+        assert explicit_legacy.status_code == 202, explicit_legacy.text
+        assert explicit_legacy.json()["options"]["algorithm"] == "legacy_pbr"
+        assert explicit_legacy.json()["options"]["asset_profile"] == "general"
 
 
 async def test_mof_worker_enables_capacity_and_can_claim_only_mof_uv(
@@ -4279,7 +4305,7 @@ async def test_mof_worker_enables_capacity_and_can_claim_only_mof_uv(
                 "display_name": "4070 Ti Windows MOF UV Worker",
                 "hostname": "worker-4070ti-wsl",
                 "blender_version": "5.2.0",
-                "skill_version": "mof-windows-1.0.9-2026.08.17-v2",
+                "skill_version": "mof-windows-native-1.0.9-2026.08.19-v3",
                 "cpu_count": 24,
                 "max_concurrency": 1,
                 "current_jobs": 0,
@@ -4306,7 +4332,7 @@ async def test_mof_worker_enables_capacity_and_can_claim_only_mof_uv(
                             "external_asset_id": "uv-mof-capacity-online",
                             "options": {
                                 "algorithm": "mof_low_seam",
-                                "asset_profile": "complex_non_hardsurface",
+                                "asset_profile": "complex_multi_mesh",
                             },
                         }
                     ),
@@ -4316,7 +4342,7 @@ async def test_mof_worker_enables_capacity_and_can_claim_only_mof_uv(
         assert created.status_code == 202, created.text
         assert created.json()["options"]["algorithm"] == "mof_low_seam"
         assert (
-            created.json()["options"]["asset_profile"] == "complex_non_hardsurface"
+            created.json()["options"]["asset_profile"] == "complex_multi_mesh"
         )
 
         await register_asset_worker(client, settings)
@@ -4351,7 +4377,242 @@ async def test_mof_worker_enables_capacity_and_can_claim_only_mof_uv(
         assert job["job_id"] == created.json()["job_id"]
         assert job["job_type"] == "UV_PROCESS_V2"
         assert job["options"]["algorithm"] == "mof_low_seam"
-        assert job["options"]["asset_profile"] == "complex_non_hardsurface"
+        assert job["options"]["asset_profile"] == "complex_multi_mesh"
+
+
+def soft_surface_auto_classification() -> dict[str, object]:
+    return {
+        "classifier_version": "uv-auto-classifier-v2",
+        "resolved_algorithm": "mof_low_seam",
+        "asset_profile": "complex_non_hardsurface",
+        "reason_codes": ["complex_multi_component_soft_surface"],
+        "evidence": {
+            "mesh_object_count": 1,
+            "face_count": 422,
+            "face_component_count": 4,
+            "vertex_count": 245,
+            "edge_count": 665,
+            "manifold_edge_count": 601,
+            "boundary_edge_count": 64,
+            "nonmanifold_edge_count": 0,
+            "modifier_count": 0,
+            "shape_key_count": 0,
+            "smooth_face_ratio": 0.0,
+            "authored_sharp_edge_ratio": 0.0,
+            "near_planar_edge_ratio": 0.11647254575707154,
+            "curved_edge_ratio": 0.7970049916805324,
+            "steep_edge_ratio": 0.08652246256239601,
+            "very_steep_edge_ratio": 0.03161397670549085,
+        },
+    }
+
+
+async def test_auto_classification_requeues_complex_soft_surface_to_mof(
+    tmp_path: Path,
+) -> None:
+    worker_id = "asset-worker-4070ti-mof-01"
+    node_id = "worker-4070ti-animation-host-01"
+    async for settings, client in prepared_asset_app(tmp_path):
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            db.add(
+                Node(
+                    id=node_id,
+                    display_name="4070 Ti",
+                    base_url="http://10.3.34.238:8188",
+                    pool="PRIMARY",
+                    mode="ACTIVE",
+                    health="ONLINE",
+                    current_jobs=0,
+                    max_concurrency=1,
+                    labels={},
+                )
+            )
+            await db.commit()
+        heartbeat = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/workers/heartbeat",
+            {
+                "worker_id": worker_id,
+                "node_id": node_id,
+                "display_name": "4070 Ti Windows MOF UV Worker",
+                "hostname": "DAC3OZHANGQICHA",
+                "blender_version": "5.2.0",
+                "skill_version": "mof-windows-native-1.0.9-2026.08.19-v3",
+                "cpu_count": 24,
+                "max_concurrency": 1,
+                "current_jobs": 0,
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                **asset_worker_generation(worker_id),
+            },
+        )
+        assert heartbeat.status_code == 200, heartbeat.text
+        await register_asset_worker(client, settings)
+
+        created = await client.post(
+            "/api/v1/assets/uv/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "uv-auto-soft-surface",
+            },
+            files={
+                "asset": ("glove.fbx", b"glove", "application/octet-stream"),
+                "metadata": (
+                    None,
+                    json.dumps(
+                        {
+                            "external_asset_id": "uv-auto-soft-surface",
+                            "options": {},
+                        }
+                    ),
+                ),
+            },
+        )
+        assert created.status_code == 202, created.text
+        assert created.json()["options"]["algorithm"] == "auto"
+
+        rolling_old_worker = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(),
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                "uv_algorithms": ["legacy_pbr"],
+            },
+        )
+        assert rolling_old_worker.status_code == 200, rolling_old_worker.text
+        assert rolling_old_worker.json()["job"] is None
+
+        classifier_claim = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(),
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                "uv_algorithms": ["legacy_pbr", "auto_v2"],
+            },
+        )
+        assert classifier_claim.status_code == 200, classifier_claim.text
+        classifier_job = classifier_claim.json()["job"]
+        assert classifier_job["job_id"] == created.json()["job_id"]
+        assert classifier_job["options"]["algorithm"] == "auto"
+
+        resolved = await client.post(
+            f"/internal/v1/assets/jobs/{classifier_job['job_id']}/uv-auto-classify",
+            headers={"X-Asset-Lease": classifier_job["lease_token"]},
+            json=soft_surface_auto_classification(),
+        )
+        assert resolved.status_code == 200, resolved.text
+        assert resolved.json()["action"] == "requeued"
+
+        legacy_retry = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(),
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                "uv_algorithms": ["legacy_pbr", "auto_v2"],
+            },
+        )
+        assert legacy_retry.status_code == 200, legacy_retry.text
+        assert legacy_retry.json()["job"] is None
+
+        mof_claim = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(worker_id, node_id),
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                "accepts_codex_jobs": False,
+                "uv_algorithms": ["mof_low_seam"],
+            },
+        )
+        assert mof_claim.status_code == 200, mof_claim.text
+        mof_job = mof_claim.json()["job"]
+        assert mof_job["job_id"] == created.json()["job_id"]
+        assert mof_job["attempt_count"] == 1
+        assert mof_job["options"]["algorithm"] == "mof_low_seam"
+        assert mof_job["options"]["asset_profile"] == "complex_non_hardsurface"
+        assert (
+            mof_job["options"]["auto_classification"]["classifier_version"]
+            == "uv-auto-classifier-v2"
+        )
+
+
+async def test_auto_classification_keeps_hard_surface_on_current_legacy_worker(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        await register_asset_worker(client, settings)
+        created = await client.post(
+            "/api/v1/assets/uv/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "uv-auto-hard-surface",
+            },
+            files={
+                "asset": ("crate.fbx", b"crate", "application/octet-stream"),
+                "metadata": (
+                    None,
+                    json.dumps(
+                        {
+                            "external_asset_id": "uv-auto-hard-surface",
+                            "options": {},
+                        }
+                    ),
+                ),
+            },
+        )
+        assert created.status_code == 202, created.text
+        claim = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(),
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                "uv_algorithms": ["legacy_pbr", "auto_v2"],
+            },
+        )
+        job = claim.json()["job"]
+        hard_surface = soft_surface_auto_classification()
+        hard_surface["resolved_algorithm"] = "legacy_pbr"
+        hard_surface["asset_profile"] = "general"
+        hard_surface["reason_codes"] = [
+            "hard_surface_edge_pattern",
+            "soft_surface_evidence_not_strong_enough",
+        ]
+        hard_evidence = hard_surface["evidence"]
+        assert isinstance(hard_evidence, dict)
+        hard_evidence.update(
+            {
+                "face_component_count": 6,
+                "smooth_face_ratio": 0.0,
+                "near_planar_edge_ratio": 0.72,
+                "curved_edge_ratio": 0.08,
+                "steep_edge_ratio": 0.20,
+                "very_steep_edge_ratio": 0.14,
+            }
+        )
+        resolved = await client.post(
+            f"/internal/v1/assets/jobs/{job['job_id']}/uv-auto-classify",
+            headers={"X-Asset-Lease": job["lease_token"]},
+            json=hard_surface,
+        )
+        assert resolved.status_code == 200, resolved.text
+        assert resolved.json()["action"] == "continue"
+        assert resolved.json()["options"]["algorithm"] == "legacy_pbr"
+        assert resolved.json()["options"]["asset_profile"] == "general"
 
 
 async def test_mof_worker_heartbeat_rejects_wrong_physical_node(tmp_path: Path) -> None:
@@ -4367,7 +4628,7 @@ async def test_mof_worker_heartbeat_rejects_wrong_physical_node(tmp_path: Path) 
                 "display_name": "misbound MOF Worker",
                 "hostname": "wrong-host",
                 "blender_version": "5.2.0",
-                "skill_version": "mof-windows-1.0.9-2026.08.17-v2",
+                "skill_version": "mof-windows-native-1.0.9-2026.08.19-v3",
                 "cpu_count": 24,
                 "max_concurrency": 1,
                 "current_jobs": 0,
@@ -4388,6 +4649,7 @@ async def create_and_claim_uv_process_v2(
     metadata = {
         "external_asset_id": external_asset_id,
         "options": {
+            "algorithm": "legacy_pbr",
             "resolution": 2048,
             "padding_px": 10,
             "hard_edge_angle_degrees": 75,

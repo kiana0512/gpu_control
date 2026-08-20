@@ -1,34 +1,24 @@
 # 统一调度中心（GPU Control）文档总入口
 
-本页是仓库文档导航。今天部署时不要从 30 多份文档逐一翻找，按下面的“现场主线”执行即可；其余文档是遇到具体问题时的细节手册。
+本页是仓库文档导航。全部 Markdown 的分类与历史边界见
+`00_DOCUMENT_CATALOG.md`；全部业务 Skill 的来源、用途和发布边界见
+`00_ASSET_SKILLS_CATALOG.md`。历史文件不移动、不重编号，以免破坏已有链接；编号重复时以完整文件名为准。
 
-2026-08-13 的四节点目标基线为 GPU Control `1.5.14`、Blender Worker `1.4.48`、数据库
-`20260810_0013`，节点为 4090、3090-A、3090-B 和 Windows/WSL2 4070Ti。六个 API 均已取得
-真实功能成功证据；3090-B Windows Substance Agent v7 已同步容器 Python 路径和异步显存释放轮询
-热修，原任务经受控 Admin Retry 在 attempt 3 成功并发布 12 个通过 SHA 校验的制品。当前进入
-`FUNCTIONAL_RECOVERY_CONFIRMED / STABILITY_TESTING`，正式 1.5.14 镜像/LFS/综合测试证据仍按发布
-门禁收口。四节点架构、固定路由、
-工作流 SHA、4070Ti 指标、真实任务、代码审计和次日验收的唯一最新记录见
-`118_2026-08-12_FOUR_GPU_RELEASE_AND_SIX_API_CLOSURE.md`；v7 热修、Admin Retry 与真实制品证据见
-`119_2026-08-13_SUBSTANCE_V7_PYTHON_PATH_HOTFIX.md`；动画管家最新对接合同见
-`120_2026-08-13_ASSETCLAW_FOUR_GPU_1_5_14_ALIGNMENT_HANDOFF.md`；动画管家修复后的事实回执见
-`121_2026-08-13_ASSETCLAW_GPU_CONTROL_1_5_14_FIX_RECEIPT.md`。此前 1.5.11 执行与证据见
-`98_2026-08-10_GPU_CONTROL_1_5_11_AUDIT_RELEASE_AND_100VU.md`；最新自动拓扑热修复见
-`104_2026-08-11_RETOPOLOGY_DEGENERATE_DELIVERY_HOTFIX.md`；拓扑低模进入 UV 后的 FBX 米制单位修复见
-`105_2026-08-11_UV_FBX_METER_UNIT_HOTFIX.md`；一键烘焙 GLB 输入 422 修复见
-`106_2026-08-11_SUBSTANCE_GLB_INPUT_HOTFIX.md`；最新 Direct V2 轴向与视觉 QA 修复见
-`107_2026-08-11_RETOPOLOGY_SOURCE_AXIS_VISUAL_QA_HOTFIX.md`；拓扑进度和无效重试修复见
-`108_2026-08-11_RETOPOLOGY_PROGRESS_AND_RETRY_HOTFIX.md`；当前自动拓扑与高模原坐标对齐包 v3.0.0
-的合同、部署和真实交付证据见 `109_2026-08-11_AUTO_RETOPO_ALIGN_V3_RELEASE.md`。
+2026-08-20 的四节点当前基线为 GPU Control API/Scheduler/Web `1.5.18`、Asset API
+`1.5.16-uv-multimesh-mof-v1`、Blender Worker `1.4.55-uv-multimesh-mof-v1`、数据库
+`20260810_0013`。节点为 4090、3090-A、3090-B 和 Windows 4070Ti。4070Ti 的 MOF 管线由原生
+PowerShell Agent 直接控制 Windows Blender/MOF，既不经 WSL 也不经 WSL2；其他 GPU/Worker 的历史
+WSL2 部署记录仍保留。
 
-生产 UV 和旧 Retopology QA 保留 `advisory` 兼容语义；v3 同任务生成不运行旧自动视觉 QA，但坐标、
-拓扑/UV 指纹、FBX 回读、身份、manifest、文件完整性、租约和 SHA 仍为硬门禁。四个 Windows
-Substance Baker Agent v7 均为
-`ONLINE/HEALTHY`。三节点 ComfyUI 使用同一 `projects-0.2.3` 镜像，健康、`RestartCount=0`，本轮未
-停止/重启 ComfyUI，也未清理模型缓存。没有注入额外合成流量；现有真实任务已完成 PBR、UV warning、
-UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重 SHA、registry/SBOM、固定基准、
-完整故障矩阵和七天观察未完成前，禁止标记
-`FROZEN / PRODUCTION_ACCEPTED`。断电或重启后仍必须以运行时 API/数据库只读检查为准。
+自动 UV 默认先在 Linux Blender Worker 读取多项几何证据：复杂多 Mesh FBX 整单转交原生 Windows
+MOF，并在统一排版后恢复原物体边界；单 Mesh 仅在复杂多结构、软表面证据充分且无 Modifier/Shape Key
+保护项时使用 MOF；其余保守走 `legacy_pbr`。生产 UV QA 为 `strict`，旧 Retopology QA 仍为
+`advisory`。当前实现、Windows 原生部署和真实 canary 证据以 130—134 号文档为准，最新入口是
+`134_2026-08-19_UV_MULTI_MESH_NATIVE_MOF_ROUTING.md`。
+
+系统仍处于 `FUNCTIONAL_RECOVERY_CONFIRMED / STABILITY_TESTING`；控制面统一、远端镜像仓库身份、
+固定基准、完整故障矩阵和七天观察未全部完成前，不标记 `FROZEN / PRODUCTION_ACCEPTED`。断电或重启后
+仍必须以运行时 API、数据库和 Worker 心跳只读检查为准。
 
 ## 1. 当前现场主线
 
@@ -110,6 +100,7 @@ UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重
 | 层级 | 文档 | 用途 |
 |---|---|---|
 | 总入口 | `00_START_HERE.md` | 当前页面，告诉操作者先做什么 |
+| 分类目录 | `00_DOCUMENT_CATALOG.md`、`00_ASSET_SKILLS_CATALOG.md` | 全部 Markdown 与业务 Skill 的分类、来源和发布边界 |
 | 产品与审计 | `00_REPOSITORY_AUDIT.md`、`29_PRODUCT_RELEASE_AND_TEST_REPORT.md` | 仓库现状、功能范围、实现证据和真实边界 |
 | 入门与架构 | `01_BEGINNER_OVERVIEW.md`、`02_ARCHITECTURE.md`、`14_SCHEDULER_DESIGN.md`、`27_CORE_LOGIC_AND_ALGORITHM_AUDIT.md` | 系统如何工作、任务状态机、3090/4090 算法 |
 | 当天部署主线 | `28_TODAY_DEPLOYMENT_MANUAL.md`、`30_TODAY_ONSITE_CHECKLIST.md` | 三机从空机到首单和 100 并发验收 |
@@ -124,7 +115,7 @@ UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重
 | Asset V4 客户端合同 | `58_2026-07-29_ASSET_V4_CLIENT_HANDOFF_AND_STABILITY.md` | UV/重拓扑当前 API、自动交付、确定性算法、Codex/RetopoFlow 健康与稳定性验收 |
 | 1.5.4 发布审计 | `59_2026-07-29_RELEASE_AUDIT_STABILITY_AND_IMAGE_RECORD.md`、`62_2026-07-30_REPRODUCIBLE_BACKUP_AND_ROLLING_UPDATE.md` | 三节点真实压力、代码审计、镜像归档、恢复状态与机器可读证据 |
 | 粗糙度与烘焙 | `57_2026-07-29_MODELVIEW_ROUGHNESS_API.md`、`58_2026-07-29_SUBSTANCE_BAKER_API.md`、`59_2026-07-29_ROUGHNESS_AND_SUBSTANCE_BAKER_API_HANDOFF_V2.md`、`61_2026-07-29_SUBSTANCE_BAKER_4_SLOT_RELEASE.md` | 粗糙度 GPU API、Windows Baker API、四槽并发与客户端交接 |
-| UV / 重拓扑 V5 | `60_2026-07-29_UV_AND_RETOPOLOGY_API_HANDOFF_V5.md` | 历史 V5 合同；当前几何 QA 已切为 advisory，正式 BLEND/FBX 交付以 70 号记录为准 |
+| UV / 重拓扑 V5 | `60_2026-07-29_UV_AND_RETOPOLOGY_API_HANDOFF_V5.md` | 历史 V5 合同与当时的 advisory 语义；当前 UV strict 主线以 130—134 号记录为准 |
 | 动画管家 V4.1 回执 | `64_2026-07-30_ASSETCLAW_GPU_CONTROL_V4_1_RECEIPT.md` | 逐项实现状态、版本证据、身份冲突、P0/P1 缺口与联合验收输入 |
 | 动画管家优化后第二轮回执 | `65_2026-07-30_ASSETCLAW_POST_OPTIMIZATION_ALIGNMENT_RECEIPT.md` | 批准的 691 身份、G-P0-01～07 候选代码状态、取消状态映射、发布与联合验收待填证据 |
 | WebUI 运行中心重构 | `66_2026-07-30_WEBUI_OPERATIONS_REDESIGN.md` | 任务/API 分类、真实时间、性能分析、调度解释、视觉验证与 Web-only 回滚边界 |
@@ -142,23 +133,26 @@ UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重
 | 自动拓扑 v3.0.3 可靠性发布 | `112_2026-08-11_RETOPOLOGY_OUTPUT_CONTRACT_AND_AUTH_RELIABILITY.md` | Agent 输出契约恢复、节点私有认证刷新、逐项坐标门禁、三节点滚动及同一故障 FBX 的生产成功回归 |
 | 1.5.9 统一发布与六 API 验收 | `83_2026-08-03_CONTROL_PLANE_1_5_9_RELEASE_AND_SIX_API_ACCEPTANCE.md` | 生产优先全局准入、精确 artifact 合同、五镜像身份、三节点灰度、浏览器 QA、120 用户压测及动画管家回执的唯一回填入口 |
 | 1.5.10 部分成功与失败帧补算 | `84_2026-08-05_PARTIAL_SUCCESS_AND_FAILED_FRAME_REPAIR_HANDOFF.md` | PARTIAL_SUCCESS、跨节点帧级重试、成功子集归档、failed_items、OOM 证据与动画管家补算合同 |
+| 当前 UV / 原生 MOF | `130_2026-08-17_UV_LEGACY_ORIGINAL_RESTORE.md`—`134_2026-08-19_UV_MULTI_MESH_NATIVE_MOF_ROUTING.md` | 原版恢复、拓扑代理、Max 兼容焊接、后台自动判定、Windows 原生 MOF 与复杂多 Mesh 整单路由 |
 | 分角色安装 | `03`—`11` | 网络、准备、4090、3090、镜像、模型、工作流、首次部署 |
 | 使用手册 | `12_WEB_ADMIN_GUIDE.md`、`13_PUBLIC_API_GUIDE.md` | 管理后台和业务 API |
 | 运维 | `15`—`22` | 日志、告警、备份、升级、故障、容量和 FAQ |
 | 验收 | `23`—`26`、`IMPLEMENTATION_STATUS.md` | 验收清单、三机验收、交付报告和单文件审计材料 |
 | 决策记录 | `docs/adr/` | 为什么选择 asyncio、PostgreSQL、Redis 通知、Loki/Alloy 等 |
 
-## 3. 三台主机职责
+## 3. 四台主机职责
 
 | 主机 | 默认职责 | GPU 状态 | 关键服务 |
 |---|---|---|---|
 | RTX 4090 主控 | 控制面、数据、监控、日志，也作为第三个受控 ComfyUI 槽位 | `OVERFLOW` | Nginx、Web、API、Scheduler、PostgreSQL、Redis、Loki、Grafana、Alloy、Prometheus、Alertmanager、ComfyUI |
 | RTX 3090-A | 主推理节点 | `ACTIVE` | ComfyUI、Alloy、GPU exporter、Node Agent |
 | RTX 3090-B | 主推理节点 | `ACTIVE` | ComfyUI、Alloy、GPU exporter、Node Agent |
+| RTX 4070Ti | 第四推理节点和授权 MOF 主机 | `ACTIVE`（以运行时为准） | ComfyUI、Windows 原生 MOF Agent、Blender/MOF、Alloy、GPU exporter、Node Agent |
 
-当前三节点压力与批量抠图模式中三卡均可接单；4090 位于 `OVERFLOW` 池，是否参与由运行时策略、
+当前四节点模式中四卡均可受控接单；4090 位于 `OVERFLOW` 池，是否参与由运行时策略、
 队列阈值、等待时间、哨兵文件、GPU 利用率、剩余显存和允许时段共同决定。需要纯两卡生产时可把
-4090 设为保留，但文档和 Web 必须展示实际运行模式，不能沿用旧“单机模式”文案。
+4090 设为保留，但文档和 Web 必须展示实际运行模式。4070Ti 的 ComfyUI 历史网络可涉及 WSL2；
+MOF Agent 明确直接运行于 Windows，不通过 WSL/WSL2 控制。
 
 ## 4. 代码结构
 
@@ -169,6 +163,7 @@ UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重
 | `apps/node_agent` | HMAC 防重放的固定运维操作代理 |
 | `apps/asset_api` | 与 GPU Scheduler 隔离的 Asset API、CPU 作业队列、租约和最终产物发布 |
 | `apps/blender_worker` | 可并发的 Blender 5.1.2 CPU Worker |
+| `apps/mof_worker` | Windows 原生 PowerShell MOF Agent、安装、SSH 管理与 canary 脚本 |
 | `apps/web` | LiClick 风格 Vue 管理后台 |
 | `packages/gpu_control_core` | 数据模型、状态机、设置、日志和通用核心逻辑 |
 | `migrations` | PostgreSQL/SQLite Alembic 迁移 |
@@ -176,6 +171,7 @@ UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重
 | `deploy` | 主控与 GPU 节点 Compose、Nginx、Loki、Alloy、Grafana、Prometheus |
 | `scripts` | `gpuctl`、初始化、驱动/Toolkit、镜像、模型、备份、诊断和联通脚本 |
 | `tests` | 单元、集成、Fake ComfyUI 和 100 并发回归测试；这是源码，不是缓存 |
+| `runtime/asset-skills` | 由双重 SHA-256 固定、允许入库的三套业务 Skill 快照；其他 `runtime` 内容均为本机状态 |
 | `workflows` | API 工作流注册格式、示例和校验 schema |
 
 ## 5. 生成文件与源码的区别
@@ -186,4 +182,8 @@ UV clean 和连续两笔重拓扑 canary。控制面统一、API artifact 三重
 
 ## 6. 上线成功的最低标准
 
-三机 CUDA 容器通过；三机 ComfyUI `projects-0.2.3` 镜像 ID 和批准模型 SHA 一致；两台 3090 显示 `ONLINE/ACTIVE`；4090 显示 `ONLINE/OVERFLOW`；PostgreSQL/Redis/API/Nginx/Loki/Grafana/Prometheus 正常；真实 API 工作流完成 1 单、3 单、10 单；Fake ComfyUI 100 并发无丢单；管理后台能够 Drain、Reserve、Release、中断、释放模型、启停/重启和下载诊断；Grafana 可按 `job_id`、`request_id`、`node_id`、`prompt_id` 查询。
+四节点 CUDA/ComfyUI 运行身份和批准模型 SHA 与发布清单一致；两台 3090、4070Ti 和 4090 的实际
+`ONLINE`/mode 与 API 心跳一致；Windows 原生 MOF Agent 通过严格 CA、HMAC、运行时哈希与真实 FBX
+canary；PostgreSQL/Redis/API/Nginx/Loki/Grafana/Prometheus 正常；真实 API 工作流完成 1 单、3 单、
+10 单；Fake ComfyUI 100 并发无丢单；管理后台能够 Drain、Reserve、Release、中断、释放模型、启停/重启
+和下载诊断；Grafana 可按 `job_id`、`request_id`、`node_id`、`prompt_id` 查询。

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Blender 游戏级重拓扑"
+  short_description: "训练方法后一次生成剪影准确、结构正确且布线稀疏的正式低模"
+  default_prompt: "使用 $blender-retopology-compare-iterate 先完整分析当前高模，再一次生成剪影、结构、突出件和布线都到位的正式游戏低模，并完成固定六视图验收。"

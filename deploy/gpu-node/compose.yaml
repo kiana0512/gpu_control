@@ -60,9 +60,9 @@ services:
       dockerfile: apps/blender_worker/Dockerfile
       args:
         BLENDER_BASE_IMAGE: ${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}
-        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.50-uv-local-stretch-v1}
+        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.55-uv-multimesh-mof-v1}
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
-    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.50-uv-local-stretch-v1}
+    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.55-uv-multimesh-mof-v1}
     restart: unless-stopped
     # Required for Codex's nested bubblewrap workspace sandbox.
     cap_add: [SYS_ADMIN]

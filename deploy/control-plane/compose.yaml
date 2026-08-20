@@ -65,7 +65,7 @@ services:
     environment:
       TMPDIR: /srv/gpu-control/assets
       ASSET_ROOT: ${ASSET_ROOT:-/srv/gpu-control/assets}
-      UV_QA_ENFORCEMENT: ${UV_QA_ENFORCEMENT:-advisory}
+      UV_QA_ENFORCEMENT: ${UV_QA_ENFORCEMENT:-strict}
       RETOPOLOGY_QA_ENFORCEMENT: ${RETOPOLOGY_QA_ENFORCEMENT:-advisory}
     volumes:
       - ${ASSET_ROOT:-/srv/gpu-control/assets}:/srv/gpu-control/assets
@@ -80,9 +80,9 @@ services:
       dockerfile: apps/blender_worker/Dockerfile
       args:
         BLENDER_BASE_IMAGE: ${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}
-        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.50-uv-local-stretch-v1}
+        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.55-uv-multimesh-mof-v1}
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
-    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.50-uv-local-stretch-v1}
+    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.55-uv-multimesh-mof-v1}
     restart: unless-stopped
     # Codex workspace-write uses bubblewrap inside the already isolated Worker
     # container. SYS_ADMIN plus unconfined seccomp/AppArmor are required for

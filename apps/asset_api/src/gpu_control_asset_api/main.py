@@ -94,6 +94,11 @@ from packages.gpu_control_core.scheduling import (
 )
 from packages.gpu_control_core.security import sign_agent_request, verify_api_key
 from packages.gpu_control_core.settings import Settings, get_settings
+from packages.gpu_control_core.uv_auto_classification import (
+    UV_AUTO_CLASSIFIER_VERSION,
+    UVGeometryEvidence,
+    classify_uv_geometry,
+)
 
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 DOWNLOADABLE_ASSET_STATUSES = frozenset({"SUCCEEDED", "WAITING_REVIEW"})
@@ -223,7 +228,8 @@ SUBSTANCE_SKILL_VERSION = "substance-baker-2026.08.12-v7"
 MOF_WORKER_ID = "asset-worker-4070ti-mof-01"
 MOF_NODE_ID = "worker-4070ti-animation-host-01"
 MOF_BLENDER_VERSION = "5.2.0"
-MOF_SKILL_VERSION = "mof-windows-1.0.9-2026.08.17-v2"
+MOF_SKILL_VERSION = "mof-windows-native-1.0.9-2026.08.19-v3"
+MOF_ASSET_PROFILES = ("complex_non_hardsurface", "complex_multi_mesh")
 RETOPOLOGY_AUDIT_ARTIFACTS = {
     "audit": ("retopology_audit.json", "application/json"),
     "manifest": ("retopology_manifest.json", "application/json"),
@@ -851,8 +857,10 @@ class WorkerClaim(BaseModel):
     # execution slot. Rolling Workers omit this field and retain the previous
     # behavior of accepting either class of work.
     accepts_codex_jobs: bool = True
-    uv_algorithms: list[Literal["legacy_pbr", "mof_low_seam"]] = Field(
-        default_factory=lambda: ["legacy_pbr"], min_length=1, max_length=2
+    uv_algorithms: list[
+        Literal["auto", "auto_v2", "legacy_pbr", "mof_low_seam"]
+    ] = Field(
+        default_factory=lambda: ["legacy_pbr"], min_length=1, max_length=3
     )
 
 
@@ -919,6 +927,39 @@ class WorkerFailure(BaseModel):
     code: str = Field(pattern=r"^[A-Z0-9_]{3,64}$")
     message: str = Field(min_length=1, max_length=4000)
     retryable: bool = True
+
+
+class UVGeometryEvidencePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mesh_object_count: int = Field(ge=0, le=100000)
+    face_count: int = Field(ge=0, le=100000000)
+    face_component_count: int = Field(ge=0, le=100000000)
+    vertex_count: int = Field(ge=0, le=100000000)
+    edge_count: int = Field(ge=0, le=200000000)
+    manifold_edge_count: int = Field(ge=0, le=200000000)
+    boundary_edge_count: int = Field(ge=0, le=200000000)
+    nonmanifold_edge_count: int = Field(ge=0, le=200000000)
+    modifier_count: int = Field(ge=0, le=100000)
+    shape_key_count: int = Field(ge=0, le=100000)
+    smooth_face_ratio: float = Field(ge=0, le=1)
+    authored_sharp_edge_ratio: float = Field(ge=0, le=1)
+    near_planar_edge_ratio: float = Field(ge=0, le=1)
+    curved_edge_ratio: float = Field(ge=0, le=1)
+    steep_edge_ratio: float = Field(ge=0, le=1)
+    very_steep_edge_ratio: float = Field(ge=0, le=1)
+
+
+class UVAutoClassificationPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    classifier_version: Literal["uv-auto-classifier-v2"]
+    resolved_algorithm: Literal["legacy_pbr", "mof_low_seam"]
+    asset_profile: Literal[
+        "general", "complex_non_hardsurface", "complex_multi_mesh"
+    ]
+    reason_codes: list[str] = Field(min_length=1, max_length=16)
+    evidence: UVGeometryEvidencePayload
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -2163,6 +2204,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not committed:
                 await cleanup_uncommitted_asset_root(request, job_id, job_root)
 
+    async def mof_worker_is_ready(db: AsyncSession) -> bool:
+        heartbeat_cutoff = datetime.now(UTC) - timedelta(
+            seconds=cfg.asset_worker_heartbeat_timeout_seconds
+        )
+        worker_id = await db.scalar(
+            select(AssetWorker.id)
+            .join(Node, Node.id == AssetWorker.node_id)
+            .where(
+                AssetWorker.id == MOF_WORKER_ID,
+                AssetWorker.node_id == MOF_NODE_ID,
+                AssetWorker.status == "ONLINE",
+                AssetWorker.blender_version == MOF_BLENDER_VERSION,
+                AssetWorker.skill_version == MOF_SKILL_VERSION,
+                AssetWorker.last_heartbeat_at >= heartbeat_cutoff,
+                Node.mode == "ACTIVE",
+                Node.health == "ONLINE",
+                Node.manual_reserved.is_(False),
+                Node.external_busy.is_(False),
+                Node.foreign_queue_detected.is_(False),
+            )
+        )
+        return worker_id == MOF_WORKER_ID
+
     @app.post("/api/v1/assets/uv/process")
     async def create_uv_process_job(
         request: Request,
@@ -2178,59 +2242,54 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raw_metadata = json.loads(metadata)
         except ValueError:
             raw_metadata = None
-        raw_algorithm = (
-            raw_metadata.get("options", {}).get("algorithm", "legacy_pbr")
-            if isinstance(raw_metadata, dict) and isinstance(raw_metadata.get("options", {}), dict)
-            else "legacy_pbr"
+        raw_options = (
+            raw_metadata.get("options", {})
+            if isinstance(raw_metadata, dict)
+            and isinstance(raw_metadata.get("options", {}), dict)
+            else {}
         )
-        if raw_algorithm not in {"legacy_pbr", "mof_low_seam"}:
+        raw_algorithm = raw_options.get("algorithm")
+        if raw_algorithm is not None and raw_algorithm not in {
+            "auto",
+            "legacy_pbr",
+            "mof_low_seam",
+        }:
             raise HTTPException(
                 422,
                 detail={
                     "code": "UV_ALGORITHM_INVALID",
-                    "message": "options.algorithm must be legacy_pbr or mof_low_seam",
+                    "message": "options.algorithm must be auto, legacy_pbr or mof_low_seam",
                 },
             )
+        if isinstance(raw_metadata, dict) and raw_algorithm in {None, "auto"}:
+            raw_metadata = {
+                **raw_metadata,
+                "options": {
+                    **raw_options,
+                    "algorithm": "auto",
+                    "asset_profile": "auto",
+                },
+            }
         try:
-            parsed = AssetCreateMetadata.model_validate_json(metadata)
+            parsed = AssetCreateMetadata.model_validate(raw_metadata)
             filename = validate_asset_filename(asset.filename or "")
         except ValueError as exc:
             raise HTTPException(
                 422, detail={"code": "ASSET_INPUT_INVALID", "message": str(exc)}
             ) from exc
         if parsed.options.algorithm == "mof_low_seam":
-            if parsed.options.asset_profile != "complex_non_hardsurface":
+            if parsed.options.asset_profile not in MOF_ASSET_PROFILES:
                 raise HTTPException(
                     422,
                     detail={
                         "code": "UV_MOF_ASSET_PROFILE_REQUIRED",
                         "message": (
-                            "mof_low_seam is restricted to assets explicitly classified "
-                            "as complex_non_hardsurface; hard-surface and general assets "
-                            "must use legacy_pbr"
+                            "mof_low_seam requires an approved complex_non_hardsurface "
+                            "or complex_multi_mesh asset profile"
                         ),
                     },
                 )
-            heartbeat_cutoff = datetime.now(UTC) - timedelta(
-                seconds=cfg.asset_worker_heartbeat_timeout_seconds
-            )
-            mof_worker = await db.scalar(
-                select(AssetWorker)
-                .join(Node, Node.id == AssetWorker.node_id)
-                .where(
-                    AssetWorker.id == MOF_WORKER_ID,
-                    AssetWorker.node_id == MOF_NODE_ID,
-                    AssetWorker.status == "ONLINE",
-                    AssetWorker.blender_version == MOF_BLENDER_VERSION,
-                    AssetWorker.skill_version == MOF_SKILL_VERSION,
-                    AssetWorker.last_heartbeat_at >= heartbeat_cutoff,
-                    Node.mode == "ACTIVE",
-                    Node.manual_reserved.is_(False),
-                    Node.external_busy.is_(False),
-                    Node.foreign_queue_detected.is_(False),
-                )
-            )
-            if mof_worker is None:
+            if not await mof_worker_is_ready(db):
                 # Fail before persisting the upload instead of queueing an
                 # unclaimable job or silently changing algorithms.
                 raise HTTPException(
@@ -2948,10 +3007,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     AssetJob.options["algorithm"].as_string(), "legacy_pbr"
                 )
                 == "mof_low_seam",
-                AssetJob.options["asset_profile"].as_string()
-                == "complex_non_hardsurface",
+                AssetJob.options["asset_profile"].as_string().in_(MOF_ASSET_PROFILES),
             )
         else:
+            supported_uv_algorithms = []
+            if "legacy_pbr" in body.uv_algorithms:
+                supported_uv_algorithms.append("legacy_pbr")
+            if "auto_v2" in body.uv_algorithms:
+                supported_uv_algorithms.append("auto")
             durable_codex_assignment = await db.scalar(
                 select(AssetJob.id)
                 .where(
@@ -2966,11 +3029,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or_(
                     AssetJob.job_type != "UV_PROCESS_V2",
                     func.coalesce(AssetJob.options["algorithm"].as_string(), "legacy_pbr").in_(
-                        [
-                            algorithm
-                            for algorithm in body.uv_algorithms
-                            if algorithm == "legacy_pbr"
-                        ]
+                        supported_uv_algorithms
                     ),
                 )
             )
@@ -3220,6 +3279,140 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "status": "CANCELLED",
             "cancel_requested": True,
         }
+
+    @app.post("/internal/v1/assets/jobs/{job_id}/uv-auto-classify")
+    async def resolve_automatic_uv_algorithm(
+        job_id: str,
+        body: UVAutoClassificationPayload,
+        db: Annotated[AsyncSession, Depends(session)],
+        lease: Annotated[str, Header(alias="X-Asset-Lease")],
+    ) -> dict[str, Any]:
+        job = await leased_job(job_id, lease, db)
+        if job.job_type != "UV_PROCESS_V2":
+            raise HTTPException(409, detail={"code": "ASSET_JOB_TYPE_MISMATCH"})
+        if str(job.options.get("algorithm") or "legacy_pbr") != "auto":
+            raise HTTPException(409, detail={"code": "UV_AUTO_ALREADY_RESOLVED"})
+
+        evidence = UVGeometryEvidence(**body.evidence.model_dump())
+        authoritative = classify_uv_geometry(evidence)
+        if (
+            body.classifier_version != UV_AUTO_CLASSIFIER_VERSION
+            or body.resolved_algorithm != authoritative.resolved_algorithm
+            or body.asset_profile != authoritative.asset_profile
+            or body.reason_codes != list(authoritative.reason_codes)
+        ):
+            raise HTTPException(422, detail={"code": "UV_AUTO_CLASSIFICATION_MISMATCH"})
+
+        now = datetime.now(UTC)
+        previous_worker_id = job.worker_id
+        classification = authoritative.as_dict()
+        job.options = {
+            **job.options,
+            "algorithm": authoritative.resolved_algorithm,
+            "asset_profile": authoritative.asset_profile,
+            "auto_classification": classification,
+        }
+        job.error_code = None
+        job.error_message = None
+        job.last_progress_at = now
+
+        if job.cancel_requested:
+            job.status = "CANCELLED"
+            job.stage = "CANCELLED"
+            job.stage_message = "自动分类完成后确认取消"
+            job.estimated_remaining_seconds = 0
+            job.finished_at = now
+            job.lease_token_hash = None
+            job.lease_expires_at = None
+            await decrement_asset_worker_jobs_atomic(db, previous_worker_id)
+            await append_asset_event(
+                db,
+                job,
+                details={
+                    "event": "asset.cancelled",
+                    "safe_point": "after_uv_auto_classification",
+                    "auto_classification": classification,
+                },
+            )
+            await db.commit()
+            return {"accepted": False, "action": "cancelled", "status": job.status}
+
+        if authoritative.resolved_algorithm == "legacy_pbr":
+            job.status = "RUNNING"
+            job.progress = max(job.progress, 4)
+            job.stage = "UV_AUTO_RESOLVED"
+            job.stage_message = "后台判定为普通或硬表面，继续使用原版 PBR UV"
+            job.estimated_remaining_seconds = 240
+            job.lease_expires_at = now + timedelta(seconds=cfg.asset_worker_lease_seconds)
+            await append_asset_event(
+                db,
+                job,
+                details={
+                    "event": "asset.uv_auto_classified",
+                    "action": "continue_on_current_worker",
+                    "auto_classification": classification,
+                },
+            )
+            await db.commit()
+            return {
+                "accepted": True,
+                "action": "continue",
+                "status": job.status,
+                "options": job.options,
+            }
+
+        if not await mof_worker_is_ready(db):
+            job.status = "FAILED"
+            job.stage = "FAILED"
+            job.stage_message = "后台判定需要 MOF，但原生 Windows 插件 Worker 当前不可用"
+            job.estimated_remaining_seconds = 0
+            job.finished_at = now
+            job.error_code = "UV_MOF_CAPACITY_UNAVAILABLE"
+            job.error_message = (
+                "automatic UV classification selected mof_low_seam but the licensed "
+                "native Windows MOF Worker is unavailable"
+            )
+            job.lease_token_hash = None
+            job.lease_expires_at = None
+            await decrement_asset_worker_jobs_atomic(db, previous_worker_id)
+            await append_asset_event(
+                db,
+                job,
+                details={
+                    "event": "asset.failed",
+                    "automatic_fallback_blocked": True,
+                    "auto_classification": classification,
+                },
+            )
+            await db.commit()
+            return {"accepted": False, "action": "failed", "status": job.status}
+
+        await decrement_asset_worker_jobs_atomic(db, previous_worker_id)
+        job.status = "QUEUED"
+        job.progress = 0
+        job.stage = "UV_MOF_QUEUED"
+        job.stage_message = "后台判定为复杂模型，正在转交 Windows MOF 插件"
+        job.estimated_remaining_seconds = None
+        job.worker_id = None
+        job.worker_instance_id = None
+        # Classification is a routing preflight, not an unwrap attempt. The
+        # actual MOF claim must remain attempt 1 and retain the normal retry
+        # budget if a later lease expires.
+        job.attempt_count = max(0, job.attempt_count - 1)
+        job.lease_token_hash = None
+        job.lease_expires_at = None
+        await append_asset_event(
+            db,
+            job,
+            details={
+                "event": "asset.uv_auto_classified",
+                "action": "requeue_for_native_windows_mof",
+                "previous_worker_id": previous_worker_id,
+                "auto_classification": classification,
+            },
+        )
+        await db.commit()
+        return {"accepted": True, "action": "requeued", "status": job.status}
 
     @app.get("/internal/v1/assets/jobs/{job_id}/input")
     async def worker_download_input(

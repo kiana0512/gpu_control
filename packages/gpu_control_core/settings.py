@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     asset_worker_min_available_memory_mb: int = Field(8192, ge=1024, le=1_048_576)
     asset_job_max_attempts: int = Field(2, ge=1, le=10)
     substance_pending_reservation_seconds: int = Field(60, ge=30, le=86_400)
-    uv_qa_enforcement: Literal["strict", "advisory"] = "advisory"
+    uv_qa_enforcement: Literal["strict", "advisory"] = "strict"
     retopology_qa_enforcement: Literal["strict", "advisory"] = "advisory"
 
     @field_validator(

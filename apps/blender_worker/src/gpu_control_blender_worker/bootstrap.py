@@ -37,7 +37,7 @@ APPROVED_SKILL_FILE_SHA256: Mapping[str, Mapping[str, str]] = {
         ),
     },
     "blender-pbr-uv": {
-        "SKILL.md": "255bbeb16b99bb15c37ab085e57dbc26ce3f8c9f58083753423fe0bbe13d20a8",
+        "SKILL.md": "2c099600e1281434cb067ef6cd22f92a93decd4cb5632a87646a2e4704b9685c",
         "agents/openai.yaml": (
             "8c2940dcf2a9d0058ff5b8bec03e99185f3758a0f0b3ea60e7ce9345f243d5ac"
         ),
@@ -45,16 +45,16 @@ APPROVED_SKILL_FILE_SHA256: Mapping[str, Mapping[str, str]] = {
             "06872924e99f2e856c36e3e5e0aefce23c06554e6809125a4fa7ec41970c75cb"
         ),
         "references/mof-wrapper-notes.md": (
-            "fc22d8de0ac3a217b4c63e975037691382395e4e9c9d588ee418640913a86aec"
+            "5264b8f81a40b4604a092cbcb6253bc976d2a03ee815244867d9ecd8696050a1"
         ),
         "scripts/unwrap_fbx.py": (
-            "03cdb0d9ca1f971313927603cb800acccc81f4dea79db04e79496aa9956e0ca4"
+            "04c09e0907ad8ad3838be2ece177b8c9c4b4d33c151633849bfd6262a70748c9"
         ),
         "scripts/qa_uv.py": (
-            "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
+            "a263d0fc05947d70988317972f9b0bb38e7c85a165274756d3c4dbf4e05f91c3"
         ),
         "scripts/mof_unwrap.py": (
-            "a45a10ebcae868ba82c1c14bddb6d82beb907961114dad6a4462e40ace7e409d"
+            "70e98027f64b4389ec1f7086bb363e5d4a7a686b9472d17fa840ecb01dbd946d"
         ),
         "scripts/preflight_mof.py": (
             "d4639ebd34128b02496599eef55c21ed1eab295c6117fc234c819003e491db40"

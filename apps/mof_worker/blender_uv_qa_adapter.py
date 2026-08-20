@@ -6,7 +6,7 @@ import hashlib
 import importlib.util
 from pathlib import Path
 
-SKILL_QA_SHA256 = "bbabf207a60703ec0d63ce4aa78f66ff69cb338e7e0696eac95be856c8700d5d"
+SKILL_QA_SHA256 = "a263d0fc05947d70988317972f9b0bb38e7c85a165274756d3c4dbf4e05f91c3"
 ALIGNED_EPSILON = 1.0e-12
 
 
