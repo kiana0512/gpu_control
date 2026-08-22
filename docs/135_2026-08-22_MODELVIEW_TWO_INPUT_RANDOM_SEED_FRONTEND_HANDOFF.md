@@ -1,6 +1,6 @@
 # ModelView 两图输入与随机 Seed 前端对接
 
-状态：`IMPLEMENTED / ROLLOUT PENDING DRAIN`
+状态：`DEPLOYED / TWO-IMAGE CANARY PASSED`
 
 日期：2026-08-22
 
@@ -133,3 +133,44 @@ seed。额外上传字段也只在当前工作流声明对应 filename binding �
 回滚只需重新启用上一版本
 `2026.08.17-a9dbbca-flux2-klein-truev3-3input-r2` 并恢复对应 API 镜像；不删除历史
 任务、WorkflowVersion、输入、输出或审计记录。
+
+## 7. 生产落地结果
+
+生产切换已于 2026-08-22 完成：
+
+- GPU Control 源码提交：`eb15adc19618accc8c49b7303d55bc75ab492a98`
+- ModelViewCreator 源码提交：`877c006345518870bfee6c71cd6291d28a7141cb`
+- 宿主机和 4090 ComfyUI 挂载的 UI 文件 SHA-256 均为
+  `02b250430f974a4c88504968fc90ad8a93547f7c2303072bec0f247a630badbd`
+- 旧 UI 文件备份位于
+  `/opt/gpu-control/backups/modelviewcreator-2026-08-22-two-input-rseed/`，SHA-256 为
+  `73102b3ab6f48f2b52568f5dc33910ce1f59cd2e58fa16098cfb43256f849596`
+- 新 WorkflowVersion 已启用，旧三输入版本已停用但保留；4090、3090-A、3090-B
+  兼容，12GB 4070Ti 继续被显存和 class inventory 双重门禁排除
+- API 镜像：`gpu-control-api:1.5.19`，image ID
+  `sha256:66f975955f39813010c4e69f7e4d87ffe127772d106bdc82fc4b72e23d910c94`
+- Scheduler 镜像：`gpu-control-scheduler:1.5.19`，image ID
+  `sha256:51aec26d417249d870397661e7668cf66e24ed10d14e5082826b1ce57e0e9bcf`
+- Web 镜像：`gpu-control-web:1.5.19`，image ID
+  `sha256:53bacb89137e14d01af057138af3d370dede669bf36ee7b46c75c033d5653d6c`
+
+三图旧字段兼容、随机 seed 和幂等语义都通过自动化测试。后端全量回归为
+`622 passed, 16 skipped`，新增同步两图服务测试另行通过 `3/3`；Web lint、18 项
+Vitest 和生产构建通过。
+
+真实两图 canary：
+
+- job ID：`1e227229-57dd-41c1-b113-c33edaae4836`
+- prompt ID：`0a3d0031-94f1-43d2-9353-665ff5af9556`
+- 执行节点：`worker-3090-a`
+- 服务端 seed：`772747938196243`
+- 输出：2048×2048 RGB PNG，`1951819` 字节
+- 输出 SHA-256：`84e88cd5c85f3d5e5889ac12c2c04a2951c22191a0af2165b5f02b83d11e76a5`
+- 渲染快照中只有 `#4/#5` 两张上传图，`#26/#30/#31` 均不存在；`#14` seed 与
+  数据库一致，唯一输出是 `#33 output 1 -> #32`
+- 使用完全相同图片和 `Idempotency-Key` 重放后，job 总数保持 `1 -> 1`，响应仍为
+  同一 job ID 和同一产物 SHA
+
+发布过程先排空并 DRAIN 4090，再重挂载 UI 工作流；API 更新不影响 Scheduler 中的
+既有 ImageClip 执行。待 GPU job、父批次及四台 ComfyUI 队列全部自然归零后，才滚动
+更新 Scheduler/Web。切换后没有新增失败任务或 API 错误。
