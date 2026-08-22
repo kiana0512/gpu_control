@@ -31,7 +31,7 @@
 - `docs/15_*`—`docs/26_*`、`docs/28_*`、`docs/30_*`：日志、监控、备份、升级、故障、容量和现场验收。
 - `docs/31_*`—`docs/35_*`、`docs/44_*`、`docs/46_*`、`docs/48_*`、`docs/50_*`：主机接入、部署、归档和回滚记录。
 - `docs/62_*`—`docs/80_*`：可复现打包、生产排空、综合压测、稳定性热修与发布验收。
-- `docs/115_*`—`docs/123_*`、`docs/128_*`—`docs/129_*`：四节点、4070Ti、Substance、调度和 ImageClip 的近期生产记录。
+- `docs/115_*`—`docs/123_*`、`docs/128_*`—`docs/129_*`、`docs/135_*`：四节点、4070Ti、Substance、调度和当前 ModelView 两图输入发布记录。
 - `docs/adr/*.md`：不可变架构决策记录。
 
 ## UV、烘焙与 Windows 原生 Worker
@@ -52,7 +52,7 @@
 ## GPU 图像业务与客户端交接
 
 - `docs/32_*`、`docs/37_*`—`docs/42_*`、`docs/45_*`、`docs/47_*`、`docs/49_*`、`docs/56_*`—`docs/59_2026-07-29_MODELVIEW_*`、`docs/64_*`—`docs/69_*`：图像 API、动画管家、ModelView 和客户端交接演进。
-- `docs/84_2026-08-05_PARTIAL_SUCCESS_*`、`docs/103_*`、`docs/118_*`—`docs/123_*`、`docs/126_*`—`docs/129_*`：部分成功、交互优先、四 GPU、ImageClip 与局部重绘当前记录。
+- `docs/84_2026-08-05_PARTIAL_SUCCESS_*`、`docs/103_*`、`docs/118_*`—`docs/123_*`、`docs/126_*`—`docs/129_*`、`docs/135_*`：部分成功、交互优先、四 GPU、ImageClip 与局部重绘当前记录。
 
 ## 发布制品说明
 

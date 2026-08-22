@@ -8,6 +8,7 @@ import math
 import mimetypes
 import os
 import re
+import secrets
 import time
 import uuid
 import zipfile
@@ -170,6 +171,13 @@ DURATION = Histogram(
     "gpu_control_http_request_duration_seconds", "HTTP request duration", ["method", "route"]
 )
 
+# ComfyUI's browser-side randomizer uses integers that remain exact in JSON and
+# JavaScript.  Keep the server-generated value in the same 50-bit range while
+# using a cryptographically strong generator so separate jobs do not share the
+# fixed seed saved in the UI workflow.
+MODELVIEW_NOISE_SEED_EXCLUSIVE_MAX = 1 << 50
+MODELVIEW_NOISE_SEED_PARAMETER = "noise_seed"
+
 
 def service_queue_policy(workflow_key: str) -> tuple[Priority, bool]:
     """Return the server-owned scheduling class for a synchronous service."""
@@ -177,6 +185,30 @@ def service_queue_policy(workflow_key: str) -> tuple[Priority, bool]:
     if workflow_key in INTERACTIVE_WORKFLOW_KEYS:
         return Priority.CRITICAL, True
     return Priority.NORMAL, False
+
+
+def inject_server_owned_workflow_parameters(
+    workflow_key: str,
+    bindings: dict[str, Any],
+    parameters: dict[str, Any],
+) -> None:
+    """Add execution parameters that callers must not choose themselves.
+
+    The binding check keeps a rolling deployment compatible with the previous
+    ModelView workflow version: API code may be updated before the new immutable
+    workflow is enabled without breaking jobs that still use the old template.
+    """
+
+    if (
+        workflow_key != MODELVIEW_INPAINT_WORKFLOW_KEY
+        or MODELVIEW_NOISE_SEED_PARAMETER not in bindings
+    ):
+        return
+    if MODELVIEW_NOISE_SEED_PARAMETER in parameters:
+        raise ValueError("noise_seed 由任务中心为每个新任务生成，客户端不能传入")
+    parameters[MODELVIEW_NOISE_SEED_PARAMETER] = secrets.randbelow(
+        MODELVIEW_NOISE_SEED_EXCLUSIVE_MAX
+    )
 
 
 def runtime_version_metadata() -> dict[str, Any]:
@@ -1132,6 +1164,17 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             raise HTTPException(
                 404, detail={"code": "WORKFLOW_NOT_FOUND", "message": "工作流版本不存在或未启用"}
             )
+        try:
+            inject_server_owned_workflow_parameters(
+                workflow_key,
+                {str(key): value for key, value in workflow.bindings.items()},
+                parameters,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                422,
+                detail={"code": "INPUT_INVALID", "message": str(exc)},
+            ) from exc
         client = await db.get(ApiClient, principal.id)
         if callback_url:
             allowed_hosts = {
@@ -1548,6 +1591,11 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 404,
                 detail={"code": "WORKFLOW_NOT_FOUND", "message": "服务工作流未启用"},
             )
+        accepted_additional_images = tuple(
+            (field_name, upload)
+            for field_name, upload in additional_images
+            if f"{field_name}_filename" in workflow.bindings
+        )
         tenant_lock = request.app.state.tenant_locks.setdefault(principal.id, asyncio.Lock())
         # Local repaint is an interactive operation.  It must take the first
         # compatible GPU slot released by an already-running job instead of
@@ -1570,7 +1618,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 None,
                 None,
                 pinned=pinned,
-                additional_images=additional_images,
+                additional_images=accepted_additional_images,
             )
         job_id = str(json.loads(bytes(queued.body))["job_id"])
         deadline = asyncio.get_running_loop().time() + workflow.timeout_seconds + 60
@@ -1649,7 +1697,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         db: Annotated[AsyncSession, Depends(session)],
         image: Annotated[UploadFile, File()],
         material_image: Annotated[UploadFile, File()],
-        viewport_reference: Annotated[UploadFile, File()],
+        viewport_reference: Annotated[UploadFile | None, File(deprecated=True)] = None,
         parameters: Annotated[str, Form()] = "{}",
         prompt: Annotated[str | None, Form(max_length=4096)] = None,
         idempotency_key: Annotated[
@@ -1673,7 +1721,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             idempotency_key,
             additional_images=(
                 ("material_image", material_image),
-                ("viewport_reference", viewport_reference),
+                *((("viewport_reference", viewport_reference),) if viewport_reference else ()),
             ),
         )
 

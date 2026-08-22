@@ -1,5 +1,8 @@
 # ModelView INT8 局部重绘三输入 API 对接文档
 
+> 历史合同：2026-08-22 起已由两图输入和服务端随机 seed 合同替代。新前端请使用
+> [135_2026-08-22_MODELVIEW_TWO_INPUT_RANDOM_SEED_FRONTEND_HANDOFF.md](135_2026-08-22_MODELVIEW_TWO_INPUT_RANDOM_SEED_FRONTEND_HANDOFF.md)。
+
 ## 1. 版本与不变项
 
 - GPU Control：`1.5.18`（Scheduler drainfix-r1）

@@ -15,26 +15,47 @@ def test_truev3_api_template_matches_the_approved_production_contract() -> None:
     manifest = WorkflowManifest.load(BUNDLE / "manifest.yaml")
     template = json.loads((BUNDLE / "template.api.json").read_text(encoding="utf-8"))
 
-    assert manifest.version == "2026.08.17-a9dbbca-flux2-klein-truev3-3input-r2"
+    assert manifest.version == "2026.08.22-02b2504-truev3-2input-rseed-r1"
     assert manifest.bindings == {
         "image_filename": "4.inputs.image",
         "material_image_filename": "5.inputs.image",
-        "viewport_reference_filename": "26.inputs.image",
+        "noise_seed": "14.inputs.noise_seed",
         "prompt": "9.inputs.text",
     }
     assert manifest.min_vram_mb == 24000
     assert manifest.output_nodes == ("32",)
-    assert len(template) == 27
+    assert len(template) == 24
     assert set(template) == {
-        "1", "2", "3", "4", "5", "7", "8", "9", "10", "11", "12", "13",
-        "14", "15", "16", "17", "18", "21", "22", "23", "24", "25", "26",
-        "30", "31", "32", "33",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+        "17",
+        "18",
+        "21",
+        "22",
+        "23",
+        "24",
+        "25",
+        "32",
+        "33",
     }
     assert "20" not in template
     assert not any(node["class_type"] == "PreviewImage" for node in template.values())
     assert template["32"]["class_type"] == "SaveImage"
-    assert template["32"]["inputs"]["images"] == ["31", 0]
-    assert template["14"]["inputs"]["noise_seed"] == 293365702567203
+    assert template["32"]["inputs"]["images"] == ["33", 1]
+    assert template["14"]["inputs"]["noise_seed"] == 1029362313494898
     assert template["1"]["inputs"] == {
         "unet_name": "Flux2-Klein-9B-True-V3-int8mixedrow.safetensors",
         "weight_dtype": "default",
@@ -62,13 +83,9 @@ def test_truev3_api_template_matches_the_approved_production_contract() -> None:
         "long_size": 1536,
         "square_size": 1024,
     }
-    assert template["30"]["inputs"]["method"] == "mkl"
-    assert template["31"]["inputs"]["method"] == "hm-mkl-hm"
-    assert template["5"]["inputs"]["image"] == (
-        "c67b0fab153890a6225a371dc7a8a911bc2f4c3933b9399fc4470b19f047654e.jpg"
-    )
-    assert template["26"]["inputs"]["image"] == (
-        "img_v3_0214l_5c6a7e7e-e76c-4a82-86c1-b8f7cfe87b4g.png"
+    assert template["4"]["inputs"]["image"].endswith("/image-white-model.png")
+    assert template["5"]["inputs"]["image"].endswith(
+        "/material_image-multiview-material-reference.png"
     )
     assert template["33"]["inputs"] | {"图像A": None, "图像B": None} == {
         "图像A": None,
@@ -80,10 +97,12 @@ def test_truev3_api_template_matches_the_approved_production_contract() -> None:
         "检测阈值": 18,
         "使用Alpha": True,
     }
+    assert template["33"]["inputs"]["图像A"] == ["4", 0]
+    assert template["33"]["inputs"]["图像B"] == ["25", 0]
     assert {node["class_type"] for node in template.values()} == manifest.allowed_class_types
 
 
-def test_truev3_binds_three_public_images_and_one_final_output() -> None:
+def test_truev3_binds_two_public_images_server_seed_and_one_final_output() -> None:
     manifest = WorkflowManifest.load(BUNDLE / "manifest.yaml")
     template = json.loads((BUNDLE / "template.api.json").read_text(encoding="utf-8"))
     default_prompt = template["9"]["inputs"]["text"]
@@ -94,7 +113,7 @@ def test_truev3_binds_three_public_images_and_one_final_output() -> None:
         {
             "image_filename": "job-a/white-model.png",
             "material_image_filename": "job-a/six-view.png",
-            "viewport_reference_filename": "job-a/viewport-reference.png",
+            "noise_seed": 101,
         },
     )
     overridden = render_workflow(
@@ -103,22 +122,23 @@ def test_truev3_binds_three_public_images_and_one_final_output() -> None:
         {
             "image_filename": "job-b/white-model.png",
             "material_image_filename": "job-b/six-view.png",
-            "viewport_reference_filename": "job-b/viewport-reference.png",
+            "noise_seed": 202,
             "prompt": "preserve geometry and repair only the selected material",
         },
     )
 
     assert automatic["4"]["inputs"]["image"] == "job-a/white-model.png"
     assert automatic["5"]["inputs"]["image"] == "job-a/six-view.png"
-    assert automatic["26"]["inputs"]["image"] == "job-a/viewport-reference.png"
+    assert automatic["14"]["inputs"]["noise_seed"] == 101
     assert automatic["9"]["inputs"]["text"] == default_prompt
     assert overridden["4"]["inputs"]["image"] == "job-b/white-model.png"
     assert overridden["5"]["inputs"]["image"] == "job-b/six-view.png"
-    assert overridden["26"]["inputs"]["image"] == "job-b/viewport-reference.png"
+    assert overridden["14"]["inputs"]["noise_seed"] == 202
     assert overridden["9"]["inputs"]["text"] == (
         "preserve geometry and repair only the selected material"
     )
-    assert template["4"]["inputs"]["image"] == "11 (1).png"
+    assert template["4"]["inputs"]["image"].endswith("/image-white-model.png")
+    assert template["14"]["inputs"]["noise_seed"] == 1029362313494898
     assert template["9"]["inputs"]["text"] == default_prompt
 
 
@@ -140,27 +160,20 @@ def test_bundled_cherry_sources_are_byte_exact_to_upstream_commit() -> None:
         assert hashlib.sha256((PLUGIN / filename).read_bytes()).hexdigest() == digest
 
 
-def test_official_plugin_revisions_are_immutable_and_match_the_workflow() -> None:
+def test_required_official_plugin_revision_is_immutable_and_matches_the_workflow() -> None:
+    manifest = WorkflowManifest.load(BUNDLE / "manifest.yaml")
     lock = yaml.safe_load(
-        (ROOT / "docker" / "comfyui" / "custom_nodes.lock.yaml").read_text(
-            encoding="utf-8"
-        )
+        (ROOT / "docker" / "comfyui" / "custom_nodes.lock.yaml").read_text(encoding="utf-8")
     )
     revisions = {item["name"]: item["commit"] for item in lock["custom_nodes"]}
 
-    assert revisions["ComfyUI-Easy-Use"] == (
-        "b5e31ef12ad9d0b187b545c2707735cc7d581c52"
-    )
-    assert revisions["ComfyUI_essentials"] == (
-        "9d9f4bedfc9f0321c19faf71855e228c93bd0dc9"
-    )
+    assert revisions["ComfyUI_essentials"] == ("9d9f4bedfc9f0321c19faf71855e228c93bd0dc9")
+    assert not any(item.startswith("ComfyUI-Easy-Use@") for item in manifest.required_custom_nodes)
 
 
 def test_truev3_models_and_visible_workflow_mount_are_pinned() -> None:
     model_manifest = yaml.safe_load(
-        (ROOT / "configs" / "modelviewcreator.models.manifest.yaml").read_text(
-            encoding="utf-8"
-        )
+        (ROOT / "configs" / "modelviewcreator.models.manifest.yaml").read_text(encoding="utf-8")
     )
     models = {item["path"]: item for item in model_manifest["models"]}
     assert models["unet/Flux2-Klein-9B-True-V3-int8mixedrow.safetensors"] == {

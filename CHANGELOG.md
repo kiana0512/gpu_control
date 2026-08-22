@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.19 — ModelView two-input workflow and per-job seed — 2026-08-22
+
+- Replace the three-image ModelView TrueV3 graph with the user-approved two-image UI workflow;
+  remove the third color reference and both post-generation Easy-Use color-match nodes.
+- Generate a fresh 50-bit `RandomNoise #14` seed for every newly created ModelView job while
+  retaining the stored seed for idempotent submission replay and Scheduler retries.
+- Keep the old optional `viewport_reference` upload as a rollout-only ignored compatibility field,
+  and publish the two-file frontend contract and regeneration/idempotency guidance in document 135.
+
 ## 1.5.18 — TrueV3 inpaint and ImageClip color-correct output — 2026-08-17
 
 - Promote the 4090 to the preferred ten-minute INT8 local-inpaint lane while keeping 3090-A and

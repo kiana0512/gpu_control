@@ -76,11 +76,11 @@
   },
   "14": {
     "_meta": {
-      "title": "固定测试种子"
+      "title": "任务中心随机种子"
     },
     "class_type": "RandomNoise",
     "inputs": {
-      "noise_seed": 293365702567203
+      "noise_seed": 1029362313494898
     }
   },
   "15": {
@@ -261,15 +261,6 @@
       ]
     }
   },
-  "26": {
-    "_meta": {
-      "title": "参考颜色图"
-    },
-    "class_type": "LoadImage",
-    "inputs": {
-      "image": "img_v3_0214l_5c6a7e7e-e76c-4a82-86c1-b8f7cfe87b4g.png"
-    }
-  },
   "3": {
     "_meta": {
       "title": "Flux2 VAE"
@@ -277,44 +268,6 @@
     "class_type": "VAELoader",
     "inputs": {
       "vae_name": "flux2-vae.safetensors"
-    }
-  },
-  "30": {
-    "_meta": {
-      "title": "图像颜色匹配"
-    },
-    "class_type": "easy imageColorMatch",
-    "inputs": {
-      "image_output": "Hide",
-      "image_ref": [
-        "33",
-        0
-      ],
-      "image_target": [
-        "33",
-        1
-      ],
-      "method": "mkl",
-      "save_prefix": "ComfyUI"
-    }
-  },
-  "31": {
-    "_meta": {
-      "title": "图像颜色匹配"
-    },
-    "class_type": "easy imageColorMatch",
-    "inputs": {
-      "image_output": "Hide",
-      "image_ref": [
-        "33",
-        0
-      ],
-      "image_target": [
-        "30",
-        0
-      ],
-      "method": "hm-mkl-hm",
-      "save_prefix": "ComfyUI"
     }
   },
   "32": {
@@ -325,8 +278,8 @@
     "inputs": {
       "filename_prefix": "ComfyUI",
       "images": [
-        "31",
-        0
+        "33",
+        1
       ]
     }
   },
@@ -338,7 +291,7 @@
     "inputs": {
       "使用Alpha": true,
       "图像A": [
-        "26",
+        "4",
         0
       ],
       "图像B": [
@@ -358,7 +311,7 @@
     },
     "class_type": "LoadImage",
     "inputs": {
-      "image": "11 (1).png"
+      "image": "d1783234-b88a-42e7-9341-099b2c5c9050/image-white-model.png"
     }
   },
   "5": {
@@ -367,7 +320,7 @@
     },
     "class_type": "LoadImage",
     "inputs": {
-      "image": "c67b0fab153890a6225a371dc7a8a911bc2f4c3933b9399fc4470b19f047654e.jpg"
+      "image": "d1783234-b88a-42e7-9341-099b2c5c9050/material_image-multiview-material-reference.png"
     }
   },
   "7": {

@@ -7,7 +7,7 @@
 > 3090-B v7 修复与成功 Retry 见 [2026-08-13 专项记录](docs/119_2026-08-13_SUBSTANCE_V7_PYTHON_PATH_HOTFIX.md)。
 > 1.5.15 稳定版镜像、部署与验收见 [稳定版发布记录](docs/122_2026-08-13_GPU_CONTROL_1_5_15_STABLE_RELEASE.md)。
 > 3090-B 烘焙排空自动恢复修复见 [1.5.16 热修记录](docs/123_2026-08-13_GPU_CONTROL_1_5_16_3090B_AUTO_RECOVERY_HOTFIX.md)。
-> TrueV3 三输入局部重绘对接见 [局部重绘 API 文档](docs/126_2026-08-17_MODELVIEW_INT8_THREE_INPUT_API_HANDOFF.md)；
+> TrueV3 两图输入与随机 seed 对接见 [局部重绘 API 文档](docs/135_2026-08-22_MODELVIEW_TWO_INPUT_RANDOM_SEED_FRONTEND_HANDOFF.md)；
 > ImageClip 校色输出修复与四节点验收见 [1.5.18 校色热修记录](docs/127_2026-08-17_IMAGECLIP_COLOR_OUTPUT_HOTFIX.md)。
 > 4070 Ti 开启 HAGS 后的 WSL2/portproxy 恢复见 [4070 重启恢复记录](docs/128_2026-08-17_4070TI_HAGS_REBOOT_RECOVERY.md)。
 > 4090 局部重绘错误互锁修复与真实抢占回归见 [调度 drainfix 记录](docs/129_2026-08-17_4090_INPAINT_DRAIN_INTERLOCK_HOTFIX.md)。

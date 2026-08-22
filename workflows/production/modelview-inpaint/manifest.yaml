@@ -1,5 +1,5 @@
 workflow_key: modelview-inpaint
-version: 2026.08.17-a9dbbca-flux2-klein-truev3-3input-r2
+version: 2026.08.22-02b2504-truev3-2input-rseed-r1
 template_file: template.api.json
 parameter_schema:
   type: object
@@ -12,22 +12,22 @@ parameter_schema:
       type: string
       minLength: 1
       maxLength: 512
-    viewport_reference_filename:
-      type: string
-      minLength: 1
-      maxLength: 512
+    noise_seed:
+      type: integer
+      minimum: 0
+      maximum: 1125899906842623
     prompt:
       type: string
       maxLength: 4096
   required:
     - image_filename
     - material_image_filename
-    - viewport_reference_filename
+    - noise_seed
   additionalProperties: false
 bindings:
   image_filename: 4.inputs.image
   material_image_filename: 5.inputs.image
-  viewport_reference_filename: 26.inputs.image
+  noise_seed: 14.inputs.noise_seed
   prompt: 9.inputs.text
 allowed_class_types:
   - BasicGuider
@@ -50,7 +50,6 @@ allowed_class_types:
   - VAEDecode
   - VAEEncode
   - VAELoader
-  - easy imageColorMatch
 required_models:
   - text_encoders/qwen_3_8b_fp8mixed.safetensors
   - unet/Flux2-Klein-9B-True-V3-int8mixedrow.safetensors
@@ -58,7 +57,6 @@ required_models:
   - lora/baimo_shangcaizhi_klein_v1_000005500.safetensors
 required_custom_nodes:
   - Cherry_KleinWorkflowTools@a9dbbca846ee80734d0a6123ac32d8a8e51c7fcd
-  - ComfyUI-Easy-Use@b5e31ef12ad9d0b187b545c2707735cc7d581c52
   - ComfyUI_essentials@9d9f4bedfc9f0321c19faf71855e228c93bd0dc9
 min_vram_mb: 24000
 timeout_seconds: 2400

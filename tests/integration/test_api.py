@@ -13,7 +13,13 @@ from typing import Any
 import httpx
 import pytest
 from fastapi import FastAPI
-from gpu_control_api.main import _merge_service_parameter, create_app, service_queue_policy
+from gpu_control_api.main import (
+    MODELVIEW_NOISE_SEED_EXCLUSIVE_MAX,
+    _merge_service_parameter,
+    create_app,
+    inject_server_owned_workflow_parameters,
+    service_queue_policy,
+)
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,6 +71,36 @@ def test_modelview_inpaint_uses_non_preemptive_interactive_queue_policy() -> Non
     assert service_queue_policy("modelview-inpaint") == (Priority.CRITICAL, True)
     assert service_queue_policy("imageclip-rgba") == (Priority.NORMAL, False)
     assert service_queue_policy("modelview-roughness") == (Priority.NORMAL, False)
+
+
+def test_modelview_noise_seed_is_server_owned_and_rolling_deploy_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generated = iter((101, 202))
+    monkeypatch.setattr(
+        "gpu_control_api.main.secrets.randbelow",
+        lambda upper_bound: next(generated)
+        if upper_bound == MODELVIEW_NOISE_SEED_EXCLUSIVE_MAX
+        else -1,
+    )
+    first: dict[str, Any] = {}
+    second: dict[str, Any] = {}
+    bindings = {"noise_seed": "14.inputs.noise_seed"}
+
+    inject_server_owned_workflow_parameters("modelview-inpaint", bindings, first)
+    inject_server_owned_workflow_parameters("modelview-inpaint", bindings, second)
+
+    assert first == {"noise_seed": 101}
+    assert second == {"noise_seed": 202}
+
+    old_version_parameters: dict[str, Any] = {}
+    inject_server_owned_workflow_parameters(
+        "modelview-inpaint", {"image_filename": "4.inputs.image"}, old_version_parameters
+    )
+    assert old_version_parameters == {}
+
+    with pytest.raises(ValueError, match="客户端不能传入"):
+        inject_server_owned_workflow_parameters("modelview-inpaint", bindings, {"noise_seed": 303})
 
 
 async def test_api_version_exposes_immutable_build_provenance(
@@ -2985,11 +3021,6 @@ async def test_direct_image_service_reports_missing_workflow(tmp_path: Path) -> 
                             b"not-an-image",
                             "image/png",
                         ),
-                        "viewport_reference": (
-                            "viewport.png",
-                            b"not-an-image",
-                            "image/png",
-                        ),
                     }
                 )
             response = await client.post(endpoint, files=files)
@@ -2997,7 +3028,9 @@ async def test_direct_image_service_reports_missing_workflow(tmp_path: Path) -> 
             assert response.json()["detail"]["code"] == "WORKFLOW_NOT_FOUND"
 
 
-async def test_modelview_inpaint_requires_exactly_three_image_roles(tmp_path: Path) -> None:
+async def test_modelview_inpaint_requires_white_model_and_material_reference(
+    tmp_path: Path,
+) -> None:
     async for _, client in prepared_app(tmp_path):
         response = await client.post(
             "/api/v1/services/modelview-inpaint",
@@ -3005,7 +3038,170 @@ async def test_modelview_inpaint_requires_exactly_three_image_roles(tmp_path: Pa
         )
         assert response.status_code == 422
         missing = {item["loc"][-1] for item in response.json()["detail"]}
-        assert missing == {"material_image", "viewport_reference"}
+        assert missing == {"material_image"}
+
+
+async def test_modelview_two_image_service_persists_seed_and_ignores_legacy_third_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from PIL import Image
+
+    generated = iter((111, 222, 333))
+    monkeypatch.setattr(
+        "gpu_control_api.main.secrets.randbelow",
+        lambda upper_bound: next(generated)
+        if upper_bound == MODELVIEW_NOISE_SEED_EXCLUSIVE_MAX
+        else -1,
+    )
+    white = io.BytesIO()
+    material = io.BytesIO()
+    Image.new("RGB", (4, 3), "white").save(white, format="PNG")
+    Image.new("RGB", (4, 3), "orange").save(material, format="PNG")
+    white_bytes = white.getvalue()
+    material_bytes = material.getvalue()
+
+    async for app, client in prepared_app(tmp_path):
+        async with app.state.db.session() as db:
+            db.add(
+                Workflow(
+                    key="modelview-inpaint",
+                    display_name="ModelView two-image test",
+                    description="",
+                )
+            )
+            db.add(
+                WorkflowVersion(
+                    workflow_key="modelview-inpaint",
+                    version="two-image-rseed-test",
+                    template={
+                        "4": {"class_type": "LoadImage", "inputs": {"image": "white.png"}},
+                        "5": {
+                            "class_type": "LoadImage",
+                            "inputs": {"image": "material.png"},
+                        },
+                        "14": {"class_type": "RandomNoise", "inputs": {"noise_seed": 0}},
+                        "32": {"class_type": "SaveImage", "inputs": {}},
+                    },
+                    parameter_schema={
+                        "type": "object",
+                        "properties": {
+                            "image_filename": {"type": "string"},
+                            "material_image_filename": {"type": "string"},
+                            "noise_seed": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": MODELVIEW_NOISE_SEED_EXCLUSIVE_MAX - 1,
+                            },
+                        },
+                        "required": [
+                            "image_filename",
+                            "material_image_filename",
+                            "noise_seed",
+                        ],
+                        "additionalProperties": False,
+                    },
+                    bindings={
+                        "image_filename": "4.inputs.image",
+                        "material_image_filename": "5.inputs.image",
+                        "noise_seed": "14.inputs.noise_seed",
+                    },
+                    allowed_class_types=["LoadImage", "RandomNoise", "SaveImage"],
+                    required_models=[],
+                    required_custom_nodes=[],
+                    min_vram_mb=0,
+                    timeout_seconds=5,
+                    node_labels={},
+                    output_nodes=["32"],
+                    enabled=True,
+                    template_sha256="two-image-rseed-test",
+                )
+            )
+            await db.commit()
+
+        async def complete_new_job(expected_count: int, test_app: FastAPI = app) -> Job:
+            for _ in range(200):
+                async with test_app.state.db.session() as db:
+                    jobs = list(
+                        (
+                            await db.scalars(
+                                select(Job)
+                                .where(Job.workflow_key == "modelview-inpaint")
+                                .order_by(Job.created_at, Job.id)
+                            )
+                        ).all()
+                    )
+                    if len(jobs) >= expected_count:
+                        job = jobs[expected_count - 1]
+                        output = Path(job.job_dir) / "output" / "result.png"
+                        output.parent.mkdir(parents=True, exist_ok=True)
+                        output.write_bytes(white_bytes)
+                        job.status = "SUCCEEDED"
+                        db.add(
+                            JobArtifact(
+                                id=str(uuid.uuid4()),
+                                job_id=job.id,
+                                kind="output",
+                                relative_path="output/result.png",
+                                content_type="image/png",
+                                size_bytes=len(white_bytes),
+                                sha256=hashlib.sha256(white_bytes).hexdigest(),
+                            )
+                        )
+                        await db.commit()
+                        return job
+                await asyncio.sleep(0.01)
+            raise AssertionError("modelview test job was not created")
+
+        def request_files() -> dict[str, tuple[str, bytes, str]]:
+            return {
+                "image": ("white.png", white_bytes, "image/png"),
+                "material_image": ("reference.png", material_bytes, "image/png"),
+                "viewport_reference": ("legacy-third.bin", b"ignored", "application/octet-stream"),
+            }
+
+        first_request = asyncio.create_task(
+            client.post(
+                "/api/v1/services/modelview-inpaint",
+                headers={"Idempotency-Key": "generation-one"},
+                files=request_files(),
+            )
+        )
+        first_job = await complete_new_job(1)
+        first_response = await first_request
+        assert first_response.status_code == 200, first_response.text
+        assert first_response.headers["x-job-id"] == first_job.id
+        assert first_job.parameters["noise_seed"] == 111
+        first_rendered = json.loads(
+            (Path(first_job.job_dir) / "workflow" / "rendered.api.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert first_rendered["14"]["inputs"]["noise_seed"] == 111
+        assert first_rendered["4"]["inputs"]["image"].startswith(f"{first_job.id}/")
+        assert first_rendered["5"]["inputs"]["image"].startswith(f"{first_job.id}/")
+        assert not any(Path(first_job.job_dir, "input").glob("viewport_reference-*"))
+
+        replay = await client.post(
+            "/api/v1/services/modelview-inpaint",
+            headers={"Idempotency-Key": "generation-one"},
+            files=request_files(),
+        )
+        assert replay.status_code == 200
+        assert replay.headers["x-job-id"] == first_job.id
+
+        second_request = asyncio.create_task(
+            client.post(
+                "/api/v1/services/modelview-inpaint",
+                headers={"Idempotency-Key": "generation-two"},
+                files=request_files(),
+            )
+        )
+        second_job = await complete_new_job(2)
+        second_response = await second_request
+        assert second_response.status_code == 200, second_response.text
+        assert second_job.parameters["noise_seed"] == 333
+        assert second_job.parameters["noise_seed"] != first_job.parameters["noise_seed"]
 
 
 async def test_callback_url_allowlist_and_one_time_secret(tmp_path: Path) -> None:
