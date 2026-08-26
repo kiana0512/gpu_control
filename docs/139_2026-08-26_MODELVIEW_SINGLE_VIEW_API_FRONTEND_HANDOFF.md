@@ -191,3 +191,50 @@ single-view-<资产ID>-generation-<递增编号或UUID>
 - [ ] 成功响应按 Blob 读取，并保存 `X-Job-ID`。
 - [ ] 任务中心显示“单视图生成”，而不是“自定义工作流”。
 - [ ] 不向 API 发送 `noise_seed`、采样步数、模型名或工作流节点参数。
+
+## 11. 生产部署与真实验收记录
+
+生产发布已于 2026-08-26 完成。
+
+- GPU Control 版本：`1.5.20`
+- 源码 revision：`69c00d121284924d733eecbec5eafc9ea9823049`
+- 工作流版本：`2026.08.26-c0e6218-single-view-4step-r1`
+- UI 工作流 SHA-256：
+  `c0e6218a599da460124cc955e2d3fb3125293808f541a67b0e97fabe17579d33`
+- API 模板 SHA-256：
+  `13cc9c17e4ceecc6149351b119e84c987d813003319758c661cc6237ab2e2818`
+- 兼容节点：`control-4090`、`worker-3090-a`、`worker-3090-b`
+- 不兼容节点：`worker-4070ti-animation-host-01`（12282 MiB 显存低于
+  24000 MiB 门槛）
+
+控制面镜像：
+
+| 组件 | 镜像 | image ID |
+|---|---|---|
+| API | `gpu-control-api:1.5.20` | `sha256:e549c331fbf936e7a7aafe310a6528015bac5a82d6598bbb5b665f23f2c1bdfe` |
+| Scheduler | `gpu-control-scheduler:1.5.20` | `sha256:b426ce33c3f1e49b6334ca7c209a3db36a5cd484bb6c96b8a2077b1f5f4ac12e` |
+| Web | `gpu-control-web:1.5.20` | `sha256:5c45817b41f57b21abb1fcf7deb989746d4e2b01364ee1b20e03101da600d23d` |
+
+真实三节点 canary：
+
+| 节点 | Job ID | 服务端 Seed | GPU 执行耗时 | 结果 SHA-256 |
+|---|---|---:|---:|---|
+| 4090 | `829974f3-2b4c-4e2c-8abc-f6380ce665cd` | `327978606625285` | 11 s | `a7e2dfc25ba87f191af83c5da3ec632f001c1250165e59304848d64081d6ec8a` |
+| 3090-A | `6ee57b8c-d569-4f5b-ae04-59ed17399475` | `19200809589581` | 20 s | `3d5868c7970a52317379a77ddb747158870cfaeb903c36349af4bebadb8fc9d2` |
+| 3090-B | `712e816b-2337-444a-b46d-12e21c94a6f7` | `868946067193107` | 50 s | `e8d1d9543c7025330be9ab0fc80ad38e1fcfdf22bafd110101c0faff31c6f439` |
+
+三笔任务均验证为 `critical + pinned`、`BasicScheduler steps=4`、节点 29
+`SaveImage`、2048×2048 RGB PNG。三个 Seed 互不相同。相同幂等键重放在 1 秒内返回
+3090-B 原 Job 和原 SHA，没有产生第二笔推理。
+
+局部重绘与单视图生成切换时，三个 canary 的 `free.response.json` 均记录
+`skipped=true`，证明同模型家族没有被误判为切换并重新加载。
+
+三台 ComfyUI 的 UI 工作流已与用户文件 SHA 对齐。本次只原子同步工作流
+文件，没有重启 ComfyUI。4090 旧文件备份位于：
+
+```text
+/opt/gpu-control/backups/modelview-single-view-pre-20260826-1507/control-4090.previous.json
+```
+
+发布结束后四台 GPU 均恢复为 `ACTIVE / ONLINE / current_jobs=0`。
