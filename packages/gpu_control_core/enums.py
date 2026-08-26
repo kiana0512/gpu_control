@@ -49,7 +49,12 @@ class Priority(StrEnum):
     BATCH = "batch"
 
 
-INTERACTIVE_WORKFLOW_KEYS = frozenset({"modelview-inpaint"})
+INTERACTIVE_WORKFLOW_KEYS = frozenset(
+    {
+        "modelview-inpaint",
+        "modelview-single-view",
+    }
+)
 
 
 class BatchStatus(StrEnum):

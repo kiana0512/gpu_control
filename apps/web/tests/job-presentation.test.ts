@@ -39,6 +39,22 @@ describe("job presentation evidence rules", () => {
     });
   });
 
+  it("presents the single-view workflow as its own public task", () => {
+    expect(
+      serviceFor(
+        task({
+          kind: "job",
+          workflow_key: "modelview-single-view",
+        }),
+      ),
+    ).toMatchObject({
+      key: "modelview-single-view",
+      label: "ModelView 单视图生成",
+      shortLabel: "单视图生成",
+      api: "/api/v1/services/modelview-single-view",
+    });
+  });
+
   it("derives durations only from valid reported endpoints", () => {
     const value = task();
     expect(queueDuration(value)).toBe(3_000);

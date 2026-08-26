@@ -69,6 +69,7 @@ def test_modelview_prompt_form_field_merges_without_ambiguity() -> None:
 
 def test_modelview_inpaint_uses_non_preemptive_interactive_queue_policy() -> None:
     assert service_queue_policy("modelview-inpaint") == (Priority.CRITICAL, True)
+    assert service_queue_policy("modelview-single-view") == (Priority.CRITICAL, True)
     assert service_queue_policy("imageclip-rgba") == (Priority.NORMAL, False)
     assert service_queue_policy("modelview-roughness") == (Priority.NORMAL, False)
 
@@ -76,7 +77,7 @@ def test_modelview_inpaint_uses_non_preemptive_interactive_queue_policy() -> Non
 def test_modelview_noise_seed_is_server_owned_and_rolling_deploy_safe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    generated = iter((101, 202))
+    generated = iter((101, 202, 303))
     monkeypatch.setattr(
         "gpu_control_api.main.secrets.randbelow",
         lambda upper_bound: next(generated)
@@ -92,6 +93,12 @@ def test_modelview_noise_seed_is_server_owned_and_rolling_deploy_safe(
 
     assert first == {"noise_seed": 101}
     assert second == {"noise_seed": 202}
+
+    single_view: dict[str, Any] = {}
+    inject_server_owned_workflow_parameters(
+        "modelview-single-view", bindings, single_view
+    )
+    assert single_view == {"noise_seed": 303}
 
     old_version_parameters: dict[str, Any] = {}
     inject_server_owned_workflow_parameters(
@@ -3010,10 +3017,11 @@ async def test_direct_image_service_reports_missing_workflow(tmp_path: Path) -> 
         for endpoint in (
             "/api/v1/services/imageclip-rgba",
             "/api/v1/services/modelview-inpaint",
+            "/api/v1/services/modelview-single-view",
             "/api/v1/services/modelview-roughness",
         ):
             files = {"image": ("input.png", b"not-an-image", "image/png")}
-            if endpoint.endswith("modelview-inpaint"):
+            if endpoint.endswith(("modelview-inpaint", "modelview-single-view")):
                 files.update(
                     {
                         "material_image": (
@@ -3032,18 +3040,31 @@ async def test_modelview_inpaint_requires_white_model_and_material_reference(
     tmp_path: Path,
 ) -> None:
     async for _, client in prepared_app(tmp_path):
-        response = await client.post(
+        for endpoint in (
             "/api/v1/services/modelview-inpaint",
-            files={"image": ("white-model.png", b"not-an-image", "image/png")},
-        )
-        assert response.status_code == 422
-        missing = {item["loc"][-1] for item in response.json()["detail"]}
-        assert missing == {"material_image"}
+            "/api/v1/services/modelview-single-view",
+        ):
+            response = await client.post(
+                endpoint,
+                files={"image": ("white-model.png", b"not-an-image", "image/png")},
+            )
+            assert response.status_code == 422
+            missing = {item["loc"][-1] for item in response.json()["detail"]}
+            assert missing == {"material_image"}
 
 
+@pytest.mark.parametrize(
+    ("workflow_key", "endpoint"),
+    (
+        ("modelview-inpaint", "/api/v1/services/modelview-inpaint"),
+        ("modelview-single-view", "/api/v1/services/modelview-single-view"),
+    ),
+)
 async def test_modelview_two_image_service_persists_seed_and_ignores_legacy_third_image(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    workflow_key: str,
+    endpoint: str,
 ) -> None:
     from PIL import Image
 
@@ -3065,14 +3086,14 @@ async def test_modelview_two_image_service_persists_seed_and_ignores_legacy_thir
         async with app.state.db.session() as db:
             db.add(
                 Workflow(
-                    key="modelview-inpaint",
+                    key=workflow_key,
                     display_name="ModelView two-image test",
                     description="",
                 )
             )
             db.add(
                 WorkflowVersion(
-                    workflow_key="modelview-inpaint",
+                    workflow_key=workflow_key,
                     version="two-image-rseed-test",
                     template={
                         "4": {"class_type": "LoadImage", "inputs": {"image": "white.png"}},
@@ -3126,7 +3147,7 @@ async def test_modelview_two_image_service_persists_seed_and_ignores_legacy_thir
                         (
                             await db.scalars(
                                 select(Job)
-                                .where(Job.workflow_key == "modelview-inpaint")
+                                .where(Job.workflow_key == workflow_key)
                                 .order_by(Job.created_at, Job.id)
                             )
                         ).all()
@@ -3162,7 +3183,7 @@ async def test_modelview_two_image_service_persists_seed_and_ignores_legacy_thir
 
         first_request = asyncio.create_task(
             client.post(
-                "/api/v1/services/modelview-inpaint",
+                endpoint,
                 headers={"Idempotency-Key": "generation-one"},
                 files=request_files(),
             )
@@ -3183,7 +3204,7 @@ async def test_modelview_two_image_service_persists_seed_and_ignores_legacy_thir
         assert not any(Path(first_job.job_dir, "input").glob("viewport_reference-*"))
 
         replay = await client.post(
-            "/api/v1/services/modelview-inpaint",
+            endpoint,
             headers={"Idempotency-Key": "generation-one"},
             files=request_files(),
         )
@@ -3192,7 +3213,7 @@ async def test_modelview_two_image_service_persists_seed_and_ignores_legacy_thir
 
         second_request = asyncio.create_task(
             client.post(
-                "/api/v1/services/modelview-inpaint",
+                endpoint,
                 headers={"Idempotency-Key": "generation-two"},
                 files=request_files(),
             )

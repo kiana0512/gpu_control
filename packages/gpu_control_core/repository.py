@@ -29,6 +29,7 @@ from .scheduling import (
     GPU_SPECIALIZATION_LABEL,
     MODELVIEW_INPAINT_NODE_ID,
     MODELVIEW_INPAINT_WORKFLOW_KEY,
+    MODELVIEW_WORKFLOW_KEYS,
     SUBSTANCE_DRAIN_OWNER_LABEL,
     SUBSTANCE_FENCE_LABEL,
     SUBSTANCE_LEGACY_FENCE_LABEL,
@@ -296,19 +297,19 @@ async def claim_next_job(
     )
     if not jobs:
         return None
-    # The control 4090 is the preferred low-latency inpaint lane while its
+    # The control 4090 is the preferred low-latency ModelView lane while its
     # renewable ten-minute window is live. Never leave the physical slot idle:
-    # if no compatible inpaint job is queued, ordinary compatible GPU work may
-    # use it and will be preempted/reassigned when a new inpaint request arrives.
+    # if no compatible ModelView job is queued, ordinary compatible GPU work may
+    # use it and will be preempted/reassigned when a new ModelView request arrives.
     if node.id == MODELVIEW_INPAINT_NODE_ID and specialization is not None:
         if specialization != MODELVIEW_INPAINT_WORKFLOW_KEY:
             return None
-        inpaint_jobs = [
+        modelview_jobs = [
             job for job in jobs
-            if job.workflow_key == MODELVIEW_INPAINT_WORKFLOW_KEY
+            if job.workflow_key in MODELVIEW_WORKFLOW_KEYS
         ]
-        if inpaint_jobs:
-            jobs = inpaint_jobs
+        if modelview_jobs:
+            jobs = modelview_jobs
     if not jobs:
         return None
     workflow_rows = list(

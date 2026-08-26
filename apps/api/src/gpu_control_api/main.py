@@ -94,6 +94,8 @@ from packages.gpu_control_core.scheduling import (
     IMAGECLIP_WORKFLOW_KEY,
     MODELVIEW_INPAINT_NODE_ID,
     MODELVIEW_INPAINT_WORKFLOW_KEY,
+    MODELVIEW_SINGLE_VIEW_WORKFLOW_KEY,
+    MODELVIEW_WORKFLOW_KEYS,
     SUBSTANCE_DRAIN_OWNER,
     SUBSTANCE_DRAIN_OWNER_LABEL,
     SUBSTANCE_GPU_NODE_ID,
@@ -200,7 +202,7 @@ def inject_server_owned_workflow_parameters(
     """
 
     if (
-        workflow_key != MODELVIEW_INPAINT_WORKFLOW_KEY
+        workflow_key not in MODELVIEW_WORKFLOW_KEYS
         or MODELVIEW_NOISE_SEED_PARAMETER not in bindings
     ):
         return
@@ -1403,18 +1405,18 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         )
         db.add(job)
         await db.flush()
-        if workflow_key == MODELVIEW_INPAINT_WORKFLOW_KEY and not is_load_test:
-            # The arrival itself renews the control 4090's guaranteed response
-            # lane. This does not pin the job: both compatible 24 GiB 3090
-            # nodes may still claim inpaint work in parallel.
-            inpaint_guard_node = await db.scalar(
+        if workflow_key in MODELVIEW_WORKFLOW_KEYS and not is_load_test:
+            # The arrival itself renews the control 4090's guaranteed ModelView
+            # response lane. This does not pin the job: both compatible 24 GiB
+            # 3090 nodes may still claim ModelView work in parallel.
+            modelview_guard_node = await db.scalar(
                 select(Node)
                 .where(Node.id == MODELVIEW_INPAINT_NODE_ID)
                 .with_for_update()
             )
-            if inpaint_guard_node is not None:
+            if modelview_guard_node is not None:
                 refresh_gpu_specialization(
-                    inpaint_guard_node,
+                    modelview_guard_node,
                     MODELVIEW_INPAINT_WORKFLOW_KEY,
                     job_now,
                     owner="gpu-api",
@@ -1439,7 +1441,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 if active_imageclip is not None:
                     active_imageclip.error_code = IMAGECLIP_INPAINT_PREEMPTION_CODE
                     active_imageclip.error_message = (
-                        "4090 局部重绘优先：当前抠图执行尝试将安全中断并改派其他 GPU"
+                        "4090 ModelView 交互任务优先：当前抠图执行尝试将安全中断并改派其他 GPU"
                     )
         await transition_job(db, job, JobStatus.VALIDATING, "api.validated")
         await transition_job(db, job, JobStatus.QUEUED, "api.queued")
@@ -1597,12 +1599,12 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             if f"{field_name}_filename" in workflow.bindings
         )
         tenant_lock = request.app.state.tenant_locks.setdefault(principal.id, asyncio.Lock())
-        # Local repaint is an interactive operation.  It must take the first
+        # ModelView generation is an interactive operation. It must take the first
         # compatible GPU slot released by an already-running job instead of
         # aging behind the much older animation-matting batch backlog.  The
         # durable queue is still used for safety and observability; pinning is
         # deliberately non-preemptive, so an in-flight production frame is
-        # allowed to finish before the repaint is claimed.
+        # allowed to finish before the ModelView job is claimed.
         service_priority, pinned = service_queue_policy(workflow_key)
         async with tenant_lock:
             queued = await _create_job(
@@ -1704,6 +1706,57 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             str | None, Header(alias="Idempotency-Key", max_length=128)
         ] = None,
     ) -> FileResponse:
+        return await run_modelview_service_request(
+            request,
+            MODELVIEW_INPAINT_WORKFLOW_KEY,
+            principal,
+            db,
+            image,
+            material_image,
+            parameters,
+            prompt,
+            idempotency_key,
+            viewport_reference=viewport_reference,
+        )
+
+    @app.post("/api/v1/services/modelview-single-view", response_class=FileResponse)
+    async def modelview_single_view_service(
+        request: Request,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+        image: Annotated[UploadFile, File()],
+        material_image: Annotated[UploadFile, File()],
+        parameters: Annotated[str, Form()] = "{}",
+        prompt: Annotated[str | None, Form(max_length=4096)] = None,
+        idempotency_key: Annotated[
+            str | None, Header(alias="Idempotency-Key", max_length=128)
+        ] = None,
+    ) -> FileResponse:
+        return await run_modelview_service_request(
+            request,
+            MODELVIEW_SINGLE_VIEW_WORKFLOW_KEY,
+            principal,
+            db,
+            image,
+            material_image,
+            parameters,
+            prompt,
+            idempotency_key,
+        )
+
+    async def run_modelview_service_request(
+        request: Request,
+        workflow_key: str,
+        principal: Principal,
+        db: AsyncSession,
+        image: UploadFile,
+        material_image: UploadFile,
+        parameters: str,
+        prompt: str | None,
+        idempotency_key: str | None,
+        *,
+        viewport_reference: UploadFile | None = None,
+    ) -> FileResponse:
         try:
             parameters = _merge_service_parameter(parameters, "prompt", prompt)
         except ValueError as exc:
@@ -1713,7 +1766,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             ) from exc
         return await run_image_service(
             request,
-            "modelview-inpaint",
+            workflow_key,
             principal,
             db,
             image,

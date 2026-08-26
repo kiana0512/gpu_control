@@ -52,6 +52,10 @@ prepare_directories() {
     echo "缺少 ModelViewCreator 工作流: ${modelview_root}/Flux2 Klein TrueV3-双图材质编辑-精简测试.json" >&2
     return 1
   }
+  [[ -f "${modelview_root}/ModelViewCreator_flux_Single-view Generation.json" ]] || {
+    echo "缺少 ModelViewCreator 单视图工作流: ${modelview_root}/ModelViewCreator_flux_Single-view Generation.json" >&2
+    return 1
+  }
   [[ -f "${modelview_root}/custom_nodes/haoze-LiClick/__init__.py" ]] || {
     echo "缺少 haoze-LiClick 节点: ${modelview_root}/custom_nodes/haoze-LiClick" >&2
     return 1
@@ -122,6 +126,7 @@ start_server() {
       -v "${data_root}/user:/opt/comfyui/user" \
       -v "${imageclip_root}/ImageClip.json:/opt/comfyui/user/default/workflows/ImageClip.json:ro" \
       -v "${modelview_root}/Flux2 Klein TrueV3-双图材质编辑-精简测试.json:/opt/comfyui/user/default/workflows/ModelViewCreator_flux_fill_inpaint.json:ro" \
+      -v "${modelview_root}/ModelViewCreator_flux_Single-view Generation.json:/opt/comfyui/user/default/workflows/ModelViewCreator_flux_Single-view Generation.json:ro" \
       "${image}" --reserve-vram "${reserve_vram_gb}" >/dev/null
   fi
   connect_control_network

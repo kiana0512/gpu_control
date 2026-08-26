@@ -11,6 +11,13 @@
 - Preserve the supplied graph's actual `BasicScheduler steps=2` value even though its UI title
   still says 12 steps, and keep the 4070 Ti excluded by the 24 GiB VRAM contract.
 
+## 1.5.20 — ModelView single-view generation service — 2026-08-26
+
+- Add the independent `modelview-single-view` task and synchronous image API.
+- Keep server-owned random seeds and the two-image plus optional prompt contract.
+- Share the Flux2 Klein TrueV3 warm-cache family with local repaint without merging task identity.
+- Add Task Center labels, API examples, three-node workflow mounts and rollout documentation.
+
 ## 1.5.19 — ModelView two-input workflow and per-job seed — 2026-08-22
 
 - Replace the three-image ModelView TrueV3 graph with the user-approved two-image UI workflow;

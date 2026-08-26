@@ -25,9 +25,25 @@ GPU_SPECIALIZATION_LABEL = "gpu_specialization"
 GPU_CACHE_DRAIN_FAILED_LABEL = "gpu_cache_drain_failed"
 MODELVIEW_INPAINT_NODE_ID = "control-4090"
 MODELVIEW_INPAINT_WORKFLOW_KEY = "modelview-inpaint"
+MODELVIEW_SINGLE_VIEW_WORKFLOW_KEY = "modelview-single-view"
+MODELVIEW_WORKFLOW_KEYS = frozenset(
+    {
+        MODELVIEW_INPAINT_WORKFLOW_KEY,
+        MODELVIEW_SINGLE_VIEW_WORKFLOW_KEY,
+    }
+)
+MODELVIEW_CACHE_FAMILY_KEY = "modelview-flux2-klein-truev3"
 IMAGECLIP_WORKFLOW_KEY = "imageclip-rgba"
 IMAGECLIP_INPAINT_PREEMPTION_CODE = "IMAGECLIP_PREEMPTED_FOR_INPAINT"
 SUBSTANCE_SPECIALIZATION_KEY = "substance-bake"
+
+
+def workflow_cache_family(workflow_key: str | None) -> str | None:
+    """Return the model-memory family used for safe warm-cache reuse."""
+
+    if workflow_key in MODELVIEW_WORKFLOW_KEYS:
+        return MODELVIEW_CACHE_FAMILY_KEY
+    return workflow_key
 
 
 class NodeLike(Protocol):

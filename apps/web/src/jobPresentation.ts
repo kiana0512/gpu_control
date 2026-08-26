@@ -47,6 +47,11 @@ const SERVICE_BY_WORKFLOW: Record<string, Omit<TaskService, "key">> = {
     shortLabel: "局部重绘",
     api: "/api/v1/services/modelview-inpaint",
   },
+  "modelview-single-view": {
+    label: "ModelView 单视图生成",
+    shortLabel: "单视图生成",
+    api: "/api/v1/services/modelview-single-view",
+  },
   "modelview-roughness": {
     label: "PBR 粗糙度生成",
     shortLabel: "PBR 粗糙度",

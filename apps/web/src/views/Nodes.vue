@@ -80,11 +80,11 @@ function nodePolicyTitle(node: NodeInfo) {
   const active = specialization(node);
   if (node.id === "control-4090") {
     if (active?.key === "modelview-inpaint")
-      return `局部重绘优先窗口 · 约 ${active.remainingMinutes} 分钟`;
-    return "局部重绘首选 · 当前为共享状态";
+      return `ModelView 交互任务优先窗口 · 约 ${active.remainingMinutes} 分钟`;
+    return "ModelView 交互任务首选 · 当前为共享状态";
   }
   if (node.id === "worker-4070ti-animation-host-01") {
-    return "12 GiB 普通推理节点 · 不参与局部重绘";
+    return "12 GiB 普通推理节点 · 不参与 ModelView 交互任务";
   }
   if (node.id === "worker-3090-b") {
     if (active?.key === "substance-bake")
@@ -105,12 +105,12 @@ function nodePolicyDetail(node: NodeInfo) {
   if (node.id === "control-4090") {
     if (active?.key === "modelview-inpaint")
       return node.current_jobs
-        ? "局部重绘已取得优先权；冲突的抠图帧会安全中断并改派其它物理 GPU。"
-        : "局部重绘到达时优先抢占；没有局部重绘排队时继续领取兼容普通任务，不预留空闲 GPU。";
-    return "局部重绘默认首选；没有局部重绘排队时继续参与抠图、粗糙度等兼容任务。";
+        ? "ModelView 交互任务已取得优先权；冲突的抠图帧会安全中断并改派其它物理 GPU。"
+        : "ModelView 交互任务到达时优先抢占；没有同类任务排队时继续领取兼容普通任务。";
+    return "ModelView 交互任务默认首选；空闲时继续参与抠图、粗糙度等兼容任务。";
   }
   if (node.id === "worker-4070ti-animation-host-01") {
-    return "可接兼容的普通推理；局部重绘需要 24 GiB，本节点被硬排除。";
+    return "可接兼容的普通推理；ModelView 交互任务需要 24 GiB，本节点被硬排除。";
   }
   if (node.id === "worker-3090-b") {
     if (active?.key === "substance-bake")
@@ -125,7 +125,7 @@ function nodePolicyDetail(node: NodeInfo) {
       return "软保护已到期，Asset API 正在清理过期标签并回写 ACTIVE；无需人工等待。";
     return "可接普通推理；生产烘焙到达后获得下一 GPU 执行权。";
   }
-  return "按兼容性、缓存亲和与公平队列参与抠图、局部重绘和粗糙度。";
+  return "按兼容性、缓存亲和与公平队列参与抠图、局部重绘、单视图生成和粗糙度。";
 }
 async function load() {
   error.value = "";
@@ -253,14 +253,14 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
       <div>
         <strong>普通任务四卡共享</strong>
         <span
-          >局部重绘只分配到 4090、3090-A、3090-B 三台 24 GiB GPU；
+          >局部重绘和单视图生成只分配到 4090、3090-A、3090-B 三台 24 GiB GPU；
           4070Ti 继续参与其它兼容任务。</span
         >
       </div>
       <div>
-        <strong>4090 保证局部重绘响应</strong>
+        <strong>4090 保证 ModelView 交互任务响应</strong>
         <span
-          >局部重绘到达时优先抢占；没有局部重绘排队时继续接兼容普通任务，不预留空闲 GPU。</span
+          >ModelView 交互任务到达时优先抢占；没有同类任务排队时继续接兼容普通任务。</span
         >
       </div>
       <div>

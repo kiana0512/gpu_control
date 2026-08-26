@@ -79,10 +79,11 @@ from packages.gpu_control_core.scheduling import (
     IMAGECLIP_INPAINT_PREEMPTION_CODE,
     IMAGECLIP_WORKFLOW_KEY,
     MODELVIEW_INPAINT_NODE_ID,
-    MODELVIEW_INPAINT_WORKFLOW_KEY,
+    MODELVIEW_WORKFLOW_KEYS,
     OverflowGuard,
     QueueSnapshot,
     rank_nodes,
+    workflow_cache_family,
 )
 from packages.gpu_control_core.security import (
     derive_callback_secret,
@@ -2996,17 +2997,20 @@ class Scheduler:
                     )
                     .limit(1)
                 )
+                target_cache_family = workflow_cache_family(target_workflow)
                 warm_nodes = {
                     candidate.id
                     for candidate in nodes
                     if target_workflow
-                    and str((candidate.labels or {}).get("warm_workflow", ""))
-                    == target_workflow
+                    and workflow_cache_family(
+                        str((candidate.labels or {}).get("warm_workflow", ""))
+                    )
+                    == target_cache_family
                 }
-                if target_workflow == MODELVIEW_INPAINT_WORKFLOW_KEY:
+                if target_workflow in MODELVIEW_WORKFLOW_KEYS:
                     # The control 4090 is the preferred low-latency lane, not
                     # an exclusive pin. Compatible 24 GiB 3090 nodes remain
-                    # available for parallel/fallback inpaint work.
+                    # available for parallel/fallback ModelView work.
                     warm_nodes.add(MODELVIEW_INPAINT_NODE_ID)
                 candidates, exclusions = rank_nodes(
                     nodes,
@@ -3016,7 +3020,7 @@ class Scheduler:
                     preferred_node_ids=warm_nodes,
                     promoted_node_ids=(
                         {MODELVIEW_INPAINT_NODE_ID}
-                        if target_workflow == MODELVIEW_INPAINT_WORKFLOW_KEY
+                        if target_workflow in MODELVIEW_WORKFLOW_KEYS
                         else None
                     ),
                 )
@@ -3339,10 +3343,12 @@ class Scheduler:
                         # overwrite+SHA-verified uploads and durable intent are
                         # all complete, but never waits for GPU execution.
                         await self.assert_scheduler_epoch(session)
-                        if previous_workflow != job.workflow_key:
+                        if workflow_cache_family(previous_workflow) != workflow_cache_family(
+                            job.workflow_key
+                        ):
                             # Large model families cannot coexist on a 24 GiB 3090.
                             # Release only on a family switch (or cold start); same-
-                            # workflow jobs keep their hot cache for lower latency.
+                            # model-family jobs keep their hot cache for lower latency.
                             try:
                                 free_result = await self.drain_free_and_validate(
                                     client,

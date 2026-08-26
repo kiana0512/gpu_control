@@ -18,6 +18,7 @@ const codeTab = ref<"curl" | "python">("curl");
 type PublicService =
   | "imageclip-rgba"
   | "modelview-inpaint"
+  | "modelview-single-view"
   | "modelview-roughness"
   | "asset-uv"
   | "asset-retopology"
@@ -27,6 +28,16 @@ const search = ref("");
 const clientScope = ref<"production" | "test">("production");
 const modelviewPromptEnabled =
   import.meta.env.VITE_MODELVIEW_PROMPT_ENABLED === "true";
+const isModelviewService = computed(() =>
+  ["modelview-inpaint", "modelview-single-view"].includes(
+    selectedService.value,
+  ),
+);
+const modelviewPromptVisible = computed(
+  () =>
+    selectedService.value === "modelview-single-view" ||
+    (selectedService.value === "modelview-inpaint" && modelviewPromptEnabled),
+);
 
 const clientForm = reactive({
   id: "",
@@ -108,7 +119,9 @@ const outputName = computed(() =>
     ? "result-rgba.png"
     : selectedService.value === "modelview-roughness"
       ? "result-roughness.png"
-      : "result-inpaint.png",
+      : selectedService.value === "modelview-single-view"
+        ? "result-single-view.png"
+        : "result-inpaint.png",
 );
 const curlExample = computed(() => {
   if (selectedService.value === "asset-uv")
@@ -142,12 +155,11 @@ const curlExample = computed(() => {
     "  -H 'Idempotency-Key: order-001-attempt-1' \\",
     "  -F 'image=@input.png' \\",
   ];
-  if (selectedService.value === "modelview-inpaint") {
+  if (isModelviewService.value) {
     lines[2] = "  -F 'image=@white-model.png' \\";
     lines.push("  -F 'material_image=@six-view.png' \\");
-    lines.push("  -F 'viewport_reference=@viewport-reference.png' \\");
   }
-  if (selectedService.value === "modelview-inpaint" && modelviewPromptEnabled)
+  if (modelviewPromptVisible.value)
     lines.push("  -F 'prompt=保持白模几何，只转移六视图材质' \\");
   lines.push(`  --output '${outputName.value}'`);
   return lines.join("\n");
@@ -159,9 +171,9 @@ const pythonExample = computed(() => {
     return `import json, requests\n\nmetadata = {"external_asset_id": "asset:crate:retopo:001", "options": {"high_object": "crate_high", "reference_object": "crate_reference_low", "low_object": "crate_current_low", "generated_low_object": "crate_generated_v001", "target_faces": 3000}}\nwith open("crate.blend", "rb") as project, open("crate_front.png", "rb") as front:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "asset-crate-retopo-001"},\n        files=[("project", ("crate.blend", project)), ("reference_images", ("crate_front.png", front, "image/png"))],\n        data={"metadata": json.dumps(metadata)},\n        timeout=60,\n    )\nresponse.raise_for_status()\nprint(response.json())`;
   if (selectedService.value === "asset-bake")
     return `import json, requests\n\nmetadata = {"external_asset_id": "asset:chair:bake:001", "options": {"profile": "li3d-pbr-full-v2", "resolution": 2048, "texture_cache_mb": 32768}}\nwith open("chair_low_uv.fbx", "rb") as low, open("chair_high.fbx", "rb") as high, open("chair_basecolor.png", "rb") as base, open("chair_roughness.png", "rb") as roughness, open("chair_metallic.png", "rb") as metallic:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "asset-chair-bake-001"},\n        files={"low_mesh": ("chair_low_uv.fbx", low), "high_mesh": ("chair_high.fbx", high), "base_color_texture": ("chair_basecolor.png", base, "image/png"), "roughness_texture": ("chair_roughness.png", roughness, "image/png"), "metallic_texture": ("chair_metallic.png", metallic, "image/png")},\n        data={"metadata": json.dumps(metadata)},\n        timeout=60,\n    )\nresponse.raise_for_status()\nprint(response.json())`;
-  if (selectedService.value === "modelview-inpaint")
-    return `import requests\n\nwith open("white-model.png", "rb") as white_model, open("six-view.png", "rb") as material, open("viewport-reference.png", "rb") as viewport:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "modelview-001-attempt-1"},\n        files={\n            "image": ("white-model.png", white_model, "image/png"),\n            "material_image": ("six-view.png", material, "image/png"),\n            "viewport_reference": ("viewport-reference.png", viewport, "image/png"),\n        },${
-      modelviewPromptEnabled
+  if (isModelviewService.value)
+    return `import requests\n\nwith open("white-model.png", "rb") as white_model, open("six-view.png", "rb") as material:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "modelview-001-attempt-1"},\n        files={\n            "image": ("white-model.png", white_model, "image/png"),\n            "material_image": ("six-view.png", material, "image/png"),\n        },${
+      modelviewPromptVisible.value
         ? '\n        data={"prompt": "保持白模几何，只转移六视图材质"},'
         : ""
     }\n        timeout=1900,\n    )\nresponse.raise_for_status()\nwith open("${outputName.value}", "wb") as output:\n    output.write(response.content)\nprint("job:", response.headers.get("X-Job-ID"))`;
@@ -793,6 +805,11 @@ function formatCell(value: unknown) {
             >
               ModelView 局部重绘</button
             ><button
+              :class="{ active: selectedService === 'modelview-single-view' }"
+              @click="selectedService = 'modelview-single-view'"
+            >
+              ModelView 单视图生成</button
+            ><button
               :class="{ active: selectedService === 'modelview-roughness' }"
               @click="selectedService = 'modelview-roughness'"
             >
@@ -831,10 +848,10 @@ function formatCell(value: unknown) {
               multipart 字段为低模、高模、Base Color、Roughness、Metallic 与
               metadata；仅由 3090-B Windows 原生 Substance Worker 执行。
             </li>
-            <li v-else-if="selectedService === 'modelview-inpaint'">
+            <li v-else-if="isModelviewService">
               multipart 必填字段为
-              <code>image + material_image + viewport_reference</code>，
-              依次表示白模、六视图材质图和视窗调色参考图。
+              <code>image + material_image</code>，
+              依次表示白模和参考多视图。
             </li>
             <li v-else>multipart 图片字段固定为 <code>image</code>。</li>
             <li v-if="selectedService === 'modelview-roughness'">
@@ -842,8 +859,7 @@ function formatCell(value: unknown) {
             </li>
             <li
               v-if="
-                selectedService === 'modelview-inpaint' &&
-                modelviewPromptEnabled
+                modelviewPromptVisible
               "
             >
               可选文字要求字段为
@@ -855,7 +871,7 @@ function formatCell(value: unknown) {
                 !modelviewPromptEnabled
               "
             >
-              当前生产版本固定为三图输入；未启用可选 <code>prompt</code>
+              未启用可选 <code>prompt</code>
               时使用版本锁定的几何保护和材质迁移提示词。
             </li>
             <li v-if="selectedService.startsWith('asset-')">

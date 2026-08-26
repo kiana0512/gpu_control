@@ -4,7 +4,9 @@ from pathlib import Path
 
 from packages.gpu_control_core.scheduling import (
     GPU_CACHE_DRAIN_FAILED_LABEL,
+    MODELVIEW_CACHE_FAMILY_KEY,
     MODELVIEW_INPAINT_WORKFLOW_KEY,
+    MODELVIEW_SINGLE_VIEW_WORKFLOW_KEY,
     SUBSTANCE_DRAIN_OWNER,
     SUBSTANCE_DRAIN_OWNER_LABEL,
     SUBSTANCE_FENCE_LABEL,
@@ -18,6 +20,7 @@ from packages.gpu_control_core.scheduling import (
     linux_asset_claim_allowed,
     rank_nodes,
     refresh_gpu_specialization,
+    workflow_cache_family,
 )
 from packages.gpu_control_core.settings import Settings
 
@@ -38,6 +41,17 @@ class FakeNode:
     last_heartbeat_at: datetime | None = None
     last_assigned_at: datetime | None = None
     labels: dict[str, object] = field(default_factory=dict)
+
+
+def test_modelview_workflows_share_one_warm_cache_family() -> None:
+    assert workflow_cache_family(MODELVIEW_INPAINT_WORKFLOW_KEY) == (
+        MODELVIEW_CACHE_FAMILY_KEY
+    )
+    assert workflow_cache_family(MODELVIEW_SINGLE_VIEW_WORKFLOW_KEY) == (
+        MODELVIEW_CACHE_FAMILY_KEY
+    )
+    assert workflow_cache_family("imageclip-rgba") == "imageclip-rgba"
+    assert workflow_cache_family(None) is None
 
 
 def guard(tmp_path: Path, enabled: bool = True) -> OverflowGuard:
