@@ -78,9 +78,14 @@ if [[ "${project}" == "all" || "${project}" == "modelview" ]]; then
         # The approved roughness workflow stores its loaders in category
         # subdirectories. Keep one canonical model copy and expose only links.
         mkdir -p \
+          /opt/modelviewcreator/model/lora/flux-kelin \
           /opt/modelviewcreator/model/lora/qwen \
           /opt/modelviewcreator/model/lora/qwen-2511 \
           /opt/modelviewcreator/model/unet/gguf
+        if [ -f /opt/modelviewcreator/model/lora/baimo_shangcaizhi_klein_v1_000005500.safetensors ]; then
+          ln -sfn ../baimo_shangcaizhi_klein_v1_000005500.safetensors \
+            /opt/modelviewcreator/model/lora/flux-kelin/baimo_shangcaizhi_klein_v1_000005500.safetensors
+        fi
         if [ -f /opt/modelviewcreator/model/lora/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors ]; then
           ln -sfn ../Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors \
             /opt/modelviewcreator/model/lora/qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors

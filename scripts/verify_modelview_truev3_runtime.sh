@@ -23,7 +23,9 @@ for class_type in \
   CherryAlignReference \
   CherryInferenceSizeBucket \
   'ImageResize+' \
-  'easy imageColorMatch'; do
+  'Text Concatenate' \
+  'UnetLoaderGGUF' \
+  'ttN text'; do
   jq -e --arg class_type "${class_type}" 'has($class_type)' \
     "${temporary}/object_info.json" >/dev/null || {
       echo "错误：${comfy_url} 缺少节点 ${class_type}" >&2
@@ -40,10 +42,10 @@ check_model() {
       exit 1
     }
 }
-check_model diffusion_models 'Flux2-Klein-9B-True-V3-int8mixedrow.safetensors'
+check_model diffusion_models 'Flux2-Klein-9B-True-V3-Q5_K.gguf'
 check_model text_encoders 'qwen_3_8b_fp8mixed.safetensors'
 check_model vae 'flux2-vae.safetensors'
-check_model loras 'baimo_shangcaizhi_klein_v1_000005500.safetensors'
+check_model loras 'flux-kelin/baimo_shangcaizhi_klein_v1_000005500.safetensors'
 
 names=(
   'c67b0fab153890a6225a371dc7a8a911bc2f4c3933b9399fc4470b19f047654e.jpg'

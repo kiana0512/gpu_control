@@ -15,16 +15,16 @@ def test_truev3_api_template_matches_the_approved_production_contract() -> None:
     manifest = WorkflowManifest.load(BUNDLE / "manifest.yaml")
     template = json.loads((BUNDLE / "template.api.json").read_text(encoding="utf-8"))
 
-    assert manifest.version == "2026.08.22-02b2504-truev3-2input-rseed-r1"
+    assert manifest.version == "2026.08.26-740115a-truev3-gguf-3input-rseed-r1"
     assert manifest.bindings == {
         "image_filename": "4.inputs.image",
         "material_image_filename": "5.inputs.image",
         "noise_seed": "14.inputs.noise_seed",
-        "prompt": "9.inputs.text",
+        "prompt": "41.inputs.text",
     }
     assert manifest.min_vram_mb == 24000
-    assert manifest.output_nodes == ("32",)
-    assert len(template) == 24
+    assert manifest.output_nodes == ("29",)
+    assert len(template) == 27
     assert set(template) == {
         "1",
         "2",
@@ -48,17 +48,20 @@ def test_truev3_api_template_matches_the_approved_production_contract() -> None:
         "23",
         "24",
         "25",
-        "32",
+        "29",
         "33",
+        "38",
+        "40",
+        "41",
     }
     assert "20" not in template
     assert not any(node["class_type"] == "PreviewImage" for node in template.values())
-    assert template["32"]["class_type"] == "SaveImage"
-    assert template["32"]["inputs"]["images"] == ["33", 1]
-    assert template["14"]["inputs"]["noise_seed"] == 1029362313494898
+    assert template["29"]["class_type"] == "SaveImage"
+    assert template["29"]["inputs"]["images"] == ["33", 1]
+    assert template["14"]["inputs"]["noise_seed"] == 354126340055704
+    assert template["1"]["class_type"] == "UnetLoaderGGUF"
     assert template["1"]["inputs"] == {
-        "unet_name": "Flux2-Klein-9B-True-V3-int8mixedrow.safetensors",
-        "weight_dtype": "default",
+        "unet_name": "Flux2-Klein-9B-True-V3-Q5_K.gguf",
     }
     assert template["2"]["inputs"] == {
         "clip_name": "qwen_3_8b_fp8mixed.safetensors",
@@ -67,25 +70,27 @@ def test_truev3_api_template_matches_the_approved_production_contract() -> None:
     }
     assert template["3"]["inputs"] == {"vae_name": "flux2-vae.safetensors"}
     assert template["21"]["inputs"]["lora_name"] == (
-        "baimo_shangcaizhi_klein_v1_000005500.safetensors"
+        "flux-kelin/baimo_shangcaizhi_klein_v1_000005500.safetensors"
     )
     assert template["21"]["inputs"]["strength_model"] == 0.8
     assert template["15"]["inputs"] | {"model": None} == {
         "denoise": 1,
         "model": None,
         "scheduler": "simple",
-        "steps": 12,
+        "steps": 2,
     }
     assert template["16"]["inputs"] == {"sampler_name": "euler"}
     assert template["22"]["inputs"] | {"image": None} == {
         "aspect_threshold": 1.2,
         "image": None,
-        "long_size": 1536,
+        "long_size": 1528,
         "square_size": 1024,
     }
-    assert template["4"]["inputs"]["image"].endswith("/image-white-model.png")
-    assert template["5"]["inputs"]["image"].endswith(
-        "/material_image-multiview-material-reference.png"
+    assert template["4"]["inputs"]["image"] == (
+        "509caff28e32103999d6a06a5a06b1a1907751ee58706edd1731a95eabdff15d.png"
+    )
+    assert template["5"]["inputs"]["image"] == (
+        "b4c6465b6bd7dd0d455adc09419b385672b34d42fa212898015849730fab4628.png"
     )
     assert template["33"]["inputs"] | {"图像A": None, "图像B": None} == {
         "图像A": None,
@@ -99,13 +104,27 @@ def test_truev3_api_template_matches_the_approved_production_contract() -> None:
     }
     assert template["33"]["inputs"]["图像A"] == ["4", 0]
     assert template["33"]["inputs"]["图像B"] == ["25", 0]
+    assert template["41"] == {
+        "_meta": {"title": "ttN text"},
+        "class_type": "ttN text",
+        "inputs": {"text": ""},
+    }
+    assert template["38"]["class_type"] == "Text Concatenate"
+    assert template["38"]["inputs"] == {
+        "clean_whitespace": "true",
+        "delimiter": ", ",
+        "text_a": ["41", 0],
+        "text_b": ["40", 0],
+    }
+    assert template["9"]["inputs"]["text"] == ["38", 0]
+    assert "IMAGE1_GEOMETRY_LOCK" in template["40"]["inputs"]["text"]
     assert {node["class_type"] for node in template.values()} == manifest.allowed_class_types
 
 
 def test_truev3_binds_two_public_images_server_seed_and_one_final_output() -> None:
     manifest = WorkflowManifest.load(BUNDLE / "manifest.yaml")
     template = json.loads((BUNDLE / "template.api.json").read_text(encoding="utf-8"))
-    default_prompt = template["9"]["inputs"]["text"]
+    fixed_prompt = template["40"]["inputs"]["text"]
 
     automatic = render_workflow(
         manifest,
@@ -130,16 +149,23 @@ def test_truev3_binds_two_public_images_server_seed_and_one_final_output() -> No
     assert automatic["4"]["inputs"]["image"] == "job-a/white-model.png"
     assert automatic["5"]["inputs"]["image"] == "job-a/six-view.png"
     assert automatic["14"]["inputs"]["noise_seed"] == 101
-    assert automatic["9"]["inputs"]["text"] == default_prompt
+    assert automatic["41"]["inputs"]["text"] == ""
+    assert automatic["40"]["inputs"]["text"] == fixed_prompt
     assert overridden["4"]["inputs"]["image"] == "job-b/white-model.png"
     assert overridden["5"]["inputs"]["image"] == "job-b/six-view.png"
     assert overridden["14"]["inputs"]["noise_seed"] == 202
-    assert overridden["9"]["inputs"]["text"] == (
+    assert overridden["41"]["inputs"]["text"] == (
         "preserve geometry and repair only the selected material"
     )
-    assert template["4"]["inputs"]["image"].endswith("/image-white-model.png")
-    assert template["14"]["inputs"]["noise_seed"] == 1029362313494898
-    assert template["9"]["inputs"]["text"] == default_prompt
+    assert overridden["40"]["inputs"]["text"] == fixed_prompt
+    assert overridden["38"]["inputs"]["text_a"] == ["41", 0]
+    assert overridden["38"]["inputs"]["text_b"] == ["40", 0]
+    assert template["4"]["inputs"]["image"] == (
+        "509caff28e32103999d6a06a5a06b1a1907751ee58706edd1731a95eabdff15d.png"
+    )
+    assert template["14"]["inputs"]["noise_seed"] == 354126340055704
+    assert template["41"]["inputs"]["text"] == ""
+    assert template["40"]["inputs"]["text"] == fixed_prompt
 
 
 def test_bundled_cherry_sources_are_byte_exact_to_upstream_commit() -> None:
@@ -168,6 +194,11 @@ def test_required_official_plugin_revision_is_immutable_and_matches_the_workflow
     revisions = {item["name"]: item["commit"] for item in lock["custom_nodes"]}
 
     assert revisions["ComfyUI_essentials"] == ("9d9f4bedfc9f0321c19faf71855e228c93bd0dc9")
+    assert revisions["ComfyUI-GGUF"] == ("6ea2651e7df66d7585f6ffee804b20e92fb38b8a")
+    assert revisions["ComfyUI_tinyterraNodes"] == (
+        "97096a39847b74e15886a16049ae89ad918e1aea"
+    )
+    assert revisions["WAS-Node-Suite"] == ("afeee09ba44e713ec52a413ac6b105fd06b2d356")
     assert not any(item.startswith("ComfyUI-Easy-Use@") for item in manifest.required_custom_nodes)
 
 
@@ -176,10 +207,10 @@ def test_truev3_models_and_visible_workflow_mount_are_pinned() -> None:
         (ROOT / "configs" / "modelviewcreator.models.manifest.yaml").read_text(encoding="utf-8")
     )
     models = {item["path"]: item for item in model_manifest["models"]}
-    assert models["unet/Flux2-Klein-9B-True-V3-int8mixedrow.safetensors"] == {
-        "path": "unet/Flux2-Klein-9B-True-V3-int8mixedrow.safetensors",
-        "size_bytes": 9439884768,
-        "sha256": "6d23ea6946f410a496bf706b136b17bea5e1cdd1a6ba17a1b5f23c64d30c7088",
+    assert models["unet/Flux2-Klein-9B-True-V3-Q5_K.gguf"] == {
+        "path": "unet/Flux2-Klein-9B-True-V3-Q5_K.gguf",
+        "size_bytes": 6813702528,
+        "sha256": "8167105716c715be31018f682916b5b9988f9afec4e20d7ad7cd9b42aa9774ce",
     }
     assert models["lora/baimo_shangcaizhi_klein_v1_000005500.safetensors"] == {
         "path": "lora/baimo_shangcaizhi_klein_v1_000005500.safetensors",
@@ -195,3 +226,7 @@ def test_truev3_models_and_visible_workflow_mount_are_pinned() -> None:
         compose = compose_path.read_text(encoding="utf-8")
         assert source_name in compose
         assert "/flux_fill_inpaint.json:/opt/comfyui/user/default/workflows/" not in compose
+
+    sync_script = (ROOT / "scripts" / "sync_models.sh").read_text(encoding="utf-8")
+    assert "/opt/modelviewcreator/model/lora/flux-kelin" in sync_script
+    assert "ln -sfn ../baimo_shangcaizhi_klein_v1_000005500.safetensors" in sync_script

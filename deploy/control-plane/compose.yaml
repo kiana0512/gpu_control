@@ -257,7 +257,7 @@ services:
 
   comfyui-4090:
     container_name: comfyui-4090
-    image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:projects-0.2.5}
+    image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:projects-0.2.6}
     profiles: ["4090-gpu"]
     restart: unless-stopped
     ports: ["8188:8188"]

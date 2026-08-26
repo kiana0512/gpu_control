@@ -5,9 +5,9 @@ x-logging: &default-logging
 
 services:
   comfyui:
-    image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:projects-0.2.5}
+    image: ${COMFY_IMAGE:-registry.local:5000/gpu-control/comfyui:projects-0.2.6}
     restart: unless-stopped
-    # The approved INT8 TrueV3 workflow peaks near 22.4 GiB on a 24 GiB card.
+    # Approved ModelView workflows run close to the 24 GiB card limit.
     # Reserve 2 GiB so ComfyUI's dynamic loader offloads before CUDA reaches
     # the physical limit. The 12 GiB 4070Ti overlay keeps its stricter flags.
     command: ["--reserve-vram", "${COMFY_RESERVE_VRAM_GB:-2.0}"]

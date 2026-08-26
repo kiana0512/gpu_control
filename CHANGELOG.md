@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-26 — ModelView GGUF three-input workflow
+
+- Replace the ModelView TrueV3 workflow on the 4090 and both 3090 nodes with the
+  user-approved GGUF graph while retaining two image uploads and one final image output.
+- Bind the optional public prompt to the new empty `ttN text #41`, concatenate it with the
+  immutable geometry/material guard prompt, and keep server-owned per-job random seeds.
+- Pin the required GGUF, WAS Node Suite and tinyterra nodes; expose the workflow's nested LoRA
+  path as a symlink so the 165 MB model is not duplicated.
+- Preserve the supplied graph's actual `BasicScheduler steps=2` value even though its UI title
+  still says 12 steps, and keep the 4070 Ti excluded by the 24 GiB VRAM contract.
+
 ## 1.5.19 — ModelView two-input workflow and per-job seed — 2026-08-22
 
 - Replace the three-image ModelView TrueV3 graph with the user-approved two-image UI workflow;

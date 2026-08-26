@@ -1,12 +1,11 @@
 {
   "1": {
     "_meta": {
-      "title": "TrueV3 主模型"
+      "title": "TrueV3 主模型 (GGUF Q5_K)"
     },
-    "class_type": "UNETLoader",
+    "class_type": "UnetLoaderGGUF",
     "inputs": {
-      "unet_name": "Flux2-Klein-9B-True-V3-int8mixedrow.safetensors",
-      "weight_dtype": "default"
+      "unet_name": "Flux2-Klein-9B-True-V3-Q5_K.gguf"
     }
   },
   "10": {
@@ -76,11 +75,11 @@
   },
   "14": {
     "_meta": {
-      "title": "任务中心随机种子"
+      "title": "固定测试种子"
     },
     "class_type": "RandomNoise",
     "inputs": {
-      "noise_seed": 1029362313494898
+      "noise_seed": 354126340055704
     }
   },
   "15": {
@@ -95,7 +94,7 @@
         0
       ],
       "scheduler": "simple",
-      "steps": 12
+      "steps": 2
     }
   },
   "16": {
@@ -168,7 +167,7 @@
     },
     "class_type": "LoraLoaderModelOnly",
     "inputs": {
-      "lora_name": "baimo_shangcaizhi_klein_v1_000005500.safetensors",
+      "lora_name": "flux-kelin/baimo_shangcaizhi_klein_v1_000005500.safetensors",
       "model": [
         "1",
         0
@@ -187,7 +186,7 @@
         "4",
         0
       ],
-      "long_size": 1536,
+      "long_size": 1528,
       "square_size": 1024
     }
   },
@@ -261,6 +260,19 @@
       ]
     }
   },
+  "29": {
+    "_meta": {
+      "title": "ImageClip API Final RGBA"
+    },
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "modelview-inpaint",
+      "images": [
+        "33",
+        1
+      ]
+    }
+  },
   "3": {
     "_meta": {
       "title": "Flux2 VAE"
@@ -270,22 +282,9 @@
       "vae_name": "flux2-vae.safetensors"
     }
   },
-  "32": {
-    "_meta": {
-      "title": "保存图像"
-    },
-    "class_type": "SaveImage",
-    "inputs": {
-      "filename_prefix": "ComfyUI",
-      "images": [
-        "33",
-        1
-      ]
-    }
-  },
   "33": {
     "_meta": {
-      "title": "Cherry - 双图基准匹配"
+      "title": "CherryAlignReference"
     },
     "class_type": "CherryAlignReference",
     "inputs": {
@@ -305,13 +304,49 @@
       "背景色": ""
     }
   },
+  "38": {
+    "_meta": {
+      "title": "Text Concatenate"
+    },
+    "class_type": "Text Concatenate",
+    "inputs": {
+      "clean_whitespace": "true",
+      "delimiter": ", ",
+      "text_a": [
+        "41",
+        0
+      ],
+      "text_b": [
+        "40",
+        0
+      ]
+    }
+  },
   "4": {
     "_meta": {
       "title": "图1｜白模主图（锁定构图）"
     },
     "class_type": "LoadImage",
     "inputs": {
-      "image": "d1783234-b88a-42e7-9341-099b2c5c9050/image-white-model.png"
+      "image": "509caff28e32103999d6a06a5a06b1a1907751ee58706edd1731a95eabdff15d.png"
+    }
+  },
+  "40": {
+    "_meta": {
+      "title": "ttN text"
+    },
+    "class_type": "ttN text",
+    "inputs": {
+      "text": "Task: view-locked material transfer, not object generation.\n\nIMAGE1_GEOMETRY_LOCK: Image 1 is the only source for canvas, aspect ratio, background, object identity, silhouette, outer contour, pixel boundary, inner contours, component count, camera view, perspective, pose, scale, position, framing, visible surfaces, occlusion relationships, and every visible surface boundary. Preserve the white-model mask and all existing parts exactly. Do not shift, scale, rotate, recrop, thicken, simplify, fill, open, close, or reinterpret any part.\n\nIMAGE2_MATERIAL_ONLY: Use image 2 only to infer the material appearance of the corresponding same object. Ignore image 2's layout, multi-view arrangement, camera angle, background, ground, shadows, lighting, reflections, unrelated objects, contents, and any component not visible in image 1.\n\nPARTWISE_MATERIAL_MAPPING: Map material region to matching existing visible part only: shell to shell, edge to edge, panel to panel, frame to frame, handle to handle, fastener/control to the same existing part. Preserve corresponding color zones, paint boundaries, bare-metal areas, wood grain, paper or fabric fibers, rust, scratches, stains, wear, labels on matching surfaces, and fine albedo texture at the correct scale and direction. Do not spread the dominant color across unrelated parts.\n\nWHITE_MODEL_SILHOUETTE_LOCK: The final output must keep image 1's exact white-model outer contour, pixel boundary, internal part boundaries, current view, crop, and background. Only visible surface color and micro-texture may change. Do not add, remove, move, resize, rotate, replace, reshape, merge, or reconstruct geometry. Do not hallucinate geometry. Do not create extra objects, copied multi-view sheets, new viewpoints, attachments, openings, holes, controls, text, logos, or mechanical details absent from image 1.\n\nFINAL_RESULT: The same object from image 1, in the same view and framing, with only visible surfaces re-materialized from image 2 as clean base-color/albedo material. Avoid baked lighting, cast shadows, strong highlights, mirror reflections, environment gradients, and any change to geometry or silhouette."
+    }
+  },
+  "41": {
+    "_meta": {
+      "title": "ttN text"
+    },
+    "class_type": "ttN text",
+    "inputs": {
+      "text": ""
     }
   },
   "5": {
@@ -320,7 +355,7 @@
     },
     "class_type": "LoadImage",
     "inputs": {
-      "image": "d1783234-b88a-42e7-9341-099b2c5c9050/material_image-multiview-material-reference.png"
+      "image": "b4c6465b6bd7dd0d455adc09419b385672b34d42fa212898015849730fab4628.png"
     }
   },
   "7": {
@@ -357,7 +392,7 @@
   },
   "9": {
     "_meta": {
-      "title": "材质迁移规则｜锁图1几何，只用图2材质"
+      "title": "???????????1????2??"
     },
     "class_type": "CLIPTextEncode",
     "inputs": {
@@ -365,7 +400,10 @@
         "2",
         0
       ],
-      "text": "Task: view-locked material transfer, not object generation.\n\nIMAGE1_GEOMETRY_LOCK: Image 1 is the only source for canvas, aspect ratio, background, object identity, silhouette, outer contour, pixel boundary, inner contours, component count, camera view, perspective, pose, scale, position, framing, visible surfaces, occlusion relationships, and every visible surface boundary. Preserve the white-model mask and all existing parts exactly. Do not shift, scale, rotate, recrop, thicken, simplify, fill, open, close, or reinterpret any part.\n\nIMAGE2_MATERIAL_ONLY: Use image 2 only to infer the material appearance of the corresponding same object. Ignore image 2's layout, multi-view arrangement, camera angle, background, ground, shadows, lighting, reflections, unrelated objects, contents, and any component not visible in image 1.\n\nPARTWISE_MATERIAL_MAPPING: Map material region to matching existing visible part only: shell to shell, edge to edge, panel to panel, frame to frame, handle to handle, fastener/control to the same existing part. Preserve corresponding color zones, paint boundaries, bare-metal areas, wood grain, paper or fabric fibers, rust, scratches, stains, wear, labels on matching surfaces, and fine albedo texture at the correct scale and direction. Do not spread the dominant color across unrelated parts.\n\nWHITE_MODEL_SILHOUETTE_LOCK: The final output must keep image 1's exact white-model outer contour, pixel boundary, internal part boundaries, current view, crop, and background. Only visible surface color and micro-texture may change. Do not add, remove, move, resize, rotate, replace, reshape, merge, or reconstruct geometry. Do not hallucinate geometry. Do not create extra objects, copied multi-view sheets, new viewpoints, attachments, openings, holes, controls, text, logos, or mechanical details absent from image 1.\n\nFINAL_RESULT: The same object from image 1, in the same view and framing, with only visible surfaces re-materialized from image 2 as clean base-color/albedo material. Avoid baked lighting, cast shadows, strong highlights, mirror reflections, environment gradients, and any change to geometry or silhouette."
+      "text": [
+        "38",
+        0
+      ]
     }
   }
 }

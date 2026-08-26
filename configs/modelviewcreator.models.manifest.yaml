@@ -30,6 +30,9 @@ models:
   - path: unet/Flux2-Klein-9B-True-V3-int8mixedrow.safetensors
     size_bytes: 9439884768
     sha256: 6d23ea6946f410a496bf706b136b17bea5e1cdd1a6ba17a1b5f23c64d30c7088
+  - path: unet/Flux2-Klein-9B-True-V3-Q5_K.gguf
+    size_bytes: 6813702528
+    sha256: 8167105716c715be31018f682916b5b9988f9afec4e20d7ad7cd9b42aa9774ce
   - path: vae/ae.safetensors
     size_bytes: 335304388
     sha256: afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38

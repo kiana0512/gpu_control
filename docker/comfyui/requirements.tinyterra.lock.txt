@@ -1,0 +1,1 @@
+# tinyterraNodes 2.0.11 的 ttN text 节点没有额外 Python 依赖。
