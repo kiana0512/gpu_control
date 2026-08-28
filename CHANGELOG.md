@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.22 — ModelView LoadImage mask upload routing — 2026-08-28
+
+- Route the ModelView inpaint mask through ComfyUI's regular `/upload/image` endpoint because the
+  approved workflow consumes it with `LoadImage #44`.
+- Preserve `/upload/mask` for existing interactive editor-mask workflows that provide ComfyUI's
+  required `original_ref` metadata, and add a regression test for both routes.
+
 ## 1.5.21 — ModelView mask inpaint four-input contract — 2026-08-28
 
 - Replace the production local-repaint graph with the exact user-approved mask-inpaint JSON,

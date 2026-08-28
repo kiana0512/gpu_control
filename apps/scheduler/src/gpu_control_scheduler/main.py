@@ -79,6 +79,7 @@ from packages.gpu_control_core.scheduling import (
     IMAGECLIP_INPAINT_PREEMPTION_CODE,
     IMAGECLIP_WORKFLOW_KEY,
     MODELVIEW_INPAINT_NODE_ID,
+    MODELVIEW_INPAINT_WORKFLOW_KEY,
     MODELVIEW_WORKFLOW_KEYS,
     OverflowGuard,
     QueueSnapshot,
@@ -146,6 +147,18 @@ def node_has_recent_telemetry(node: Node, now: datetime) -> bool:
     )
     current = now if now.tzinfo else now.replace(tzinfo=UTC)
     return current - observed_at <= NODE_TELEMETRY_GRACE
+
+
+def uses_comfy_mask_upload_endpoint(workflow_key: str, filename: str) -> bool:
+    """Choose ComfyUI's editor-mask endpoint only for editor-mask payloads.
+
+    ModelView consumes its public mask with ``LoadImage #44``. That file must
+    use ``/upload/image`` because ``/upload/mask`` requires ``original_ref``.
+    """
+
+    return filename.startswith("mask-") and workflow_key != MODELVIEW_INPAINT_WORKFLOW_KEY
+
+
 BUILD_INFO = Info(
     "gpu_control_scheduler_build",
     "Scheduler package, immutable build version and source revision",
@@ -3388,7 +3401,11 @@ class Scheduler:
                             if path.is_file() and not path.name.endswith(".json"):
                                 uploads.append(
                                     await client.upload(
-                                        path, mask=path.name.startswith("mask-"), subfolder=job.id
+                                        path,
+                                        mask=uses_comfy_mask_upload_endpoint(
+                                            job.workflow_key, path.name
+                                        ),
+                                        subfolder=job.id,
                                     )
                                 )
                         self.storage.atomic_json(root / "comfy" / "upload.responses.json", uploads)

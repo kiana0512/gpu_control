@@ -1,7 +1,7 @@
 # ModelView 蒙版局部重绘前端 API 对接文档
 
 更新时间：2026-08-28  
-GPU Control 版本：`1.5.21`  
+GPU Control 版本：`1.5.22`
 工作流：`modelview-inpaint`  
 工作流版本：`2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1`  
 用户 UI JSON SHA-256：`cd48a782ccc9bd716412b8935de6cfff7df531a12f22ef8178b00df60f782cd9`  
