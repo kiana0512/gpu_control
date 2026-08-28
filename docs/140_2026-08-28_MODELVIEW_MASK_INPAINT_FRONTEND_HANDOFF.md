@@ -185,3 +185,32 @@ modelview-mask-<资产ID>-<递增编号或UUID>
 
 latent 蒙版通常能稳定限制编辑区域，但不承诺蒙版外逐像素完全相同。如果业务必须做到
 像素级锁定，需要另行批准增加最终像素合成节点，不能由前端假设。
+
+## 11. 生产部署与验收记录
+
+生产控制面版本为 `1.5.22`，源码提交为
+`7a09ea97f8bcb7963429fcd4a555fbf38bdea9c5`。API、Scheduler、Web 镜像均具有相同版本和
+revision 标签。三台可执行节点挂载的用户 UI JSON 与批准源文件 SHA-256 一致；生产启用的
+API 模板规范化 SHA-256 为本文开头记录的 `250768c7...`，上一工作流版本保留但已禁用。
+
+第一次 `1.5.21` 的 4090 验收任务 `05025e16-807c-4ea6-9715-35ceaea3ef8d` 失败。现场日志
+确认不是工作流执行错误，而是 Scheduler 根据 `mask-` 文件名前缀调用了 ComfyUI 的
+`/upload/mask`；该交互式端点要求 `original_ref`，不适用于本工作流的普通 `LoadImage #44`。
+发布随即停止并排空全部节点。`1.5.22` 只把 `modelview-inpaint` 的蒙版改走
+`/upload/image`，其他交互式蒙版工作流仍保持原端点。
+
+热修复回归结果为 `129 passed`。节点隔离实跑结果如下：
+
+| 节点 | Job ID | 结果 | 输出 SHA-256 |
+|---|---|---|---|
+| `control-4090` | `3d6e933e-6a02-4cb9-9479-41042ff12ba8` | `SUCCEEDED`，一次尝试，2048×2048 PNG | `92065fdae806d93870519c2af1cf58a5aeb14818506f9ca2557ad4dbed0784dd` |
+| `worker-3090-a` | `3f2d617f-69b3-4b1b-b6f6-d81c151143ab` | `SUCCEEDED`，一次尝试，2048×2048 PNG | `45fc08df8146170d490d787a9a944c0eb55d975f30fdb070b241b70bc0b68a49` |
+| `worker-3090-b` | `733d604f-d826-4959-90b5-43b4bca7335e` | `SUCCEEDED`，一次尝试，2048×2048 PNG | `909bc98a24c30d2214a57ca4dae33198bbf7d6d6284997b07f4d9eaab415d13b` |
+
+三项上传记录都显示 `type=input` 且哈希已验证；渲染快照分别保存了服务端随机 Seed、
+`LoadImage #44` 的蒙版路径和唯一 `SaveImage #29` 输出。3090-B 使用相同请求内容和相同
+`Idempotency-Key` 重放后，仍返回同一个 Job ID 和相同输出 SHA-256，数据库中没有新增任务。
+
+验收结束时四个节点均为 `ACTIVE / ONLINE / current_jobs=0`，四个 ComfyUI 队列均为 0，
+控制面活动任务为 0。4090 和两台 3090 对本工作流兼容；4070Ti 因 12 GiB 显存和缺少
+ModelView 自定义节点继续按合同排除，只处理其他兼容任务。
