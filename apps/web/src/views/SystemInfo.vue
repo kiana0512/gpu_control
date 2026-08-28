@@ -161,14 +161,17 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
         <div>
           <span
             ><strong>ModelView 局部重绘</strong
-            ><small>POST · image + material_image 必填 · prompt 可选</small
+            ><small
+              >POST · image + material_image + mask 必填 · prompt 可选</small
             ></span
           ><code>{{ modelviewUrl }}</code>
         </div>
         <div>
           <span
             ><strong>ModelView 单视图生成</strong
-            ><small>POST · image + material_image 必填 · prompt 可选</small></span
+            ><small
+              >POST · image + material_image 必填 · prompt 可选</small
+            ></span
           ><code>{{ modelviewSingleViewUrl }}</code>
         </div>
         <div>

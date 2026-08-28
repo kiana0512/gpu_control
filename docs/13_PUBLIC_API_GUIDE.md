@@ -31,9 +31,15 @@ ModelView 局部重绘，返回最终输出图：
 ```bash
 curl -X POST 'https://10.3.34.11/api/v1/services/modelview-inpaint' \
   -H 'Idempotency-Key: order-002-attempt-1' \
-  -F 'image=@input.png' \
+  -F 'image=@current-result.png' \
+  -F 'material_image=@reference.png' \
+  -F 'mask=@mask.png' \
+  -F 'prompt=只修改蒙版内区域，参考目标图调整材质' \
   --output result-inpaint.png
 ```
+
+其中 `mask` 必须与 `image` 尺寸一致，红色通道白色区域重绘、黑色区域保留；完整合同见
+[`140_2026-08-28_MODELVIEW_MASK_INPAINT_FRONTEND_HANDOFF.md`](140_2026-08-28_MODELVIEW_MASK_INPAINT_FRONTEND_HANDOFF.md)。
 
 PBR 粗糙度生成，返回最终粗糙度图片。该接口只接收图片；工作流提示词由生产版本固定，
 调用方不能传入或覆盖：

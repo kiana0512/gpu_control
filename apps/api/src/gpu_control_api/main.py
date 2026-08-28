@@ -125,6 +125,7 @@ from packages.gpu_control_core.storage import (
     LocalJobStorage,
     StorageError,
     inspect_image,
+    mask_red_channel_has_edit_region,
     safe_filename,
 )
 from packages.gpu_control_core.workflow import WorkflowManifest, render_workflow
@@ -1232,6 +1233,19 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 raise HTTPException(
                     422, detail={"code": "INPUT_INVALID", "message": str(exc)}
                 ) from exc
+            if (
+                workflow_key == MODELVIEW_INPAINT_WORKFLOW_KEY
+                and field_name == "mask"
+                and not mask_red_channel_has_edit_region(destination)
+            ):
+                storage.remove_tree(root)
+                raise HTTPException(
+                    422,
+                    detail={
+                        "code": "MASK_EMPTY",
+                        "message": "蒙版红色通道不能是全黑；白色或灰色区域才会参与重绘",
+                    },
+                )
             file_hashes.append((field_name, digest))
             image_dimensions[field_name] = (width, height)
             # Scheduler uploads every job into an isolated ComfyUI input
@@ -1578,6 +1592,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         parameters: str,
         idempotency_key: str | None,
         *,
+        mask: UploadFile | None = None,
         additional_images: tuple[tuple[str, UploadFile], ...] = (),
     ) -> FileResponse:
         workflow = await db.scalar(
@@ -1592,6 +1607,14 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             raise HTTPException(
                 404,
                 detail={"code": "WORKFLOW_NOT_FOUND", "message": "服务工作流未启用"},
+            )
+        if mask is not None and "mask_filename" not in workflow.bindings:
+            raise HTTPException(
+                503,
+                detail={
+                    "code": "WORKFLOW_CONTRACT_MISMATCH",
+                    "message": "当前启用的工作流版本尚未声明蒙版输入",
+                },
             )
         accepted_additional_images = tuple(
             (field_name, upload)
@@ -1617,7 +1640,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 principal,
                 db,
                 image,
-                None,
+                mask,
                 None,
                 pinned=pinned,
                 additional_images=accepted_additional_images,
@@ -1699,6 +1722,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         db: Annotated[AsyncSession, Depends(session)],
         image: Annotated[UploadFile, File()],
         material_image: Annotated[UploadFile, File()],
+        mask: Annotated[UploadFile, File()],
         viewport_reference: Annotated[UploadFile | None, File(deprecated=True)] = None,
         parameters: Annotated[str, Form()] = "{}",
         prompt: Annotated[str | None, Form(max_length=4096)] = None,
@@ -1716,6 +1740,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             parameters,
             prompt,
             idempotency_key,
+            mask=mask,
             viewport_reference=viewport_reference,
         )
 
@@ -1755,6 +1780,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         prompt: str | None,
         idempotency_key: str | None,
         *,
+        mask: UploadFile | None = None,
         viewport_reference: UploadFile | None = None,
     ) -> FileResponse:
         try:
@@ -1772,6 +1798,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             image,
             parameters,
             idempotency_key,
+            mask=mask,
             additional_images=(
                 ("material_image", material_image),
                 *((("viewport_reference", viewport_reference),) if viewport_reference else ()),

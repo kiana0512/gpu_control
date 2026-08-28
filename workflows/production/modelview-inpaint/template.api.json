@@ -56,30 +56,13 @@
       ]
     }
   },
-  "13": {
-    "_meta": {
-      "title": "输出画布｜跟随图1 1024×1024"
-    },
-    "class_type": "EmptyFlux2LatentImage",
-    "inputs": {
-      "batch_size": 1,
-      "height": [
-        "22",
-        3
-      ],
-      "width": [
-        "22",
-        2
-      ]
-    }
-  },
   "14": {
     "_meta": {
       "title": "固定测试种子"
     },
     "class_type": "RandomNoise",
     "inputs": {
-      "noise_seed": 354126340055704
+      "noise_seed": 468546072632498
     }
   },
   "15": {
@@ -94,7 +77,7 @@
         0
       ],
       "scheduler": "simple",
-      "steps": 2
+      "steps": 4
     }
   },
   "16": {
@@ -117,7 +100,7 @@
         0
       ],
       "latent_image": [
-        "13",
+        "43",
         0
       ],
       "noise": [
@@ -172,7 +155,7 @@
         "1",
         0
       ],
-      "strength_model": 0.8
+      "strength_model": 0.9
     }
   },
   "22": {
@@ -304,24 +287,6 @@
       "背景色": ""
     }
   },
-  "38": {
-    "_meta": {
-      "title": "Text Concatenate"
-    },
-    "class_type": "Text Concatenate",
-    "inputs": {
-      "clean_whitespace": "true",
-      "delimiter": ", ",
-      "text_a": [
-        "41",
-        0
-      ],
-      "text_b": [
-        "40",
-        0
-      ]
-    }
-  },
   "4": {
     "_meta": {
       "title": "图1｜白模主图（锁定构图）"
@@ -331,22 +296,42 @@
       "image": "509caff28e32103999d6a06a5a06b1a1907751ee58706edd1731a95eabdff15d.png"
     }
   },
-  "40": {
+  "43": {
     "_meta": {
-      "title": "ttN text"
+      "title": "SetLatentNoiseMask"
     },
-    "class_type": "ttN text",
+    "class_type": "SetLatentNoiseMask",
     "inputs": {
-      "text": "Task: view-locked material transfer, not object generation.\n\nIMAGE1_GEOMETRY_LOCK: Image 1 is the only source for canvas, aspect ratio, background, object identity, silhouette, outer contour, pixel boundary, inner contours, component count, camera view, perspective, pose, scale, position, framing, visible surfaces, occlusion relationships, and every visible surface boundary. Preserve the white-model mask and all existing parts exactly. Do not shift, scale, rotate, recrop, thicken, simplify, fill, open, close, or reinterpret any part.\n\nIMAGE2_MATERIAL_ONLY: Use image 2 only to infer the material appearance of the corresponding same object. Ignore image 2's layout, multi-view arrangement, camera angle, background, ground, shadows, lighting, reflections, unrelated objects, contents, and any component not visible in image 1.\n\nPARTWISE_MATERIAL_MAPPING: Map material region to matching existing visible part only: shell to shell, edge to edge, panel to panel, frame to frame, handle to handle, fastener/control to the same existing part. Preserve corresponding color zones, paint boundaries, bare-metal areas, wood grain, paper or fabric fibers, rust, scratches, stains, wear, labels on matching surfaces, and fine albedo texture at the correct scale and direction. Do not spread the dominant color across unrelated parts.\n\nWHITE_MODEL_SILHOUETTE_LOCK: The final output must keep image 1's exact white-model outer contour, pixel boundary, internal part boundaries, current view, crop, and background. Only visible surface color and micro-texture may change. Do not add, remove, move, resize, rotate, replace, reshape, merge, or reconstruct geometry. Do not hallucinate geometry. Do not create extra objects, copied multi-view sheets, new viewpoints, attachments, openings, holes, controls, text, logos, or mechanical details absent from image 1.\n\nFINAL_RESULT: The same object from image 1, in the same view and framing, with only visible surfaces re-materialized from image 2 as clean base-color/albedo material. Avoid baked lighting, cast shadows, strong highlights, mirror reflections, environment gradients, and any change to geometry or silhouette."
+      "mask": [
+        "45",
+        0
+      ],
+      "samples": [
+        "7",
+        0
+      ]
     }
   },
-  "41": {
+  "44": {
     "_meta": {
-      "title": "ttN text"
+      "title": "图三 蒙版"
     },
-    "class_type": "ttN text",
+    "class_type": "LoadImage",
     "inputs": {
-      "text": ""
+      "image": "img_v3_02150_3491781e-bae6-45de-99b0-384d6b692a6g.png"
+    }
+  },
+  "45": {
+    "_meta": {
+      "title": "ImageToMask"
+    },
+    "class_type": "ImageToMask",
+    "inputs": {
+      "channel": "red",
+      "image": [
+        "52",
+        0
+      ]
     }
   },
   "5": {
@@ -356,6 +341,39 @@
     "class_type": "LoadImage",
     "inputs": {
       "image": "b4c6465b6bd7dd0d455adc09419b385672b34d42fa212898015849730fab4628.png"
+    }
+  },
+  "52": {
+    "_meta": {
+      "title": "图1｜等比适配并补边到推理尺寸"
+    },
+    "class_type": "ImageResize+",
+    "inputs": {
+      "condition": "always",
+      "height": [
+        "22",
+        3
+      ],
+      "image": [
+        "44",
+        0
+      ],
+      "interpolation": "area",
+      "method": "pad",
+      "multiple_of": 0,
+      "width": [
+        "22",
+        2
+      ]
+    }
+  },
+  "60": {
+    "_meta": {
+      "title": "提示词"
+    },
+    "class_type": "ttN text",
+    "inputs": {
+      "text": ""
     }
   },
   "7": {
@@ -401,7 +419,7 @@
         0
       ],
       "text": [
-        "38",
+        "60",
         0
       ]
     }

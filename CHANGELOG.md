@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.21 — ModelView mask inpaint four-input contract — 2026-08-28
+
+- Replace the production local-repaint graph with the exact user-approved mask-inpaint JSON,
+  changing the public contract to current image, reference image, required mask and optional prompt.
+- Preserve the supplied graph's 4 sampler steps, LoRA strength 0.9, direct prompt path and single
+  final output while keeping server-owned random seeds and the existing interactive queue policy.
+- Validate same-sized non-empty red-channel masks, include the mask hash in idempotency, retain the
+  old workflow version for rollback and publish the frontend integration guide in document 140.
+
 ## 2026-08-26 — ModelView GGUF three-input workflow
 
 - Replace the ModelView TrueV3 workflow on the 4090 and both 3090 nodes with the
