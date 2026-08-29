@@ -214,3 +214,26 @@ API 模板规范化 SHA-256 为本文开头记录的 `250768c7...`，上一工�
 验收结束时四个节点均为 `ACTIVE / ONLINE / current_jobs=0`，四个 ComfyUI 队列均为 0，
 控制面活动任务为 0。4090 和两台 3090 对本工作流兼容；4070Ti 因 12 GiB 显存和缺少
 ModelView 自定义节点继续按合同排除，只处理其他兼容任务。
+
+## 12. 2026-08-29 两步采样更新与验收记录
+
+按用户明确要求，仅将局部重绘 `BasicScheduler #15` 的实际执行参数从 `steps=4` 调整为
+`steps=2`。四个输入、服务端随机 Seed、模型、LoRA 强度 0.9、蒙版链路、图拓扑和唯一
+`SaveImage #29` 输出均未改变，前端不需要修改请求字段或响应处理。
+
+当前启用的不可变工作流版本为
+`2026.08.29-cba4414-truev3-gguf-mask-4input-rseed-steps2-r1`。4090 和两台 3090 中的 UI
+工作流 SHA-256 均为 `cba4414a...`，任务中心 API 模板规范化 SHA-256 为 `cc95d74d...`。
+上一版四步工作流保留但禁用，作为可审计回滚版本。部署前备份位于三台节点各自的
+`/opt/gpu-control/backups/modelview-steps2-pre-20260829-181403/`。
+
+工作流合同与相关 API 回归共 `79 passed`。三台节点逐台隔离实跑如下：
+
+| 节点 | Job ID | 渲染快照 | 端到端耗时 | 输出 SHA-256 |
+|---|---|---|---:|---|
+| `control-4090` | `37599af8-5e4e-4f3b-bfd1-a44955389674` | `steps=2`，Seed `306473530596120`，一次成功 | 13 秒 | `778e28e147c91ac8b63cdda64435bdd4869874c6cdbbc101429694c0a47eb38a` |
+| `worker-3090-a` | `c77ad1ab-efe2-44b5-96b6-d1d041dfca51` | `steps=2`，Seed `309650590140862`，一次成功 | 18 秒 | `b72204e99740fec3ea1af962d7eb5eef4854c2b54cecdead56c821ac9eef068a` |
+| `worker-3090-b` | `cd00ea58-34af-42d2-a8a9-bc66d32bcf50` | `steps=2`，Seed `808385066489017`，一次成功 | 47 秒 | `69a451b0b2ad4fce70db7ad597616076c451e74dd9bdfb1195961f0d84fd78b4` |
+
+验收结束时四个节点均为 `ACTIVE / ONLINE / current_jobs=0`，四个 ComfyUI 队列均为 0，
+控制面活动任务为 0。4070Ti 的排除规则未改变。
