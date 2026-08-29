@@ -15,7 +15,9 @@ def test_truev3_api_template_matches_the_approved_production_contract() -> None:
     manifest = WorkflowManifest.load(BUNDLE / "manifest.yaml")
     template = json.loads((BUNDLE / "template.api.json").read_text(encoding="utf-8"))
 
-    assert manifest.version == "2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1"
+    assert manifest.version == (
+        "2026.08.29-cba4414-truev3-gguf-mask-4input-rseed-steps2-r1"
+    )
     assert manifest.bindings == {
         "image_filename": "4.inputs.image",
         "material_image_filename": "5.inputs.image",
@@ -79,7 +81,7 @@ def test_truev3_api_template_matches_the_approved_production_contract() -> None:
         "denoise": 1,
         "model": None,
         "scheduler": "simple",
-        "steps": 4,
+        "steps": 2,
     }
     assert template["16"]["inputs"] == {"sampler_name": "euler"}
     assert template["22"]["inputs"] | {"image": None} == {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-29 — ModelView mask inpaint two-step workflow
+
+- Apply the user's explicit inference adjustment only to ModelView mask inpaint:
+  `BasicScheduler #15` now uses `steps=2` instead of `steps=4`.
+- Keep the four-input contract, server-owned random seed, models, LoRA strength, graph topology and
+  single final output unchanged; retain the prior immutable workflow version for rollback.
+
 ## 1.5.22 — ModelView LoadImage mask upload routing — 2026-08-28
 
 - Route the ModelView inpaint mask through ComfyUI's regular `/upload/image` endpoint because the

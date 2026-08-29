@@ -4,20 +4,20 @@
 
 - 业务仓库：`rd_center/ai_art/modelviewcreator`
 - 原始 UI 工作流：`Flux2 Klein TrueV3-双图材质编辑-局部重绘.json`
-- 用户提供的 2026-08-28 UI 工作流 SHA-256：
-  `cd48a782ccc9bd716412b8935de6cfff7df531a12f22ef8178b00df60f782cd9`
+- 用户批准的 2026-08-29 两步 UI 工作流 SHA-256：
+  `cba4414a694b9fe427477f3a4782f3111248f06193efb0c1cbc6c85d3c71349a`
 - GPU Control 不可变版本：
-  `2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1`
+  `2026.08.29-cba4414-truev3-gguf-mask-4input-rseed-steps2-r1`
 
 `template.api.json` 由上述 UI 工作流逐节点转换。对外共有四个业务输入：当前效果图、
 参考图、蒙版和提示词；输出仍只有一张图。API 模板只把 UI 的最终 `PreviewImage #29`
 等价改为 `SaveImage #29`，输入保持 `CherryAlignReference #33` 的第二路输出，因此不会
 发布采样中间图。
 
-新工作流原样保留 `BasicScheduler #15` 的实际参数 `steps=4` 和
-`LoraLoaderModelOnly #21` 的实际强度 `0.9`。节点标题中的“12步”和“0.8”不是执行值，
-不得据此静默改写。UI 文件中保存的 `RandomNoise #14` 只作来源占位，生产执行时一定由
-任务中心覆盖。
+按用户 2026-08-29 的明确要求，`BasicScheduler #15` 的实际参数从 `steps=4` 调整为
+`steps=2`；`LoraLoaderModelOnly #21` 的实际强度仍为 `0.9`。节点标题中的“12步”和“0.8”
+不是执行值。UI 文件中保存的 `RandomNoise #14` 只作来源占位，生产执行时一定由任务中心
+覆盖。
 
 ## 对外 API 契约
 

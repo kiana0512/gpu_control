@@ -77,7 +77,7 @@
         0
       ],
       "scheduler": "simple",
-      "steps": 4
+      "steps": 2
     }
   },
   "16": {

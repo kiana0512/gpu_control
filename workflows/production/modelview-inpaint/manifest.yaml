@@ -1,5 +1,5 @@
 workflow_key: modelview-inpaint
-version: 2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1
+version: 2026.08.29-cba4414-truev3-gguf-mask-4input-rseed-steps2-r1
 template_file: template.api.json
 parameter_schema:
   type: object

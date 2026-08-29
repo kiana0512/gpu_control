@@ -3,9 +3,9 @@
 更新时间：2026-08-28  
 GPU Control 版本：`1.5.22`
 工作流：`modelview-inpaint`  
-工作流版本：`2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1`  
-用户 UI JSON SHA-256：`cd48a782ccc9bd716412b8935de6cfff7df531a12f22ef8178b00df60f782cd9`  
-API 模板规范化 SHA-256：`250768c7da952c81cd781247cf1ab6dbe1258a4055cd1b384d08e5b38ea3549e`
+工作流版本：`2026.08.29-cba4414-truev3-gguf-mask-4input-rseed-steps2-r1`
+用户 UI JSON SHA-256：`cba4414a694b9fe427477f3a4782f3111248f06193efb0c1cbc6c85d3c71349a`
+API 模板规范化 SHA-256：`cc95d74d69df5f1ec96add1f1205e83c0e7bff1f2f1f3198a7ca3b6fa9520b32`
 
 ## 1. 接口
 
@@ -180,13 +180,13 @@ modelview-mask-<资产ID>-<递增编号或UUID>
 ## 10. 工作流行为说明
 
 本版本从当前效果图编码得到 latent，再通过蒙版限制加噪区域。它不是旧版本的空 latent
-全图生成。实际参数为 4 个采样步、LoRA 强度 0.9；提示词直接进入文本编码节点，不再
+全图生成。实际参数为 2 个采样步、LoRA 强度 0.9；提示词直接进入文本编码节点，不再
 自动拼接旧版本的隐藏几何保护提示词。
 
 latent 蒙版通常能稳定限制编辑区域，但不承诺蒙版外逐像素完全相同。如果业务必须做到
 像素级锁定，需要另行批准增加最终像素合成节点，不能由前端假设。
 
-## 11. 生产部署与验收记录
+## 11. 2026-08-28 首次生产部署与验收记录
 
 生产控制面版本为 `1.5.22`，源码提交为
 `7a09ea97f8bcb7963429fcd4a555fbf38bdea9c5`。API、Scheduler、Web 镜像均具有相同版本和
