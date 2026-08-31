@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5.23 — ModelView single-view inpaint service — 2026-08-31
+
+- Add the independent `modelview-single-view-inpaint` task with current image, reference image,
+  red-channel mask and optional user prompt inputs, returning one final PNG.
+- Preserve the user-approved two-step graph and immutable view/geometry guard prompt while injecting
+  a server-owned random seed for every new task.
+- Reuse the interactive ModelView cache family and 4090 response lane, support both 24 GiB 3090
+  nodes, and share LoadImage mask validation/upload routing with the existing inpaint service.
+- Publish the frontend contract in document 141 and expose the task in the control Web UI.
+
 ## 2026-08-29 — ModelView mask inpaint two-step workflow
 
 - Apply the user's explicit inference adjustment only to ModelView mask inpaint:

@@ -19,6 +19,7 @@ type PublicService =
   | "imageclip-rgba"
   | "modelview-inpaint"
   | "modelview-single-view"
+  | "modelview-single-view-inpaint"
   | "modelview-roughness"
   | "asset-uv"
   | "asset-retopology"
@@ -27,9 +28,11 @@ const selectedService = ref<PublicService>("imageclip-rgba");
 const search = ref("");
 const clientScope = ref<"production" | "test">("production");
 const isModelviewService = computed(() =>
-  ["modelview-inpaint", "modelview-single-view"].includes(
-    selectedService.value,
-  ),
+  [
+    "modelview-inpaint",
+    "modelview-single-view",
+    "modelview-single-view-inpaint",
+  ].includes(selectedService.value),
 );
 const modelviewPromptVisible = computed(() => isModelviewService.value);
 
@@ -115,7 +118,9 @@ const outputName = computed(() =>
       ? "result-roughness.png"
       : selectedService.value === "modelview-single-view"
         ? "result-single-view.png"
-        : "result-inpaint.png",
+        : selectedService.value === "modelview-single-view-inpaint"
+          ? "result-single-view-inpaint.png"
+          : "result-inpaint.png",
 );
 const curlExample = computed(() => {
   if (selectedService.value === "asset-uv")
@@ -150,7 +155,10 @@ const curlExample = computed(() => {
     "  -F 'image=@input.png' \\",
   ];
   if (isModelviewService.value) {
-    if (selectedService.value === "modelview-inpaint") {
+    if (
+      selectedService.value === "modelview-inpaint" ||
+      selectedService.value === "modelview-single-view-inpaint"
+    ) {
       lines[2] = "  -F 'image=@current-result.png' \\";
       lines.push("  -F 'material_image=@reference.png' \\");
       lines.push("  -F 'mask=@mask.png' \\");
@@ -163,7 +171,9 @@ const curlExample = computed(() => {
     lines.push(
       selectedService.value === "modelview-inpaint"
         ? "  -F 'prompt=只修改蒙版内区域，参考目标图调整材质' \\"
-        : "  -F 'prompt=保持白模几何，只转移六视图材质' \\",
+        : selectedService.value === "modelview-single-view-inpaint"
+          ? "  -F 'prompt=只重绘蒙版内区域，并保持当前单视图结构' \\"
+          : "  -F 'prompt=保持白模几何，只转移六视图材质' \\",
     );
   lines.push(`  --output '${outputName.value}'`);
   return lines.join("\n");
@@ -175,7 +185,10 @@ const pythonExample = computed(() => {
     return `import json, requests\n\nmetadata = {"external_asset_id": "asset:crate:retopo:001", "options": {"high_object": "crate_high", "reference_object": "crate_reference_low", "low_object": "crate_current_low", "generated_low_object": "crate_generated_v001", "target_faces": 3000}}\nwith open("crate.blend", "rb") as project, open("crate_front.png", "rb") as front:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "asset-crate-retopo-001"},\n        files=[("project", ("crate.blend", project)), ("reference_images", ("crate_front.png", front, "image/png"))],\n        data={"metadata": json.dumps(metadata)},\n        timeout=60,\n    )\nresponse.raise_for_status()\nprint(response.json())`;
   if (selectedService.value === "asset-bake")
     return `import json, requests\n\nmetadata = {"external_asset_id": "asset:chair:bake:001", "options": {"profile": "li3d-pbr-full-v2", "resolution": 2048, "texture_cache_mb": 32768}}\nwith open("chair_low_uv.fbx", "rb") as low, open("chair_high.fbx", "rb") as high, open("chair_basecolor.png", "rb") as base, open("chair_roughness.png", "rb") as roughness, open("chair_metallic.png", "rb") as metallic:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "asset-chair-bake-001"},\n        files={"low_mesh": ("chair_low_uv.fbx", low), "high_mesh": ("chair_high.fbx", high), "base_color_texture": ("chair_basecolor.png", base, "image/png"), "roughness_texture": ("chair_roughness.png", roughness, "image/png"), "metallic_texture": ("chair_metallic.png", metallic, "image/png")},\n        data={"metadata": json.dumps(metadata)},\n        timeout=60,\n    )\nresponse.raise_for_status()\nprint(response.json())`;
-  if (selectedService.value === "modelview-inpaint")
+  if (
+    selectedService.value === "modelview-inpaint" ||
+    selectedService.value === "modelview-single-view-inpaint"
+  )
     return `import requests\n\nwith open("current-result.png", "rb") as current, open("reference.png", "rb") as reference, open("mask.png", "rb") as mask:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "modelview-mask-001-attempt-1"},\n        files={\n            "image": ("current-result.png", current, "image/png"),\n            "material_image": ("reference.png", reference, "image/png"),\n            "mask": ("mask.png", mask, "image/png"),\n        },\n        data={"prompt": "只修改蒙版内区域，参考目标图调整材质"},\n        timeout=1900,\n    )\nresponse.raise_for_status()\nwith open("${outputName.value}", "wb") as output:\n    output.write(response.content)\nprint("job:", response.headers.get("X-Job-ID"))`;
   if (selectedService.value === "modelview-single-view")
     return `import requests\n\nwith open("white-model.png", "rb") as white_model, open("six-view.png", "rb") as material:\n    response = requests.post(\n        "${serviceUrl.value}",\n        headers={"Idempotency-Key": "modelview-001-attempt-1"},\n        files={\n            "image": ("white-model.png", white_model, "image/png"),\n            "material_image": ("six-view.png", material, "image/png"),\n        },${
@@ -816,6 +829,13 @@ function formatCell(value: unknown) {
             >
               ModelView 单视图生成</button
             ><button
+              :class="{
+                active: selectedService === 'modelview-single-view-inpaint',
+              }"
+              @click="selectedService = 'modelview-single-view-inpaint'"
+            >
+              ModelView 单视图局部重绘</button
+            ><button
               :class="{ active: selectedService === 'modelview-roughness' }"
               @click="selectedService = 'modelview-roughness'"
             >
@@ -863,6 +883,11 @@ function formatCell(value: unknown) {
               multipart 必填字段为
               <code>image + material_image</code>， 依次表示白模和参考多视图。
             </li>
+            <li v-else-if="selectedService === 'modelview-single-view-inpaint'">
+              multipart 必填字段为
+              <code>image + material_image + mask</code
+              >，依次表示当前效果图、参考图和蒙版。
+            </li>
             <li v-else>multipart 图片字段固定为 <code>image</code>。</li>
             <li v-if="selectedService === 'modelview-roughness'">
               服务使用版本锁定的内置提示词；调用方不能传入或覆盖提示词。
@@ -871,7 +896,12 @@ function formatCell(value: unknown) {
               可选文字要求字段为
               <code>prompt</code>；省略或留空时按空文本执行。
             </li>
-            <li v-if="selectedService === 'modelview-inpaint'">
+            <li
+              v-if="
+                selectedService === 'modelview-inpaint' ||
+                selectedService === 'modelview-single-view-inpaint'
+              "
+            >
               蒙版读取红色通道：白色重绘、黑色保留；蒙版尺寸必须与当前效果图一致。
             </li>
             <li v-if="selectedService.startsWith('asset-')">

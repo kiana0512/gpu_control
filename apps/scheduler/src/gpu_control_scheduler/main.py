@@ -79,7 +79,7 @@ from packages.gpu_control_core.scheduling import (
     IMAGECLIP_INPAINT_PREEMPTION_CODE,
     IMAGECLIP_WORKFLOW_KEY,
     MODELVIEW_INPAINT_NODE_ID,
-    MODELVIEW_INPAINT_WORKFLOW_KEY,
+    MODELVIEW_MASK_WORKFLOW_KEYS,
     MODELVIEW_WORKFLOW_KEYS,
     OverflowGuard,
     QueueSnapshot,
@@ -156,7 +156,7 @@ def uses_comfy_mask_upload_endpoint(workflow_key: str, filename: str) -> bool:
     use ``/upload/image`` because ``/upload/mask`` requires ``original_ref``.
     """
 
-    return filename.startswith("mask-") and workflow_key != MODELVIEW_INPAINT_WORKFLOW_KEY
+    return filename.startswith("mask-") and workflow_key not in MODELVIEW_MASK_WORKFLOW_KEYS
 
 
 BUILD_INFO = Info(

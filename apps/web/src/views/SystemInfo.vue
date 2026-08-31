@@ -12,6 +12,7 @@ const comfyUrl = `http://${window.location.hostname}:8188/#551d82b0-b1fb-483a-a5
 const imageclipUrl = `${origin}/api/v1/services/imageclip-rgba`;
 const modelviewUrl = `${origin}/api/v1/services/modelview-inpaint`;
 const modelviewSingleViewUrl = `${origin}/api/v1/services/modelview-single-view`;
+const modelviewSingleViewInpaintUrl = `${origin}/api/v1/services/modelview-single-view-inpaint`;
 const roughnessUrl = `${origin}/api/v1/services/modelview-roughness`;
 const uvUrl = `${origin}/api/v1/assets/uv/process`;
 const retopologyUrl = `${origin}/api/v1/assets/retopology/process`;
@@ -173,6 +174,14 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
               >POST · image + material_image 必填 · prompt 可选</small
             ></span
           ><code>{{ modelviewSingleViewUrl }}</code>
+        </div>
+        <div>
+          <span
+            ><strong>ModelView 单视图局部重绘</strong
+            ><small
+              >POST · image + material_image + mask 必填 · prompt 可选</small
+            ></span
+          ><code>{{ modelviewSingleViewInpaintUrl }}</code>
         </div>
         <div>
           <span

@@ -6,6 +6,7 @@ from packages.gpu_control_core.scheduling import (
     GPU_CACHE_DRAIN_FAILED_LABEL,
     MODELVIEW_CACHE_FAMILY_KEY,
     MODELVIEW_INPAINT_WORKFLOW_KEY,
+    MODELVIEW_SINGLE_VIEW_INPAINT_WORKFLOW_KEY,
     MODELVIEW_SINGLE_VIEW_WORKFLOW_KEY,
     SUBSTANCE_DRAIN_OWNER,
     SUBSTANCE_DRAIN_OWNER_LABEL,
@@ -48,6 +49,9 @@ def test_modelview_workflows_share_one_warm_cache_family() -> None:
         MODELVIEW_CACHE_FAMILY_KEY
     )
     assert workflow_cache_family(MODELVIEW_SINGLE_VIEW_WORKFLOW_KEY) == (
+        MODELVIEW_CACHE_FAMILY_KEY
+    )
+    assert workflow_cache_family(MODELVIEW_SINGLE_VIEW_INPAINT_WORKFLOW_KEY) == (
         MODELVIEW_CACHE_FAMILY_KEY
     )
     assert workflow_cache_family("imageclip-rgba") == "imageclip-rgba"

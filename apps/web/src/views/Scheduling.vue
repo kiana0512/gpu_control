@@ -228,6 +228,8 @@ function workflowName(key: string) {
   if (key === "imageclip-rgba") return "ImageClip 抠图";
   if (key === "modelview-inpaint") return "ModelView 局部重绘";
   if (key === "modelview-single-view") return "ModelView 单视图生成";
+  if (key === "modelview-single-view-inpaint")
+    return "ModelView 单视图局部重绘";
   if (key === "modelview-roughness") return "PBR 粗糙度";
   return key;
 }
@@ -509,17 +511,20 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <div>
               <strong>4090：ModelView 交互任务首选 + 三台 24 GiB 扩展</strong>
               <p>
-                局部重绘和单视图生成只在 4090、3090-A、3090-B 上执行；发生抠图冲突时，
-                4090 的抠图帧安全中断并改派其它物理 GPU，清显存后
-                优先响应 ModelView 交互任务；没有同类任务排队时，4090 继续接兼容普通任务。
-                4070Ti 因 12 GiB 显存被兼容表硬排除。
+                局部重绘、单视图生成和单视图局部重绘只在 4090、3090-A、3090-B
+                上执行；发生抠图冲突时， 4090 的抠图帧安全中断并改派其它物理
+                GPU，清显存后 优先响应 ModelView
+                交互任务；没有同类任务排队时，4090 继续接兼容普通任务。 4070Ti
+                因 12 GiB 显存被兼容表硬排除。
               </p>
             </div>
             <dl>
               <dt>保护窗口</dt>
               <dd>新 ModelView 交互任务到达后 10 分钟，可续期且硬过期</dd>
               <dt>影响</dt>
-              <dd>仅 4090 GPU 单槽优先级；空闲时不阻塞普通任务，3090 作为兼容回退</dd>
+              <dd>
+                仅 4090 GPU 单槽优先级；空闲时不阻塞普通任务，3090 作为兼容回退
+              </dd>
             </dl>
           </li>
           <li>
@@ -534,7 +539,8 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <dl>
               <dt>保护窗口</dt>
               <dd>
-                最后一次新烘焙到达后 5 分钟；积压队列继续保留执行权，空闲时可由管理员立即解除
+                最后一次新烘焙到达后 5
+                分钟；积压队列继续保留执行权，空闲时可由管理员立即解除
               </dd>
               <dt>影响</dt>
               <dd>仅 3090-B GPU 单槽</dd>

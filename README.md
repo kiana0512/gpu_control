@@ -8,6 +8,7 @@
 > 1.5.15 稳定版镜像、部署与验收见 [稳定版发布记录](docs/122_2026-08-13_GPU_CONTROL_1_5_15_STABLE_RELEASE.md)。
 > 3090-B 烘焙排空自动恢复修复见 [1.5.16 热修记录](docs/123_2026-08-13_GPU_CONTROL_1_5_16_3090B_AUTO_RECOVERY_HOTFIX.md)。
 > TrueV3 蒙版局部重绘四输入与随机 seed 对接见 [局部重绘 API 文档](docs/140_2026-08-28_MODELVIEW_MASK_INPAINT_FRONTEND_HANDOFF.md)；
+> 单视图局部重绘任务与四输入前端合同见 [单视图局部重绘 API 文档](docs/141_2026-08-31_MODELVIEW_SINGLE_VIEW_INPAINT_FRONTEND_HANDOFF.md)；
 > ImageClip 校色输出修复与四节点验收见 [1.5.18 校色热修记录](docs/127_2026-08-17_IMAGECLIP_COLOR_OUTPUT_HOTFIX.md)。
 > 4070 Ti 开启 HAGS 后的 WSL2/portproxy 恢复见 [4070 重启恢复记录](docs/128_2026-08-17_4070TI_HAGS_REBOOT_RECOVERY.md)。
 > 4090 局部重绘错误互锁修复与真实抢占回归见 [调度 drainfix 记录](docs/129_2026-08-17_4090_INPAINT_DRAIN_INTERLOCK_HOTFIX.md)。
@@ -21,7 +22,7 @@
 面向 RTX 4090 控制中心、两台 RTX 3090 和一台 RTX 4070Ti 的统一任务调度、运维与可观测平台；GPU
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
-当前源码目标基线为 GPU Control API/Scheduler/Web `1.5.22`、Asset API/Node Agent 既有稳定版本、Blender Worker
+当前源码目标基线为 GPU Control API/Scheduler/Web `1.5.23`、Asset API/Node Agent 既有稳定版本、Blender Worker
 `1.4.55-uv-multimesh-mof-v1`、数据库 `20260810_0013`。当前总状态为
 `FUNCTIONAL_RECOVERY_CONFIRMED / STABILITY_TESTING`：六 API 均已有真实功能成功证据；正式
 1.5.15 镜像/LFS、第三次正式 100 VU、registry digest/SBOM、固定基准、完整故障矩阵和连续七天观察

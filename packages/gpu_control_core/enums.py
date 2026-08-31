@@ -53,6 +53,7 @@ INTERACTIVE_WORKFLOW_KEYS = frozenset(
     {
         "modelview-inpaint",
         "modelview-single-view",
+        "modelview-single-view-inpaint",
     }
 )
 

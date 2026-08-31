@@ -94,6 +94,8 @@ from packages.gpu_control_core.scheduling import (
     IMAGECLIP_WORKFLOW_KEY,
     MODELVIEW_INPAINT_NODE_ID,
     MODELVIEW_INPAINT_WORKFLOW_KEY,
+    MODELVIEW_MASK_WORKFLOW_KEYS,
+    MODELVIEW_SINGLE_VIEW_INPAINT_WORKFLOW_KEY,
     MODELVIEW_SINGLE_VIEW_WORKFLOW_KEY,
     MODELVIEW_WORKFLOW_KEYS,
     SUBSTANCE_DRAIN_OWNER,
@@ -1234,7 +1236,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     422, detail={"code": "INPUT_INVALID", "message": str(exc)}
                 ) from exc
             if (
-                workflow_key == MODELVIEW_INPAINT_WORKFLOW_KEY
+                workflow_key in MODELVIEW_MASK_WORKFLOW_KEYS
                 and field_name == "mask"
                 and not mask_red_channel_has_edit_region(destination)
             ):
@@ -1767,6 +1769,36 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             parameters,
             prompt,
             idempotency_key,
+        )
+
+    @app.post(
+        "/api/v1/services/modelview-single-view-inpaint",
+        response_class=FileResponse,
+    )
+    async def modelview_single_view_inpaint_service(
+        request: Request,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+        image: Annotated[UploadFile, File()],
+        material_image: Annotated[UploadFile, File()],
+        mask: Annotated[UploadFile, File()],
+        parameters: Annotated[str, Form()] = "{}",
+        prompt: Annotated[str | None, Form(max_length=4096)] = None,
+        idempotency_key: Annotated[
+            str | None, Header(alias="Idempotency-Key", max_length=128)
+        ] = None,
+    ) -> FileResponse:
+        return await run_modelview_service_request(
+            request,
+            MODELVIEW_SINGLE_VIEW_INPAINT_WORKFLOW_KEY,
+            principal,
+            db,
+            image,
+            material_image,
+            parameters,
+            prompt,
+            idempotency_key,
+            mask=mask,
         )
 
     async def run_modelview_service_request(

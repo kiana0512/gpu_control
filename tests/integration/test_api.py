@@ -70,6 +70,10 @@ def test_modelview_prompt_form_field_merges_without_ambiguity() -> None:
 def test_modelview_inpaint_uses_non_preemptive_interactive_queue_policy() -> None:
     assert service_queue_policy("modelview-inpaint") == (Priority.CRITICAL, True)
     assert service_queue_policy("modelview-single-view") == (Priority.CRITICAL, True)
+    assert service_queue_policy("modelview-single-view-inpaint") == (
+        Priority.CRITICAL,
+        True,
+    )
     assert service_queue_policy("imageclip-rgba") == (Priority.NORMAL, False)
     assert service_queue_policy("modelview-roughness") == (Priority.NORMAL, False)
 
@@ -77,7 +81,7 @@ def test_modelview_inpaint_uses_non_preemptive_interactive_queue_policy() -> Non
 def test_modelview_noise_seed_is_server_owned_and_rolling_deploy_safe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    generated = iter((101, 202, 303))
+    generated = iter((101, 202, 303, 404))
     monkeypatch.setattr(
         "gpu_control_api.main.secrets.randbelow",
         lambda upper_bound: next(generated)
@@ -99,6 +103,12 @@ def test_modelview_noise_seed_is_server_owned_and_rolling_deploy_safe(
         "modelview-single-view", bindings, single_view
     )
     assert single_view == {"noise_seed": 303}
+
+    single_view_inpaint: dict[str, Any] = {}
+    inject_server_owned_workflow_parameters(
+        "modelview-single-view-inpaint", bindings, single_view_inpaint
+    )
+    assert single_view_inpaint == {"noise_seed": 404}
 
     old_version_parameters: dict[str, Any] = {}
     inject_server_owned_workflow_parameters(
@@ -3018,10 +3028,15 @@ async def test_direct_image_service_reports_missing_workflow(tmp_path: Path) -> 
             "/api/v1/services/imageclip-rgba",
             "/api/v1/services/modelview-inpaint",
             "/api/v1/services/modelview-single-view",
+            "/api/v1/services/modelview-single-view-inpaint",
             "/api/v1/services/modelview-roughness",
         ):
             files = {"image": ("input.png", b"not-an-image", "image/png")}
-            if endpoint.endswith(("modelview-inpaint", "modelview-single-view")):
+            if endpoint in {
+                "/api/v1/services/modelview-inpaint",
+                "/api/v1/services/modelview-single-view",
+                "/api/v1/services/modelview-single-view-inpaint",
+            }:
                 files.update(
                     {
                         "material_image": (
@@ -3031,7 +3046,10 @@ async def test_direct_image_service_reports_missing_workflow(tmp_path: Path) -> 
                         ),
                     }
                 )
-            if endpoint.endswith("modelview-inpaint"):
+            if endpoint in {
+                "/api/v1/services/modelview-inpaint",
+                "/api/v1/services/modelview-single-view-inpaint",
+            }:
                 files["mask"] = ("mask.png", b"not-an-image", "image/png")
             response = await client.post(endpoint, files=files)
             assert response.status_code == 404
@@ -3059,6 +3077,16 @@ async def test_modelview_services_require_their_declared_images(
         assert single_view.status_code == 422
         assert {item["loc"][-1] for item in single_view.json()["detail"]} == {
             "material_image"
+        }
+
+        single_view_inpaint = await client.post(
+            "/api/v1/services/modelview-single-view-inpaint",
+            files={"image": ("current.png", b"not-an-image", "image/png")},
+        )
+        assert single_view_inpaint.status_code == 422
+        assert {item["loc"][-1] for item in single_view_inpaint.json()["detail"]} == {
+            "material_image",
+            "mask",
         }
 
 
@@ -3225,9 +3253,25 @@ async def test_modelview_single_view_two_image_service_persists_seed(
         assert second_job.parameters["noise_seed"] != first_job.parameters["noise_seed"]
 
 
-async def test_modelview_inpaint_requires_and_binds_current_reference_mask_and_prompt(
+@pytest.mark.parametrize(
+    ("workflow_key", "endpoint", "prompt_node", "include_legacy_viewport"),
+    (
+        ("modelview-inpaint", "/api/v1/services/modelview-inpaint", "60", True),
+        (
+            "modelview-single-view-inpaint",
+            "/api/v1/services/modelview-single-view-inpaint",
+            "61",
+            False,
+        ),
+    ),
+)
+async def test_modelview_mask_services_bind_current_reference_mask_prompt_and_seed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    workflow_key: str,
+    endpoint: str,
+    prompt_node: str,
+    include_legacy_viewport: bool,
 ) -> None:
     from PIL import Image
 
@@ -3261,14 +3305,14 @@ async def test_modelview_inpaint_requires_and_binds_current_reference_mask_and_p
         async with app.state.db.session() as db:
             db.add(
                 Workflow(
-                    key="modelview-inpaint",
+                    key=workflow_key,
                     display_name="ModelView mask inpaint test",
                     description="",
                 )
             )
             db.add(
                 WorkflowVersion(
-                    workflow_key="modelview-inpaint",
+                    workflow_key=workflow_key,
                     version="mask-four-input-rseed-test",
                     template={
                         "4": {"class_type": "LoadImage", "inputs": {"image": "current.png"}},
@@ -3278,7 +3322,10 @@ async def test_modelview_inpaint_requires_and_binds_current_reference_mask_and_p
                         },
                         "14": {"class_type": "RandomNoise", "inputs": {"noise_seed": 0}},
                         "44": {"class_type": "LoadImage", "inputs": {"image": "mask.png"}},
-                        "60": {"class_type": "ttN text", "inputs": {"text": ""}},
+                        prompt_node: {
+                            "class_type": "ttN text",
+                            "inputs": {"text": ""},
+                        },
                         "32": {"class_type": "SaveImage", "inputs": {}},
                     },
                     parameter_schema={
@@ -3307,7 +3354,7 @@ async def test_modelview_inpaint_requires_and_binds_current_reference_mask_and_p
                         "material_image_filename": "5.inputs.image",
                         "mask_filename": "44.inputs.image",
                         "noise_seed": "14.inputs.noise_seed",
-                        "prompt": "60.inputs.text",
+                        "prompt": f"{prompt_node}.inputs.text",
                     },
                     allowed_class_types=["LoadImage", "RandomNoise", "SaveImage", "ttN text"],
                     required_models=[],
@@ -3323,26 +3370,28 @@ async def test_modelview_inpaint_requires_and_binds_current_reference_mask_and_p
             await db.commit()
 
         def files(mask_payload: bytes = mask_bytes) -> dict[str, tuple[str, bytes, str]]:
-            return {
+            payload = {
                 "image": ("current.png", current_bytes, "image/png"),
                 "material_image": ("reference.png", reference_bytes, "image/png"),
                 "mask": ("mask.png", mask_payload, "image/png"),
-                "viewport_reference": (
+            }
+            if include_legacy_viewport:
+                payload["viewport_reference"] = (
                     "legacy-third.bin",
                     b"ignored",
                     "application/octet-stream",
-                ),
-            }
+                )
+            return payload
 
         empty = await client.post(
-            "/api/v1/services/modelview-inpaint",
+            endpoint,
             files=files(empty_mask_bytes),
         )
         assert empty.status_code == 422
         assert empty.json()["detail"]["code"] == "MASK_EMPTY"
 
         mismatched = await client.post(
-            "/api/v1/services/modelview-inpaint",
+            endpoint,
             files=files(png_bytes((2, 2), "white")),
         )
         assert mismatched.status_code == 422
@@ -3350,7 +3399,7 @@ async def test_modelview_inpaint_requires_and_binds_current_reference_mask_and_p
 
         request = asyncio.create_task(
             client.post(
-                "/api/v1/services/modelview-inpaint",
+                endpoint,
                 headers={"Idempotency-Key": "masked-edit-one"},
                 files=files(),
                 data={"prompt": "repair only the selected painted panel"},
@@ -3360,7 +3409,7 @@ async def test_modelview_inpaint_requires_and_binds_current_reference_mask_and_p
         for _ in range(200):
             async with app.state.db.session() as db:
                 job = await db.scalar(
-                    select(Job).where(Job.workflow_key == "modelview-inpaint")
+                    select(Job).where(Job.workflow_key == workflow_key)
                 )
                 if job is not None:
                     output = Path(job.job_dir) / "output" / "result.png"
@@ -3396,14 +3445,14 @@ async def test_modelview_inpaint_requires_and_binds_current_reference_mask_and_p
         assert rendered["4"]["inputs"]["image"].startswith(f"{job.id}/")
         assert rendered["5"]["inputs"]["image"].startswith(f"{job.id}/")
         assert rendered["44"]["inputs"]["image"].startswith(f"{job.id}/")
-        assert rendered["60"]["inputs"]["text"] == (
+        assert rendered[prompt_node]["inputs"]["text"] == (
             "repair only the selected painted panel"
         )
         assert rendered["14"]["inputs"]["noise_seed"] == 444
         assert not any(Path(job.job_dir, "input").glob("viewport_reference-*"))
 
         replay = await client.post(
-            "/api/v1/services/modelview-inpaint",
+            endpoint,
             headers={"Idempotency-Key": "masked-edit-one"},
             files=files(),
             data={"prompt": "repair only the selected painted panel"},
@@ -3412,7 +3461,7 @@ async def test_modelview_inpaint_requires_and_binds_current_reference_mask_and_p
         assert replay.headers["x-job-id"] == job.id
 
         conflict = await client.post(
-            "/api/v1/services/modelview-inpaint",
+            endpoint,
             headers={"Idempotency-Key": "masked-edit-one"},
             files=files(alternate_mask_bytes),
             data={"prompt": "repair only the selected painted panel"},

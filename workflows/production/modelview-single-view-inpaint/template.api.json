@@ -1,0 +1,454 @@
+{
+  "1": {
+    "_meta": {
+      "title": "TrueV3 主模型 (GGUF Q5_K)"
+    },
+    "class_type": "UnetLoaderGGUF",
+    "inputs": {
+      "unet_name": "Flux2-Klein-9B-True-V3-Q5_K.gguf"
+    }
+  },
+  "10": {
+    "_meta": {
+      "title": "参考条件1｜白模主图"
+    },
+    "class_type": "ReferenceLatent",
+    "inputs": {
+      "conditioning": [
+        "9",
+        0
+      ],
+      "latent": [
+        "7",
+        0
+      ]
+    }
+  },
+  "11": {
+    "_meta": {
+      "title": "参考条件2｜材质六视图"
+    },
+    "class_type": "ReferenceLatent",
+    "inputs": {
+      "conditioning": [
+        "10",
+        0
+      ],
+      "latent": [
+        "8",
+        0
+      ]
+    }
+  },
+  "12": {
+    "_meta": {
+      "title": "TrueV3 引导"
+    },
+    "class_type": "BasicGuider",
+    "inputs": {
+      "conditioning": [
+        "11",
+        0
+      ],
+      "model": [
+        "21",
+        0
+      ]
+    }
+  },
+  "14": {
+    "_meta": {
+      "title": "固定测试种子"
+    },
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 468546072632506
+    }
+  },
+  "15": {
+    "_meta": {
+      "title": "12步 Simple 调度"
+    },
+    "class_type": "BasicScheduler",
+    "inputs": {
+      "denoise": 1,
+      "model": [
+        "21",
+        0
+      ],
+      "scheduler": "simple",
+      "steps": 2
+    }
+  },
+  "16": {
+    "_meta": {
+      "title": "Euler 采样器"
+    },
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "euler"
+    }
+  },
+  "17": {
+    "_meta": {
+      "title": "TrueV3 双图采样"
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "guider": [
+        "12",
+        0
+      ],
+      "latent_image": [
+        "43",
+        0
+      ],
+      "noise": [
+        "14",
+        0
+      ],
+      "sampler": [
+        "16",
+        0
+      ],
+      "sigmas": [
+        "15",
+        0
+      ]
+    }
+  },
+  "18": {
+    "_meta": {
+      "title": "解码生成结果"
+    },
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "17",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "2": {
+    "_meta": {
+      "title": "Flux2 文本编码器"
+    },
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+      "device": "default",
+      "type": "flux2"
+    }
+  },
+  "21": {
+    "_meta": {
+      "title": "白模上材质 LoRA｜0.8"
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "flux-kelin/baimo_shangcaizhi_klein_v1_000005500.safetensors",
+      "model": [
+        "1",
+        0
+      ],
+      "strength_model": 0.9
+    }
+  },
+  "22": {
+    "_meta": {
+      "title": "图1｜选择推理尺寸并记录原始尺寸"
+    },
+    "class_type": "CherryInferenceSizeBucket",
+    "inputs": {
+      "aspect_threshold": 1.2,
+      "image": [
+        "4",
+        0
+      ],
+      "long_size": 1528,
+      "square_size": 1024
+    }
+  },
+  "23": {
+    "_meta": {
+      "title": "图1｜等比适配并补边到推理尺寸"
+    },
+    "class_type": "ImageResize+",
+    "inputs": {
+      "condition": "always",
+      "height": [
+        "22",
+        3
+      ],
+      "image": [
+        "4",
+        0
+      ],
+      "interpolation": "area",
+      "method": "pad",
+      "multiple_of": 0,
+      "width": [
+        "22",
+        2
+      ]
+    }
+  },
+  "24": {
+    "_meta": {
+      "title": "图2｜等比适配并补边到同一推理尺寸"
+    },
+    "class_type": "ImageResize+",
+    "inputs": {
+      "condition": "always",
+      "height": [
+        "22",
+        3
+      ],
+      "image": [
+        "5",
+        0
+      ],
+      "interpolation": "area",
+      "method": "pad",
+      "multiple_of": 0,
+      "width": [
+        "22",
+        2
+      ]
+    }
+  },
+  "25": {
+    "_meta": {
+      "title": "去补边并恢复图1原始尺寸"
+    },
+    "class_type": "ImageScale",
+    "inputs": {
+      "crop": "center",
+      "height": [
+        "22",
+        1
+      ],
+      "image": [
+        "18",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "width": [
+        "22",
+        0
+      ]
+    }
+  },
+  "29": {
+    "_meta": {
+      "title": "ModelView Single-view Inpaint API Final"
+    },
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "modelview-single-view-inpaint",
+      "images": [
+        "33",
+        1
+      ]
+    }
+  },
+  "3": {
+    "_meta": {
+      "title": "Flux2 VAE"
+    },
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "flux2-vae.safetensors"
+    }
+  },
+  "33": {
+    "_meta": {
+      "title": "CherryAlignReference"
+    },
+    "class_type": "CherryAlignReference",
+    "inputs": {
+      "使用Alpha": true,
+      "图像A": [
+        "4",
+        0
+      ],
+      "图像B": [
+        "25",
+        0
+      ],
+      "对齐基准": "图像A",
+      "检测阈值": 18,
+      "画布尺寸": 2048,
+      "背景模式": "自动采样",
+      "背景色": ""
+    }
+  },
+  "4": {
+    "_meta": {
+      "title": "图1｜白模主图（锁定构图）"
+    },
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "img_v3_02150_3491781e-bae6-45de-99b0-384d6b692a6g.jpg"
+    }
+  },
+  "43": {
+    "_meta": {
+      "title": "SetLatentNoiseMask"
+    },
+    "class_type": "SetLatentNoiseMask",
+    "inputs": {
+      "mask": [
+        "45",
+        0
+      ],
+      "samples": [
+        "7",
+        0
+      ]
+    }
+  },
+  "44": {
+    "_meta": {
+      "title": "图三 蒙版"
+    },
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "img_v3_02150_3491781e-bae6-45de-99b0-384d6b692a6g.png"
+    }
+  },
+  "45": {
+    "_meta": {
+      "title": "ImageToMask"
+    },
+    "class_type": "ImageToMask",
+    "inputs": {
+      "channel": "red",
+      "image": [
+        "52",
+        0
+      ]
+    }
+  },
+  "5": {
+    "_meta": {
+      "title": "图2｜六视图材质参考"
+    },
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "img_v3_02150_ebdcbb27-62ea-40fe-bd99-611d26d7af1g.jpg"
+    }
+  },
+  "52": {
+    "_meta": {
+      "title": "图1｜等比适配并补边到推理尺寸"
+    },
+    "class_type": "ImageResize+",
+    "inputs": {
+      "condition": "always",
+      "height": [
+        "22",
+        3
+      ],
+      "image": [
+        "44",
+        0
+      ],
+      "interpolation": "area",
+      "method": "pad",
+      "multiple_of": 0,
+      "width": [
+        "22",
+        2
+      ]
+    }
+  },
+  "7": {
+    "_meta": {
+      "title": "编码图1"
+    },
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "23",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "8": {
+    "_meta": {
+      "title": "编码图2"
+    },
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "24",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "9": {
+    "_meta": {
+      "title": "???????????1????2??"
+    },
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "2",
+        0
+      ],
+      "text": [
+        "63",
+        0
+      ]
+    }
+  },
+  "61": {
+    "_meta": {
+      "title": "用户提示词"
+    },
+    "class_type": "ttN text",
+    "inputs": {
+      "text": ""
+    }
+  },
+  "62": {
+    "_meta": {
+      "title": "固定视角与结构保护提示词"
+    },
+    "class_type": "ttN text",
+    "inputs": {
+      "text": "Task: view-locked material transfer, not object generation.\n\nIMAGE1_GEOMETRY_LOCK: Image 1 is the only source for canvas, aspect ratio, background, object identity, silhouette, outer contour, pixel boundary, inner contours, component count, camera view, perspective, pose, scale, position, framing, visible surfaces, occlusion relationships, and every visible surface boundary. Preserve the white-model mask and all existing parts exactly. Do not shift, scale, rotate, recrop, thicken, simplify, fill, open, close, or reinterpret any part.\n\nIMAGE2_MATERIAL_ONLY: Use image 2 only to infer the material appearance of the corresponding same object. Ignore image 2's layout, multi-view arrangement, camera angle, background, ground, shadows, lighting, reflections, unrelated objects, contents, and any component not visible in image 1.\n\nPARTWISE_MATERIAL_MAPPING: Map material region to matching existing visible part only: shell to shell, edge to edge, panel to panel, frame to frame, handle to handle, fastener/control to the same existing part. Preserve corresponding color zones, paint boundaries, bare-metal areas, wood grain, paper or fabric fibers, rust, scratches, stains, wear, labels on matching surfaces, and fine albedo texture at the correct scale and direction. Do not spread the dominant color across unrelated parts.\n\nWHITE_MODEL_SILHOUETTE_LOCK: The final output must keep image 1's exact white-model outer contour, pixel boundary, internal part boundaries, current view, crop, and background. Only visible surface color and micro-texture may change. Do not add, remove, move, resize, rotate, replace, reshape, merge, or reconstruct geometry. Do not hallucinate geometry. Do not create extra objects, copied multi-view sheets, new viewpoints, attachments, openings, holes, controls, text, logos, or mechanical details absent from image 1.\n\nFINAL_RESULT: The same object from image 1, in the same view and framing, with only visible surfaces re-materialized from image 2 as clean base-color/albedo material. Avoid baked lighting, cast shadows, strong highlights, mirror reflections, environment gradients, and any change to geometry or silhouette."
+    }
+  },
+  "63": {
+    "_meta": {
+      "title": "用户提示词与固定保护提示词合并"
+    },
+    "class_type": "Text Concatenate",
+    "inputs": {
+      "clean_whitespace": "true",
+      "delimiter": ", ",
+      "text_a": [
+        "61",
+        0
+      ],
+      "text_b": [
+        "62",
+        0
+      ]
+    }
+  }
+}

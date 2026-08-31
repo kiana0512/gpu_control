@@ -125,7 +125,7 @@ function nodePolicyDetail(node: NodeInfo) {
       return "软保护已到期，Asset API 正在清理过期标签并回写 ACTIVE；无需人工等待。";
     return "可接普通推理；生产烘焙到达后获得下一 GPU 执行权。";
   }
-  return "按兼容性、缓存亲和与公平队列参与抠图、局部重绘、单视图生成和粗糙度。";
+  return "按兼容性、缓存亲和与公平队列参与抠图、局部重绘、单视图生成、单视图局部重绘和粗糙度。";
 }
 async function load() {
   error.value = "";
@@ -253,14 +253,15 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
       <div>
         <strong>普通任务四卡共享</strong>
         <span
-          >局部重绘和单视图生成只分配到 4090、3090-A、3090-B 三台 24 GiB GPU；
-          4070Ti 继续参与其它兼容任务。</span
+          >局部重绘、单视图生成和单视图局部重绘只分配到 4090、3090-A、3090-B
+          三台 24 GiB GPU； 4070Ti 继续参与其它兼容任务。</span
         >
       </div>
       <div>
         <strong>4090 保证 ModelView 交互任务响应</strong>
         <span
-          >ModelView 交互任务到达时优先抢占；没有同类任务排队时继续接兼容普通任务。</span
+          >ModelView
+          交互任务到达时优先抢占；没有同类任务排队时继续接兼容普通任务。</span
         >
       </div>
       <div>

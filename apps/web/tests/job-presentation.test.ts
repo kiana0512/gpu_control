@@ -55,6 +55,22 @@ describe("job presentation evidence rules", () => {
     });
   });
 
+  it("presents single-view inpaint as an independent public task", () => {
+    expect(
+      serviceFor(
+        task({
+          kind: "job",
+          workflow_key: "modelview-single-view-inpaint",
+        }),
+      ),
+    ).toMatchObject({
+      key: "modelview-single-view-inpaint",
+      label: "ModelView 单视图局部重绘",
+      shortLabel: "单视图局部重绘",
+      api: "/api/v1/services/modelview-single-view-inpaint",
+    });
+  });
+
   it("derives durations only from valid reported endpoints", () => {
     const value = task();
     expect(queueDuration(value)).toBe(3_000);

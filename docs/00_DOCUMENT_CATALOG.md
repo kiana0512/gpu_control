@@ -52,7 +52,7 @@
 ## GPU 图像业务与客户端交接
 
 - `docs/32_*`、`docs/37_*`—`docs/42_*`、`docs/45_*`、`docs/47_*`、`docs/49_*`、`docs/56_*`—`docs/59_2026-07-29_MODELVIEW_*`、`docs/64_*`—`docs/69_*`：图像 API、动画管家、ModelView 和客户端交接演进。
-- `docs/84_2026-08-05_PARTIAL_SUCCESS_*`、`docs/103_*`、`docs/118_*`—`docs/123_*`、`docs/126_*`—`docs/129_*`、`docs/135_*`—`docs/140_*`：部分成功、交互优先、四 GPU、ImageClip 与局部重绘当前记录。
+- `docs/84_2026-08-05_PARTIAL_SUCCESS_*`、`docs/103_*`、`docs/118_*`—`docs/123_*`、`docs/126_*`—`docs/129_*`、`docs/135_*`—`docs/141_*`：部分成功、交互优先、四 GPU、ImageClip 与 ModelView 当前记录。
 
 ## 发布制品说明
 
