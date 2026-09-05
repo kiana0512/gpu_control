@@ -1,5 +1,8 @@
 # Changelog
 
+- Update `modelview-single-view-inpaint` fixed prompt to enforce seamless masked surface restoration
+  while preserving the existing four-input contract, graph, models, random seed, and two-step sampler.
+
 ## 1.5.23 — ModelView single-view inpaint service — 2026-08-31
 
 - Add the independent `modelview-single-view-inpaint` task with current image, reference image,

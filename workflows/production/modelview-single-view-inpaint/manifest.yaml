@@ -1,5 +1,5 @@
 workflow_key: modelview-single-view-inpaint
-version: 2026.08.31-e39ed5f-single-view-inpaint-4input-rseed-steps2-r1
+version: 2026.09.05-d49d622-single-view-inpaint-prompt-r2
 template_file: template.api.json
 parameter_schema:
   type: object

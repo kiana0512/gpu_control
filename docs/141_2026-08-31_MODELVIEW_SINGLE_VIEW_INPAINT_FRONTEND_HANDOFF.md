@@ -8,11 +8,11 @@ GPU Control 版本：`1.5.23`
 
 工作流：`modelview-single-view-inpaint`
 
-工作流版本：`2026.08.31-e39ed5f-single-view-inpaint-4input-rseed-steps2-r1`
+工作流版本：`2026.09.05-d49d622-single-view-inpaint-prompt-r2`
 
-用户 UI JSON SHA-256：`e39ed5f5ec3916e5b3d45415a472734d0707fcbf3ca971ee2064f0d94f056c26`
+用户 UI JSON SHA-256：`d49d6228c4d7d24f2280a110dfe60a57de20c3aba2070a76b88e17acb4d66238`
 
-API 模板规范化 SHA-256：`32f09e228407e0f5c78720c6f4c09bf6451dd47e9139e69d2a5da1deeef31322`
+API 模板规范化 SHA-256：`ebee4ba19608e43420a783576a0fa1c7b2c81f41db34f0a7dcf683ccf041fd37`
 
 ## 1. 接口
 
@@ -235,3 +235,38 @@ single-view-inpaint-<资产ID>-<递增编号或UUID>
 输入和相同 `Idempotency-Key` 重试返回原 Job ID 与相同输出 SHA，数据库任务总数没有增加。
 
 验收结束后三台节点均恢复 `ACTIVE / ONLINE / 0 jobs`，GPU 队列与 Asset 队列均为 0。
+
+## 14. 2026-09-05 默认固定提示词更新
+
+本次只更新 `ttN text #62` 的默认固定提示词，输入字段、输出、节点连接、模型、LoRA、
+`steps=2`、服务端随机 Seed 和幂等逻辑均不变，前端无需修改。
+
+- 用户上传的运行快照 SHA-256：
+  `e386bdb272f9d12cfa20398709fe75cf97aa984f5d5a043cf52c67a672225873`；
+- 清除当次图片名、512×512 临时值和当次随机 Seed 后，生产 UI JSON SHA-256：
+  `d49d6228c4d7d24f2280a110dfe60a57de20c3aba2070a76b88e17acb4d66238`；
+- API 模板 SHA-256：
+  `091cf2701152d1eb8aac835bb0d2685844934cd883004abc24dab107fb26f706`；
+- 固定提示词 UTF-8 SHA-256：
+  `1d6ba90e9b6fcc42ce39875d57c68b819c85881752425e73d05aef31fa715242`。
+
+新固定提示词明确区分：图 1 只提供结构与构图，图 2 只提供材质，图 3 只提供编辑
+区域；蒙版轮廓不得成为输出中的接缝、条纹、边框或结构，并要求重绘表面跨越原蒙版
+边界连续延伸。
+
+生产切换时先导入新版本并验证兼容表，再启用新版本、停用旧版本。三台兼容节点均在
+`DRAINING / 0 jobs / ComfyUI 空队列` 条件下同步生产 UI JSON；未重启 ComfyUI、未清理
+模型缓存。随后逐台隔离执行真实四输入任务：
+
+| 节点 | Job ID | Seed | 最终 PNG SHA-256 | 结果 |
+|---|---|---:|---|---|
+| 4090 | `4da49a80-55e2-48be-8750-2e634f74ec65` | `324372480550933` | `ab787eb6173241cd4247a89867a3dcb400f9b12e2cec389d066ff8b8bdd6c976` | `SUCCEEDED`，2048×2048 |
+| 3090-A | `3e0cab50-4120-4625-b5d5-5897a6df9e1d` | `575514312986910` | `35d0213649464f35d81a084f26ce9a8f5547d5340205282b4367bfcd47c10023` | `SUCCEEDED`，2048×2048 |
+| 3090-B | `2043ed15-315c-447e-89f0-574b0e82e598` | `57708716807982` | `b9b0a4ceaaad0c9c5a8b5024d236808160d40c8ab457c0dafc68d832f912753e` | `SUCCEEDED`，2048×2048 |
+
+3090-B 使用相同输入和相同 `Idempotency-Key` 重放后仍返回原 Job ID 和相同输出 SHA，
+新版本任务总数保持 3。
+
+验收完成后 `control-4090`、`worker-3090-a`、`worker-3090-b` 均恢复
+`ACTIVE / ONLINE / 0 jobs`，GPU 与 Asset 活动队列均为 0。4070Ti 仍因 12 GiB 显存和
+缺少必要自定义节点保持对此工作流不兼容。

@@ -7,9 +7,9 @@ from packages.gpu_control_core.workflow import WorkflowManifest, render_workflow
 ROOT = Path(__file__).parents[2]
 BUNDLE = ROOT / "workflows" / "production" / "modelview-single-view-inpaint"
 SOURCE = Path(
-    "/home/lilithgames/下载/ModelViewCreator_flux_fill_inpaint -View generation.json"
+    "/opt/modelviewcreator/ModelViewCreator_flux_fill_inpaint -View generation.json"
 )
-FIXED_PROMPT_SHA256 = "3c0118ac184e923ba56d3172f8d928025bea8a0c6f1a90b535219239ef500a70"
+FIXED_PROMPT_SHA256 = "1d6ba90e9b6fcc42ce39875d57c68b819c85881752425e73d05aef31fa715242"
 
 
 def test_single_view_inpaint_bundle_matches_approved_four_input_contract() -> None:
@@ -18,7 +18,7 @@ def test_single_view_inpaint_bundle_matches_approved_four_input_contract() -> No
 
     assert manifest.workflow_key == "modelview-single-view-inpaint"
     assert manifest.version == (
-        "2026.08.31-e39ed5f-single-view-inpaint-4input-rseed-steps2-r1"
+        "2026.09.05-d49d622-single-view-inpaint-prompt-r2"
     )
     assert manifest.bindings == {
         "image_filename": "4.inputs.image",
@@ -81,7 +81,7 @@ def test_single_view_inpaint_source_hash_is_the_user_approved_workflow() -> None
     if not SOURCE.exists():
         return
     assert hashlib.sha256(SOURCE.read_bytes()).hexdigest() == (
-        "e39ed5f5ec3916e5b3d45415a472734d0707fcbf3ca971ee2064f0d94f056c26"
+        "d49d6228c4d7d24f2280a110dfe60a57de20c3aba2070a76b88e17acb4d66238"
     )
 
 
