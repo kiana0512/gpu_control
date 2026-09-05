@@ -34,12 +34,20 @@ from packages.gpu_control_core.models import (
     Node,
 )
 from packages.gpu_control_core.scheduling import (
+    GPU_SPECIALIZATION_LABEL,
     OverflowGuard,
     QueueSnapshot,
     choose_node,
 )
 from packages.gpu_control_core.security import hash_api_secret, sign_agent_request
 from packages.gpu_control_core.settings import Settings
+
+
+def assert_substance_specialization(node: Node) -> None:
+    assert node.mode == "DRAINING"
+    specialization = node.labels[GPU_SPECIALIZATION_LABEL]
+    assert specialization["key"] == "substance-bake"
+    assert datetime.fromisoformat(specialization["expires_at"]) > datetime.now(UTC)
 
 
 def test_direct_v2_long_progress_stage_is_canonicalized_for_rolling_workers() -> None:
@@ -81,9 +89,9 @@ async def test_asset_api_version_exposes_aligned_immutable_provenance(
             "source_revision": "a" * 40,
             "retopology": {
                 "engine_contract": "retopology-direct-v2",
-                "package_version": "3.0.24",
+                "package_version": "3.0.25",
                 "package_sha256": (
-                    "e6bdc11ded860cfc71381af3eed16b2db2df424393779e84b1da7c548672d169"
+                    "d415d93b0153634e96ac263d0f25c61feeea2bb8f270596ed1395154f40ec1a1"
                 ),
                 "submission_mode": "one_file_per_job",
                 "recommended_upload_concurrency": 3,
@@ -549,7 +557,7 @@ def direct_v2_completion_files(
         "schema_version": schema_version,
         "job_id": context["job_id"],
         "engine_contract": "retopology-direct-v2",
-        "package_version": "3.0.24",
+        "package_version": "3.0.25",
         "package_sha256": context["package_sha256"],
         "source_sha256": context["project_sha256"],
         "adapter_input_sha256": context["adapter_input_sha"],
@@ -633,9 +641,9 @@ async def test_retopology_process_creates_v300_direct_contract(tmp_path: Path) -
         assert response.status_code == 202, response.text
         payload = response.json()
         assert payload["options"]["engine_contract"] == "retopology-direct-v2"
-        assert payload["options"]["package_version"] == "3.0.24"
+        assert payload["options"]["package_version"] == "3.0.25"
         assert payload["options"]["package_sha256"] == (
-            "e6bdc11ded860cfc71381af3eed16b2db2df424393779e84b1da7c548672d169"
+            "d415d93b0153634e96ac263d0f25c61feeea2bb8f270596ed1395154f40ec1a1"
         )
 
         bundle = settings.asset_root / payload["job_id"] / "retopology_input.zip"
@@ -658,7 +666,7 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.24",
+            skill_version="asset-skills-auto-retopo-align-v3.0.25",
         )
         leased = await claim_asset_job(client, settings)
         assert leased["job_id"] == created_payload["job_id"]
@@ -796,7 +804,7 @@ async def test_direct_v2_completion_requires_v3_source_alignment_evidence(tmp_pa
 
         completion_context = {
             "job_id": created_payload["job_id"],
-            "package_version": "3.0.24",
+            "package_version": "3.0.25",
             "package_sha256": created_payload["options"]["package_sha256"],
             "project_sha256": created_payload["options"]["project_sha256"],
             "adapter_input_sha": adapter_input_sha,
@@ -1085,7 +1093,7 @@ async def register_substance_worker(
             "display_name": worker_id,
             "hostname": "LILITHGAMES3",
             "blender_version": "substance-15.1.0",
-            "skill_version": "substance-baker-2026.08.03-v6",
+            "skill_version": "substance-baker-2026.08.12-v7",
             "cpu_count": 128,
             "max_concurrency": 1,
             "current_jobs": current_jobs,
@@ -1158,6 +1166,48 @@ async def test_substance_heartbeat_with_unowned_baker_process_is_drained(
         claimed = await claim_substance_job(client, settings, worker_id)
         assert claimed.status_code == 200, claimed.text
         assert claimed.json()["job"] is None
+
+
+async def test_healthy_substance_heartbeat_releases_expired_owned_soft_drain(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        now = datetime.now(UTC)
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            node.mode = "DRAINING"
+            node.current_jobs = 0
+            node.manual_reserved = False
+            node.external_busy = False
+            node.foreign_queue_detected = False
+            node.labels = {
+                "substance_bake_drain_owner": "asset-api",
+                # Simulate a pre-1.5.15 15-minute label. Read-time policy
+                # clamps it to started_at + 5 minutes.
+                "gpu_specialization": {
+                    "key": "substance-bake",
+                    "owner": "asset-api",
+                    "started_at": (now - timedelta(minutes=6)).isoformat(),
+                    "expires_at": (now + timedelta(minutes=9)).isoformat(),
+                },
+            }
+            await db.commit()
+
+        heartbeat = await register_substance_worker(
+            client,
+            settings,
+            "asset-worker-3090-b-windows-01",
+            active_baker_processes=0,
+        )
+        assert heartbeat.json() == {"accepted": True, "status": "ONLINE"}
+
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            node = await db.get(Node, "worker-3090-b")
+            assert node is not None
+            assert node.mode == "ACTIVE"
+            assert "gpu_specialization" not in node.labels
+            assert "substance_bake_drain_owner" not in node.labels
 
 
 async def test_substance_worker_heartbeat_rejects_wrong_physical_node(
@@ -1293,7 +1343,7 @@ async def test_substance_v4_without_host_process_evidence_is_drained(
                 "display_name": "incomplete v4 Windows Substance Baker",
                 "hostname": "LILITHGAMES3",
                 "blender_version": "substance-15.1.0",
-                "skill_version": "substance-baker-2026.08.03-v6",
+                "skill_version": "substance-baker-2026.08.12-v7",
                 "cpu_count": 128,
                 "max_concurrency": 1,
                 "current_jobs": 0,
@@ -1310,7 +1360,7 @@ async def test_substance_v4_without_host_process_evidence_is_drained(
         assert claimed.json()["job"] is None
 
 
-async def test_substance_v5_identity_is_drained_and_cannot_claim_v6_work(
+async def test_substance_v5_identity_is_drained_and_cannot_claim_v7_work(
     tmp_path: Path,
 ) -> None:
     async for settings, client in prepared_asset_app(tmp_path):
@@ -1357,7 +1407,7 @@ async def test_substance_v5_identity_is_drained_and_cannot_claim_v6_work(
         assert claimed.json()["job"] is None
 
 
-async def test_substance_v6_identity_is_online_and_can_claim(
+async def test_substance_v7_identity_is_online_and_can_claim(
     tmp_path: Path,
 ) -> None:
     async for settings, client in prepared_asset_app(tmp_path):
@@ -1617,7 +1667,7 @@ async def test_substance_baker_full_pbr_is_windows_only_fenced_and_atomically_pu
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")
             assert node is not None
-            assert node.mode == "ACTIVE"
+            assert_substance_specialization(node)
             assert "substance_bake_fence_job_ids" not in node.labels
 
 
@@ -1698,7 +1748,7 @@ async def test_substance_completion_honors_cancel_before_artifact_publication(
             assert job is not None and node is not None
             assert job.lease_token_hash is None
             assert job.lease_expires_at is None
-            assert node.mode == "ACTIVE"
+            assert_substance_specialization(node)
             assert "substance_bake_fence_job_ids" not in node.labels
 
 
@@ -1809,9 +1859,9 @@ async def test_production_substance_queue_reserves_next_gpu_turn_and_cancel_rele
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")
             assert node is not None
-            assert node.mode == "ACTIVE"
+            assert_substance_specialization(node)
             assert "substance_bake_pending_reservation" not in node.labels
-            assert "substance_bake_drain_owner" not in node.labels
+            assert node.labels["substance_bake_drain_owner"] == "asset-api"
 
 
 async def test_substance_pending_reservation_requires_fresh_available_baker(
@@ -1854,9 +1904,9 @@ async def test_substance_pending_reservation_requires_fresh_available_baker(
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")
             assert node is not None
-            assert node.mode == "ACTIVE"
+            assert_substance_specialization(node)
             assert "substance_bake_pending_reservation" not in node.labels
-            assert "substance_bake_drain_owner" not in node.labels
+            assert node.labels["substance_bake_drain_owner"] == "asset-api"
 
 
 @pytest.mark.parametrize(
@@ -2232,7 +2282,7 @@ async def test_unconfirmed_baker_termination_is_never_retried_and_recovers_two_p
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")
             assert node is not None
-            assert node.mode == "ACTIVE"
+            assert_substance_specialization(node)
             assert "substance_bake_recovery_required" not in node.labels
 
 
@@ -2451,9 +2501,9 @@ async def test_substance_recovery_restores_asset_owned_drain_to_active(
         async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
             node = await db.get(Node, "worker-3090-b")
             assert node is not None
-            assert node.mode == "ACTIVE"
+            assert_substance_specialization(node)
             assert "substance_bake_recovery_required" not in node.labels
-            assert "substance_bake_drain_owner" not in node.labels
+            assert node.labels["substance_bake_drain_owner"] == "asset-api"
 
 
 async def test_uv_asset_job_contract_worker_concurrency_and_atomic_artifacts(
@@ -2467,6 +2517,7 @@ async def test_uv_asset_job_contract_worker_concurrency_and_atomic_artifacts(
     metadata = {
         "external_asset_id": "asset:chair:g1",
         "options": {
+            "algorithm": "legacy_pbr",
             "resolution": 2048,
             "padding_px": 10,
             "hard_edge_angle_degrees": 75,
@@ -2710,6 +2761,7 @@ async def claim_asset_job(
             "load_1m": 1.0,
             "available_memory_mb": 100000,
             "accepts_codex_jobs": accepts_codex_jobs,
+            "uv_algorithms": ["legacy_pbr", "auto_v2"],
         },
     )
     assert response.status_code == 200, response.text
@@ -2723,7 +2775,7 @@ async def test_retopology_retry_keeps_task_progress_monotonic(tmp_path: Path) ->
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.24",
+            skill_version="asset-skills-auto-retopo-align-v3.0.25",
         )
         created = await post_retopology_process(
             client,
@@ -2808,7 +2860,7 @@ async def test_retopology_post_build_qa_failure_is_not_retried(tmp_path: Path) -
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.24",
+            skill_version="asset-skills-auto-retopo-align-v3.0.25",
         )
         created = await post_retopology_process(
             client,
@@ -2869,7 +2921,7 @@ async def test_retopology_early_generated_low_qa_failure_retries_once(tmp_path: 
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.24",
+            skill_version="asset-skills-auto-retopo-align-v3.0.25",
         )
         created = await post_retopology_process(
             client,
@@ -2918,7 +2970,7 @@ async def test_busy_codex_slot_still_claims_blender_only_work(tmp_path: Path) ->
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.24",
+            skill_version="asset-skills-auto-retopo-align-v3.0.25",
         )
         retopology = await post_retopology_process(
             client,
@@ -2949,7 +3001,7 @@ async def test_durable_codex_assignment_blocks_racing_second_topology_claim(
         await register_asset_worker(
             client,
             settings,
-            skill_version="asset-skills-auto-retopo-align-v3.0.24",
+            skill_version="asset-skills-auto-retopo-align-v3.0.25",
         )
         first = await post_retopology_process(
             client,
@@ -3676,6 +3728,52 @@ async def test_cpu_asset_claim_prioritizes_production_and_keeps_pool_fifo(
         ]
 
 
+async def test_direct_v2_worker_keeps_public_retopology_audit_capacity(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        now = datetime.now(UTC)
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            db.add_all(
+                [
+                    queued_asset_job(
+                        "retopology-v1-retired",
+                        client_id="asset-client",
+                        job_type="RETOPOLOGY_PROCESS_V1",
+                        created_at=now - timedelta(minutes=2),
+                    ),
+                    queued_asset_job(
+                        "retopology-audit-supported",
+                        client_id="asset-client",
+                        job_type="RETOPOLOGY_AUDIT",
+                        created_at=now - timedelta(minutes=1),
+                    ),
+                ]
+            )
+            await db.commit()
+
+        await register_asset_worker(
+            client,
+            settings,
+            skill_version="asset-skills-auto-retopo-align-v3.0.25",
+        )
+        claimed = await claim_asset_job(client, settings)
+        assert claimed["job_id"] == "retopology-audit-supported"
+
+        no_retired_v1_claim = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(),
+                "load_1m": 1.0,
+                "available_memory_mb": 100000,
+                "accepts_codex_jobs": True,
+            },
+        )
+        assert no_retired_v1_claim.json()["job"] is None
+
+
 async def test_codex_unhealthy_worker_skips_process_but_keeps_cpu_queue_moving(
     tmp_path: Path,
 ) -> None:
@@ -3899,6 +3997,7 @@ async def test_uv_process_v2_preserves_stem_and_publishes_five_verified_artifact
     metadata = {
         "external_asset_id": "asset:chair:uv:v2",
         "options": {
+            "algorithm": "legacy_pbr",
             "resolution": 2048,
             "padding_px": 10,
             "hard_edge_angle_degrees": 75,
@@ -3984,7 +4083,77 @@ async def test_uv_process_v2_preserves_stem_and_publishes_five_verified_artifact
         }
 
 
-async def test_uv_process_v2_dual_mode_is_explicit_and_never_silently_falls_back(
+async def test_uv_process_v2_rejects_known_retopology_high_artifact(
+    tmp_path: Path,
+) -> None:
+    high_payload = b"known-retopology-bake-high"
+    high_sha256 = hashlib.sha256(high_payload).hexdigest()
+    source_job_id = str(uuid.uuid4())
+    async for _, client in prepared_asset_app(tmp_path):
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            db.add(
+                AssetJob(
+                    id=source_job_id,
+                    client_id="asset-client",
+                    external_asset_id="asset:retopo:source-for-uv-guard",
+                    job_type="RETOPOLOGY_PROCESS_V2",
+                    status="SUCCEEDED",
+                    source_filename="retopology_input.zip",
+                    input_path=str(tmp_path / "retopology_input.zip"),
+                    input_sha256="a" * 64,
+                    input_size_bytes=1,
+                    options={},
+                    request_hash="b" * 64,
+                    request_id="retopo-source-request",
+                    progress=100,
+                    stage="SUCCEEDED",
+                )
+            )
+            await db.flush()
+            db.add(
+                AssetArtifact(
+                    id=str(uuid.uuid4()),
+                    job_id=source_job_id,
+                    kind="high_fbx",
+                    filename="asset_BAKE_HIGH.fbx",
+                    path=str(tmp_path / "asset_BAKE_HIGH.fbx"),
+                    content_type="application/octet-stream",
+                    size_bytes=len(high_payload),
+                    sha256=high_sha256,
+                )
+            )
+            await db.commit()
+
+        response = await client.post(
+            "/api/v1/assets/uv/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "uv-known-high-rejected",
+            },
+            files={
+                "asset": ("renamed-reto-result.fbx", high_payload, "application/octet-stream"),
+                "metadata": (
+                    None,
+                    json.dumps(
+                        {
+                            "external_asset_id": "asset:uv:known-high-rejected",
+                            "options": {},
+                        }
+                    ),
+                ),
+            },
+        )
+
+        assert response.status_code == 422, response.text
+        assert response.json()["detail"]["code"] == "UV_RETOPOLOGY_HIGH_INPUT"
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            uv_jobs = await db.scalar(
+                select(func.count(AssetJob.id)).where(AssetJob.job_type == "UV_PROCESS_V2")
+            )
+            assert uv_jobs == 0
+
+
+async def test_uv_process_v2_auto_routes_omitted_algorithm_and_preserves_explicit_gates(
     tmp_path: Path,
 ) -> None:
     async for _, client in prepared_asset_app(tmp_path):
@@ -4010,6 +4179,28 @@ async def test_uv_process_v2_dual_mode_is_explicit_and_never_silently_falls_back
         assert invalid.status_code == 422, invalid.text
         assert invalid.json()["detail"]["code"] == "UV_ALGORITHM_INVALID"
 
+        wrong_profile = await client.post(
+            "/api/v1/assets/uv/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "uv-mof-wrong-profile",
+            },
+            files={
+                "asset": ("asset.fbx", b"asset", "application/octet-stream"),
+                "metadata": (
+                    None,
+                    json.dumps(
+                        {
+                            "external_asset_id": "uv-mof-wrong-profile",
+                            "options": {"algorithm": "mof_low_seam"},
+                        }
+                    ),
+                ),
+            },
+        )
+        assert wrong_profile.status_code == 422, wrong_profile.text
+        assert wrong_profile.json()["detail"]["code"] == "UV_MOF_ASSET_PROFILE_REQUIRED"
+
         unavailable = await client.post(
             "/api/v1/assets/uv/process",
             headers={
@@ -4023,7 +4214,10 @@ async def test_uv_process_v2_dual_mode_is_explicit_and_never_silently_falls_back
                     json.dumps(
                         {
                             "external_asset_id": "uv-mof-unavailable",
-                            "options": {"algorithm": "mof_low_seam"},
+                            "options": {
+                                "algorithm": "mof_low_seam",
+                                "asset_profile": "complex_non_hardsurface",
+                            },
                         }
                     ),
                 ),
@@ -4036,7 +4230,7 @@ async def test_uv_process_v2_dual_mode_is_explicit_and_never_silently_falls_back
             "/api/v1/assets/uv/process",
             headers={
                 "X-API-Key": "gpc_assetkey_secret",
-                "Idempotency-Key": "uv-default-legacy",
+                "Idempotency-Key": "uv-default-auto",
             },
             files={
                 "asset": ("asset.fbx", b"asset", "application/octet-stream"),
@@ -4044,7 +4238,7 @@ async def test_uv_process_v2_dual_mode_is_explicit_and_never_silently_falls_back
                     None,
                     json.dumps(
                         {
-                            "external_asset_id": "uv-default-legacy",
+                            "external_asset_id": "uv-default-auto",
                             "options": {},
                         }
                     ),
@@ -4052,7 +4246,399 @@ async def test_uv_process_v2_dual_mode_is_explicit_and_never_silently_falls_back
             },
         )
         assert defaulted.status_code == 202, defaulted.text
-        assert defaulted.json()["options"]["algorithm"] == "legacy_pbr"
+        assert defaulted.json()["options"]["algorithm"] == "auto"
+        assert defaulted.json()["options"]["asset_profile"] == "auto"
+
+        explicit_legacy = await client.post(
+            "/api/v1/assets/uv/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "uv-explicit-legacy",
+            },
+            files={
+                "asset": ("asset.fbx", b"asset", "application/octet-stream"),
+                "metadata": (
+                    None,
+                    json.dumps(
+                        {
+                            "external_asset_id": "uv-explicit-legacy",
+                            "options": {"algorithm": "legacy_pbr"},
+                        }
+                    ),
+                ),
+            },
+        )
+        assert explicit_legacy.status_code == 202, explicit_legacy.text
+        assert explicit_legacy.json()["options"]["algorithm"] == "legacy_pbr"
+        assert explicit_legacy.json()["options"]["asset_profile"] == "general"
+
+
+async def test_mof_worker_enables_capacity_and_can_claim_only_mof_uv(
+    tmp_path: Path,
+) -> None:
+    worker_id = "asset-worker-4070ti-mof-01"
+    node_id = "worker-4070ti-animation-host-01"
+    async for settings, client in prepared_asset_app(tmp_path):
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            db.add(
+                Node(
+                    id=node_id,
+                    display_name="4070 Ti",
+                    base_url="http://10.3.34.238:8188",
+                    pool="PRIMARY",
+                    mode="ACTIVE",
+                    health="ONLINE",
+                    current_jobs=0,
+                    max_concurrency=1,
+                    labels={},
+                )
+            )
+            await db.commit()
+
+        heartbeat = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/workers/heartbeat",
+            {
+                "worker_id": worker_id,
+                "node_id": node_id,
+                "display_name": "4070 Ti Windows MOF UV Worker",
+                "hostname": "worker-4070ti-wsl",
+                "blender_version": "5.2.0",
+                "skill_version": "mof-windows-native-1.0.9-2026.08.19-v3",
+                "cpu_count": 24,
+                "max_concurrency": 1,
+                "current_jobs": 0,
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                **asset_worker_generation(worker_id),
+            },
+        )
+        assert heartbeat.status_code == 200, heartbeat.text
+        assert heartbeat.json()["status"] == "ONLINE"
+
+        created = await client.post(
+            "/api/v1/assets/uv/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "uv-mof-capacity-online",
+            },
+            files={
+                "asset": ("mof.source.fbx", b"mof-asset", "application/octet-stream"),
+                "metadata": (
+                    None,
+                    json.dumps(
+                        {
+                            "external_asset_id": "uv-mof-capacity-online",
+                            "options": {
+                                "algorithm": "mof_low_seam",
+                                "asset_profile": "complex_multi_mesh",
+                            },
+                        }
+                    ),
+                ),
+            },
+        )
+        assert created.status_code == 202, created.text
+        assert created.json()["options"]["algorithm"] == "mof_low_seam"
+        assert (
+            created.json()["options"]["asset_profile"] == "complex_multi_mesh"
+        )
+
+        await register_asset_worker(client, settings)
+        legacy_attempt = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(),
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                "uv_algorithms": ["legacy_pbr", "mof_low_seam"],
+            },
+        )
+        assert legacy_attempt.status_code == 200, legacy_attempt.text
+        assert legacy_attempt.json()["job"] is None
+
+        claimed = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(worker_id, node_id),
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                "accepts_codex_jobs": False,
+                "uv_algorithms": ["mof_low_seam"],
+            },
+        )
+        assert claimed.status_code == 200, claimed.text
+        job = claimed.json()["job"]
+        assert job["job_id"] == created.json()["job_id"]
+        assert job["job_type"] == "UV_PROCESS_V2"
+        assert job["options"]["algorithm"] == "mof_low_seam"
+        assert job["options"]["asset_profile"] == "complex_multi_mesh"
+
+
+def soft_surface_auto_classification() -> dict[str, object]:
+    return {
+        "classifier_version": "uv-auto-classifier-v2",
+        "resolved_algorithm": "mof_low_seam",
+        "asset_profile": "complex_non_hardsurface",
+        "reason_codes": ["complex_multi_component_soft_surface"],
+        "evidence": {
+            "mesh_object_count": 1,
+            "face_count": 422,
+            "face_component_count": 4,
+            "vertex_count": 245,
+            "edge_count": 665,
+            "manifold_edge_count": 601,
+            "boundary_edge_count": 64,
+            "nonmanifold_edge_count": 0,
+            "modifier_count": 0,
+            "shape_key_count": 0,
+            "smooth_face_ratio": 0.0,
+            "authored_sharp_edge_ratio": 0.0,
+            "near_planar_edge_ratio": 0.11647254575707154,
+            "curved_edge_ratio": 0.7970049916805324,
+            "steep_edge_ratio": 0.08652246256239601,
+            "very_steep_edge_ratio": 0.03161397670549085,
+        },
+    }
+
+
+async def test_auto_classification_requeues_complex_soft_surface_to_mof(
+    tmp_path: Path,
+) -> None:
+    worker_id = "asset-worker-4070ti-mof-01"
+    node_id = "worker-4070ti-animation-host-01"
+    async for settings, client in prepared_asset_app(tmp_path):
+        async with client._transport.app.state.db.session() as db:  # type: ignore[attr-defined]
+            db.add(
+                Node(
+                    id=node_id,
+                    display_name="4070 Ti",
+                    base_url="http://10.3.34.238:8188",
+                    pool="PRIMARY",
+                    mode="ACTIVE",
+                    health="ONLINE",
+                    current_jobs=0,
+                    max_concurrency=1,
+                    labels={},
+                )
+            )
+            await db.commit()
+        heartbeat = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/workers/heartbeat",
+            {
+                "worker_id": worker_id,
+                "node_id": node_id,
+                "display_name": "4070 Ti Windows MOF UV Worker",
+                "hostname": "DAC3OZHANGQICHA",
+                "blender_version": "5.2.0",
+                "skill_version": "mof-windows-native-1.0.9-2026.08.19-v3",
+                "cpu_count": 24,
+                "max_concurrency": 1,
+                "current_jobs": 0,
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                **asset_worker_generation(worker_id),
+            },
+        )
+        assert heartbeat.status_code == 200, heartbeat.text
+        await register_asset_worker(client, settings)
+
+        created = await client.post(
+            "/api/v1/assets/uv/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "uv-auto-soft-surface",
+            },
+            files={
+                "asset": ("glove.fbx", b"glove", "application/octet-stream"),
+                "metadata": (
+                    None,
+                    json.dumps(
+                        {
+                            "external_asset_id": "uv-auto-soft-surface",
+                            "options": {},
+                        }
+                    ),
+                ),
+            },
+        )
+        assert created.status_code == 202, created.text
+        assert created.json()["options"]["algorithm"] == "auto"
+
+        rolling_old_worker = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(),
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                "uv_algorithms": ["legacy_pbr"],
+            },
+        )
+        assert rolling_old_worker.status_code == 200, rolling_old_worker.text
+        assert rolling_old_worker.json()["job"] is None
+
+        classifier_claim = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(),
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                "uv_algorithms": ["legacy_pbr", "auto_v2"],
+            },
+        )
+        assert classifier_claim.status_code == 200, classifier_claim.text
+        classifier_job = classifier_claim.json()["job"]
+        assert classifier_job["job_id"] == created.json()["job_id"]
+        assert classifier_job["options"]["algorithm"] == "auto"
+
+        resolved = await client.post(
+            f"/internal/v1/assets/jobs/{classifier_job['job_id']}/uv-auto-classify",
+            headers={"X-Asset-Lease": classifier_job["lease_token"]},
+            json=soft_surface_auto_classification(),
+        )
+        assert resolved.status_code == 200, resolved.text
+        assert resolved.json()["action"] == "requeued"
+
+        legacy_retry = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(),
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                "uv_algorithms": ["legacy_pbr", "auto_v2"],
+            },
+        )
+        assert legacy_retry.status_code == 200, legacy_retry.text
+        assert legacy_retry.json()["job"] is None
+
+        mof_claim = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(worker_id, node_id),
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                "accepts_codex_jobs": False,
+                "uv_algorithms": ["mof_low_seam"],
+            },
+        )
+        assert mof_claim.status_code == 200, mof_claim.text
+        mof_job = mof_claim.json()["job"]
+        assert mof_job["job_id"] == created.json()["job_id"]
+        assert mof_job["attempt_count"] == 1
+        assert mof_job["options"]["algorithm"] == "mof_low_seam"
+        assert mof_job["options"]["asset_profile"] == "complex_non_hardsurface"
+        assert (
+            mof_job["options"]["auto_classification"]["classifier_version"]
+            == "uv-auto-classifier-v2"
+        )
+
+
+async def test_auto_classification_keeps_hard_surface_on_current_legacy_worker(
+    tmp_path: Path,
+) -> None:
+    async for settings, client in prepared_asset_app(tmp_path):
+        await register_asset_worker(client, settings)
+        created = await client.post(
+            "/api/v1/assets/uv/process",
+            headers={
+                "X-API-Key": "gpc_assetkey_secret",
+                "Idempotency-Key": "uv-auto-hard-surface",
+            },
+            files={
+                "asset": ("crate.fbx", b"crate", "application/octet-stream"),
+                "metadata": (
+                    None,
+                    json.dumps(
+                        {
+                            "external_asset_id": "uv-auto-hard-surface",
+                            "options": {},
+                        }
+                    ),
+                ),
+            },
+        )
+        assert created.status_code == 202, created.text
+        claim = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/jobs/claim",
+            {
+                **asset_worker_claim_identity(),
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                "uv_algorithms": ["legacy_pbr", "auto_v2"],
+            },
+        )
+        job = claim.json()["job"]
+        hard_surface = soft_surface_auto_classification()
+        hard_surface["resolved_algorithm"] = "legacy_pbr"
+        hard_surface["asset_profile"] = "general"
+        hard_surface["reason_codes"] = [
+            "hard_surface_edge_pattern",
+            "soft_surface_evidence_not_strong_enough",
+        ]
+        hard_evidence = hard_surface["evidence"]
+        assert isinstance(hard_evidence, dict)
+        hard_evidence.update(
+            {
+                "face_component_count": 6,
+                "smooth_face_ratio": 0.0,
+                "near_planar_edge_ratio": 0.72,
+                "curved_edge_ratio": 0.08,
+                "steep_edge_ratio": 0.20,
+                "very_steep_edge_ratio": 0.14,
+            }
+        )
+        resolved = await client.post(
+            f"/internal/v1/assets/jobs/{job['job_id']}/uv-auto-classify",
+            headers={"X-Asset-Lease": job["lease_token"]},
+            json=hard_surface,
+        )
+        assert resolved.status_code == 200, resolved.text
+        assert resolved.json()["action"] == "continue"
+        assert resolved.json()["options"]["algorithm"] == "legacy_pbr"
+        assert resolved.json()["options"]["asset_profile"] == "general"
+
+
+async def test_mof_worker_heartbeat_rejects_wrong_physical_node(tmp_path: Path) -> None:
+    worker_id = "asset-worker-4070ti-mof-01"
+    async for settings, client in prepared_asset_app(tmp_path):
+        response = await signed_post(
+            client,
+            settings,
+            "/internal/v1/assets/workers/heartbeat",
+            {
+                "worker_id": worker_id,
+                "node_id": "worker-3090-b",
+                "display_name": "misbound MOF Worker",
+                "hostname": "wrong-host",
+                "blender_version": "5.2.0",
+                "skill_version": "mof-windows-native-1.0.9-2026.08.19-v3",
+                "cpu_count": 24,
+                "max_concurrency": 1,
+                "current_jobs": 0,
+                "load_1m": 0,
+                "available_memory_mb": 100000,
+                **asset_worker_generation(worker_id),
+            },
+        )
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["code"] == "UV_MOF_WORKER_NODE_MISMATCH"
 
 
 async def create_and_claim_uv_process_v2(
@@ -4063,6 +4649,7 @@ async def create_and_claim_uv_process_v2(
     metadata = {
         "external_asset_id": external_asset_id,
         "options": {
+            "algorithm": "legacy_pbr",
             "resolution": 2048,
             "padding_px": 10,
             "hard_edge_angle_degrees": 75,
@@ -4275,8 +4862,9 @@ async def test_uv_process_v2_rejects_non_object_qa_json_as_422(
         assert list((settings.asset_root / str(job["job_id"])).glob(".outputs-*")) == []
 
 
+@pytest.mark.parametrize("audit_schema_version", [2, 3])
 async def test_retopology_audit_stops_at_review_gate_and_exposes_audit_artifacts(
-    tmp_path: Path,
+    tmp_path: Path, audit_schema_version: int,
 ) -> None:
     metadata = {
         "external_asset_id": "asset:crate:retopo:audit:v1",
@@ -4308,16 +4896,30 @@ async def test_retopology_audit_stops_at_review_gate_and_exposes_audit_artifacts
         assert job["job_type"] == "RETOPOLOGY_AUDIT"
         assert job["options"] == metadata["options"]
         lease_headers = {"X-Asset-Lease": str(job["lease_token"])}
+        audit_objects = {
+            "high": {"object": "crate_high"},
+            "low": {"object": "crate_current_low"},
+        }
+        visual_review_required = ["front", "side", "top", "perspective"]
+        if audit_schema_version == 2:
+            audit_objects["reference"] = {"object": "crate_reference_low"}
+        else:
+            visual_review_required = [
+                "front",
+                "back",
+                "left",
+                "right",
+                "top",
+                "bottom",
+                "perspective",
+                "high/generated topology comparison",
+            ]
         audit = {
-            "schema_version": 2,
+            "schema_version": audit_schema_version,
             "audit_passed": True,
-            "objects": {
-                "high": {"object": "crate_high"},
-                "reference": {"object": "crate_reference_low"},
-                "low": {"object": "crate_current_low"},
-            },
+            "objects": audit_objects,
             "failures": [],
-            "visual_review_required": ["front", "side", "top", "perspective"],
+            "visual_review_required": visual_review_required,
         }
         manifest = {
             "schema_version": "retopology_manifest.v1",

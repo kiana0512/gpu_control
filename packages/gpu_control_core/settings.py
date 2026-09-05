@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     node_agent_hmac_secret: str = "development-only-change-me"
     node_agent_hmac_secret_worker_3090_a: str = ""
     node_agent_hmac_secret_worker_3090_b: str = ""
+    node_agent_hmac_secret_worker_4070ti: str = ""
     node_agent_hmac_secret_control_4090: str = ""
     alertmanager_webhook_token: str = "development-only-change-me"
     job_root: Path = Path("storage/jobs")
@@ -65,7 +66,7 @@ class Settings(BaseSettings):
     asset_worker_min_available_memory_mb: int = Field(8192, ge=1024, le=1_048_576)
     asset_job_max_attempts: int = Field(2, ge=1, le=10)
     substance_pending_reservation_seconds: int = Field(60, ge=30, le=86_400)
-    uv_qa_enforcement: Literal["strict", "advisory"] = "advisory"
+    uv_qa_enforcement: Literal["strict", "advisory"] = "strict"
     retopology_qa_enforcement: Literal["strict", "advisory"] = "advisory"
 
     @field_validator(
@@ -100,6 +101,7 @@ class Settings(BaseSettings):
         per_node = {
             "worker-3090-a": self.node_agent_hmac_secret_worker_3090_a,
             "worker-3090-b": self.node_agent_hmac_secret_worker_3090_b,
+            "worker-4070ti-animation-host-01": self.node_agent_hmac_secret_worker_4070ti,
             "control-4090": self.node_agent_hmac_secret_control_4090,
         }
         return per_node.get(node_id) or self.node_agent_hmac_secret

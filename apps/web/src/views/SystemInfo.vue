@@ -11,11 +11,11 @@ const origin = window.location.origin;
 const comfyUrl = `http://${window.location.hostname}:8188/#551d82b0-b1fb-483a-a5ea-564bdb813625`;
 const imageclipUrl = `${origin}/api/v1/services/imageclip-rgba`;
 const modelviewUrl = `${origin}/api/v1/services/modelview-inpaint`;
+const modelviewSingleViewUrl = `${origin}/api/v1/services/modelview-single-view`;
+const modelviewSingleViewInpaintUrl = `${origin}/api/v1/services/modelview-single-view-inpaint`;
 const roughnessUrl = `${origin}/api/v1/services/modelview-roughness`;
 const uvUrl = `${origin}/api/v1/assets/uv/process`;
 const retopologyUrl = `${origin}/api/v1/assets/retopology/process`;
-const modelviewPromptEnabled =
-  import.meta.env.VITE_MODELVIEW_PROMPT_ENABLED === "true";
 const controlNode = computed(() =>
   dashboard.value?.nodes.find((node) => node.id === "control-4090"),
 );
@@ -163,14 +163,25 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           <span
             ><strong>ModelView 局部重绘</strong
             ><small
-              >POST · image 必填 ·
-              {{
-                modelviewPromptEnabled
-                  ? "prompt 可选"
-                  : "prompt 候选协议待安全窗口启用"
-              }}</small
+              >POST · image + material_image + mask 必填 · prompt 可选</small
             ></span
           ><code>{{ modelviewUrl }}</code>
+        </div>
+        <div>
+          <span
+            ><strong>ModelView 单视图生成</strong
+            ><small
+              >POST · image + material_image 必填 · prompt 可选</small
+            ></span
+          ><code>{{ modelviewSingleViewUrl }}</code>
+        </div>
+        <div>
+          <span
+            ><strong>ModelView 单视图局部重绘</strong
+            ><small
+              >POST · image + material_image + mask 必填 · prompt 可选</small
+            ></span
+          ><code>{{ modelviewSingleViewInpaintUrl }}</code>
         </div>
         <div>
           <span

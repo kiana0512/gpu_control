@@ -15,6 +15,7 @@ from packages.gpu_control_core.storage import (
     LocalJobStorage,
     StorageError,
     inspect_image,
+    mask_red_channel_has_edit_region,
     safe_filename,
 )
 
@@ -72,6 +73,19 @@ def test_image_validation_rejects_non_image_and_pixel_limit(tmp_path: Path) -> N
     assert inspect_image(valid, 12) == (4, 3, "PNG")
     with pytest.raises(StorageError, match="pixel limit"):
         inspect_image(valid, 11)
+
+
+def test_mask_validation_reads_the_red_channel_without_mutating_input(tmp_path: Path) -> None:
+    empty = tmp_path / "empty.png"
+    edit = tmp_path / "edit.png"
+    alpha_only = tmp_path / "alpha-only.png"
+    Image.new("RGB", (4, 3), "black").save(empty)
+    Image.new("RGB", (4, 3), (1, 0, 0)).save(edit)
+    Image.new("RGBA", (4, 3), (0, 0, 0, 255)).save(alpha_only)
+
+    assert not mask_red_channel_has_edit_region(empty)
+    assert mask_red_channel_has_edit_region(edit)
+    assert not mask_red_channel_has_edit_region(alpha_only)
 
 
 def test_production_rejects_development_secrets() -> None:

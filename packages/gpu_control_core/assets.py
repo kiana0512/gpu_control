@@ -23,7 +23,14 @@ ASSET_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 class UVUnwrapOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    algorithm: Literal["legacy_pbr", "mof_low_seam"] = "legacy_pbr"
+    algorithm: Literal["auto", "legacy_pbr", "mof_low_seam"] = "legacy_pbr"
+    # ``auto`` is assigned only by the UV_PROCESS_V2 admission path when the
+    # caller omits an algorithm. A Blender-side classifier must resolve it from
+    # several topology/curvature signals before unwrapping; polygon count alone
+    # is never sufficient. Explicit MOF still requires the semantic profile.
+    asset_profile: Literal[
+        "auto", "general", "complex_non_hardsurface", "complex_multi_mesh"
+    ] = "general"
     resolution: Literal[1024, 2048, 4096, 8192] = 2048
     padding_px: int = Field(default=10, ge=2, le=128)
     hard_edge_angle_degrees: float = Field(default=75.0, ge=1.0, le=179.0)
@@ -227,9 +234,9 @@ class RetopologyV6ProcessMetadata(BaseModel):
 
 
 RETOPOLOGY_V6_POLICY_SHA256 = "d7e3b0be13a7a9daf5f9452b6429edc5b161a16ce3b43871864680dc7333eef0"
-RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION = "3.0.24"
+RETOPOLOGY_DIRECT_V2_PACKAGE_VERSION = "3.0.25"
 RETOPOLOGY_DIRECT_V2_PACKAGE_SHA256 = (
-    "e6bdc11ded860cfc71381af3eed16b2db2df424393779e84b1da7c548672d169"
+    "d415d93b0153634e96ac263d0f25c61feeea2bb8f270596ed1395154f40ec1a1"
 )
 RETOPOLOGY_DIRECT_V2_COMPLETION_IDENTITIES = frozenset(
     {

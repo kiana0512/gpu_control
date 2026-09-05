@@ -1,0 +1,18 @@
+[Unit]
+Description=GPU Control WSL Node Agent telemetry proxy
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/gpu-control
+EnvironmentFile=/opt/gpu-control/.env
+Environment=WSL_NODE_PROXY_PORT=9201
+Environment=WSL_NODE_AGENT_BACKEND=http://127.0.0.1:9202
+ExecStart=/usr/bin/python3 /opt/gpu-control/scripts/wsl-node-agent-proxy.py
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target

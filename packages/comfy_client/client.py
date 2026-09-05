@@ -62,16 +62,28 @@ class ComfyClient:
         await self.http.aclose()
 
     async def _json(
-        self, method: str, path: str, *, allow_empty: bool = False, **kwargs: Any
+        self,
+        method: str,
+        path: str,
+        *,
+        allow_empty: bool = False,
+        allow_non_json: bool = False,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         try:
             response = await self.http.request(method, path, **kwargs)
             response.raise_for_status()
-            if allow_empty and not response.content:
+            if allow_empty and not response.content.strip():
                 return {}
             try:
                 value = response.json()
             except ValueError as exc:
+                # ComfyUI's action endpoints are not consistent across builds:
+                # /interrupt may acknowledge a successful request with an empty
+                # body or plain text.  The HTTP status is the acknowledgement;
+                # queue polling remains the authoritative drain check.
+                if allow_non_json:
+                    return {}
                 raise ComfyError(
                     "COMFY_INVALID_RESPONSE", f"{path} did not return valid JSON"
                 ) from exc
@@ -283,7 +295,12 @@ class ComfyClient:
         return prompt_id
 
     async def interrupt(self) -> dict[str, Any]:
-        return await self._json("POST", "/interrupt")
+        return await self._json(
+            "POST",
+            "/interrupt",
+            allow_empty=True,
+            allow_non_json=True,
+        )
 
     async def free(self) -> dict[str, Any]:
         return await self._json(

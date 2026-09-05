@@ -1,0 +1,4 @@
+interface:
+  display_name: "Blender 高低模烘焙对齐"
+  short_description: "只用变换对齐高低模，严禁改拓扑与 UV"
+  default_prompt: "Use $blender-align-bake-models to align my original high/low bake pair using transforms only, preserve topology and UVs exactly, and verify the result."

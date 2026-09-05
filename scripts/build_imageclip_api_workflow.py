@@ -15,6 +15,15 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--ui-workflow", type=Path, required=True)
     parser.add_argument("--object-info-url", required=True)
     parser.add_argument("--final-output-node", type=int, default=25)
+    parser.add_argument(
+        "--adapt-final-image-to-save-image",
+        action="store_true",
+        help=(
+            "replace the selected UI-only output node with a standard SaveImage "
+            "while preserving its image input ancestry"
+        ),
+    )
+    parser.add_argument("--filename-prefix", default="imageclip-rgba")
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
 
@@ -248,11 +257,50 @@ def build_prompt(
     return prompt
 
 
+def adapt_final_image_to_save_image(
+    prompt: dict[str, Any], final_output_node: int, filename_prefix: str
+) -> dict[str, Any]:
+    """Expose a UI-only image sink through ComfyUI's standard API artifact shape.
+
+    ImageClip's approved UI graph ends in ``CherryMirrorSave`` so artists can
+    mirror a folder tree to a Windows path.  GPU Control must not return that
+    host path.  It needs the exact same final IMAGE input, saved through
+    ``SaveImage`` so history/output collection can return a portable PNG.
+    """
+
+    node_id = str(final_output_node)
+    final = prompt.get(node_id)
+    if not isinstance(final, dict):
+        raise ValueError("final output node is absent from the API prompt")
+    inputs = final.get("inputs")
+    if not isinstance(inputs, dict):
+        raise ValueError("final output node has no inputs")
+    image = inputs.get("图像", inputs.get("images"))
+    if not (
+        isinstance(image, list)
+        and len(image) == 2
+        and isinstance(image[0], str)
+        and isinstance(image[1], int)
+    ):
+        raise ValueError("final output node does not expose one linked IMAGE input")
+    adapted = dict(prompt)
+    adapted[node_id] = {
+        "inputs": {"filename_prefix": filename_prefix, "images": image},
+        "class_type": "SaveImage",
+        "_meta": {"title": "ImageClip API Final RGBA"},
+    }
+    return adapted
+
+
 def main() -> None:
     args = arguments()
     workflow = read_json(args.ui_workflow)
     definitions = object_info(args.object_info_url)
     prompt = build_prompt(workflow, definitions, args.final_output_node)
+    if args.adapt_final_image_to_save_image:
+        prompt = adapt_final_image_to_save_image(
+            prompt, args.final_output_node, args.filename_prefix
+        )
     canonical = json.dumps(prompt, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(canonical.encode()).hexdigest()
     args.output.parent.mkdir(parents=True, exist_ok=True)

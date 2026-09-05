@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "release": "uv-multimesh-mof-20260820",
+  "source": {
+    "repository": "https://github.com/kiana0512/gpu_control.git",
+    "revision": "104a67b2512a79236fef8112d8accb5526e24a42"
+  },
+  "images": [
+    {
+      "component": "asset-api",
+      "tag": "unified-scheduler-asset-api:1.5.16-uv-multimesh-mof-v1-git-104a67b2512a",
+      "image_id": "sha256:281e1ddb9357f048794977808b835fa483756cd53877a34b49041fe4819c2aef",
+      "local_digest": "unified-scheduler-asset-api@sha256:281e1ddb9357f048794977808b835fa483756cd53877a34b49041fe4819c2aef",
+      "created": "2026-08-20T14:49:48.670949753+08:00",
+      "size_bytes": 92761861,
+      "platform": "linux/amd64",
+      "smoke_test": "ASSET_API_IMAGE_SMOKE_OK"
+    },
+    {
+      "component": "blender-worker",
+      "tag": "li3d/blender-worker:1.4.55-uv-multimesh-mof-v1-git-104a67b2512a",
+      "image_id": "sha256:0f32c10837eebcb2230a5da7bad2d0b73a445ff8183985b4928c982c96db36c4",
+      "local_digest": "li3d/blender-worker@sha256:0f32c10837eebcb2230a5da7bad2d0b73a445ff8183985b4928c982c96db36c4",
+      "created": "2026-08-20T14:50:31.744316205+08:00",
+      "size_bytes": 693763999,
+      "platform": "linux/amd64",
+      "blender_archive_sha256": "21a6ab66b2a8b9f035fdb39c6445cdbe91e2fe1dcff30786148b757df7f9a9c5",
+      "smoke_test": "BLENDER_WORKER_IMAGE_SMOKE_OK"
+    }
+  ],
+  "tests": {
+    "python": "521 passed, 5 skipped",
+    "skill_quick_validate_count": 5,
+    "approved_runtime_skill_hashes": "passed",
+    "compose_config": "passed"
+  },
+  "distribution": {
+    "docker_registry_pushed": false,
+    "offline_tar_created": false,
+    "git_lfs_upload_bytes": 0,
+    "policy": "source, manifests and small evidence in Git; image/model binaries outside Git LFS"
+  }
+}

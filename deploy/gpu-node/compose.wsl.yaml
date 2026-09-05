@@ -1,0 +1,29 @@
+# WSL2-only runtime overlay. Use together with compose.yaml on Windows/WSL nodes.
+services:
+  node-exporter:
+    # WSL2 does not expose the root mount as shared/slave, so the Linux-node
+    # default `rslave` propagation fails container creation. A read-only bind
+    # still provides the stable host metrics required by this deployment.
+    volumes:
+      - /:/host:ro
+
+  comfyui:
+    # 12 GiB WSL runtime placement validated with the unchanged upstream
+    # ImageClip workflow. These flags only control Comfy memory residency.
+    command:
+      - "--disable-dynamic-vram"
+      - "--lowvram"
+      - "--reserve-vram"
+      - "3.0"
+      - "--cpu-vae"
+      - "--disable-async-offload"
+      - "--disable-pinned-memory"
+    environment:
+      TRITON_LIBCUDA_PATH: /usr/lib/wsl/lib
+    volumes:
+      - /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro
+
+  # WSL GPU telemetry is provided by the signed Node Agent. DCGM remains an
+  # explicit opt-in because it is not part of the validated WSL baseline.
+  dcgm-exporter:
+    profiles: ["dcgm"]

@@ -1,5 +1,5 @@
 workflow_key: modelview-roughness
-version: 2026.07.29-d318bb39-roughness-v1
+version: 2026.08.12-d318bb39-roughness-12g-r1
 template_file: template.api.json
 parameter_schema:
   type: object
@@ -37,7 +37,7 @@ required_models:
 required_custom_nodes:
   - ComfyUI-GGUF
   - haoze-LiClick@d318bb392040e2d5f6bbd10ae61d832d36d3cb4a
-min_vram_mb: 22000
+min_vram_mb: 12000
 timeout_seconds: 1800
 node_labels: {}
 output_nodes:

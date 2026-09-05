@@ -31,10 +31,10 @@ def valid_snapshot() -> dict[str, str | int | float | None]:
 def scheduler_stub() -> Scheduler:
     scheduler = Scheduler.__new__(Scheduler)
     scheduler.settings = SimpleNamespace(node_agent_secret=lambda _node_id: "secret")
-    scheduler.wsl_system_metrics_retry_at = 0.0
-    scheduler.wsl_system_metrics_checked_at = 0.0
-    scheduler.wsl_system_metrics_cache = None
-    scheduler.wsl_boot_id = None
+    scheduler.wsl_system_metrics_retry_at = {}
+    scheduler.wsl_system_metrics_checked_at = {}
+    scheduler.wsl_system_metrics_cache = {}
+    scheduler.wsl_boot_ids = {}
     return scheduler
 
 
@@ -74,7 +74,11 @@ async def test_wsl_system_probe_is_signed_and_cached(monkeypatch) -> None:
 
     monkeypatch.setattr(scheduler_main.httpx, "AsyncClient", Client)
     scheduler = scheduler_stub()
-    node = Node(id="worker-3090-b", agent_url="http://10.3.34.14:9201")
+    node = Node(
+        id="worker-3090-b",
+        agent_url="http://10.3.34.14:9201",
+        labels={"wsl_runtime": True},
+    )
 
     first = await scheduler.node_agent_system_metrics(node)
     second = await scheduler.node_agent_system_metrics(node)
@@ -105,9 +109,75 @@ async def test_wsl_system_probe_failure_is_advisory_and_backed_off(monkeypatch) 
 
     monkeypatch.setattr(scheduler_main.httpx, "AsyncClient", FailingClient)
     scheduler = scheduler_stub()
-    node = Node(id="worker-3090-b", agent_url="http://10.3.34.14:9201")
+    node = Node(
+        id="worker-3090-b",
+        agent_url="http://10.3.34.14:9201",
+        labels={"wsl_runtime": True},
+    )
 
     assert await scheduler.node_agent_system_metrics(node) is None
     assert await scheduler.node_agent_system_metrics(node) is None
     assert calls == 1
-    assert scheduler.wsl_system_metrics_retry_at > 0
+    assert scheduler.wsl_system_metrics_retry_at[node.id] > 0
+
+
+async def test_wsl_system_probe_caches_each_wsl_node_independently(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class Response:
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+        @staticmethod
+        def json() -> dict[str, str | int | float | None]:
+            return valid_snapshot()
+
+    class Client:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def get(self, url: str, *, headers: dict[str, str]) -> Response:
+            calls.append(url)
+            return Response()
+
+    monkeypatch.setattr(scheduler_main.httpx, "AsyncClient", Client)
+    scheduler = scheduler_stub()
+    node_b = Node(
+        id="worker-3090-b",
+        agent_url="http://10.3.34.14:9201",
+        labels={"wsl_runtime": True},
+    )
+    node_4070ti = Node(
+        id="worker-4070ti-animation-host-01",
+        agent_url="http://10.3.34.238:9201",
+        labels={"wsl_runtime": True},
+    )
+
+    await scheduler.node_agent_system_metrics(node_b)
+    await scheduler.node_agent_system_metrics(node_4070ti)
+    await scheduler.node_agent_system_metrics(node_b)
+    await scheduler.node_agent_system_metrics(node_4070ti)
+
+    assert len(calls) == 2
+    assert set(scheduler.wsl_system_metrics_cache) == {
+        node_b.id,
+        node_4070ti.id,
+    }
+
+
+async def test_wsl_system_probe_skips_native_nodes() -> None:
+    scheduler = scheduler_stub()
+    node = Node(
+        id="worker-3090-a",
+        agent_url="http://10.3.34.12:9201",
+        labels={"wsl_runtime": False},
+    )
+
+    assert await scheduler.node_agent_system_metrics(node) is None

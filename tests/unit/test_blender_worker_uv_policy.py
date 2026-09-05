@@ -18,4 +18,5 @@ def test_uv_qa_strictness_is_owned_by_asset_api_for_v2(
         job_type,
     )
 
+    assert "--require-max-compatible-shells" in arguments
     assert ("--strict" in arguments) is strict_expected

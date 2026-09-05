@@ -1,5 +1,131 @@
 # Changelog
 
+- Update `modelview-single-view-inpaint` fixed prompt to enforce seamless masked surface restoration
+  while preserving the existing four-input contract, graph, models, random seed, and two-step sampler.
+
+## 1.5.23 — ModelView single-view inpaint service — 2026-08-31
+
+- Add the independent `modelview-single-view-inpaint` task with current image, reference image,
+  red-channel mask and optional user prompt inputs, returning one final PNG.
+- Preserve the user-approved two-step graph and immutable view/geometry guard prompt while injecting
+  a server-owned random seed for every new task.
+- Reuse the interactive ModelView cache family and 4090 response lane, support both 24 GiB 3090
+  nodes, and share LoadImage mask validation/upload routing with the existing inpaint service.
+- Publish the frontend contract in document 141 and expose the task in the control Web UI.
+
+## 2026-08-29 — ModelView mask inpaint two-step workflow
+
+- Apply the user's explicit inference adjustment only to ModelView mask inpaint:
+  `BasicScheduler #15` now uses `steps=2` instead of `steps=4`.
+- Keep the four-input contract, server-owned random seed, models, LoRA strength, graph topology and
+  single final output unchanged; retain the prior immutable workflow version for rollback.
+
+## 1.5.22 — ModelView LoadImage mask upload routing — 2026-08-28
+
+- Route the ModelView inpaint mask through ComfyUI's regular `/upload/image` endpoint because the
+  approved workflow consumes it with `LoadImage #44`.
+- Preserve `/upload/mask` for existing interactive editor-mask workflows that provide ComfyUI's
+  required `original_ref` metadata, and add a regression test for both routes.
+
+## 1.5.21 — ModelView mask inpaint four-input contract — 2026-08-28
+
+- Replace the production local-repaint graph with the exact user-approved mask-inpaint JSON,
+  changing the public contract to current image, reference image, required mask and optional prompt.
+- Preserve the supplied graph's 4 sampler steps, LoRA strength 0.9, direct prompt path and single
+  final output while keeping server-owned random seeds and the existing interactive queue policy.
+- Validate same-sized non-empty red-channel masks, include the mask hash in idempotency, retain the
+  old workflow version for rollback and publish the frontend integration guide in document 140.
+
+## 2026-08-26 — ModelView GGUF three-input workflow
+
+- Replace the ModelView TrueV3 workflow on the 4090 and both 3090 nodes with the
+  user-approved GGUF graph while retaining two image uploads and one final image output.
+- Bind the optional public prompt to the new empty `ttN text #41`, concatenate it with the
+  immutable geometry/material guard prompt, and keep server-owned per-job random seeds.
+- Pin the required GGUF, WAS Node Suite and tinyterra nodes; expose the workflow's nested LoRA
+  path as a symlink so the 165 MB model is not duplicated.
+- Preserve the supplied graph's actual `BasicScheduler steps=2` value even though its UI title
+  still says 12 steps, and keep the 4070 Ti excluded by the 24 GiB VRAM contract.
+
+## 1.5.20 — ModelView single-view generation service — 2026-08-26
+
+- Add the independent `modelview-single-view` task and synchronous image API.
+- Keep server-owned random seeds and the two-image plus optional prompt contract.
+- Share the Flux2 Klein TrueV3 warm-cache family with local repaint without merging task identity.
+- Add Task Center labels, API examples, three-node workflow mounts and rollout documentation.
+
+## 1.5.19 — ModelView two-input workflow and per-job seed — 2026-08-22
+
+- Replace the three-image ModelView TrueV3 graph with the user-approved two-image UI workflow;
+  remove the third color reference and both post-generation Easy-Use color-match nodes.
+- Generate a fresh 50-bit `RandomNoise #14` seed for every newly created ModelView job while
+  retaining the stored seed for idempotent submission replay and Scheduler retries.
+- Keep the old optional `viewport_reference` upload as a rollout-only ignored compatibility field,
+  and publish the two-file frontend contract and regeneration/idempotency guidance in document 135.
+
+## 1.5.18 — TrueV3 inpaint and ImageClip color-correct output — 2026-08-17
+
+- Promote the 4090 to the preferred ten-minute INT8 local-inpaint lane while keeping 3090-A and
+  3090-B as 24 GiB fallbacks; the 4070Ti remains available for compatible non-inpaint work.
+- Keep 4090 work-conserving during the protection window: when no inpaint job is queued it continues
+  to claim ImageClip, roughness and other compatible work instead of idling.
+- Replace ImageClip's API sink that bypassed color correction with the existing
+  `CherrySelfComposite -> 122_ColorMatchToSource -> CherryAlphaDenoise -> SaveImage` chain.
+- Cancel the two pre-fix animation batches so no remaining frame can be produced by the invalid
+  output path; enable only `2026.08.17-c39ed0b-colorfix-r1` for new ImageClip submissions.
+- Add the three-image ModelView API binding, synchronized WebUI policy text, four-node canaries and
+  production handoff documents 126 and 127.
+
+## 1.5.15 — Work-conserving Baker release and AssetClaw closure — 2026-08-13
+
+- Shorten the 3090-B post-arrival Substance GPU specialization from 15 minutes to five minutes;
+  retain the 4070Ti inpaint response lane at 15 minutes.
+- Clamp pre-upgrade 15-minute Substance labels to `started_at + 5 minutes` during rolling updates.
+- Let an explicit administrator ACTIVE action release only an idle Substance soft hold; pending
+  reservations, live Baker fences, recovery-required state and occupied/foreign GPU activity remain
+  non-bypassable.
+- Add the WebUI “解除烘焙保护” action and update scheduling explanations without freezing CPU Asset
+  slots.
+- Archive AssetClaw's byte-identical 1.5.14 fix receipt: production matting is GPU-Control-only,
+  local/hybrid/OOM fallback is forbidden, and the three recovery batches are mapped for audit.
+
+## 1.5.14 — Substance Baker v7 recovery and safe Admin Retry — 2026-08-13
+
+- Pin the v7 Windows Baker Agent's ComfyUI fencing probe to
+  `/opt/python/bin/python3`; the production ComfyUI container does not expose a bare `python` in
+  `PATH`.
+- After `/free`, poll authoritative VRAM release for up to 30 seconds while continuously rechecking
+  the ComfyUI queue; fail closed if either condition regresses.
+- Bind the synchronized repository, 3090-B candidate and installed Agent to SHA-256
+  `06fcb4cefb9aeb7e53693faf9f87a36a113324ba8df162738e416afdb9e4b399` and add regression
+  contracts for the absolute Python path and asynchronous release loop.
+- Add a bounded, audited Admin Retry for failed Substance continuity/execution jobs. Retry is
+  admitted only when 3090-B is online, active and idle, all four v7 Agents are fresh and healthy,
+  no Baker process/interlock exists, and the original input still exists with no published result.
+- Accept both the legacy and v7 verified GPU-fencing result policies while requiring non-empty
+  drain evidence for the v7 policy.
+- Retry job `867d53b9-cfb6-49d5-b1d2-0007777e8072` succeeded on attempt 3 with 12 verified
+  artifacts, 10 Baker success markers and ComfyUI process continuity preserved.
+- Expose the safe Admin Retry action in the Asset Web UI and publish the four-GPU/six-API animation
+  manager handoff contract.
+
+## 1.5.13 — Four-GPU scheduling, WSL telemetry and six-API closure — 2026-08-12
+
+- Add the RTX 4070Ti WSL2 node to scheduling, Web UI, Asset Worker and Codex runtime views while
+  retaining one physical GPU slot and two independent CPU Asset slots.
+- Add signed WSL host telemetry proxy support so GPU utilization, VRAM, temperature and power remain
+  observable while ComfyUI is busy; node liveness no longer depends on Docker NVML behavior in WSL.
+- Lock ImageClip, ModelView inpaint and roughness to the approved production manifests and exact
+  model/custom-node/output contracts without changing external workflow semantics.
+- Enforce work-conserving GPU specialization: 4070Ti keeps a 15-minute inpaint response lane;
+  3090-B uses a five-minute Substance lane and an audited idle-only operator release, while active
+  Baker fences/reservations/recovery gates remain non-bypassable and CPU Asset slots stay independent.
+- Restore public retopology audit capacity on current Direct V2 Workers, align the packaged audit
+  script SHA, remove retired `--reference` arguments and accept both legacy schema v2 and current
+  schema v3 completion payloads.
+- Align first-party release identity to GPU Control `1.5.13` and Blender Worker `1.4.48`; detailed
+  production evidence and remaining fail-closed Substance v7 gate are recorded in document 118.
+
 ## 2026-08-12 — Automatic retopology fused-surface fallback v3.0.24
 
 - Detect the real cloth-over-wood failure mode where classification-only adjacency recovers one

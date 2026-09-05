@@ -35,25 +35,19 @@ def test_blender_helper_accepts_only_owned_incomplete_root(tmp_path: Path) -> No
     output.mkdir(parents=True)
 
     with pytest.raises(RuntimeError, match="refusing overwrite"):
-        blender_generator.prepare_output_root(
-            output, repository, allow_incomplete_root=True
-        )
+        blender_generator.prepare_output_root(output, repository, allow_incomplete_root=True)
 
     (output / blender_generator.INCOMPLETE_MARKER).write_text(
         "schema_version=synthetic-six-api-v1\n", encoding="utf-8"
     )
-    root, _ = blender_generator.prepare_output_root(
-        output, repository, allow_incomplete_root=True
-    )
+    root, _ = blender_generator.prepare_output_root(output, repository, allow_incomplete_root=True)
     assert root == output.resolve()
 
     occupied = output / "uv" / "asset.blend"
     occupied.parent.mkdir(parents=True)
     occupied.write_bytes(b"existing")
     with pytest.raises(RuntimeError, match="refusing to overwrite Blender fixture"):
-        blender_generator.prepare_output_root(
-            output, repository, allow_incomplete_root=True
-        )
+        blender_generator.prepare_output_root(output, repository, allow_incomplete_root=True)
 
 
 def _fake_blender_generation(
@@ -68,11 +62,7 @@ def _fake_blender_generation(
     artifacts: dict[str, str] = {}
     for index, relative in enumerate(generator.REQUIRED_BLENDER_FILES):
         path = root / relative
-        prefix = (
-            generator.RAW_BLEND_SIGNATURE
-            if path.suffix == ".blend"
-            else b"Kaydara FBX"
-        )
+        prefix = generator.RAW_BLEND_SIGNATURE if path.suffix == ".blend" else b"Kaydara FBX"
         generator.write_bytes_no_overwrite(
             path,
             prefix + f"-synthetic-3d-{index}".encode(),
@@ -145,6 +135,7 @@ def test_complete_synthetic_fixture_contract_without_network_or_source_assets(
     assert manifest["parameters"] == {}
 
     for path in (
+        generated / "inpaint" / "input.png",
         generated / "roughness" / "material.png",
         generated / "retopology" / "front.png",
         generated / "bake" / "base_color.png",

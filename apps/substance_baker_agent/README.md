@@ -12,21 +12,21 @@ Required local files:
 - `C:\Program Files\Adobe\Adobe Substance 3D Designer\substance3d_baker.exe`
 
 The Asset API drains `worker-3090-b` and gives production PBR the next physical
-GPU turn after the current ComfyUI frame finishes. Agent v6 keeps
-`gpu-control-node-comfyui-1` running, requests no model eviction, and verifies
-the same container ID, `StartedAt`, and `RestartCount` before and after native
-SAL + SoRa execution. It never calls ComfyUI's model-release endpoint and never
-stops, starts, or restarts that container. Its result schema preserves an
+GPU turn after the current ComfyUI frame finishes. Agent v7 keeps
+`gpu-control-node-comfyui-1` running, proves its queue is empty, calls `/free`
+with `unload_models=true` and `free_memory=true`, validates VRAM recovery, and
+verifies the same container ID, `StartedAt`, and `RestartCount` before and after
+native SAL + SoRa execution. It never stops, starts, or restarts that container.
+Its result schema preserves an
 unavailable PowerShell exit code as unobserved/null and requires every Baker
 command's own completion marker; it never fabricates an observed zero exit.
 
-This preserves the opportunity to reuse the previous approved workflow's hot
-cache. It does not claim that every model remains in VRAM under Substance
-memory pressure; the next real same-workflow GPU task provides the cold/hot
-timing evidence. GPU Control's existing warm-workflow affinity remains enabled.
+This deliberately discards the previous workflow's hot GPU cache before
+Substance. The following ComfyUI job is treated as a cold workflow switch; this
+is required to prevent mixed model families from causing an OOM on 3090-B.
 
 Agent identity is fail closed. Asset API accepts Substance claims only from
-`substance-baker-2026.08.03-v6`. Every heartbeat carries a per-process Agent
+`substance-baker-2026.08.12-v7`. Every heartbeat carries a per-process Agent
 generation plus a fail-closed, host-wide `Win32_Process` probe for
 `substance3d_baker.exe`. Each stable Worker ID also holds a full-lifetime
 `Global\` named mutex, so a duplicate scheduled, manual, or reinstall-launched

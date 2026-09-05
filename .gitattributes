@@ -26,3 +26,6 @@ artifacts/load-tests/sixapi-20260730-r8/*.tar.gz filter=lfs diff=lfs merge=lfs -
 # Approved upstream retopology releases are checksum-verified byte-for-byte.
 # Do not normalize their original line endings when storing or checking out.
 resources/retopology-direct-v2/** -text !eol
+# Runtime-approved Skills are also SHA-256 pinned byte-for-byte. Preserve the
+# reviewed bytes (including upstream line endings) on every checkout.
+runtime/asset-skills/** -text !eol

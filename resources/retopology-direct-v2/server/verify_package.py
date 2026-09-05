@@ -206,7 +206,8 @@ def main() -> int:
             "SOURCE_HIGH_NORMALIZED_WORK",
             "--prefer-normalized-work",
             "RETOPOLOGY_SOURCE_MUTATED",
-            "no_uv_generation_or_modification",
+            "adaptive_shape_budget",
+            "preserve_existing_no_generation_or_relayout",
         ),
         "controlled-reduction fallback",
         errors,
@@ -298,7 +299,7 @@ def main() -> int:
 
     payload = {
         "ok": not errors,
-        "package_version": "3.0.24",
+        "package_version": "3.0.25",
         "skill_id": SKILL_ID,
         "skill_file_count": len(actual_skill),
         "topology_skill_id": TOPOLOGY_SKILL_ID,

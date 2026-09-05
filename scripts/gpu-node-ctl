@@ -15,24 +15,29 @@ if [[ "${role}" == "control" ]]; then
       exec docker logs --tail "${lines}" comfyui-4090
       ;;
   esac
-  readonly COMPOSE_FILE="/opt/gpu-control/deploy/control-plane/compose.yaml"
-  readonly SERVICE_NAME="comfyui-4090"
-  profile_args=(--profile 4090-gpu)
+	  readonly COMPOSE_FILE="/opt/gpu-control/deploy/control-plane/compose.yaml"
+	  readonly SERVICE_NAME="comfyui-4090"
+	  compose_args=(-f "${COMPOSE_FILE}")
+	  profile_args=(--profile 4090-gpu)
 else
   readonly COMPOSE_FILE="/opt/gpu-control/deploy/gpu-node/compose.yaml"
   readonly SERVICE_NAME="comfyui"
+  compose_args=(-f "${COMPOSE_FILE}")
+  if grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
+    compose_args+=(-f "/opt/gpu-control/deploy/gpu-node/compose.wsl.yaml")
+  fi
   profile_args=()
 fi
 
 case "${1:-}" in
-  status) exec docker compose --project-directory "${PROJECT_DIR}" -f "${COMPOSE_FILE}" "${profile_args[@]}" ps "${SERVICE_NAME}" ;;
-  start) exec docker compose --project-directory "${PROJECT_DIR}" -f "${COMPOSE_FILE}" "${profile_args[@]}" up -d "${SERVICE_NAME}" ;;
-  stop) exec docker compose --project-directory "${PROJECT_DIR}" -f "${COMPOSE_FILE}" "${profile_args[@]}" stop -t 60 "${SERVICE_NAME}" ;;
-  restart) exec docker compose --project-directory "${PROJECT_DIR}" -f "${COMPOSE_FILE}" "${profile_args[@]}" restart -t 60 "${SERVICE_NAME}" ;;
+	  status) exec docker compose --project-directory "${PROJECT_DIR}" "${compose_args[@]}" "${profile_args[@]}" ps "${SERVICE_NAME}" ;;
+	  start) exec docker compose --project-directory "${PROJECT_DIR}" "${compose_args[@]}" "${profile_args[@]}" up -d "${SERVICE_NAME}" ;;
+	  stop) exec docker compose --project-directory "${PROJECT_DIR}" "${compose_args[@]}" "${profile_args[@]}" stop -t 60 "${SERVICE_NAME}" ;;
+	  restart) exec docker compose --project-directory "${PROJECT_DIR}" "${compose_args[@]}" "${profile_args[@]}" restart -t 60 "${SERVICE_NAME}" ;;
   logs)
     readonly lines="${2:-200}"
     [[ "${lines}" =~ ^[0-9]+$ ]] && (( lines >= 1 && lines <= 2000 )) || { echo "invalid log lines" >&2; exit 2; }
-    exec docker compose --project-directory "${PROJECT_DIR}" -f "${COMPOSE_FILE}" "${profile_args[@]}" logs --no-color --tail "${lines}" "${SERVICE_NAME}"
+	    exec docker compose --project-directory "${PROJECT_DIR}" "${compose_args[@]}" "${profile_args[@]}" logs --no-color --tail "${lines}" "${SERVICE_NAME}"
     ;;
   nvidia-smi)
     if [[ -x /usr/bin/nvidia-smi ]]; then

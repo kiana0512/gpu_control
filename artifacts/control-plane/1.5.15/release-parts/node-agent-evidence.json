@@ -1,0 +1,29 @@
+{
+  "archive": {
+    "filename": "gpu-control-node-agent-1.5.15-image.tar.gz",
+    "sha256": "908df1d70284a4257d8fdb116a3840960d8f6f1f4dea3f0953ef631dce0a323d",
+    "size_bytes": 89245100
+  },
+  "image": {
+    "local_image_id": "sha256:0bd52c863be5bb5fbaf8c87df08782faf618b9f84e199701fe497e28df3e96ab",
+    "oci_labels": {
+      "org.opencontainers.image.revision": "917646957755cd0583768d412f72f94fd2cb6043",
+      "org.opencontainers.image.source": "https://github.com/kiana0512/gpu_control.git",
+      "org.opencontainers.image.title": "GPU Control Node Agent",
+      "org.opencontainers.image.version": "1.5.15"
+    },
+    "reference": "gpu-control-node-agent:1.5.15",
+    "runtime_package_version": "1.5.15"
+  },
+  "part": {
+    "filename": "gpu-control-node-agent-1.5.15-image.tar.gz.part-00",
+    "git_lfs_status": "NOT_YET_STAGED_OR_PUSHED",
+    "sha256": "908df1d70284a4257d8fdb116a3840960d8f6f1f4dea3f0953ef631dce0a323d",
+    "size_bytes": 89245100
+  },
+  "registry_manifest_digest": "PENDING_REGISTRY_PUSH",
+  "revision": "917646957755cd0583768d412f72f94fd2cb6043",
+  "schema_version": "gpu-control-node-agent-release-evidence.v1",
+  "status": "CANDIDATE_ARCHIVE_ONLY",
+  "version": "1.5.15"
+}

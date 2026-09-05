@@ -14,7 +14,7 @@ def _evaluate_baker_result_contract(
     return "accepted"
 
 
-def test_substance_baker_fence_preserves_process_without_model_eviction() -> None:
+def test_substance_baker_fence_preserves_process_and_safely_evicts_models() -> None:
     source = (
         Path(__file__).parents[2]
         / "apps"
@@ -26,15 +26,29 @@ def test_substance_baker_fence_preserves_process_without_model_eviction() -> Non
     assert "Set-ComfyUiRunning" not in source
     assert "docker stop" not in source
     assert "docker start" not in source
-    assert "/free" not in source
+    assert 'base + "/queue"' in source
+    assert 'base + "/free"' in source
+    assert '"unload_models": True' in source
+    assert '"free_memory": True' in source
+    assert 'base + "/system_stats"' in source
+    assert "COMFY_QUEUE_NOT_EMPTY" in source
+    assert "COMFY_VRAM_RECOVERY_UNSAFE" in source
     assert "{{.State.StartedAt}}" in source
     assert "{{.RestartCount}}" in source
     assert "ComfyUI process changed during native Baker fence" in source
     assert "Read-BakerFenceJobs" not in source
     assert "Write-BakerFenceJobs" not in source
-    assert "comfyui_cache_policy = 'no_explicit_eviction_process_preserved'" in source
+    assert "comfyui_cache_policy = 'queue_drained_models_unloaded_vram_verified'" in source
     assert "comfyui_container_restarted = $false" in source
     assert "SUBSTANCE_COMFYUI_CONTINUITY_FAILED" in source
+    assert (
+        "$WslComfyContainer /opt/python/bin/python3 -c $pythonCommand" in source
+    )
+    assert "$WslComfyContainer python -c $pythonCommand" not in source
+    assert "deadline = time.monotonic() + 30" in source
+    assert "while True:" in source
+    assert source.count('base + "/queue"') == 2
+    assert "time.sleep(0.5)" in source
 
 
 def test_long_substance_commands_renew_the_lease_and_worker_heartbeat() -> None:
@@ -238,7 +252,7 @@ def test_agent_reports_fail_closed_host_process_and_generation_evidence() -> Non
     assert "substance_process_probe_checked_at" in source
     assert "substance_active_processes" in source
     assert "worker_id = $WorkerId; agent_instance_id = $AgentInstanceId" in source
-    assert "substance-baker-2026.08.03-v6" in source
+    assert "substance-baker-2026.08.12-v7" in source
     assert '$AgentMutexName = "Global\\GPUControl.SubstanceAgent.$WorkerId"' in source
     assert "$AgentMutex.WaitOne(0, $false)" in source
     assert "SUBSTANCE_AGENT_INSTANCE_ALREADY_RUNNING" in source

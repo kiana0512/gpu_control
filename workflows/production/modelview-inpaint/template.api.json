@@ -1,388 +1,427 @@
 {
-  "105": {
+  "1": {
     "_meta": {
-      "title": "NunchakuFluxDiTLoader"
+      "title": "TrueV3 主模型 (GGUF Q5_K)"
     },
-    "class_type": "NunchakuFluxDiTLoader",
+    "class_type": "UnetLoaderGGUF",
     "inputs": {
-      "attention": "nunchaku-fp16",
-      "cache_threshold": 0,
-      "cpu_offload": "auto",
-      "data_type": "bfloat16",
-      "device_id": 0,
-      "i2f_mode": "enabled",
-      "model_path": "Nunchaku-svdq-int4_r32-flux.1-fill-dev.safetensors"
+      "unet_name": "Flux2-Klein-9B-True-V3-Q5_K.gguf"
     }
   },
-  "107": {
+  "10": {
     "_meta": {
-      "title": "LoraLoaderModelOnly"
+      "title": "参考条件1｜白模主图"
     },
-    "class_type": "LoraLoaderModelOnly",
-    "inputs": {
-      "lora_name": "flux-turbo-alpha-8tp.safetensors",
-      "model": [
-        "105",
-        0
-      ],
-      "strength_model": 1
-    }
-  },
-  "108": {
-    "_meta": {
-      "title": "SeedVR2LoadDiTModel"
-    },
-    "class_type": "SeedVR2LoadDiTModel",
-    "inputs": {
-      "attention_mode": "sdpa",
-      "blocks_to_swap": 36,
-      "cache_model": false,
-      "device": "cuda:0",
-      "model": "seedvr2_ema_7b_sharp-Q4_K_M.gguf",
-      "offload_device": "cpu",
-      "swap_io_components": false
-    }
-  },
-  "109": {
-    "_meta": {
-      "title": "SeedVR2LoadVAEModel"
-    },
-    "class_type": "SeedVR2LoadVAEModel",
-    "inputs": {
-      "cache_model": false,
-      "decode_tile_overlap": 128,
-      "decode_tile_size": 1024,
-      "decode_tiled": true,
-      "device": "cuda:0",
-      "encode_tile_overlap": 128,
-      "encode_tile_size": 1024,
-      "encode_tiled": true,
-      "model": "ema_vae_fp16.safetensors",
-      "offload_device": "cpu",
-      "tile_debug": "false"
-    }
-  },
-  "110": {
-    "_meta": {
-      "title": "SeedVR2VideoUpscaler"
-    },
-    "class_type": "SeedVR2VideoUpscaler",
-    "inputs": {
-      "batch_size": 1,
-      "color_correction": "lab",
-      "dit": [
-        "108",
-        0
-      ],
-      "enable_debug": false,
-      "image": [
-        "79",
-        0
-      ],
-      "input_noise_scale": 0,
-      "latent_noise_scale": 0,
-      "max_resolution": 2048,
-      "new_resolution": 2048,
-      "offload_device": "cpu",
-      "prepend_frames": 0,
-      "seed": 42,
-      "temporal_overlap": 0,
-      "uniform_batch_size": false,
-      "vae": [
-        "109",
-        0
-      ]
-    }
-  },
-  "127": {
-    "_meta": {
-      "title": "LoadImage"
-    },
-    "class_type": "LoadImage",
-    "inputs": {
-      "image": "clipspace/clipspace-painted-masked-1784800823493.png [input]"
-    }
-  },
-  "129": {
-    "_meta": {
-      "title": "MaskToImage"
-    },
-    "class_type": "MaskToImage",
-    "inputs": {
-      "mask": [
-        "127",
-        1
-      ]
-    }
-  },
-  "131": {
-    "_meta": {
-      "title": "BatchImagesNode"
-    },
-    "class_type": "BatchImagesNode",
-    "inputs": {
-      "images.image0": [
-        "127",
-        0
-      ],
-      "images.image1": [
-        "129",
-        0
-      ]
-    }
-  },
-  "48": {
-    "_meta": {
-      "title": "DualCLIPLoader"
-    },
-    "class_type": "DualCLIPLoader",
-    "inputs": {
-      "clip_name1": "clip_l.safetensors",
-      "clip_name2": "t5xxl_fp16.safetensors",
-      "device": "default",
-      "type": "flux"
-    }
-  },
-  "49": {
-    "_meta": {
-      "title": "FluxGuidance"
-    },
-    "class_type": "FluxGuidance",
+    "class_type": "ReferenceLatent",
     "inputs": {
       "conditioning": [
-        "53",
+        "9",
         0
       ],
-      "guidance": 30
+      "latent": [
+        "7",
+        0
+      ]
     }
   },
-  "50": {
+  "11": {
     "_meta": {
-      "title": "VAELoader"
+      "title": "参考条件2｜材质六视图"
     },
-    "class_type": "VAELoader",
-    "inputs": {
-      "vae_name": "ae.safetensors"
-    }
-  },
-  "52": {
-    "_meta": {
-      "title": "ConditioningZeroOut"
-    },
-    "class_type": "ConditioningZeroOut",
+    "class_type": "ReferenceLatent",
     "inputs": {
       "conditioning": [
-        "53",
-        0
-      ]
-    }
-  },
-  "53": {
-    "_meta": {
-      "title": "CLIP Text Encode (Positive Prompt)"
-    },
-    "class_type": "CLIPTextEncode",
-    "inputs": {
-      "clip": [
-        "48",
+        "10",
         0
       ],
-      "text": [
-        "94",
+      "latent": [
+        "8",
         0
       ]
     }
   },
-  "54": {
+  "12": {
     "_meta": {
-      "title": "DifferentialDiffusion"
+      "title": "TrueV3 引导"
     },
-    "class_type": "DifferentialDiffusion",
+    "class_type": "BasicGuider",
     "inputs": {
+      "conditioning": [
+        "11",
+        0
+      ],
       "model": [
-        "107",
+        "21",
         0
-      ],
-      "strength": 1
+      ]
     }
   },
-  "55": {
+  "14": {
     "_meta": {
-      "title": "VAEDecode"
+      "title": "固定测试种子"
+    },
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 468546072632498
+    }
+  },
+  "15": {
+    "_meta": {
+      "title": "12步 Simple 调度"
+    },
+    "class_type": "BasicScheduler",
+    "inputs": {
+      "denoise": 1,
+      "model": [
+        "21",
+        0
+      ],
+      "scheduler": "simple",
+      "steps": 2
+    }
+  },
+  "16": {
+    "_meta": {
+      "title": "Euler 采样器"
+    },
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "euler"
+    }
+  },
+  "17": {
+    "_meta": {
+      "title": "TrueV3 双图采样"
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "guider": [
+        "12",
+        0
+      ],
+      "latent_image": [
+        "43",
+        0
+      ],
+      "noise": [
+        "14",
+        0
+      ],
+      "sampler": [
+        "16",
+        0
+      ],
+      "sigmas": [
+        "15",
+        0
+      ]
+    }
+  },
+  "18": {
+    "_meta": {
+      "title": "解码生成结果"
     },
     "class_type": "VAEDecode",
     "inputs": {
       "samples": [
-        "57",
+        "17",
         0
       ],
       "vae": [
-        "50",
+        "3",
         0
       ]
     }
   },
-  "56": {
+  "2": {
     "_meta": {
-      "title": "InpaintModelConditioning"
+      "title": "Flux2 文本编码器"
     },
-    "class_type": "InpaintModelConditioning",
+    "class_type": "CLIPLoader",
     "inputs": {
-      "mask": [
-        "97",
+      "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+      "device": "default",
+      "type": "flux2"
+    }
+  },
+  "21": {
+    "_meta": {
+      "title": "白模上材质 LoRA｜0.8"
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "flux-kelin/baimo_shangcaizhi_klein_v1_000005500.safetensors",
+      "model": [
+        "1",
         0
       ],
-      "negative": [
+      "strength_model": 0.9
+    }
+  },
+  "22": {
+    "_meta": {
+      "title": "图1｜选择推理尺寸并记录原始尺寸"
+    },
+    "class_type": "CherryInferenceSizeBucket",
+    "inputs": {
+      "aspect_threshold": 1.2,
+      "image": [
+        "4",
+        0
+      ],
+      "long_size": 1528,
+      "square_size": 1024
+    }
+  },
+  "23": {
+    "_meta": {
+      "title": "图1｜等比适配并补边到推理尺寸"
+    },
+    "class_type": "ImageResize+",
+    "inputs": {
+      "condition": "always",
+      "height": [
+        "22",
+        3
+      ],
+      "image": [
+        "4",
+        0
+      ],
+      "interpolation": "area",
+      "method": "pad",
+      "multiple_of": 0,
+      "width": [
+        "22",
+        2
+      ]
+    }
+  },
+  "24": {
+    "_meta": {
+      "title": "图2｜等比适配并补边到同一推理尺寸"
+    },
+    "class_type": "ImageResize+",
+    "inputs": {
+      "condition": "always",
+      "height": [
+        "22",
+        3
+      ],
+      "image": [
+        "5",
+        0
+      ],
+      "interpolation": "area",
+      "method": "pad",
+      "multiple_of": 0,
+      "width": [
+        "22",
+        2
+      ]
+    }
+  },
+  "25": {
+    "_meta": {
+      "title": "去补边并恢复图1原始尺寸"
+    },
+    "class_type": "ImageScale",
+    "inputs": {
+      "crop": "center",
+      "height": [
+        "22",
+        1
+      ],
+      "image": [
+        "18",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "width": [
+        "22",
+        0
+      ]
+    }
+  },
+  "29": {
+    "_meta": {
+      "title": "ImageClip API Final RGBA"
+    },
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "modelview-inpaint",
+      "images": [
+        "33",
+        1
+      ]
+    }
+  },
+  "3": {
+    "_meta": {
+      "title": "Flux2 VAE"
+    },
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "flux2-vae.safetensors"
+    }
+  },
+  "33": {
+    "_meta": {
+      "title": "CherryAlignReference"
+    },
+    "class_type": "CherryAlignReference",
+    "inputs": {
+      "使用Alpha": true,
+      "图像A": [
+        "4",
+        0
+      ],
+      "图像B": [
+        "25",
+        0
+      ],
+      "对齐基准": "图像A",
+      "检测阈值": 18,
+      "画布尺寸": 2048,
+      "背景模式": "自动采样",
+      "背景色": ""
+    }
+  },
+  "4": {
+    "_meta": {
+      "title": "图1｜白模主图（锁定构图）"
+    },
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "509caff28e32103999d6a06a5a06b1a1907751ee58706edd1731a95eabdff15d.png"
+    }
+  },
+  "43": {
+    "_meta": {
+      "title": "SetLatentNoiseMask"
+    },
+    "class_type": "SetLatentNoiseMask",
+    "inputs": {
+      "mask": [
+        "45",
+        0
+      ],
+      "samples": [
+        "7",
+        0
+      ]
+    }
+  },
+  "44": {
+    "_meta": {
+      "title": "图三 蒙版"
+    },
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "img_v3_02150_3491781e-bae6-45de-99b0-384d6b692a6g.png"
+    }
+  },
+  "45": {
+    "_meta": {
+      "title": "ImageToMask"
+    },
+    "class_type": "ImageToMask",
+    "inputs": {
+      "channel": "red",
+      "image": [
         "52",
         0
+      ]
+    }
+  },
+  "5": {
+    "_meta": {
+      "title": "图2｜六视图材质参考"
+    },
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "b4c6465b6bd7dd0d455adc09419b385672b34d42fa212898015849730fab4628.png"
+    }
+  },
+  "52": {
+    "_meta": {
+      "title": "图1｜等比适配并补边到推理尺寸"
+    },
+    "class_type": "ImageResize+",
+    "inputs": {
+      "condition": "always",
+      "height": [
+        "22",
+        3
       ],
-      "noise_mask": true,
+      "image": [
+        "44",
+        0
+      ],
+      "interpolation": "area",
+      "method": "pad",
+      "multiple_of": 0,
+      "width": [
+        "22",
+        2
+      ]
+    }
+  },
+  "60": {
+    "_meta": {
+      "title": "提示词"
+    },
+    "class_type": "ttN text",
+    "inputs": {
+      "text": ""
+    }
+  },
+  "7": {
+    "_meta": {
+      "title": "编码图1"
+    },
+    "class_type": "VAEEncode",
+    "inputs": {
       "pixels": [
-        "78",
-        1
-      ],
-      "positive": [
-        "49",
+        "23",
         0
       ],
       "vae": [
-        "50",
+        "3",
         0
       ]
     }
   },
-  "57": {
+  "8": {
     "_meta": {
-      "title": "KSampler"
+      "title": "编码图2"
     },
-    "class_type": "KSampler",
+    "class_type": "VAEEncode",
     "inputs": {
-      "cfg": 1,
-      "denoise": 1,
-      "latent_image": [
-        "56",
-        2
-      ],
-      "model": [
-        "54",
+      "pixels": [
+        "24",
         0
       ],
-      "negative": [
-        "56",
-        1
-      ],
-      "positive": [
-        "56",
-        0
-      ],
-      "sampler_name": "euler",
-      "scheduler": "normal",
-      "seed": 1034197869999478,
-      "steps": 10
-    }
-  },
-  "78": {
-    "_meta": {
-      "title": "InpaintCropImproved"
-    },
-    "class_type": "InpaintCropImproved",
-    "inputs": {
-      "context_from_mask_extend_factor": 1.2,
-      "device_mode": "gpu (much faster)",
-      "downscale_algorithm": "bilinear",
-      "extend_down_factor": 1,
-      "extend_for_outpainting": false,
-      "extend_left_factor": 1,
-      "extend_right_factor": 1,
-      "extend_up_factor": 1,
-      "image": [
-        "127",
-        0
-      ],
-      "mask": [
-        "127",
-        1
-      ],
-      "mask_blend_pixels": 32,
-      "mask_expand_pixels": 0,
-      "mask_fill_holes": true,
-      "mask_hipass_filter": 0.1,
-      "mask_invert": false,
-      "output_padding": "32",
-      "output_resize_to_target_size": true,
-      "output_target_height": 768,
-      "output_target_width": 768,
-      "preresize": false,
-      "preresize_max_height": 16384,
-      "preresize_max_width": 16384,
-      "preresize_min_height": 1024,
-      "preresize_min_width": 1024,
-      "preresize_mode": "ensure minimum resolution",
-      "upscale_algorithm": "bicubic"
-    }
-  },
-  "79": {
-    "_meta": {
-      "title": "InpaintStitchImproved"
-    },
-    "class_type": "InpaintStitchImproved",
-    "inputs": {
-      "inpainted_image": [
-        "55",
-        0
-      ],
-      "stitcher": [
-        "78",
+      "vae": [
+        "3",
         0
       ]
     }
   },
   "9": {
     "_meta": {
-      "title": "SaveImage"
+      "title": "???????????1????2??"
     },
-    "class_type": "SaveImage",
+    "class_type": "CLIPTextEncode",
     "inputs": {
-      "filename_prefix": "ComfyUI",
-      "images": [
-        "110",
+      "clip": [
+        "2",
+        0
+      ],
+      "text": [
+        "60",
         0
       ]
-    }
-  },
-  "94": {
-    "_meta": {
-      "title": "Qwen3 VL Plus"
-    },
-    "class_type": "Qwen3 VL Plus",
-    "inputs": {
-      "images": [
-        "131",
-        0
-      ],
-      "prompt": "",
-      "seed": 736972101620544,
-      "system_content": "请结合输入图片与用户的修改要求，准确推断修改完成后的目标效果，并将其整理为一条完整、清晰、可直接用于文生图的英文提示词。若用户未提供文字修改要求，则直接根据图片反推提示词。\n提示词需完整描述主体、场景、材质、风格、光影、构图、视角、色彩和关键细节；保持主体身份、原始结构、比例、轮廓、透视及非修改区域不变。针对目标区域，修复异常棱边、锯齿接缝、破损表面、扭曲边界和不自然边角，使其轮廓合理、过渡平滑，并与周围材质、纹理、色彩、光照和细节自然融合。避免可见接缝、光晕、重复结构、纹理拉伸、投射溅射、摩尔纹、几何变形及无关内容变化。\n仅输出最终英文文生图提示词，不要输出分析过程、标题、说明、引号或其他格式。"
-    }
-  },
-  "97": {
-    "_meta": {
-      "title": "GrowMaskWithBlur"
-    },
-    "class_type": "GrowMaskWithBlur",
-    "inputs": {
-      "blur_radius": 6.8,
-      "decay_factor": 1,
-      "expand": 0,
-      "fill_holes": true,
-      "flip_input": false,
-      "incremental_expandrate": 0,
-      "lerp_alpha": 1,
-      "mask": [
-        "78",
-        2
-      ],
-      "tapered_corners": true
     }
   }
 }

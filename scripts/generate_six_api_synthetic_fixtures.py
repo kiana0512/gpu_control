@@ -25,12 +25,10 @@ DEFAULT_OUTPUT = Path("/opt/gpu-control-load-fixtures/synthetic-six-api-v1")
 INCOMPLETE_MARKER = ".synthetic-six-api-v1.incomplete"
 SCHEMA_VERSION = "synthetic-six-api-v1"
 PINNED_BLENDER_IMAGE = (
-    "li3d/blender-worker@sha256:"
-    "9bf4344503041abec7dd67067ccbbb0946223af53b06d1a4a67a27acfeaab6ad"
+    "li3d/blender-worker@sha256:9bf4344503041abec7dd67067ccbbb0946223af53b06d1a4a67a27acfeaab6ad"
 )
 PINNED_PYTHON_IMAGE = (
-    "gpu-control-api@sha256:"
-    "06147d527d4a146141c9cf3c56b62c474096543cbdbde2050b2d1a652e478cb3"
+    "gpu-control-api@sha256:06147d527d4a146141c9cf3c56b62c474096543cbdbde2050b2d1a652e478cb3"
 )
 REQUIRED_BLENDER_FILES = (
     "uv/asset.blend",
@@ -180,11 +178,21 @@ def synthetic_subject_frame(size: int, ordinal: int) -> Image.Image:
         width=limb,
     )
     draw.ellipse(
-        (center_x - size // 18, body_top - size // 10, center_x - size // 40, body_top - size // 16),
+        (
+            center_x - size // 18,
+            body_top - size // 10,
+            center_x - size // 40,
+            body_top - size // 16,
+        ),
         fill=outline,
     )
     draw.ellipse(
-        (center_x + size // 40, body_top - size // 10, center_x + size // 18, body_top - size // 16),
+        (
+            center_x + size // 40,
+            body_top - size // 10,
+            center_x + size // 18,
+            body_top - size // 16,
+        ),
         fill=outline,
     )
     draw.ellipse(
@@ -302,6 +310,7 @@ def generate_raster_fixtures(
     except FileExistsError as exc:
         raise FixtureGenerationError(f"refusing to overwrite {archive_path}") from exc
 
+    save_png_no_overwrite(root / "inpaint" / "input.png", synthetic_subject_frame(image_size, 0))
     save_png_no_overwrite(root / "roughness" / "material.png", synthetic_material_image(image_size))
     save_png_no_overwrite(
         root / "retopology" / "front.png", synthetic_reference(texture_size, side=False)
@@ -310,9 +319,7 @@ def generate_raster_fixtures(
         root / "retopology" / "side.png", synthetic_reference(texture_size, side=True)
     )
     for role in ("base_color", "roughness", "metallic"):
-        save_png_no_overwrite(
-            root / "bake" / f"{role}.png", synthetic_texture(texture_size, role)
-        )
+        save_png_no_overwrite(root / "bake" / f"{role}.png", synthetic_texture(texture_size, role))
 
 
 def write_metadata_and_fixture_manifest(root: Path) -> None:
@@ -390,16 +397,11 @@ def write_metadata_and_fixture_manifest(root: Path) -> None:
                 "archive": str((root / "imageclip" / "frames.zip").resolve()),
                 "manifest": str((root / "imageclip" / "manifest.json").resolve()),
             },
-            "modelview_roughness": {
-                "image": str((root / "roughness" / "material.png").resolve())
-            },
+            "modelview_inpaint": {"image": str((root / "inpaint" / "input.png").resolve())},
+            "modelview_roughness": {"image": str((root / "roughness" / "material.png").resolve())},
             "uv_process": {
                 "asset": str((root / "uv" / "asset.blend").resolve()),
                 "metadata": str((root / "uv" / "metadata.json").resolve()),
-            },
-            "retopology_audit": {
-                "project": str((root / "retopology" / "audit.blend").resolve()),
-                "metadata": str((root / "retopology" / "audit.metadata.json").resolve()),
             },
             "retopology_process": {
                 "project": str((root / "retopology" / "process.blend").resolve()),
@@ -459,6 +461,7 @@ def validate_raster_and_archive(root: Path) -> None:
                 raise FixtureGenerationError(f"ImageClip SHA mismatch: {relative_path}")
             validate_png(root / "imageclip" / relative_path)
     for path in (
+        root / "inpaint" / "input.png",
         root / "roughness" / "material.png",
         root / "retopology" / "front.png",
         root / "retopology" / "side.png",
@@ -499,7 +502,9 @@ def run_blender_generator(
     try:
         subprocess.run(command, check=True)  # noqa: S603
     except subprocess.CalledProcessError as exc:
-        raise FixtureGenerationError(f"Blender fixture generation failed: exit {exc.returncode}") from exc
+        raise FixtureGenerationError(
+            f"Blender fixture generation failed: exit {exc.returncode}"
+        ) from exc
 
 
 def validate_blender_receipt(root: Path) -> None:
@@ -657,9 +662,7 @@ def generate(
 def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument(
-        "--repository-root", type=Path, default=Path(__file__).resolve().parents[1]
-    )
+    parser.add_argument("--repository-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--frames", type=int, default=6)
     parser.add_argument("--image-size", type=int, default=768)
     parser.add_argument("--texture-size", type=int, default=512)
@@ -667,9 +670,7 @@ def arguments() -> argparse.Namespace:
     parser.add_argument(
         "--blender-script",
         type=Path,
-        default=Path(__file__).resolve().with_name(
-            "generate_six_api_blender_fixtures.py"
-        ),
+        default=Path(__file__).resolve().with_name("generate_six_api_blender_fixtures.py"),
     )
     parser.add_argument("--blender-image", default=PINNED_BLENDER_IMAGE)
     parser.add_argument("--python-image", default=PINNED_PYTHON_IMAGE)

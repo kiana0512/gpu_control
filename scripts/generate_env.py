@@ -73,14 +73,22 @@ def worker_values(
 
 
 def control(args: argparse.Namespace) -> None:
-    for value in (args.control_ip, args.worker_a_ip, args.worker_b_ip):
+    for value in (
+        args.control_ip,
+        args.worker_a_ip,
+        args.worker_b_ip,
+        args.worker_4070ti_ip,
+    ):
         ipaddress.ip_address(value)
-    if len({args.control_ip, args.worker_a_ip, args.worker_b_ip}) != 3:
-        raise ValueError("control and worker addresses must be three distinct IPs")
+    if len(
+        {args.control_ip, args.worker_a_ip, args.worker_b_ip, args.worker_4070ti_ip}
+    ) != 4:
+        raise ValueError("control and worker addresses must be four distinct IPs")
     postgres_password = random_secret(24)
     redis_password = random_secret(24)
     agent_a = random_secret()
     agent_b = random_secret()
+    agent_4070ti = random_secret()
     agent_control = random_secret()
     asset_worker_secret = random_secret()
     updates = {
@@ -88,6 +96,7 @@ def control(args: argparse.Namespace) -> None:
         "CONTROL_HOST": args.control_ip,
         "WORKER_3090_A_HOST": args.worker_a_ip,
         "WORKER_3090_B_HOST": args.worker_b_ip,
+        "WORKER_4070TI_HOST": args.worker_4070ti_ip,
         "POSTGRES_PASSWORD": postgres_password,
         "DATABASE_URL": (
             f"postgresql+asyncpg://gpu_control:{postgres_password}@postgres:5432/gpu_control"
@@ -99,6 +108,7 @@ def control(args: argparse.Namespace) -> None:
         "NODE_AGENT_HMAC_SECRET": agent_control,
         "NODE_AGENT_HMAC_SECRET_WORKER_3090_A": agent_a,
         "NODE_AGENT_HMAC_SECRET_WORKER_3090_B": agent_b,
+        "NODE_AGENT_HMAC_SECRET_WORKER_4070TI": agent_4070ti,
         "NODE_AGENT_HMAC_SECRET_CONTROL_4090": agent_control,
         "ALERTMANAGER_WEBHOOK_TOKEN": random_secret(),
         "ASSET_WORKER_HMAC_SECRET": asset_worker_secret,
@@ -155,6 +165,20 @@ def control(args: argparse.Namespace) -> None:
         ),
         set(),
     )
+    write_env(
+        ROOT / ".env.node.example",
+        bundle / "worker-4070ti-animation-host-01.env",
+        worker_values(
+            "worker-4070ti-animation-host-01",
+            args.worker_4070ti_ip,
+            args.control_ip,
+            agent_4070ti,
+            asset_worker_secret,
+            4,
+            args.worker_4070ti_mac,
+        ),
+        set(),
+    )
     inventory = Path(args.inventory).resolve()
     inventory.parent.mkdir(parents=True, exist_ok=True)
     inventory.write_text(
@@ -164,10 +188,22 @@ def control(args: argparse.Namespace) -> None:
         "    pool: PRIMARY\n    mode: ACTIVE\n    gpu: RTX3090\n    max_concurrency: 1\n"
         f"  - id: worker-3090-b\n    display_name: 3090-B\n    host: {args.worker_b_ip}\n"
         f"    base_url: http://{args.worker_b_ip}:8188\n    agent_url: http://{args.worker_b_ip}:9201\n"
-        "    pool: PRIMARY\n    mode: ACTIVE\n    gpu: RTX3090\n    max_concurrency: 1\n"
+        "    pool: PRIMARY\n    mode: ACTIVE\n    gpu: RTX3090\n"
+        "    wsl_runtime: true\n    dcgm_exporter_enabled: false\n"
+        "    vram_class: 24gb\n    max_concurrency: 1\n"
+        f"  - id: worker-4070ti-animation-host-01\n    display_name: 4070 Ti\n"
+        f"    host: {args.worker_4070ti_ip}\n"
+        f"    base_url: http://{args.worker_4070ti_ip}:8188\n"
+        f"    agent_url: http://{args.worker_4070ti_ip}:9201\n"
+        "    pool: PRIMARY\n    mode: DRAINING\n    gpu: RTX4070Ti\n"
+        "    hostname: worker-4070ti-wsl\n"
+        f"    mac: {args.worker_4070ti_mac}\n"
+        f"    gpu_uuid: {args.worker_4070ti_gpu_uuid}\n"
+        "    wsl_runtime: true\n    dcgm_exporter_enabled: false\n"
+        "    vram_class: 12gb\n    max_concurrency: 1\n"
         f"  - id: control-4090\n    display_name: 4090 控制中心\n    host: {args.control_ip}\n"
         "    base_url: http://comfyui-4090:8188\n"
-        f"    agent_url: http://{args.control_ip}:9201\n    pool: OVERFLOW\n    mode: OVERFLOW\n"
+        f"    agent_url: http://{args.control_ip}:9201\n    pool: OVERFLOW\n    mode: ACTIVE\n"
         "    gpu: RTX4090\n    max_concurrency: 1\n",
         encoding="utf-8",
     )
@@ -190,7 +226,7 @@ def control(args: argparse.Namespace) -> None:
     print(f"worker bundles: {bundle}")
     print(f"node inventory: {inventory}")
     print(f"initial admin password: {admin_password}")
-    print("下一步把两个 worker env 分别安全复制为对应主机 /opt/gpu-control/.env")
+    print("下一步把三个 worker env 分别安全复制为对应主机 /opt/gpu-control/.env")
 
 
 def node(args: argparse.Namespace) -> None:
@@ -220,6 +256,14 @@ def main() -> None:
     control_parser.add_argument("--control-ip", required=True)
     control_parser.add_argument("--worker-a-ip", required=True)
     control_parser.add_argument("--worker-b-ip", required=True)
+    control_parser.add_argument("--worker-4070ti-ip", required=True)
+    control_parser.add_argument(
+        "--worker-4070ti-mac", default="34:5a:60:47:c6:1d"
+    )
+    control_parser.add_argument(
+        "--worker-4070ti-gpu-uuid",
+        default="GPU-70c028e4-dd91-4337-8f96-29daa437d1c3",
+    )
     control_parser.add_argument("--output", default=str(ROOT / ".env"))
     control_parser.add_argument("--bundle-dir", default=str(ROOT / "output" / "deploy"))
     control_parser.add_argument("--inventory", default=str(ROOT / "configs" / "nodes.yaml"))

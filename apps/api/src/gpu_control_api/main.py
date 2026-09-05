@@ -8,6 +8,7 @@ import math
 import mimetypes
 import os
 import re
+import secrets
 import time
 import uuid
 import zipfile
@@ -88,14 +89,25 @@ from packages.gpu_control_core.models import (
 )
 from packages.gpu_control_core.repository import ACTIVE_STATUSES, transition_job
 from packages.gpu_control_core.scheduling import (
+    GPU_SPECIALIZATION_LABEL,
+    IMAGECLIP_INPAINT_PREEMPTION_CODE,
+    IMAGECLIP_WORKFLOW_KEY,
+    MODELVIEW_INPAINT_NODE_ID,
+    MODELVIEW_INPAINT_WORKFLOW_KEY,
+    MODELVIEW_MASK_WORKFLOW_KEYS,
+    MODELVIEW_SINGLE_VIEW_INPAINT_WORKFLOW_KEY,
+    MODELVIEW_SINGLE_VIEW_WORKFLOW_KEY,
+    MODELVIEW_WORKFLOW_KEYS,
     SUBSTANCE_DRAIN_OWNER,
     SUBSTANCE_DRAIN_OWNER_LABEL,
     SUBSTANCE_GPU_NODE_ID,
     SUBSTANCE_MAX_PARALLEL,
     SUBSTANCE_RECOVERY_REQUIRED_LABEL,
+    SUBSTANCE_SPECIALIZATION_KEY,
     SUBSTANCE_WORKER_ID,
     SUBSTANCE_WORKER_ID_PREFIX,
     linux_asset_claim_allowed,
+    refresh_gpu_specialization,
     substance_fence_job_ids,
     substance_pending_reservation,
 )
@@ -115,6 +127,7 @@ from packages.gpu_control_core.storage import (
     LocalJobStorage,
     StorageError,
     inspect_image,
+    mask_red_channel_has_edit_region,
     safe_filename,
 )
 from packages.gpu_control_core.workflow import WorkflowManifest, render_workflow
@@ -163,6 +176,13 @@ DURATION = Histogram(
     "gpu_control_http_request_duration_seconds", "HTTP request duration", ["method", "route"]
 )
 
+# ComfyUI's browser-side randomizer uses integers that remain exact in JSON and
+# JavaScript.  Keep the server-generated value in the same 50-bit range while
+# using a cryptographically strong generator so separate jobs do not share the
+# fixed seed saved in the UI workflow.
+MODELVIEW_NOISE_SEED_EXCLUSIVE_MAX = 1 << 50
+MODELVIEW_NOISE_SEED_PARAMETER = "noise_seed"
+
 
 def service_queue_policy(workflow_key: str) -> tuple[Priority, bool]:
     """Return the server-owned scheduling class for a synchronous service."""
@@ -170,6 +190,30 @@ def service_queue_policy(workflow_key: str) -> tuple[Priority, bool]:
     if workflow_key in INTERACTIVE_WORKFLOW_KEYS:
         return Priority.CRITICAL, True
     return Priority.NORMAL, False
+
+
+def inject_server_owned_workflow_parameters(
+    workflow_key: str,
+    bindings: dict[str, Any],
+    parameters: dict[str, Any],
+) -> None:
+    """Add execution parameters that callers must not choose themselves.
+
+    The binding check keeps a rolling deployment compatible with the previous
+    ModelView workflow version: API code may be updated before the new immutable
+    workflow is enabled without breaking jobs that still use the old template.
+    """
+
+    if (
+        workflow_key not in MODELVIEW_WORKFLOW_KEYS
+        or MODELVIEW_NOISE_SEED_PARAMETER not in bindings
+    ):
+        return
+    if MODELVIEW_NOISE_SEED_PARAMETER in parameters:
+        raise ValueError("noise_seed 由任务中心为每个新任务生成，客户端不能传入")
+    parameters[MODELVIEW_NOISE_SEED_PARAMETER] = secrets.randbelow(
+        MODELVIEW_NOISE_SEED_EXCLUSIVE_MAX
+    )
 
 
 def runtime_version_metadata() -> dict[str, Any]:
@@ -467,6 +511,37 @@ def take_operator_drain_ownership(node: Node) -> bool:
     labels.pop(SUBSTANCE_DRAIN_OWNER_LABEL, None)
     node.labels = labels
     return owned
+
+
+def clear_idle_substance_specialization_on_manual_active(
+    node: Node, now: datetime
+) -> bool:
+    """Let an explicit operator ACTIVE action end only the soft Baker hold.
+
+    Pending reservations, active Baker fences, recovery-required state and an
+    occupied/externally busy GPU remain authoritative. This gives operators a
+    work-conserving escape hatch after a completed bake without weakening the
+    physical-GPU mutual exclusion that protects ComfyUI and Substance.
+    """
+
+    if node.id != SUBSTANCE_GPU_NODE_ID or node.current_jobs:
+        return False
+    if node.external_busy or node.foreign_queue_detected:
+        return False
+    if substance_gpu_interlock(node, now)["active"]:
+        return False
+    labels = dict(node.labels or {})
+    raw_specialization = labels.get(GPU_SPECIALIZATION_LABEL)
+    if (
+        not isinstance(raw_specialization, dict)
+        or raw_specialization.get("key") != SUBSTANCE_SPECIALIZATION_KEY
+    ):
+        return False
+    # Remove both a live idle hold and an already-expired stale label. The
+    # hard interlock checks above remain authoritative in either case.
+    labels.pop(GPU_SPECIALIZATION_LABEL, None)
+    node.labels = labels
+    return True
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -1055,6 +1130,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         callback_url: str | None,
         *,
         pinned: bool = False,
+        additional_images: tuple[tuple[str, UploadFile], ...] = (),
     ) -> JSONResponse:
         if len(parameters_raw.encode("utf-8")) > 65_536:
             raise HTTPException(
@@ -1093,6 +1169,17 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             raise HTTPException(
                 404, detail={"code": "WORKFLOW_NOT_FOUND", "message": "工作流版本不存在或未启用"}
             )
+        try:
+            inject_server_owned_workflow_parameters(
+                workflow_key,
+                {str(key): value for key, value in workflow.bindings.items()},
+                parameters,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                422,
+                detail={"code": "INPUT_INVALID", "message": str(exc)},
+            ) from exc
         client = await db.get(ApiClient, principal.id)
         if callback_url:
             allowed_hosts = {
@@ -1114,7 +1201,15 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         root = storage.create_staging_layout(job_id)
         file_hashes: list[tuple[str, str]] = []
         image_dimensions: dict[str, tuple[int, int]] = {}
-        for field_name, upload in (("image", input_image), ("mask", mask)):
+        upload_fields = (("image", input_image), ("mask", mask), *additional_images)
+        field_names = [field_name for field_name, upload in upload_fields if upload is not None]
+        if len(field_names) != len(set(field_names)):
+            storage.remove_tree(root)
+            raise HTTPException(
+                500,
+                detail={"code": "UPLOAD_BINDING_INVALID", "message": "上传字段绑定重复"},
+            )
+        for field_name, upload in upload_fields:
             if upload is None:
                 continue
             name = safe_filename(upload.filename or f"{field_name}.bin")
@@ -1140,6 +1235,19 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 raise HTTPException(
                     422, detail={"code": "INPUT_INVALID", "message": str(exc)}
                 ) from exc
+            if (
+                workflow_key in MODELVIEW_MASK_WORKFLOW_KEYS
+                and field_name == "mask"
+                and not mask_red_channel_has_edit_region(destination)
+            ):
+                storage.remove_tree(root)
+                raise HTTPException(
+                    422,
+                    detail={
+                        "code": "MASK_EMPTY",
+                        "message": "蒙版红色通道不能是全黑；白色或灰色区域才会参与重绘",
+                    },
+                )
             file_hashes.append((field_name, digest))
             image_dimensions[field_name] = (width, height)
             # Scheduler uploads every job into an isolated ComfyUI input
@@ -1313,6 +1421,44 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         )
         db.add(job)
         await db.flush()
+        if workflow_key in MODELVIEW_WORKFLOW_KEYS and not is_load_test:
+            # The arrival itself renews the control 4090's guaranteed ModelView
+            # response lane. This does not pin the job: both compatible 24 GiB
+            # 3090 nodes may still claim ModelView work in parallel.
+            modelview_guard_node = await db.scalar(
+                select(Node)
+                .where(Node.id == MODELVIEW_INPAINT_NODE_ID)
+                .with_for_update()
+            )
+            if modelview_guard_node is not None:
+                refresh_gpu_specialization(
+                    modelview_guard_node,
+                    MODELVIEW_INPAINT_WORKFLOW_KEY,
+                    job_now,
+                    owner="gpu-api",
+                )
+                active_imageclip = await db.scalar(
+                    select(Job)
+                    .where(
+                        Job.node_id == MODELVIEW_INPAINT_NODE_ID,
+                        Job.workflow_key == IMAGECLIP_WORKFLOW_KEY,
+                        Job.status.in_(
+                            {
+                                JobStatus.CLAIMED.value,
+                                JobStatus.UPLOADING.value,
+                                JobStatus.SUBMITTED.value,
+                                JobStatus.RUNNING.value,
+                            }
+                        ),
+                    )
+                    .order_by(Job.claimed_at, Job.id)
+                    .with_for_update()
+                )
+                if active_imageclip is not None:
+                    active_imageclip.error_code = IMAGECLIP_INPAINT_PREEMPTION_CODE
+                    active_imageclip.error_message = (
+                        "4090 ModelView 交互任务优先：当前抠图执行尝试将安全中断并改派其他 GPU"
+                    )
         await transition_job(db, job, JobStatus.VALIDATING, "api.validated")
         await transition_job(db, job, JobStatus.QUEUED, "api.queued")
         if idempotency_key:
@@ -1447,6 +1593,9 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         image: UploadFile,
         parameters: str,
         idempotency_key: str | None,
+        *,
+        mask: UploadFile | None = None,
+        additional_images: tuple[tuple[str, UploadFile], ...] = (),
     ) -> FileResponse:
         workflow = await db.scalar(
             select(WorkflowVersion)
@@ -1461,13 +1610,26 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 404,
                 detail={"code": "WORKFLOW_NOT_FOUND", "message": "服务工作流未启用"},
             )
+        if mask is not None and "mask_filename" not in workflow.bindings:
+            raise HTTPException(
+                503,
+                detail={
+                    "code": "WORKFLOW_CONTRACT_MISMATCH",
+                    "message": "当前启用的工作流版本尚未声明蒙版输入",
+                },
+            )
+        accepted_additional_images = tuple(
+            (field_name, upload)
+            for field_name, upload in additional_images
+            if f"{field_name}_filename" in workflow.bindings
+        )
         tenant_lock = request.app.state.tenant_locks.setdefault(principal.id, asyncio.Lock())
-        # Local repaint is an interactive operation.  It must take the first
+        # ModelView generation is an interactive operation. It must take the first
         # compatible GPU slot released by an already-running job instead of
         # aging behind the much older animation-matting batch backlog.  The
         # durable queue is still used for safety and observability; pinning is
         # deliberately non-preemptive, so an in-flight production frame is
-        # allowed to finish before the repaint is claimed.
+        # allowed to finish before the ModelView job is claimed.
         service_priority, pinned = service_queue_policy(workflow_key)
         async with tenant_lock:
             queued = await _create_job(
@@ -1480,9 +1642,10 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 principal,
                 db,
                 image,
-                None,
+                mask,
                 None,
                 pinned=pinned,
+                additional_images=accepted_additional_images,
             )
         job_id = str(json.loads(bytes(queued.body))["job_id"])
         deadline = asyncio.get_running_loop().time() + workflow.timeout_seconds + 60
@@ -1560,11 +1723,97 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         principal: Annotated[Principal, Depends(api_principal)],
         db: Annotated[AsyncSession, Depends(session)],
         image: Annotated[UploadFile, File()],
+        material_image: Annotated[UploadFile, File()],
+        mask: Annotated[UploadFile, File()],
+        viewport_reference: Annotated[UploadFile | None, File(deprecated=True)] = None,
         parameters: Annotated[str, Form()] = "{}",
         prompt: Annotated[str | None, Form(max_length=4096)] = None,
         idempotency_key: Annotated[
             str | None, Header(alias="Idempotency-Key", max_length=128)
         ] = None,
+    ) -> FileResponse:
+        return await run_modelview_service_request(
+            request,
+            MODELVIEW_INPAINT_WORKFLOW_KEY,
+            principal,
+            db,
+            image,
+            material_image,
+            parameters,
+            prompt,
+            idempotency_key,
+            mask=mask,
+            viewport_reference=viewport_reference,
+        )
+
+    @app.post("/api/v1/services/modelview-single-view", response_class=FileResponse)
+    async def modelview_single_view_service(
+        request: Request,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+        image: Annotated[UploadFile, File()],
+        material_image: Annotated[UploadFile, File()],
+        parameters: Annotated[str, Form()] = "{}",
+        prompt: Annotated[str | None, Form(max_length=4096)] = None,
+        idempotency_key: Annotated[
+            str | None, Header(alias="Idempotency-Key", max_length=128)
+        ] = None,
+    ) -> FileResponse:
+        return await run_modelview_service_request(
+            request,
+            MODELVIEW_SINGLE_VIEW_WORKFLOW_KEY,
+            principal,
+            db,
+            image,
+            material_image,
+            parameters,
+            prompt,
+            idempotency_key,
+        )
+
+    @app.post(
+        "/api/v1/services/modelview-single-view-inpaint",
+        response_class=FileResponse,
+    )
+    async def modelview_single_view_inpaint_service(
+        request: Request,
+        principal: Annotated[Principal, Depends(api_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+        image: Annotated[UploadFile, File()],
+        material_image: Annotated[UploadFile, File()],
+        mask: Annotated[UploadFile, File()],
+        parameters: Annotated[str, Form()] = "{}",
+        prompt: Annotated[str | None, Form(max_length=4096)] = None,
+        idempotency_key: Annotated[
+            str | None, Header(alias="Idempotency-Key", max_length=128)
+        ] = None,
+    ) -> FileResponse:
+        return await run_modelview_service_request(
+            request,
+            MODELVIEW_SINGLE_VIEW_INPAINT_WORKFLOW_KEY,
+            principal,
+            db,
+            image,
+            material_image,
+            parameters,
+            prompt,
+            idempotency_key,
+            mask=mask,
+        )
+
+    async def run_modelview_service_request(
+        request: Request,
+        workflow_key: str,
+        principal: Principal,
+        db: AsyncSession,
+        image: UploadFile,
+        material_image: UploadFile,
+        parameters: str,
+        prompt: str | None,
+        idempotency_key: str | None,
+        *,
+        mask: UploadFile | None = None,
+        viewport_reference: UploadFile | None = None,
     ) -> FileResponse:
         try:
             parameters = _merge_service_parameter(parameters, "prompt", prompt)
@@ -1575,12 +1824,17 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             ) from exc
         return await run_image_service(
             request,
-            "modelview-inpaint",
+            workflow_key,
             principal,
             db,
             image,
             parameters,
             idempotency_key,
+            mask=mask,
+            additional_images=(
+                ("material_image", material_image),
+                *((("viewport_reference", viewport_reference),) if viewport_reference else ()),
+            ),
         )
 
     @app.post("/api/v1/services/modelview-roughness", response_class=FileResponse)
@@ -3746,7 +4000,10 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "roughness": {
                     "submit": "/api/v1/services/modelview-roughness",
                     "format": "multipart image",
-                    "runtime": "GPU: control-4090 / worker-3090-a / worker-3090-b",
+                    "runtime": (
+                        "GPU: control-4090 / worker-3090-a / worker-3090-b / "
+                        "worker-4070ti-animation-host-01"
+                    ),
                     "response": "final image/png",
                 },
                 "substance_bake": {
@@ -3821,6 +4078,185 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             "job_id": job.id,
             "status": job.status,
             "cancel_requested": job.cancel_requested,
+        }
+
+    @app.post("/admin/asset-jobs/{job_id}/retry")
+    async def admin_retry_substance_asset_job(
+        job_id: str,
+        body: RetryRequest,
+        request: Request,
+        principal: Annotated[Principal, Depends(require_operator)],
+        db: Annotated[AsyncSession, Depends(session)],
+    ) -> dict[str, Any]:
+        """Retry one failed Substance job only after durable host recovery evidence."""
+        if not body.confirm:
+            raise HTTPException(409, detail={"code": "CONFIRMATION_REQUIRED"})
+        job = await db.get(AssetJob, job_id, with_for_update=True)
+        if job is None:
+            raise HTTPException(404, detail={"code": "ASSET_JOB_NOT_FOUND"})
+        admin_retry_count = int((job.options or {}).get("admin_retry_count", 0))
+        if (
+            job.job_type != "SUBSTANCE_BAKE_V1"
+            or job.status != "FAILED"
+            or job.stage not in {"RECOVERY_REQUIRED", "FAILED"}
+            or job.error_code
+            not in {
+                "SUBSTANCE_COMFYUI_CONTINUITY_FAILED",
+                "SUBSTANCE_EXECUTION_FAILED",
+            }
+            or admin_retry_count >= 1
+        ):
+            raise HTTPException(409, detail={"code": "ASSET_JOB_NOT_RETRYABLE"})
+        if not Path(job.input_path).is_file():
+            raise HTTPException(409, detail={"code": "ASSET_RETRY_INPUT_MISSING"})
+        artifact_count = int(
+            await db.scalar(
+                select(func.count(AssetArtifact.id)).where(AssetArtifact.job_id == job.id)
+            )
+            or 0
+        )
+        if artifact_count:
+            raise HTTPException(409, detail={"code": "ASSET_RETRY_ARTIFACT_CONFLICT"})
+
+        active_bakes = int(
+            await db.scalar(
+                select(func.count(AssetJob.id)).where(
+                    AssetJob.id != job.id,
+                    AssetJob.job_type == "SUBSTANCE_BAKE_V1",
+                    AssetJob.status.not_in(TERMINAL_ASSET_WORK_STATUSES),
+                )
+            )
+            or 0
+        )
+        now = datetime.now(UTC)
+        node = await db.scalar(
+            select(Node).where(Node.id == SUBSTANCE_GPU_NODE_ID).with_for_update()
+        )
+        node_heartbeat = (
+            node.last_heartbeat_at.replace(tzinfo=UTC)
+            if node is not None and node.last_heartbeat_at is not None
+            and node.last_heartbeat_at.tzinfo is None
+            else (node.last_heartbeat_at if node is not None else None)
+        )
+        node_safe = bool(
+            node is not None
+            and node.health == "ONLINE"
+            and node.mode == "ACTIVE"
+            and node.current_jobs == 0
+            and not node.manual_reserved
+            and not node.external_busy
+            and not node.foreign_queue_detected
+            and node_heartbeat is not None
+            and (now - node_heartbeat).total_seconds() <= cfg.node_heartbeat_timeout_seconds
+            and not substance_gpu_interlock(node, now)["active"]
+        )
+        worker_rows = list(
+            (
+                await db.scalars(
+                    select(AssetWorker)
+                    .where(AssetWorker.id.like(f"{SUBSTANCE_WORKER_ID_PREFIX}%"))
+                    .order_by(AssetWorker.id)
+                    .with_for_update()
+                )
+            ).all()
+        )
+        expected_workers = {
+            f"{SUBSTANCE_WORKER_ID_PREFIX}{index:02d}"
+            for index in range(1, SUBSTANCE_MAX_PARALLEL + 1)
+        }
+        workers_safe = {worker.id for worker in worker_rows} == expected_workers
+        for worker in worker_rows:
+            heartbeat = worker.last_heartbeat_at
+            if heartbeat is not None and heartbeat.tzinfo is None:
+                heartbeat = heartbeat.replace(tzinfo=UTC)
+            probe_checked = worker.substance_process_probe_checked_at
+            if probe_checked is not None and probe_checked.tzinfo is None:
+                probe_checked = probe_checked.replace(tzinfo=UTC)
+            workers_safe = workers_safe and bool(
+                worker.status == "ONLINE"
+                and worker.skill_version == "substance-baker-2026.08.12-v7"
+                and worker.current_jobs == 0
+                and worker.agent_instance_id
+                and heartbeat is not None
+                and (now - heartbeat).total_seconds()
+                <= cfg.asset_worker_heartbeat_timeout_seconds
+                and worker.substance_process_probe_status == "HEALTHY"
+                and worker.substance_active_processes == 0
+                and probe_checked is not None
+                and (now - probe_checked).total_seconds()
+                <= cfg.asset_worker_heartbeat_timeout_seconds
+            )
+        if active_bakes or not node_safe or not workers_safe:
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "SUBSTANCE_ADMIN_RETRY_UNSAFE",
+                    "active_bakes": active_bakes,
+                    "node_safe": node_safe,
+                    "workers_safe": workers_safe,
+                },
+            )
+
+        previous = {
+            "status": job.status,
+            "stage": job.stage,
+            "attempt_count": job.attempt_count,
+            "worker_id": job.worker_id,
+            "worker_instance_id": job.worker_instance_id,
+            "error_code": job.error_code,
+            "error_message": job.error_message,
+        }
+        job.status = "QUEUED"
+        job.stage = "RETRY_QUEUED"
+        job.stage_message = "管理员确认宿主恢复，任务已安全返回烘焙队列"
+        job.progress = 0
+        job.estimated_remaining_seconds = None
+        job.worker_id = None
+        job.worker_instance_id = None
+        job.lease_token_hash = None
+        job.lease_expires_at = None
+        job.cancel_requested = False
+        job.error_code = None
+        job.error_message = None
+        job.options = {
+            **dict(job.options or {}),
+            "admin_retry_count": admin_retry_count + 1,
+            "admin_retry_last_reason": body.reason,
+        }
+        job.started_at = None
+        job.finished_at = None
+        job.last_progress_at = now
+        await append_admin_asset_event(
+            db,
+            job,
+            event="asset.admin_retry",
+            details={
+                "reason": body.reason,
+                "actor": principal.id,
+                "previous": previous,
+            },
+        )
+        await audit(
+            db,
+            request,
+            principal,
+            "asset_job.retry",
+            "asset_job",
+            job.id,
+            previous,
+            {
+                "status": job.status,
+                "stage": job.stage,
+                "attempt_count": job.attempt_count,
+                "reason": body.reason,
+            },
+        )
+        await db.commit()
+        return {
+            "job_id": job.id,
+            "status": job.status,
+            "stage": job.stage,
+            "attempt_count": job.attempt_count,
         }
 
     @app.get("/admin/asset-jobs/{job_id}/artifacts/{artifact_id}")
@@ -4362,10 +4798,23 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         node = await db.get(Node, node_id, with_for_update=True)
         if node is None:
             raise HTTPException(404, detail={"code": "NODE_NOT_FOUND"})
-        before = {"mode": node.mode, "manual_reserved": node.manual_reserved}
+        before = {
+            "mode": node.mode,
+            "manual_reserved": node.manual_reserved,
+            "gpu_specialization": dict(node.labels or {}).get(
+                GPU_SPECIALIZATION_LABEL
+            ),
+        }
         substance_owner_transferred = take_operator_drain_ownership(node)
         node.mode = body.mode.value
         node.manual_reserved = body.mode == NodeMode.RESERVED
+        substance_specialization_released = False
+        if body.mode == NodeMode.ACTIVE:
+            substance_specialization_released = (
+                clear_idle_substance_specialization_on_manual_active(
+                    node, datetime.now(UTC)
+                )
+            )
         await audit(
             db,
             request,
@@ -4377,6 +4826,9 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             {
                 "mode": node.mode,
                 "substance_owner_transferred": substance_owner_transferred,
+                "substance_specialization_released": (
+                    substance_specialization_released
+                ),
                 "reason": body.reason,
             },
         )

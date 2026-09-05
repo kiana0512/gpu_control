@@ -1,0 +1,71 @@
+workflow_key: modelview-single-view
+version: 2026.08.26-c0e6218-single-view-4step-r1
+template_file: template.api.json
+parameter_schema:
+  type: object
+  properties:
+    image_filename:
+      type: string
+      minLength: 1
+      maxLength: 512
+    material_image_filename:
+      type: string
+      minLength: 1
+      maxLength: 512
+    noise_seed:
+      type: integer
+      minimum: 0
+      maximum: 1125899906842623
+    prompt:
+      type: string
+      maxLength: 4096
+  required:
+    - image_filename
+    - material_image_filename
+    - noise_seed
+  additionalProperties: false
+bindings:
+  image_filename: 4.inputs.image
+  material_image_filename: 5.inputs.image
+  noise_seed: 14.inputs.noise_seed
+  prompt: 41.inputs.text
+allowed_class_types:
+  - BasicGuider
+  - BasicScheduler
+  - CherryAlignReference
+  - CherryInferenceSizeBucket
+  - CLIPLoader
+  - CLIPTextEncode
+  - EmptyFlux2LatentImage
+  - ImageResize+
+  - ImageScale
+  - KSamplerSelect
+  - LoadImage
+  - LoraLoaderModelOnly
+  - RandomNoise
+  - ReferenceLatent
+  - SamplerCustomAdvanced
+  - SaveImage
+  - Text Concatenate
+  - UnetLoaderGGUF
+  - VAEDecode
+  - VAEEncode
+  - VAELoader
+  - ttN text
+required_models:
+  - text_encoders/qwen_3_8b_fp8mixed.safetensors
+  - unet/Flux2-Klein-9B-True-V3-Q5_K.gguf
+  - vae/flux2-vae.safetensors
+  - lora/flux-kelin/baimo_shangcaizhi_klein_v1_000005500.safetensors
+required_custom_nodes:
+  - Cherry_KleinWorkflowTools@a9dbbca846ee80734d0a6123ac32d8a8e51c7fcd
+  - ComfyUI_essentials@9d9f4bedfc9f0321c19faf71855e228c93bd0dc9
+  - ComfyUI-GGUF@6ea2651e7df66d7585f6ffee804b20e92fb38b8a
+  - ComfyUI_tinyterraNodes@97096a39847b74e15886a16049ae89ad918e1aea
+  - WAS-Node-Suite@afeee09ba44e713ec52a413ac6b105fd06b2d356
+min_vram_mb: 24000
+timeout_seconds: 2400
+node_labels: {}
+output_nodes:
+  - "29"
+enabled: true

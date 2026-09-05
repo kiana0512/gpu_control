@@ -165,3 +165,14 @@ def inspect_image(path: Path, max_pixels: int) -> tuple[int, int, str]:
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise StorageError("uploaded file is not a valid image") from exc
     return width, height, image_format
+
+
+def mask_red_channel_has_edit_region(path: Path) -> bool:
+    """Return whether the red channel contains any non-zero edit weight."""
+    try:
+        with Image.open(path) as image:
+            red = image.convert("RGB").getchannel("R")
+            extrema = red.getextrema()
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise StorageError("uploaded file is not a valid mask image") from exc
+    return bool(extrema and extrema[1] > 0)
