@@ -502,6 +502,54 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 </template>
 
 <style scoped>
+.node-main-row {
+  grid-template-columns: minmax(180px, 1fr) auto minmax(420px, 1.8fr);
+  gap: 18px 22px;
+}
+.node-primary-actions,
+.node-card .offline-node-note {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+.node-primary-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.node-card .offline-node-note {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.node-identity > div {
+  min-width: 0;
+}
+.node-identity p {
+  overflow-wrap: anywhere;
+}
+.node-metrics {
+  min-width: 0;
+  gap: 12px;
+}
+.node-policy-strip > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 1200px) {
+  .node-main-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .node-metrics {
+    grid-column: 1 / -1;
+  }
+}
+@media (max-width: 720px) {
+  .node-main-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .node-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .validated-profile {
   display: block;
   margin-top: 8px;

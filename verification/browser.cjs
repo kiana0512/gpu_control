@@ -31,6 +31,19 @@ function esrgan() { return { nodes:nodes.map(n=>({id:n.id,name:n.display_name,re
  await go('/nodes','GPU 推理节点');
  assert.equal(await page.locator('.node-card').count(),5);
  assert((await page.locator('body').innerText()).includes('专项验收 3 个工作流版本 / 16 GB'));
+ for (const width of [1440,1280,390]) {
+   await page.setViewportSize({width,height:1080});
+   assert(await page.evaluate(()=>[...document.querySelectorAll('.node-card')].every(card=>{
+    const bounds=card.getBoundingClientRect();
+    return card.scrollWidth<=card.clientWidth+1 && [...card.querySelectorAll('button,.offline-node-note')].every(el=>{
+     const box=el.getBoundingClientRect();return box.left>=bounds.left && box.right<=bounds.right && el.scrollWidth<=el.clientWidth+1;
+    });
+   })),`node content clipped at ${width}px`);
+   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),`node page overflow at ${width}px`);
+   await page.screenshot({path:`/out/nodes-real-snapshot-${width}.png`,fullPage:true});
+ }
+ await page.setViewportSize({width:1440,height:1080});
+ report.checks.push('node actions and degraded notes stay within cards at 1440/1280/390px');
  await page.screenshot({path:'/out/nodes-real-snapshot-desktop.png',fullPage:true});report.checks.push('real 5 registered nodes, DRAINING node and 3 validation profiles visible');
  await go('/codex','Codex 运行中心');
  assert.equal(await page.locator('.codex-runtime-card').count(),5);
