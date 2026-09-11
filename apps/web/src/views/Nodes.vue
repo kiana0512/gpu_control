@@ -251,10 +251,10 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 
     <section class="gpu-specialization-guide">
       <div>
-        <strong>普通任务四卡共享</strong>
+        <strong>普通任务共享 GPU</strong>
         <span
           >局部重绘、单视图生成和单视图局部重绘只分配到 4090、3090-A、3090-B
-          三台 24 GiB GPU； 4070Ti 继续参与其它兼容任务。</span
+          三台 24 GiB GPU；其它节点继续参与兼容任务。</span
         >
       </div>
       <div>

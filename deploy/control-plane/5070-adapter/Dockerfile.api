@@ -1,0 +1,17 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG SOURCE_REVISION
+ARG BASE_IMAGE_ID
+USER root
+ENV GPU_CONTROL_BUILD_VERSION=1.5.23.post1 \
+    GPU_CONTROL_BUILD_REVISION=${SOURCE_REVISION} \
+    GPU_CONTROL_ADAPTER_BASE_IMAGE_ID=${BASE_IMAGE_ID}
+COPY packages/gpu_control_core/settings.py /tmp/5070-settings.py
+COPY deploy/control-plane/5070-adapter/apply_runtime_layer.py /tmp/apply_runtime_layer.py
+RUN python /tmp/apply_runtime_layer.py && rm /tmp/apply_runtime_layer.py /tmp/5070-settings.py
+COPY --chown=10001:10001 scripts/bootstrap_nodes.py /app/scripts/bootstrap_nodes.py
+LABEL org.opencontainers.image.version="1.5.23.post1" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      io.gpu-control.adapter.base-image-id="${BASE_IMAGE_ID}" \
+      io.gpu-control.adapter.scope="additional-node-hmac-and-additive-registration"
+USER gpucontrol

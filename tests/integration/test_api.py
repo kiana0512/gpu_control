@@ -3822,6 +3822,71 @@ async def test_admin_client_kind_update_uses_global_then_client_row_lock(
             assert stored.client_kind == "test"
 
 
+async def test_additional_node_uses_own_hmac_and_stays_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    new_id = "worker-5070ti-01"
+    new_secret = "additional-node-secret-" + "z" * 40
+    monkeypatch.setenv("NODE_AGENT_HMAC_SECRETS", json.dumps({new_id: new_secret}))
+    async for app, client in prepared_app(tmp_path):
+        async with app.state.db.session() as db:
+            db.add(
+                Node(
+                    id=new_id,
+                    display_name="5070 Ti",
+                    base_url="http://10.3.34.18:8188",
+                    mode="DISABLED",
+                    labels={
+                        "host": "10.3.34.18",
+                        "wsl_runtime": True,
+                        "dcgm_exporter_enabled": False,
+                    },
+                )
+            )
+            await db.commit()
+        body = json.dumps(
+            {
+                "node_id": new_id,
+                "ip": "10.3.34.18",
+                "hostname": "worker-5070ti-wsl",
+                "mac": "12:34:56:78:90:ab",
+                "gpu_uuid": "GPU-12345678-1234-1234-1234-123456789abc",
+                "gpu_model": "NVIDIA GeForce RTX 5070 Ti",
+            },
+            separators=(",", ":"),
+        ).encode()
+        timestamp = str(int(time.time()))
+        headers = {
+            "content-type": "application/json",
+            "x-real-ip": "10.3.34.18",
+            "x-gpu-timestamp": timestamp,
+        }
+        for nonce, secret, expected in [
+            ("wrong-key", app.state.settings.node_agent_secret("control-4090"), 401),
+            ("new-key", new_secret, 200),
+        ]:
+            response = await client.post(
+                "/api/v1/nodes/heartbeat",
+                content=body,
+                headers={
+                    **headers,
+                    "x-gpu-nonce": nonce,
+                    "x-gpu-signature": sign_agent_request(
+                        "POST", "/api/v1/nodes/heartbeat", body, timestamp, nonce, secret
+                    ),
+                },
+            )
+            assert response.status_code == expected, response.text
+        async with app.state.db.session() as db:
+            node = await db.get(Node, new_id)
+            assert node is not None and node.mode == "DISABLED" and node.current_jobs == 0
+            node.mode = "DRAINING"
+            await db.commit()
+        targets = (await client.get("/internal/prometheus/workers")).json()
+        assert any(group["targets"] == ["10.3.34.18:9100"] for group in targets)
+        assert not any(group["targets"] == ["10.3.34.18:9400"] for group in targets)
+
+
 async def test_signed_node_heartbeat_updates_address_and_dynamic_monitoring(
     tmp_path: Path,
 ) -> None:
