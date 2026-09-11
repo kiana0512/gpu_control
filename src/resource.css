@@ -1,0 +1,27 @@
+.resource table button,
+.one-time-key button {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 5px;
+  padding: 7px 11px;
+  color: #344861;
+}
+.one-time-key {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  background: #fff8e8;
+  border-bottom: 1px solid #f6d58b;
+}
+.one-time-key code {
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+.resource table code {
+  max-width: 260px;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
