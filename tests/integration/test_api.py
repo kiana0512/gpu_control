@@ -2212,6 +2212,8 @@ async def test_admin_nodes_selects_linux_codex_worker_not_newer_windows_baker(
     tmp_path: Path,
 ) -> None:
     async for app, client in prepared_app(tmp_path):
+        app.state.settings.asset_worker_heartbeat_timeout_seconds = 75
+        app.state.settings.asset_codex_probe_max_age_seconds = 900
         now = datetime.now(UTC)
         async with app.state.db.session() as db:
             node = await db.get(Node, "worker-3090-b")
@@ -2283,6 +2285,8 @@ async def test_admin_nodes_selects_linux_codex_worker_not_newer_windows_baker(
         assert runtime["probe_fresh"] is True
         assert runtime["scheduler_eligible"] is True
         assert runtime["eligibility_reason"] == "ELIGIBLE"
+        assert runtime["heartbeat_timeout_seconds"] == app.state.settings.asset_worker_heartbeat_timeout_seconds
+        assert runtime["probe_max_age_seconds"] == app.state.settings.asset_codex_probe_max_age_seconds
 
 
 async def test_admin_nodes_exposes_optional_gpu_temperature_and_power(tmp_path: Path) -> None:

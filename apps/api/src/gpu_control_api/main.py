@@ -4640,6 +4640,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 ),
                 "heartbeat_fresh": heartbeat_fresh,
                 "probe_fresh": probe_fresh,
+                "heartbeat_timeout_seconds": cfg.asset_worker_heartbeat_timeout_seconds,
+                "probe_max_age_seconds": cfg.asset_codex_probe_max_age_seconds,
                 "eligibility_reason": eligibility_reason,
                 "error_code": (
                     worker.codex_error_code
