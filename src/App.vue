@@ -101,7 +101,7 @@ function logout() {
       <div class="cluster-state">
         <i></i><span>控制平面在线</span
         ><small
-          >Scheduler {{ buildVersion }}<br />Revision {{ buildRevision }}</small
+          >WebUI {{ buildVersion }}<br />Revision {{ buildRevision }}</small
         >
       </div>
     </aside>
