@@ -27,6 +27,7 @@
 | Windows 交付源码落后于适配脚本 | 原样同步现场单地址与防火墙修复，Inspect 容错与 SID 归一化通过 WinPS5.1 回归 |
 | 发布测试仍断言旧 Python 版本 | 更新为 `1.5.23.post3`，保持 Web/Worker 独立版本校验 |
 | 上游原样校验清单被 *.sha256 忽略 | 狭窄忽略例外纳入原清单；6 个上游文件在两树逐个验证，业务源码零改动 |
+| 候选运行清单未更新 | 改为现场实际部署状态，9 包版本与 5 服务镜像逐项核对，保留明确待完成能力 |
 | Windows 时间慢约 14 小时 | 启用既有 W32Time 并从原 NTP 来源同步，校验偏差约 10 毫秒；未手工设置时间或放宽阈值 |
 
 控制源码、Windows 与证据边界详见 [独立审计](5070TI_CONTROL_AND_WINDOWS_AUDIT_20260911.md)。
@@ -52,7 +53,11 @@ CPU 验收的 UV、模型分类、RetopoFlow 和当前坐标恢复入口通过�
 每片 SHA、组合归档 SHA、实际 Docker image ID 与恢复步骤见 [控制发布包](../artifacts/control-plane/5070ti-20260911/README.md) 和 [Worker 发布包](../artifacts/asset-worker/5070ti-20260911/README.md)。
 不归档凭据、运行卷、CODEX_HOME、私钥、生产输入输出；公开管理公钥与 LAN CA 为明确允许的公开内容。上传前扫描本次 180 个暂存文件、两个运行源码标签内 805 个文件及 4 个镜像 Config，未检出已知运行秘密、私钥、OpenAI Key 或 JWT；10 个 LFS 指针的大小与本地全文件 SHA 均匹配（合计 970,680,958 字节）。原运行资源归档 465 个成员另做了名称与内容检查。
 
-上传与远端校验回执在最终同步完成后追加。镜像为本地 Engine 导出；未声明 registry digest、SBOM 或七天稳定性验收。
+**GitHub / LFS 已完成上传并验收。** 主发布提交为 [`7fc4bd98`](https://github.com/kiana0512/gpu_control/commit/7fc4bd98cb9f0bbd222beb35d732e53a8a5aae32)，分支及两个运行源码标签的远端 OID 均核对一致。随后补充本回执、现场清单和健康复核，LFS 归档内容未变化。
+
+使用全新的临时 LFS 存储从 GitHub 独立下载本次全部 **10 个对象、970,680,958 字节**，没有复用本机 LFS 对象；逐文件大小与 SHA-256 全部匹配，校验后的临时下载副本已删除。详见 [远端验证回执](../artifacts/control-plane/5070ti-20260911/evidence/github-remote-verification.json)。上传后五节点 ACTIVE/ONLINE、RealESRGAN 5/5、HTTPS ready/db/redis 均正常，5070 Ti 生产任务仍为 22 成功、0 失败。
+
+镜像为本地 Engine 导出；未声明 registry digest、SBOM 或七天稳定性验收。
 
 ## 清理
 

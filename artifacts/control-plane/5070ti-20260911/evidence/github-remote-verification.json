@@ -1,0 +1,77 @@
+{
+  "started_at": "2026-09-11T03:59:29.506335+00:00",
+  "remote": "https://github.com/kiana0512/gpu_control.git",
+  "refs": {
+    "refs/heads/agent/four-gpu-4070ti-closure": "7fc4bd98cb9f0bbd222beb35d732e53a8a5aae32",
+    "refs/tags/runtime/5070-control-c61648f": "c61648fe96fd5be429cd1f7b470da43131b88204",
+    "refs/tags/runtime/5070-web-350c388": "350c388d83a7d64ed7bc5e9148c54d1b89d3f43d"
+  },
+  "temporary_lfs_storage": "/tmp/gpu-control-5070-remote-lfs-verify-omvx7ukl",
+  "existing_local_lfs_objects_reused": false,
+  "objects": [
+    {
+      "path": "artifacts/asset-worker/5070ti-20260911/asset-runtime.tar.gz.part-000",
+      "sha256": "6a6345e62c94cdff59d79367e14db22c61d7cfcd26fafe26ac020115c2008cfd",
+      "size": 125320171,
+      "remote_download_sha256_verified": true
+    },
+    {
+      "path": "artifacts/asset-worker/5070ti-20260911/image-parts/runtime-images.tar.gz.part-000",
+      "sha256": "f6be35414c62bec36517b1b636edc716364ca040eebba038e970dd8da528bef8",
+      "size": 134217728,
+      "remote_download_sha256_verified": true
+    },
+    {
+      "path": "artifacts/asset-worker/5070ti-20260911/image-parts/runtime-images.tar.gz.part-001",
+      "sha256": "3f3eaf925ca838c8336afb2d7cd6c83f54bf4750ac07f909674e13deb9082193",
+      "size": 134217728,
+      "remote_download_sha256_verified": true
+    },
+    {
+      "path": "artifacts/asset-worker/5070ti-20260911/image-parts/runtime-images.tar.gz.part-002",
+      "sha256": "9aa36ef3cc5984e4eb80067434aeccfbf2f888bb3c401fdc422d3b45d7627181",
+      "size": 134217728,
+      "remote_download_sha256_verified": true
+    },
+    {
+      "path": "artifacts/asset-worker/5070ti-20260911/image-parts/runtime-images.tar.gz.part-003",
+      "sha256": "30dcd56a8d8abe566a06bc6775292b87df4160aceb247a4ccd97168b865a18bf",
+      "size": 134217728,
+      "remote_download_sha256_verified": true
+    },
+    {
+      "path": "artifacts/asset-worker/5070ti-20260911/image-parts/runtime-images.tar.gz.part-004",
+      "sha256": "53020a6ad1bb438556379b0fd9a3a004fdd29d285fb8364c07809b4f84a2262c",
+      "size": 134217728,
+      "remote_download_sha256_verified": true
+    },
+    {
+      "path": "artifacts/asset-worker/5070ti-20260911/image-parts/runtime-images.tar.gz.part-005",
+      "sha256": "aabb2909af3228f8495e4f6723bd99eaffaa7be51defdaae09bdfbca8dfcfd31",
+      "size": 18811932,
+      "remote_download_sha256_verified": true
+    },
+    {
+      "path": "artifacts/control-plane/5070ti-20260911/release-parts/runtime-images.tar.gz.part-000",
+      "sha256": "70b1a7aa67eb4fd3750c12a2eac4222de09a77bf880f142a8126a94cbb24bb0b",
+      "size": 134217728,
+      "remote_download_sha256_verified": true
+    },
+    {
+      "path": "artifacts/control-plane/5070ti-20260911/release-parts/runtime-images.tar.gz.part-001",
+      "sha256": "1930cd22f31119651f3527362caee0db2f896b27fc2aa1748675d6c5f41e7436",
+      "size": 21218206,
+      "remote_download_sha256_verified": true
+    },
+    {
+      "path": "artifacts/control-plane/5070ti-20260911/release-parts/windows-prep-20260911.zip.part-000",
+      "sha256": "c910e645d62e877681e4cd8742091292831a26ef4f1495e5d0e1086e4429039c",
+      "size": 24281,
+      "remote_download_sha256_verified": true
+    }
+  ],
+  "completed_at": "2026-09-11T04:04:16.382840+00:00",
+  "passed": true,
+  "total_bytes": 970680958,
+  "temporary_downloads_removed": true
+}

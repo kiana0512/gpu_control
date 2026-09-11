@@ -1,29 +1,175 @@
 {
-  "status": "CANDIDATE_NOT_DEPLOYED",
-  "captured_at": "2026-09-10T16:58:00+08:00",
+  "status": "DEPLOYED_VERIFIED_WITH_EXPLICIT_PENDING_CAPABILITIES",
+  "captured_at": "2026-09-11T04:02:38.631259+00:00",
+  "node_id": "worker-5070ti-01",
+  "node_mode": "ACTIVE",
+  "node_health": "ONLINE",
   "reference_node": "worker-3090-b",
+  "reference_scope": "Original package version selection only; deployed image identities below are read from the actual 5070 Ti host.",
   "ubuntu_codename": "jammy",
   "architecture": "amd64",
   "packages": [
-    {"name": "docker-ce", "version": "5:29.6.2-1~ubuntu.22.04~jammy", "sha256": "abda813589be3a9953c72181d2d1fa6064eb64966f917d70fe8996d9af485fc6"},
-    {"name": "docker-ce-cli", "version": "5:29.6.2-1~ubuntu.22.04~jammy", "sha256": "5ad09e85f123841a0ced843f748e4ec52209f1773a770bdb39eb64f24eff6ba5"},
-    {"name": "containerd.io", "version": "2.2.6-1~ubuntu.22.04~jammy", "sha256": "a5fd776785cf8482d1a342479d5eed53cccd6daf534ef129012797b6e817dee6"},
-    {"name": "docker-buildx-plugin", "version": "0.35.0-1~ubuntu.22.04~jammy", "sha256": "62b77b009803ebea4f9bc3cdecd00e3bf6c88266a3525046105c4449ceea94c7"},
-    {"name": "docker-compose-plugin", "version": "5.3.1-1~ubuntu.22.04~jammy", "sha256": "00784bd434f1fadde20cc047f5c88d97c9f2d17c82cef88ac69160421c553f2b"},
-    {"name": "nvidia-container-toolkit", "version": "1.19.1-1", "sha256": "e66acb5b33420a8417429cd217abc8400b4a409a2ae17a3852cf6feb34b5c8e6"},
-    {"name": "nvidia-container-toolkit-base", "version": "1.19.1-1", "sha256": "b6c5b4e77a28cde0197cc0e64edf75538604775d9f8aea502cef667e7e5b2132"},
-    {"name": "libnvidia-container-tools", "version": "1.19.1-1", "sha256": "5642763d51961a2295dff09990048a5dcee81edbea2a8c5084e47b09ccf17268"},
-    {"name": "libnvidia-container1", "version": "1.19.1-1", "sha256": "d73bb582af893135198ef81cb22135c790a75d2ad72910446477c6c4430f3e6b"}
+    {
+      "name": "docker-ce",
+      "version": "5:29.6.2-1~ubuntu.22.04~jammy",
+      "sha256": "abda813589be3a9953c72181d2d1fa6064eb64966f917d70fe8996d9af485fc6"
+    },
+    {
+      "name": "docker-ce-cli",
+      "version": "5:29.6.2-1~ubuntu.22.04~jammy",
+      "sha256": "5ad09e85f123841a0ced843f748e4ec52209f1773a770bdb39eb64f24eff6ba5"
+    },
+    {
+      "name": "containerd.io",
+      "version": "2.2.6-1~ubuntu.22.04~jammy",
+      "sha256": "a5fd776785cf8482d1a342479d5eed53cccd6daf534ef129012797b6e817dee6"
+    },
+    {
+      "name": "docker-buildx-plugin",
+      "version": "0.35.0-1~ubuntu.22.04~jammy",
+      "sha256": "62b77b009803ebea4f9bc3cdecd00e3bf6c88266a3525046105c4449ceea94c7"
+    },
+    {
+      "name": "docker-compose-plugin",
+      "version": "5.3.1-1~ubuntu.22.04~jammy",
+      "sha256": "00784bd434f1fadde20cc047f5c88d97c9f2d17c82cef88ac69160421c553f2b"
+    },
+    {
+      "name": "nvidia-container-toolkit",
+      "version": "1.19.1-1",
+      "sha256": "e66acb5b33420a8417429cd217abc8400b4a409a2ae17a3852cf6feb34b5c8e6"
+    },
+    {
+      "name": "nvidia-container-toolkit-base",
+      "version": "1.19.1-1",
+      "sha256": "b6c5b4e77a28cde0197cc0e64edf75538604775d9f8aea502cef667e7e5b2132"
+    },
+    {
+      "name": "libnvidia-container-tools",
+      "version": "1.19.1-1",
+      "sha256": "5642763d51961a2295dff09990048a5dcee81edbea2a8c5084e47b09ccf17268"
+    },
+    {
+      "name": "libnvidia-container1",
+      "version": "1.19.1-1",
+      "sha256": "d73bb582af893135198ef81cb22135c790a75d2ad72910446477c6c4430f3e6b"
+    }
   ],
-  "image_candidates": [
-    {"reference": "registry.local:5000/gpu-control/comfyui:projects-0.2.6", "image_id": "sha256:5bdf5c62118881afe5439ea69557618e13dc3da250764e308e245d0e0876844d", "torch": "2.11.0+cu130", "cuda": "13.0", "compiled_architecture": "sm_120"},
-    {"reference": "gpu-control-realesrgan-worker:1.0.0", "image_id": "sha256:3c5010a6c51750ee19bb472309424abafd41fc6c05cd35995835e4a7bfcf3026", "torch": "2.7.1+cu128", "cuda": "12.8", "compiled_architecture": "sm_120"},
-    {"reference": "li3d/blender-worker:1.4.68-mof-worldspace-feedback-v1", "image_id": "sha256:cdb841b188e79b8c4547eeb54aa4e17bacaf1cf789c2bb488eb730dc5c0c6f5d", "requires": "Exact matching approved skill package from a healthy worker; do not copy mutable control-host runtime."}
+  "package_verification": {
+    "download_sha256": "PASS_9_OF_9",
+    "download_verification_evidence": "artifacts/control-plane/5070ti-20260911/evidence/runtime-package-verification.txt",
+    "current_dpkg_versions": "PASS_9_OF_9_INSTALLED",
+    "original_package_entries_preserved": true
+  },
+  "gpu": {
+    "uuid": "GPU-5fa565eb-b1de-57ed-d43b-03c602cecf06",
+    "vram_total_mib": 16303,
+    "compiled_architecture": "sm_120"
+  },
+  "deployed_images": [
+    {
+      "service": "comfyui",
+      "container_name": "/gpu-control-node-comfyui-1",
+      "container_id": "88dad2c3d961b6f1e59c870e553f3fa354aac11b12929fbc95c0ae5bafbce71a",
+      "container_image_id": "sha256:5bdf5c62118881afe5439ea69557618e13dc3da250764e308e245d0e0876844d",
+      "reference": "registry.local:5000/gpu-control/comfyui:projects-0.2.6",
+      "image_id": "sha256:5bdf5c62118881afe5439ea69557618e13dc3da250764e308e245d0e0876844d",
+      "torch": "2.11.0+cu130",
+      "cuda": "13.0",
+      "compiled_architecture": "sm_120"
+    },
+    {
+      "service": "realesrgan-worker",
+      "container_name": "/gpu-control-node-realesrgan-worker-1",
+      "container_id": "3774ec7619404839c9be7598e8a2cf90ff0b0fad5b28884c61fca27c83ffc733",
+      "container_image_id": "sha256:3c5010a6c51750ee19bb472309424abafd41fc6c05cd35995835e4a7bfcf3026",
+      "reference": "registry.local:5000/gpu-control/realesrgan-worker:1.0.0",
+      "image_id": "sha256:3c5010a6c51750ee19bb472309424abafd41fc6c05cd35995835e4a7bfcf3026",
+      "torch": "2.7.1+cu128",
+      "cuda": "12.8",
+      "compiled_architecture": "sm_120",
+      "tile": 256,
+      "tile_pad": 16
+    },
+    {
+      "service": "node-exporter",
+      "container_name": "/gpu-control-node-node-exporter-1",
+      "container_id": "74cad4add96c64928f22728ebb388d61fa45d90d34c2ef9b2e918e2ebd9ca7e6",
+      "container_image_id": "sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a",
+      "reference": "prom/node-exporter:v1.9.1",
+      "image_id": "sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a"
+    },
+    {
+      "service": "alloy",
+      "container_name": "/gpu-control-node-alloy-1",
+      "container_id": "01b99cf8a80d39aeb60f177a7965488da1fdc55601197a902b6700758e206838",
+      "container_image_id": "sha256:b5fc87ff9a8941d6ed3ae5f099d9cb8598b3cd42fef9a8af128ed782258b4017",
+      "reference": "grafana/alloy:v1.9.1",
+      "image_id": "sha256:b5fc87ff9a8941d6ed3ae5f099d9cb8598b3cd42fef9a8af128ed782258b4017"
+    },
+    {
+      "service": "blender-worker",
+      "container_name": "/gpu-control-node-blender-worker-1",
+      "container_id": "875d4d806a6d382e62db47a20155734dc3e0516ebb7ce81186542aa0bd12e11a",
+      "container_image_id": "sha256:0c6ea65709566114544710dcac3255b94ac71f53138f158e4a678c6abcacb992",
+      "reference": "li3d/blender-worker:1.4.75-uv-overlap-v28-pins1-codex-auth2",
+      "image_id": "sha256:0c6ea65709566114544710dcac3255b94ac71f53138f158e4a678c6abcacb992",
+      "core_package_version": "1.5.23",
+      "worker_release": "1.4.75-uv-overlap-v28-pins1-codex-auth2",
+      "package_record_verification": "PASS_NO_MISMATCHES",
+      "approved_skills_verification": "PASS"
+    }
   ],
+  "comfyui_fixed_flags": [
+    "--disable-dynamic-vram",
+    "--lowvram",
+    "--reserve-vram",
+    "3.0",
+    "--cpu-vae",
+    "--disable-async-offload",
+    "--disable-pinned-memory"
+  ],
+  "flags_verification": "Actual container Config.Cmd matches the approved flags exactly.",
+  "codex": {
+    "cli_version": "0.146.0-alpha.3.1",
+    "auth_status": "MISSING",
+    "probe_status": "BLOCKED",
+    "error_code": "AUTH_MISSING",
+    "device_auth": "First independent device-code flow expired without authorization; not automatically refreshed.",
+    "credentials_copied": false
+  },
+  "verified_capabilities": [
+    "Approved GPU templates: 9 successful canaries",
+    "RealESRGAN direct and public API on new node",
+    "CPU UV/classification/source-coordinate restoration and FBX readback",
+    "RetopoFlow HEALTHY and exact approved skill manifests",
+    "Native systemd Node Agent signed operations",
+    "WSL distribution termination automatically recovered without manual start",
+    "Windows W32Time resync succeeded"
+  ],
+  "pending_boundaries": [
+    "Independent Codex authorization and real model execution remain unverified.",
+    "Windows full reboot/logout-login recovery remains unverified.",
+    "WSL NAT address-change recovery remains unverified; tested termination kept the same address.",
+    "DHCP reservation for 10.3.34.18 is not confirmed by network administration.",
+    "Native Windows Substance/MOF installation and machine-specific licensing remain pending.",
+    "Standalone legacy ICP synthetic fixture was rejected by the same quality gate on both new node and 4090 baseline."
+  ],
+  "target_metadata_sync": {
+    "status": "NOT_PRESENT_NO_FILE_CREATED",
+    "searched_roots": [
+      "/opt/gpu-control",
+      "/tmp",
+      "/home/gpucontrol"
+    ],
+    "prior_sha256": null,
+    "target_repo_path": "/opt/gpu-control/deploy/gpu-node/5070ti/runtime-lock.json"
+  },
   "notes": [
-    "Package versions were read from 3090-B; package hashes are from docs/116 and must be verified again after download.",
-    "image_id is Docker's local image configuration digest, not a registry manifest digest or archive checksum.",
-    "Nothing in this manifest certifies the new Windows host, driver, extensions or business canary.",
-    "A standard RTX 5070 Ti has 16 GB VRAM; existing 24000 MiB workflow contracts remain unchanged."
+    "image_id and container Image are Docker Engine-reported image identities; their semantics depend on the image store and are not assumed to be image config digests, registry manifest digests or archive checksums.",
+    "All nine package names, versions and archive SHA-256 values are preserved from the verified installation lock.",
+    "image_candidates was replaced by deployed_images; the bootstrap installer reads only ubuntu_codename, architecture and packages.",
+    "Existing 24000 MiB workflow declarations remain unchanged; any node-specific tested resource exception is controlled by separate acceptance profiles.",
+    "No compose, service, image, package or authentication mutation was performed for this metadata refresh."
   ]
 }

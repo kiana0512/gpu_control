@@ -101,7 +101,7 @@ CPU 结论以 `cpu-acceptance/acceptance-summary.json` 为准。首次独立 Ret
 
 auth2 仅在新机再次排空、确认无运行 Asset 任务后替换 CPU Worker；没有重启其 GPU 容器。随后由正常运维入口恢复 ACTIVE，03:37 UTC 的独立复核确认 ACTIVE、Worker ONLINE、RetopoFlow HEALTHY 及准确的 Codex MISSING 状态。Node Agent、Worker 修复及 Windows 维护脚本审计分别见 [Node Agent 记录](5070TI_NATIVE_NODE_AGENT_20260911.md)、[Codex 记录](5070TI_CODEX_AUTH_PROBE_20260911.md) 和 [控制端/Windows 审计](5070TI_CONTROL_AND_WINDOWS_AUDIT_20260911.md)。
 
-镜像归档、GitHub/LFS 同步与清理结果另见 [最终发布审计](5070TI_RELEASE_AUDIT_20260911.md)，本文不将仍在进行的归档操作写成已完成。
+镜像归档、GitHub/LFS 同步、全部 10 个远端对象独立下载与 SHA 验证已完成；清理实际增加 64.640 GiB 可用空间。完整提交、验收边界与清理回执见 [最终发布审计](5070TI_RELEASE_AUDIT_20260911.md)。
 
 ## 待完成和验收边界
 

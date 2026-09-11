@@ -1,0 +1,113 @@
+{
+  "at": "2026-09-11T03:59:29.055776+00:00",
+  "web": {
+    "container_id": "7daef3e63ee5ac5256d833992c914a4e771a4ecbca5a2c55fe23830c87933549",
+    "image_id": "sha256:82dfe654a884fbc6c4e71a79b17a4c211d73eec9c20d5c4b19a1b3f3ff3da251",
+    "version": "1.5.23-5070-ui.2",
+    "source_revision": "350c388d83a7d64ed7bc5e9148c54d1b89d3f43d"
+  },
+  "ready": {
+    "http_status": 200,
+    "body": {
+      "status": "ready",
+      "database": "ok",
+      "redis": "ok"
+    }
+  },
+  "api_version": {
+    "http_status": 200,
+    "body": {
+      "component": "api",
+      "version": "1.5.23.post3",
+      "package_version": "1.5.23.post3",
+      "build_version": "1.5.23.post3",
+      "source_revision": "c61648fe96fd5be429cd1f7b470da43131b88204",
+      "version_aligned": true,
+      "provenance_complete": true
+    }
+  },
+  "node_count": 5,
+  "nodes": [
+    {
+      "id": "control-4090",
+      "mode": "ACTIVE",
+      "health": "ONLINE",
+      "current_jobs": 0,
+      "codex_auth": "EXPIRED",
+      "codex_probe": "FAILED",
+      "codex_error": "AUTH_REFRESH_REUSED",
+      "heartbeat_timeout_seconds": 30,
+      "probe_max_age_seconds": 3600
+    },
+    {
+      "id": "worker-3090-a",
+      "mode": "ACTIVE",
+      "health": "ONLINE",
+      "current_jobs": 0,
+      "codex_auth": "AUTHENTICATED",
+      "codex_probe": "HEALTHY",
+      "codex_error": null,
+      "heartbeat_timeout_seconds": 30,
+      "probe_max_age_seconds": 3600
+    },
+    {
+      "id": "worker-3090-b",
+      "mode": "ACTIVE",
+      "health": "ONLINE",
+      "current_jobs": 0,
+      "codex_auth": "AUTHENTICATED",
+      "codex_probe": "HEALTHY",
+      "codex_error": null,
+      "heartbeat_timeout_seconds": 30,
+      "probe_max_age_seconds": 3600
+    },
+    {
+      "id": "worker-4070ti-animation-host-01",
+      "mode": "ACTIVE",
+      "health": "ONLINE",
+      "current_jobs": 0,
+      "codex_auth": "AUTHENTICATED",
+      "codex_probe": "HEALTHY",
+      "codex_error": null,
+      "heartbeat_timeout_seconds": 30,
+      "probe_max_age_seconds": 3600
+    },
+    {
+      "id": "worker-5070ti-01",
+      "mode": "ACTIVE",
+      "health": "ONLINE",
+      "current_jobs": 0,
+      "codex_auth": "MISSING",
+      "codex_probe": "BLOCKED",
+      "codex_error": "AUTH_MISSING",
+      "heartbeat_timeout_seconds": 30,
+      "probe_max_age_seconds": 3600
+    }
+  ],
+  "realesrgan": {
+    "ready_nodes": 5,
+    "total_nodes": 5,
+    "nodes": [
+      {
+        "id": "control-4090",
+        "ready": true
+      },
+      {
+        "id": "worker-3090-a",
+        "ready": true
+      },
+      {
+        "id": "worker-3090-b",
+        "ready": true
+      },
+      {
+        "id": "worker-4070ti-animation-host-01",
+        "ready": true
+      },
+      {
+        "id": "worker-5070ti-01",
+        "ready": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+Nine downloaded packages passed SHA-256 verification during installation.
+VERIFIED libnvidia-container-tools 1.19.1-1
+VERIFIED docker-ce 5:29.6.2-1~ubuntu.22.04~jammy
+VERIFIED docker-buildx-plugin 0.35.0-1~ubuntu.22.04~jammy
+VERIFIED containerd.io 2.2.6-1~ubuntu.22.04~jammy
+VERIFIED docker-ce-cli 5:29.6.2-1~ubuntu.22.04~jammy
+VERIFIED nvidia-container-toolkit 1.19.1-1
+VERIFIED nvidia-container-toolkit-base 1.19.1-1
+VERIFIED libnvidia-container1 1.19.1-1
+VERIFIED docker-compose-plugin 5.3.1-1~ubuntu.22.04~jammy
