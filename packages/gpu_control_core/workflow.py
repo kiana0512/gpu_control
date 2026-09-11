@@ -111,6 +111,50 @@ def template_digest(template: dict[str, Any]) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def validated_node_vram_requirement(
+    *,
+    declared_min_vram_mb: int,
+    reported_labels: dict[str, Any],
+    node_id: str | None,
+    workflow_key: str | None,
+    workflow_version: str | None,
+    template_sha256: str | None,
+) -> int:
+    """Use only an explicitly recorded acceptance for this exact node/template.
+
+    These profiles are control-plane inventory, never accepted from a Node
+    Agent heartbeat. A new workflow revision, GPU replacement, missing proof,
+    or malformed profile falls back to the unchanged workflow declaration.
+    """
+    if not all((node_id, workflow_key, workflow_version, template_sha256)):
+        return declared_min_vram_mb
+    profiles = reported_labels.get("validated_vram_profiles")
+    if not isinstance(profiles, dict):
+        return declared_min_vram_mb
+    profile = profiles.get(workflow_key)
+    if not isinstance(profile, dict):
+        return declared_min_vram_mb
+    if (
+        profile.get("status") != "PASSED"
+        or profile.get("node_id") != node_id
+        or profile.get("version") != workflow_version
+        or profile.get("template_sha256") != template_sha256
+        or not reported_labels.get("gpu_uuid")
+        or profile.get("gpu_uuid") != reported_labels.get("gpu_uuid")
+    ):
+        return declared_min_vram_mb
+    for field in ("evidence_sha256", "runtime_profile_sha256"):
+        digest = profile.get(field)
+        if not isinstance(digest, str) or len(digest) != 64 or any(
+            char not in "0123456789abcdef" for char in digest
+        ):
+            return declared_min_vram_mb
+    minimum = profile.get("min_vram_mb")
+    if type(minimum) is not int or not 12000 <= minimum <= declared_min_vram_mb:
+        return declared_min_vram_mb
+    return minimum
+
+
 def node_compatibility_reasons(
     *,
     min_vram_mb: int,
@@ -118,11 +162,23 @@ def node_compatibility_reasons(
     allowed_class_types: list[str] | set[str] | frozenset[str],
     total_vram_mb: int,
     reported_labels: dict[str, Any],
+    node_id: str | None = None,
+    workflow_key: str | None = None,
+    workflow_version: str | None = None,
+    template_sha256: str | None = None,
 ) -> list[str]:
     """Return fail-closed workflow compatibility reasons for one node."""
     reasons: list[str] = []
-    if total_vram_mb < min_vram_mb:
-        reasons.append(f"vram {total_vram_mb}MB < required {min_vram_mb}MB")
+    effective_minimum = validated_node_vram_requirement(
+        declared_min_vram_mb=min_vram_mb,
+        reported_labels=reported_labels,
+        node_id=node_id,
+        workflow_key=workflow_key,
+        workflow_version=workflow_version,
+        template_sha256=template_sha256,
+    )
+    if total_vram_mb < effective_minimum:
+        reasons.append(f"vram {total_vram_mb}MB < required {effective_minimum}MB")
     for key, value in required_labels.items():
         if str(reported_labels.get(key)) != str(value):
             reasons.append(f"label {key} must equal {value}")

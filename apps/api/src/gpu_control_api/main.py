@@ -5485,6 +5485,10 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 allowed_class_types=version.allowed_class_types,
                 total_vram_mb=node.total_vram_mb,
                 reported_labels=node.labels,
+                node_id=node.id,
+                workflow_key=version.workflow_key,
+                workflow_version=version.version,
+                template_sha256=version.template_sha256,
             )
             compatibility = await db.scalar(
                 select(WorkflowNodeCompatibility).where(

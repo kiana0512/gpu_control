@@ -1654,6 +1654,10 @@ class Scheduler:
                                             allowed_class_types=version.allowed_class_types,
                                             total_vram_mb=current.total_vram_mb,
                                             reported_labels=labels,
+                                            node_id=current.id,
+                                            workflow_key=version.workflow_key,
+                                            workflow_version=version.version,
+                                            template_sha256=version.template_sha256,
                                         )
                                         compatibility = await write_session.scalar(
                                             select(WorkflowNodeCompatibility).where(
