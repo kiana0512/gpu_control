@@ -16,7 +16,7 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 
 def test_source_release_versions_match_current_component_versions() -> None:
     assert source_versions(REPOSITORY) == {
-        "python": "1.5.23",
+        "python": "1.5.23.post3",
         "web": "1.5.23",
         "web_lock": "1.5.23",
     }

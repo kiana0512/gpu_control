@@ -1,0 +1,62 @@
+{
+  "at": "2026-09-11T03:57:18.812053+00:00",
+  "staged_files_scanned": 180,
+  "runtime_tag_files_scanned": 805,
+  "image_configs_scanned": 4,
+  "lfs_parts": [
+    {
+      "path": "artifacts/asset-worker/5070ti-20260911/asset-runtime.tar.gz.part-000",
+      "sha256": "6a6345e62c94cdff59d79367e14db22c61d7cfcd26fafe26ac020115c2008cfd",
+      "size": 125320171
+    },
+    {
+      "path": "artifacts/asset-worker/5070ti-20260911/image-parts/runtime-images.tar.gz.part-000",
+      "sha256": "f6be35414c62bec36517b1b636edc716364ca040eebba038e970dd8da528bef8",
+      "size": 134217728
+    },
+    {
+      "path": "artifacts/asset-worker/5070ti-20260911/image-parts/runtime-images.tar.gz.part-001",
+      "sha256": "3f3eaf925ca838c8336afb2d7cd6c83f54bf4750ac07f909674e13deb9082193",
+      "size": 134217728
+    },
+    {
+      "path": "artifacts/asset-worker/5070ti-20260911/image-parts/runtime-images.tar.gz.part-002",
+      "sha256": "9aa36ef3cc5984e4eb80067434aeccfbf2f888bb3c401fdc422d3b45d7627181",
+      "size": 134217728
+    },
+    {
+      "path": "artifacts/asset-worker/5070ti-20260911/image-parts/runtime-images.tar.gz.part-003",
+      "sha256": "30dcd56a8d8abe566a06bc6775292b87df4160aceb247a4ccd97168b865a18bf",
+      "size": 134217728
+    },
+    {
+      "path": "artifacts/asset-worker/5070ti-20260911/image-parts/runtime-images.tar.gz.part-004",
+      "sha256": "53020a6ad1bb438556379b0fd9a3a004fdd29d285fb8364c07809b4f84a2262c",
+      "size": 134217728
+    },
+    {
+      "path": "artifacts/asset-worker/5070ti-20260911/image-parts/runtime-images.tar.gz.part-005",
+      "sha256": "aabb2909af3228f8495e4f6723bd99eaffaa7be51defdaae09bdfbca8dfcfd31",
+      "size": 18811932
+    },
+    {
+      "path": "artifacts/control-plane/5070ti-20260911/release-parts/runtime-images.tar.gz.part-000",
+      "sha256": "70b1a7aa67eb4fd3750c12a2eac4222de09a77bf880f142a8126a94cbb24bb0b",
+      "size": 134217728
+    },
+    {
+      "path": "artifacts/control-plane/5070ti-20260911/release-parts/runtime-images.tar.gz.part-001",
+      "sha256": "1930cd22f31119651f3527362caee0db2f896b27fc2aa1748675d6c5f41e7436",
+      "size": 21218206
+    },
+    {
+      "path": "artifacts/control-plane/5070ti-20260911/release-parts/windows-prep-20260911.zip.part-000",
+      "sha256": "c910e645d62e877681e4cd8742091292831a26ef4f1495e5d0e1086e4429039c",
+      "size": 24281
+    }
+  ],
+  "lfs_total_bytes": 970680958,
+  "issues": [],
+  "passed": true,
+  "credentials_printed": false
+}

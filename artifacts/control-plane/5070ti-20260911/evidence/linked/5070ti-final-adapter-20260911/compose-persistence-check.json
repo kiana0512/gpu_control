@@ -1,0 +1,33 @@
+{
+  "passed": true,
+  "realesrgan_nodes": [
+    {
+      "id": "control-4090",
+      "name": "4090",
+      "url": "http://realesrgan-worker-4090:9301"
+    },
+    {
+      "id": "worker-3090-a",
+      "name": "3090-A",
+      "url": "http://10.3.34.12:9301"
+    },
+    {
+      "id": "worker-3090-b",
+      "name": "3090-B",
+      "url": "http://10.3.34.11:19302"
+    },
+    {
+      "id": "worker-4070ti-animation-host-01",
+      "name": "4070 Ti",
+      "url": "http://10.3.34.11:19303"
+    },
+    {
+      "id": "worker-5070ti-01",
+      "name": "5070 Ti",
+      "url": "http://10.3.34.18:9301"
+    }
+  ],
+  "api_image": "gpu-control-api:1.5.23.post3-5070-c61648f",
+  "scheduler_image": "gpu-control-scheduler:1.5.23.post3-5070-c61648f",
+  "web_image": "gpu-control-web:1.5.23-5070-ui-92257d4"
+}

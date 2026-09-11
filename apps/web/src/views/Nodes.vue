@@ -5,10 +5,16 @@ import { api } from "../api";
 import type { NodeInfo } from "../types";
 import StatusMark from "../components/StatusMark.vue";
 import { useAutoRefresh } from "../composables/useAutoRefresh";
-import { formatGpuPower, formatGpuTemperature } from "../nodePresentation";
+import {
+  compareNodes,
+  validatedVramSummary,
+  formatGpuPower,
+  formatGpuTemperature,
+} from "../nodePresentation";
 
 const nodes = ref<NodeInfo[]>([]);
 const error = ref("");
+const orderedNodes = computed(() => [...nodes.value].sort(compareNodes));
 const maintenanceNode = ref<NodeInfo | null>(null);
 const onlineCount = computed(
   () => nodes.value.filter((node) => node.health !== "OFFLINE").length,
@@ -84,7 +90,7 @@ function nodePolicyTitle(node: NodeInfo) {
     return "ModelView 交互任务首选 · 当前为共享状态";
   }
   if (node.id === "worker-4070ti-animation-host-01") {
-    return "12 GiB 普通推理节点 · 不参与 ModelView 交互任务";
+    return "按工作流兼容性参与共享推理";
   }
   if (node.id === "worker-3090-b") {
     if (active?.key === "substance-bake")
@@ -110,7 +116,7 @@ function nodePolicyDetail(node: NodeInfo) {
     return "ModelView 交互任务默认首选；空闲时继续参与抠图、粗糙度等兼容任务。";
   }
   if (node.id === "worker-4070ti-animation-host-01") {
-    return "可接兼容的普通推理；ModelView 交互任务需要 24 GiB，本节点被硬排除。";
+    return "任务分配以工作流兼容性、资源门槛和该节点验收结果为准。";
   }
   if (node.id === "worker-3090-b") {
     if (active?.key === "substance-bake")
@@ -125,7 +131,7 @@ function nodePolicyDetail(node: NodeInfo) {
       return "软保护已到期，Asset API 正在清理过期标签并回写 ACTIVE；无需人工等待。";
     return "可接普通推理；生产烘焙到达后获得下一 GPU 执行权。";
   }
-  return "按兼容性、缓存亲和与公平队列参与抠图、局部重绘、单视图生成、单视图局部重绘和粗糙度。";
+  return "按工作流兼容性与节点验收结果领取任务，并遵循缓存亲和与公平队列。";
 }
 async function load() {
   error.value = "";
@@ -251,10 +257,10 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 
     <section class="gpu-specialization-guide">
       <div>
-        <strong>普通任务四卡共享</strong>
+        <strong>兼容任务跨节点共享</strong>
         <span
-          >局部重绘、单视图生成和单视图局部重绘只分配到 4090、3090-A、3090-B
-          三台 24 GiB GPU； 4070Ti 继续参与其它兼容任务。</span
+          >节点由接口动态登记；任务按工作流版本、资源门槛与专项验收结果分配。
+          新节点完成验收并启用后参与调度。</span
         >
       </div>
       <div>
@@ -279,7 +285,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 
     <div class="node-list">
       <section
-        v-for="node in nodes"
+        v-for="node in orderedNodes"
         :key="node.id"
         class="node-card"
         :class="{
@@ -384,13 +390,18 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           }"
         >
           <strong>{{ nodePolicyTitle(node) }}</strong>
-          <span>{{ nodePolicyDetail(node) }}</span>
+          <span
+            >{{ nodePolicyDetail(node) }}
+            <span v-if="validatedVramSummary(node)" class="validated-profile">{{
+              validatedVramSummary(node)
+            }}</span></span
+          >
           <small>GPU 1 槽 · CPU Asset 独立</small>
         </div>
       </section>
       <div v-if="!nodes.length && !refreshing" class="empty-state action-empty">
         <strong>尚无 GPU 节点接入</strong
-        ><span>节点首次上报真实心跳后会自动显示在这里。</span>
+        ><span>节点完成登记后会自动显示在这里。</span>
       </div>
     </div>
 
@@ -489,3 +500,59 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
     </div>
   </div>
 </template>
+
+<style scoped>
+.node-main-row {
+  grid-template-columns: minmax(180px, 1fr) auto minmax(420px, 1.8fr);
+  gap: 18px 22px;
+}
+.node-primary-actions,
+.node-card .offline-node-note {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+.node-primary-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.node-card .offline-node-note {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.node-identity > div {
+  min-width: 0;
+}
+.node-identity p {
+  overflow-wrap: anywhere;
+}
+.node-metrics {
+  min-width: 0;
+  gap: 12px;
+}
+.node-policy-strip > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 1200px) {
+  .node-main-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .node-metrics {
+    grid-column: 1 / -1;
+  }
+}
+@media (max-width: 720px) {
+  .node-main-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .node-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.validated-profile {
+  display: block;
+  margin-top: 8px;
+  color: #68d9b8;
+}
+</style>

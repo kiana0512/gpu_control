@@ -1,0 +1,16 @@
+nodes:
+  - id: worker-5070ti-01
+    display_name: 5070 Ti
+    host: 10.3.34.18
+    base_url: http://10.3.34.18:8188
+    agent_url: http://10.3.34.18:9201
+    pool: PRIMARY
+    mode: DISABLED
+    gpu: RTX5070Ti
+    hostname: LILITHG-N0K4M0L
+    mac: 34:5a:60:4b:2b:3d
+    gpu_uuid: GPU-5fa565eb-b1de-57ed-d43b-03c602cecf06
+    wsl_runtime: true
+    dcgm_exporter_enabled: false
+    vram_class: 16gb
+    max_concurrency: 1

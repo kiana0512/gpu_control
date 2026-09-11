@@ -20,6 +20,7 @@ services:
     depends_on:
       api: {condition: service_healthy}
       asset-api: {condition: service_healthy}
+      realesrgan-controller: {condition: service_healthy}
       web: {condition: service_healthy}
     healthcheck: {test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health/live"], interval: 15s, timeout: 3s, retries: 5}
     logging: *default-logging
@@ -72,6 +73,49 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
     healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health/live',timeout=2)"], interval: 15s, timeout: 3s, retries: 5}
+
+  realesrgan-controller:
+    <<: *app
+    build:
+      context: ../..
+      dockerfile: apps/realesrgan/Dockerfile.controller
+      args:
+        GPU_CONTROL_VERSION: ${REALESRGAN_VERSION:-1.0.0}
+        GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-realesrgan-controller:${REALESRGAN_IMAGE_TAG:-1.0.0}
+    environment:
+      REALESRGAN_RESULT_ROOT: /srv/gpu-control/realesrgan
+      REALESRGAN_MAX_QUEUE: ${REALESRGAN_MAX_QUEUE:-64}
+      REALESRGAN_QUEUE_TIMEOUT_SECONDS: ${REALESRGAN_QUEUE_TIMEOUT_SECONDS:-120}
+      REALESRGAN_INFERENCE_TIMEOUT_SECONDS: ${REALESRGAN_INFERENCE_TIMEOUT_SECONDS:-300}
+      REALESRGAN_CACHE_TTL_SECONDS: ${REALESRGAN_CACHE_TTL_SECONDS:-600}
+      REALESRGAN_NODES: ${REALESRGAN_NODES:?Set the accepted RealESRGAN node inventory in .env}
+    volumes:
+      - ${REALESRGAN_RESULT_ROOT:-/srv/gpu-control/realesrgan}:/srv/gpu-control/realesrgan
+    depends_on:
+      postgres: {condition: service_healthy}
+      realesrgan-worker-4090: {condition: service_healthy}
+    healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9300/health/live',timeout=2)"], interval: 15s, timeout: 3s, retries: 5}
+
+  realesrgan-worker-4090:
+    env_file: ../../.env
+    build:
+      context: ../..
+      dockerfile: apps/realesrgan/Dockerfile.worker
+      args:
+        GPU_CONTROL_VERSION: ${REALESRGAN_VERSION:-1.0.0}
+        GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-realesrgan-worker:${REALESRGAN_IMAGE_TAG:-1.0.0}
+    restart: unless-stopped
+    environment:
+      NODE_ID: control-4090
+      NODE_DISPLAY_NAME: "4090"
+      REALESRGAN_TILE: ${REALESRGAN_TILE:-256}
+      REALESRGAN_TILE_PAD: ${REALESRGAN_TILE_PAD:-16}
+    deploy: {resources: {reservations: {devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]}}}
+    healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9301/health/live',timeout=2)"], interval: 15s, timeout: 5s, start_period: 60s, retries: 5}
+    logging: *default-logging
+    networks: [backend]
 
   asset-worker-control:
     profiles: ["asset-plane"]

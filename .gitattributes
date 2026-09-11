@@ -29,3 +29,11 @@ resources/retopology-direct-v2/** -text !eol
 # Runtime-approved Skills are also SHA-256 pinned byte-for-byte. Preserve the
 # reviewed bytes (including upstream line endings) on every checkout.
 runtime/asset-skills/** -text !eol
+
+# Deployment receipt hashes refer to the exact Windows preparation archive bytes.
+artifacts/control-plane/5070ti-20260911/windows-prep/** -text !eol
+
+# Verbatim release diffs and tool receipts retain their original whitespace.
+artifacts/control-plane/5070ti-20260911/** -whitespace
+artifacts/asset-worker/5070ti-20260911/** -whitespace
+artifacts/control-plane/5070ti-20260911/evidence/** -text !eol

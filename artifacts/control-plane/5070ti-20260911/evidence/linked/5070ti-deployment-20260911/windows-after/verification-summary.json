@@ -1,0 +1,17 @@
+{
+  "result": "PASS",
+  "runtime_watchdog_observed_seconds": 186.4,
+  "original_task_pid": 6128,
+  "original_keepalive_pid": 5244,
+  "wsl_boot_id": "bd92343c-4da8-4d0c-abdc-1283794cb054",
+  "ports": {
+    "2222": 22,
+    "8188": 8188,
+    "9100": 9100,
+    "9201": 9201,
+    "9301": 9301
+  },
+  "source_boundary": "all IPv4 except 10.3.34.11 and all IPv6 blocked",
+  "auto_admin_logon_enabled": false,
+  "native_licence_state": "no installation/activation verified"
+}

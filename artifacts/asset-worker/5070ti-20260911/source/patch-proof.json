@@ -1,0 +1,21 @@
+{
+  "base_image_id": "sha256:425f3e3cb5ad6aa5e41ad6968c0221ab5bcd24bdbdd593d815981ca43d1cae25",
+  "derived_image_id": "sha256:9a871e05c74d6f2bffd4097dae379aea8affc380bc00006a3d0cafb0db36084b",
+  "base_main_sha256": "918da248d79f1e41c572d0148e07c0abff317b8bd587315b9f3f69734c216c87",
+  "patched_main_sha256": "d4b934334400d9337971dd6058fc4ac228bee9be56eb9a943eeef5ddadf4c9f1",
+  "only_changed_functions": [
+    "classify_codex_error",
+    "inspect_codex_auth",
+    "inspect_codex_runtime",
+    "run_codex_health_probe"
+  ],
+  "all_other_top_level_ast_equal": true,
+  "image_base_layers_unchanged": true,
+  "new_layer_count": 1,
+  "tests_passed": 38,
+  "test_dependency_image": "gpu-control/5070ti-codex-probe-test:20260911",
+  "test_dependencies_in_production_image": false,
+  "probe_only_patch_sha256": "61ed8b25cc1554939115abeaf04cd81eefe3a824c2a319c577a0071eda3bf00b",
+  "additional_test_file_sha256": "7b4f04e2c6b6d5b4ebf3fdf3211cf832180edffee3b2403c3eee1dd1dc6d84c6",
+  "ruff_additional_tests": "PASS"
+}

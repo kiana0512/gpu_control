@@ -1,0 +1,120 @@
+{
+  "created_at": "2026-09-11T03:35:08.321767+00:00",
+  "images": [
+    {
+      "tag": "gpu-control-api:1.5.23.post3-5070-c61648f",
+      "local_image_id": "sha256:1e2e087986fc3c069df272c588730e46d5ff63c075a2e0e211319c85565876d5",
+      "rootfs_layers": [
+        "sha256:aca83606673032726b42f8e1396ceb979c32bfb26b602732baf699053e46b33e",
+        "sha256:b3a19b5ba9637c600bb37a67b0a30d8349ebc8f7602fc9c46376f7855a9b3c57",
+        "sha256:933d50692269a20734b5e6e54c70c009b27a46d8fdd90c8fbb8a7f3941c97e70",
+        "sha256:ac1568d6117bb1cf7d91e2d4dc47b3b1907c568e1b60b6825599cf5763b1a0a8",
+        "sha256:00725b2e9bc8063a2c5f9b9f7fbc2fc719458eb0abe1380936e8084c27a710ae",
+        "sha256:32f59b35be46f3bb6feb25d4cf49f56e5324f1be0c89f525ce38b96e8ce64cf6",
+        "sha256:f437607ee79060aec7c83c36ec8a5b4415f8ebe7754d734fedd3494d69d6962d",
+        "sha256:a5a25d703c5a83fb4b0841937accc80db6094ad9c2962b27ea1e6fc87f86d0c3",
+        "sha256:a5c65c4ccc77edd9e57df4cbc8dd4ec23efd3f48cd959ff400f742d8a83d37f3",
+        "sha256:9c74a257de2eb2cc15e079a8bedf13eaf517b7d6fcbab6b5dad0bd1ffccd4197",
+        "sha256:b113c3d83fce186c7afdbc4c7cf12aa75f4a2ad3d4badd34ced398eaa8fda1f9",
+        "sha256:4dfd70c5e3215bd4a2a0413531b5e2d7b010c8582b54fb5f85b288118e09f7bb",
+        "sha256:aa28482dfcf88322825ad350ea4d5f8f4a8fc7d16c0ceeec1868c3a5b8e1f39a",
+        "sha256:0bf8b45b8bff0c803f4fe34ebf8aa0525beedaa80b3361b97eebfe66a395ac24",
+        "sha256:5298520422a93f75fb5cfe0073b44b2ed6a2ba10adccb8059a9a03169c9dbb10",
+        "sha256:222897ca8fd6385088e9207be6a55172fb4c90441d8201e294268eac472c81c5",
+        "sha256:ec4cee6f7cdac575bd2943a6e4fe38587add62a4ea2f3cb31809136e1b0de0e7",
+        "sha256:e2e702e2895a4379033f79d433b351a3dd21b38c331d633b01beece46225969a"
+      ],
+      "labels": {
+        "com.docker.compose.project": "gpu-control",
+        "com.docker.compose.service": "api",
+        "com.docker.compose.version": "5.3.1",
+        "io.gpu-control.adapter.base-image-id": "sha256:3557bc09ea8cf9427bca3f1a9d351d4f554fd8babf2501bf1707b55b92d21dd8",
+        "io.gpu-control.adapter.scope": "terminal-batch-guard-and-codex-freshness-limits",
+        "org.opencontainers.image.revision": "c61648fe96fd5be429cd1f7b470da43131b88204",
+        "org.opencontainers.image.source": "https://github.com/kiana0512/gpu_control.git",
+        "org.opencontainers.image.title": "GPU Control API",
+        "org.opencontainers.image.version": "1.5.23.post3"
+      },
+      "identity_semantics": "Docker Engine local ID; not asserted to be a registry digest"
+    },
+    {
+      "tag": "gpu-control-scheduler:1.5.23.post3-5070-c61648f",
+      "local_image_id": "sha256:a797999f82f6711266f6bd6d46c2cf274d395820d79209b2856098728c7a4ecd",
+      "rootfs_layers": [
+        "sha256:aca83606673032726b42f8e1396ceb979c32bfb26b602732baf699053e46b33e",
+        "sha256:b3a19b5ba9637c600bb37a67b0a30d8349ebc8f7602fc9c46376f7855a9b3c57",
+        "sha256:933d50692269a20734b5e6e54c70c009b27a46d8fdd90c8fbb8a7f3941c97e70",
+        "sha256:ac1568d6117bb1cf7d91e2d4dc47b3b1907c568e1b60b6825599cf5763b1a0a8",
+        "sha256:00725b2e9bc8063a2c5f9b9f7fbc2fc719458eb0abe1380936e8084c27a710ae",
+        "sha256:32f59b35be46f3bb6feb25d4cf49f56e5324f1be0c89f525ce38b96e8ce64cf6",
+        "sha256:7e3c1e826d5f2edc32fd5454d2d0b1034757e1473f8005420d98b39f3680a54e",
+        "sha256:9dae6219818dac4fbdda576f8208ea9915076336c794ecb7678f461268b100ce",
+        "sha256:924032d59c47ad7101056be08a64de42f3e1ab6a6d2ba0eeb83e790a9c72a687",
+        "sha256:d345d313f0bcb494a6f2bc9eaa8b8f9d46e79be853491e3390fb48df7e96fa7d",
+        "sha256:14a75ebe310c1c0a87dbcc0fd848e00aa4c4ea0390a6c62bf0df3850e7cad12d",
+        "sha256:a594897f2ca2ad5abe5103ae424cde84257998db214fa88b47d4aa61bb89e78c",
+        "sha256:ec4cee6f7cdac575bd2943a6e4fe38587add62a4ea2f3cb31809136e1b0de0e7",
+        "sha256:bc177e80f861fd81e3efdfe1e5cdc42d48dbd83e7fc44c40ba4bc311fbd646e0"
+      ],
+      "labels": {
+        "com.docker.compose.project": "gpu-control",
+        "com.docker.compose.service": "scheduler",
+        "com.docker.compose.version": "5.3.1",
+        "io.gpu-control.adapter.base-image-id": "sha256:faec3e7064053e1e8624c9f1b4834708972d707a949041a97090c041a1908993",
+        "io.gpu-control.adapter.scope": "terminal-batch-guard-and-codex-freshness-limits",
+        "org.opencontainers.image.revision": "c61648fe96fd5be429cd1f7b470da43131b88204",
+        "org.opencontainers.image.source": "https://github.com/kiana0512/gpu_control.git",
+        "org.opencontainers.image.title": "GPU Control Scheduler",
+        "org.opencontainers.image.version": "1.5.23.post3"
+      },
+      "identity_semantics": "Docker Engine local ID; not asserted to be a registry digest"
+    },
+    {
+      "tag": "gpu-control-web:1.5.23-5070-ui-350c388",
+      "local_image_id": "sha256:82dfe654a884fbc6c4e71a79b17a4c211d73eec9c20d5c4b19a1b3f3ff3da251",
+      "rootfs_layers": [
+        "sha256:922ec217407c0fd31cb18b46090bf62e439fb53ecd01f09406d62e25a906e09b",
+        "sha256:412e147b334cddb83eedf352f7f2ea40844abceb3614a5d9c9726d076e5c3b6f",
+        "sha256:570a1c87f279a67fc5509cf76c4b57cf722c8de9f9cdaa214c787d0fb0e1e7a5",
+        "sha256:34034c5235653389adbf8982e9fc868561e62e5d88c58c878331ed89abfd1a6f",
+        "sha256:7d9abb9ab3b7a473c37818aee5eb0f4637716ef9d8b28989ebab09d29f987246",
+        "sha256:5f23a9cf34f1103f7564dfb3f036e877efedde5372cb2190285418008372fdde",
+        "sha256:a231a657395e32fc50a9dd243cbf8476a246468d0faf68dacfd9a9a1befbb456",
+        "sha256:90ec271303985395afe0c2966824bb392d291365e94b87df2c4582c30b0bc18a",
+        "sha256:c764023f7c06758fc341a7203498d0ba12b28e44245ee28d4a1094df0a770f45",
+        "sha256:94eec3515e86377e233aaf68e1ae317264a2b179b39159711e79376011476ca2",
+        "sha256:2608c0c200aadb2532bf8b171568bdfbd97c661331783a3810dc1c3778b6b7b9",
+        "sha256:722fc99616d9af25509e84015b3495005d1cd5b678535a8a798917b76b2fae6e",
+        "sha256:e750ad94128a62ebd72211a8ea7a7c8360701a3172d8ef3809f08afaea168bb9",
+        "sha256:db2f8a713eb928d8eec21e7f82648d222633ae615f3d41d61f797eb8a8205808"
+      ],
+      "labels": {
+        "gpu-control.base.image": "sha256:5a7044be87a5af8c05d905de0f6b06866ec1d5849e76ad84ba7af09bf0fa6395",
+        "gpu-control.source.snapshot": "b6827e72eef46f8d82ce2ad6d500ea250b2146ec",
+        "maintainer": "NGINX Docker Maintainers <docker-maint@nginx.com>",
+        "org.opencontainers.image.revision": "350c388d83a7d64ed7bc5e9148c54d1b89d3f43d",
+        "org.opencontainers.image.source": "https://github.com/kiana0512/gpu_control.git",
+        "org.opencontainers.image.title": "GPU Control Web",
+        "org.opencontainers.image.version": "1.5.23-5070-ui.2"
+      },
+      "identity_semantics": "Docker Engine local ID; not asserted to be a registry digest"
+    }
+  ],
+  "archive_name": "runtime-images.tar.gz",
+  "archive_sha256": "d648239a8f31ca0c16d45703c8cbb6fb896aea7b3a24e8928bf97bfce74d7161",
+  "compressed_size_bytes": 155435934,
+  "parts": [
+    {
+      "file": "runtime-images.tar.gz.part-000",
+      "size_bytes": 134217728,
+      "sha256": "70b1a7aa67eb4fd3750c12a2eac4222de09a77bf880f142a8126a94cbb24bb0b"
+    },
+    {
+      "file": "runtime-images.tar.gz.part-001",
+      "size_bytes": 21218206,
+      "sha256": "1930cd22f31119651f3527362caee0db2f896b27fc2aa1748675d6c5f41e7436"
+    }
+  ],
+  "parts_reread_verified": true,
+  "deployed_runtime_volumes_included": false
+}

@@ -1,0 +1,140 @@
+{
+  "kind": "live-production-final-core-route-audit",
+  "at": "2026-09-11T03:43:36.859Z",
+  "origin": "https://10.3.34.11",
+  "routes": [
+    {
+      "path": "/",
+      "label": "总览",
+      "responses": [
+        {
+          "path": "/admin/nodes",
+          "status": 200
+        },
+        {
+          "path": "/admin/asset-processing",
+          "status": 200
+        },
+        {
+          "path": "/admin/dashboard",
+          "status": 200
+        },
+        {
+          "path": "/admin/jobs",
+          "status": 200
+        }
+      ],
+      "http_status": 200,
+      "final_path": "/",
+      "heading": "生产运行总览",
+      "visible_error_banners": [],
+      "api_failed": [],
+      "passed": true
+    },
+    {
+      "path": "/nodes",
+      "label": "GPU 节点",
+      "responses": [
+        {
+          "path": "/admin/nodes",
+          "status": 200
+        }
+      ],
+      "http_status": 200,
+      "final_path": "/nodes",
+      "heading": "GPU 推理节点",
+      "visible_error_banners": [],
+      "api_failed": [],
+      "nodes": 5,
+      "passed": true
+    },
+    {
+      "path": "/realesrgan",
+      "label": "AI 高清化",
+      "responses": [
+        {
+          "path": "/admin/realesrgan",
+          "status": 200
+        }
+      ],
+      "http_status": 200,
+      "final_path": "/realesrgan",
+      "heading": "Real-ESRGAN AI 高清化",
+      "visible_error_banners": [],
+      "api_failed": [],
+      "readiness": "集群状态\n5 / 5 节点就绪\n禁止 CPU 回退",
+      "passed": true
+    },
+    {
+      "path": "/codex",
+      "label": "Codex Workers",
+      "responses": [
+        {
+          "path": "/admin/asset-processing",
+          "status": 200
+        },
+        {
+          "path": "/admin/nodes",
+          "status": 200
+        }
+      ],
+      "http_status": 200,
+      "final_path": "/codex",
+      "heading": "Codex 运行中心",
+      "visible_error_banners": [],
+      "api_failed": [],
+      "nodes": 5,
+      "states": [
+        {
+          "node": "control-4090",
+          "label": "授权已失效"
+        },
+        {
+          "node": "worker-3090-a",
+          "label": "真实调用正常"
+        },
+        {
+          "node": "worker-3090-b",
+          "label": "真实调用正常"
+        },
+        {
+          "node": "worker-4070ti-animation-host-01",
+          "label": "真实调用正常"
+        },
+        {
+          "node": "worker-5070ti-01",
+          "label": "尚未授权"
+        }
+      ],
+      "passed": true
+    },
+    {
+      "path": "/settings",
+      "label": "系统信息",
+      "responses": [
+        {
+          "path": "/admin/asset-processing",
+          "status": 200
+        },
+        {
+          "path": "/admin/dashboard",
+          "status": 200
+        }
+      ],
+      "http_status": 200,
+      "final_path": "/settings",
+      "heading": "系统信息",
+      "visible_error_banners": [],
+      "api_failed": [],
+      "passed": true
+    }
+  ],
+  "blocked_mutations": [],
+  "errors": [],
+  "footer": "控制平面在线\nWebUI 1.5.23-5070-ui.2\nRevision 350c388d83a7",
+  "login": {
+    "path": "/login",
+    "password_field": 1
+  },
+  "status": "PASSED"
+}

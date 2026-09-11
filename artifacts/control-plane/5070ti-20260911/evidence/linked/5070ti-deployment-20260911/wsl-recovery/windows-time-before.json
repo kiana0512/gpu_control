@@ -1,0 +1,31 @@
+{
+  "WindowsUtc": "2026-09-10T12:53:11.4048952Z",
+  "WindowsEpoch": 1789044791,
+  "Domain": {
+    "Domain": "WORKGROUP",
+    "Name": "LILITHG-N0K4M0L",
+    "PartOfDomain": false
+  },
+  "Service": [
+    {
+      "Status": "Stopped",
+      "StartType": "Manual"
+    }
+  ],
+  "Parameters": {
+    "Type": "NTP",
+    "NtpServer": "time.windows.com,0x9"
+  },
+  "NtpClient": {
+    "SpecialPollInterval": 16384,
+    "Enabled": 1
+  },
+  "CorrectionBounds": {
+    "MaxNegPhaseCorrection": 54000,
+    "MaxPosPhaseCorrection": 54000
+  },
+  "PolicyParameters": [],
+  "PolicyNtpClient": [],
+  "control_capture_epoch": 1789096320.378239,
+  "observed_clock_offset_seconds": 51529.4
+}

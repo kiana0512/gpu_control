@@ -1,0 +1,8 @@
+{
+  "file": "asset-runtime.tar.gz.part-000",
+  "sha256": "6a6345e62c94cdff59d79367e14db22c61d7cfcd26fafe26ac020115c2008cfd",
+  "size_bytes": 125320171,
+  "file_count": 465,
+  "credentials_included": false,
+  "scope": "Approved public skills, Codex executable, RetopoFlow and public LAN CA; no runtime home"
+}

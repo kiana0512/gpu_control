@@ -1,0 +1,28 @@
+[
+  {
+    "component": "api",
+    "base_image": "gpu-control-api:1.5.23.post2-5070-13ef0a1",
+    "base_image_id": "sha256:3557bc09ea8cf9427bca3f1a9d351d4f554fd8babf2501bf1707b55b92d21dd8",
+    "tag": "gpu-control-api:1.5.23.post3-5070-c61648f",
+    "source_revision": "c61648fe96fd5be429cd1f7b470da43131b88204",
+    "image_id": "sha256:1e2e087986fc3c069df272c588730e46d5ff63c075a2e0e211319c85565876d5",
+    "base_layers_preserved": true,
+    "module_verified": {
+      "version": "1.5.23.post3",
+      "sha256": "102019d2ced507bacb32b80c0e6dc6bac5da9dabba986087fb6eef8daf5b0ea3"
+    }
+  },
+  {
+    "component": "scheduler",
+    "base_image": "gpu-control-scheduler:1.5.23.post2-5070-13ef0a1",
+    "base_image_id": "sha256:faec3e7064053e1e8624c9f1b4834708972d707a949041a97090c041a1908993",
+    "tag": "gpu-control-scheduler:1.5.23.post3-5070-c61648f",
+    "source_revision": "c61648fe96fd5be429cd1f7b470da43131b88204",
+    "image_id": "sha256:a797999f82f6711266f6bd6d46c2cf274d395820d79209b2856098728c7a4ecd",
+    "base_layers_preserved": true,
+    "module_verified": {
+      "version": "1.5.23.post3",
+      "sha256": "9aa92d411435aac137ede79545ee4ffe3f4247bb0e59171d96eec12201e92f6e"
+    }
+  }
+]

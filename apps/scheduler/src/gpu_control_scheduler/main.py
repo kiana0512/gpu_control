@@ -44,6 +44,7 @@ from packages.gpu_control_core.database import (
     SchedulerLockLost,
 )
 from packages.gpu_control_core.enums import (
+    TERMINAL_BATCH_STATUSES,
     TERMINAL_JOB_STATUSES,
     BatchItemStatus,
     BatchStatus,
@@ -1654,6 +1655,10 @@ class Scheduler:
                                             allowed_class_types=version.allowed_class_types,
                                             total_vram_mb=current.total_vram_mb,
                                             reported_labels=labels,
+                                            node_id=current.id,
+                                            workflow_key=version.workflow_key,
+                                            workflow_version=version.version,
+                                            template_sha256=version.template_sha256,
                                         )
                                         compatibility = await write_session.scalar(
                                             select(WorkflowNodeCompatibility).where(
@@ -2055,6 +2060,10 @@ class Scheduler:
                 select(JobBatch).where(JobBatch.id == batch_id).with_for_update()
             )
             if batch is None:
+                return False
+            # Assembly can finish after reconcile_batches reads its active ID
+            # snapshot. Recheck the locked row before changing items or progress.
+            if BatchStatus(batch.status) in TERMINAL_BATCH_STATUSES:
                 return False
             if batch.status == BatchStatus.ASSEMBLING.value:
                 return True

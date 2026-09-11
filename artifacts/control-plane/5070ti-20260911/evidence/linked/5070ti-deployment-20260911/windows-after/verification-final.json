@@ -1,0 +1,351 @@
+{
+  "NowUtc": "2026-09-10T12:01:34.9862480Z",
+  "Tasks": [
+    {
+      "Name": "GPUControl-worker-5070ti-01-WSL-Maintainer",
+      "State": "Running",
+      "UserId": "lilithgames",
+      "LogonType": "Interactive",
+      "RunLevel": "Highest",
+      "Actions": [
+        {
+          "Execute": "C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+          "Arguments": "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"C:\\ProgramData\\GPUControl\\worker-5070ti-01\\Update-GPUControlWslProxy.ps1\" -ConfigPath \"C:\\ProgramData\\GPUControl\\worker-5070ti-01\\proxy-config.json\" -Apply -Watch"
+        }
+      ],
+      "Triggers": [
+        {
+          "Type": "MSFT_TaskLogonTrigger",
+          "Enabled": true,
+          "UserId": "LILITHG-N0K4M0L\\lilithgames"
+        }
+      ],
+      "TimeLimit": "PT0S",
+      "StartWhenAvailable": true,
+      "RestartCount": 999,
+      "RestartInterval": "PT1M"
+    },
+    {
+      "Name": "GPUControl-worker-5070ti-01-WSL-RuntimeProxy",
+      "State": "Running",
+      "UserId": "lilithgames",
+      "LogonType": "Interactive",
+      "RunLevel": "Highest",
+      "Actions": [
+        {
+          "Execute": "C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+          "Arguments": "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"C:\\ProgramData\\GPUControl\\worker-5070ti-01\\Update-GPUControlWslProxy.ps1\" -ConfigPath \"C:\\ProgramData\\GPUControl\\worker-5070ti-01\\runtime-proxy\\proxy-config.json\" -Apply -Watch"
+        }
+      ],
+      "Triggers": [
+        {
+          "Type": "MSFT_TaskLogonTrigger",
+          "Enabled": true,
+          "UserId": "LILITHG-N0K4M0L\\lilithgames"
+        }
+      ],
+      "TimeLimit": "PT0S",
+      "StartWhenAvailable": true,
+      "RestartCount": 999,
+      "RestartInterval": "PT1M"
+    }
+  ],
+  "TaskInfo": [
+    {
+      "TaskName": "GPUControl-worker-5070ti-01-WSL-Maintainer",
+      "LastRunTime": "/Date(1788988324000)/",
+      "LastTaskResult": 267009,
+      "NumberOfMissedRuns": 0
+    },
+    {
+      "TaskName": "GPUControl-worker-5070ti-01-WSL-RuntimeProxy",
+      "LastRunTime": "/Date(1789041459000)/",
+      "LastTaskResult": 267009,
+      "NumberOfMissedRuns": 0
+    }
+  ],
+  "Proxies": [
+    "",
+    "Listen on ipv4:             Connect to ipv4:",
+    "",
+    "Address         Port        Address         Port",
+    "--------------- ----------  --------------- ----------",
+    "10.3.34.18      2222        192.168.255.166 22",
+    "10.3.34.18      8188        192.168.255.166 8188",
+    "10.3.34.18      9100        192.168.255.166 9100",
+    "10.3.34.18      9201        192.168.255.166 9201",
+    "10.3.34.18      9301        192.168.255.166 9301",
+    ""
+  ],
+  "Firewall": [
+    {
+      "Name": "GPUControl-worker-5070ti-01-Management-BlockOtherSources",
+      "Enabled": "True",
+      "Direction": "Inbound",
+      "Action": "Block",
+      "Profile": "Any",
+      "LocalAddress": [
+        "Any"
+      ],
+      "RemoteAddress": [
+        "128.0.0.0/128.0.0.0",
+        "64.0.0.0/192.0.0.0",
+        "32.0.0.0/224.0.0.0",
+        "16.0.0.0/240.0.0.0",
+        "0.0.0.0/248.0.0.0",
+        "12.0.0.0/252.0.0.0",
+        "8.0.0.0/254.0.0.0",
+        "11.0.0.0/255.0.0.0",
+        "10.128.0.0/255.128.0.0",
+        "10.64.0.0/255.192.0.0",
+        "10.32.0.0/255.224.0.0",
+        "10.16.0.0/255.240.0.0",
+        "10.8.0.0/255.248.0.0",
+        "10.4.0.0/255.252.0.0",
+        "10.0.0.0/255.254.0.0",
+        "10.2.0.0/255.255.0.0",
+        "10.3.128.0/255.255.128.0",
+        "10.3.64.0/255.255.192.0",
+        "10.3.0.0/255.255.224.0",
+        "10.3.48.0/255.255.240.0",
+        "10.3.40.0/255.255.248.0",
+        "10.3.36.0/255.255.252.0",
+        "10.3.32.0/255.255.254.0",
+        "10.3.35.0/255.255.255.0",
+        "10.3.34.128/255.255.255.128",
+        "10.3.34.64/255.255.255.192",
+        "10.3.34.32/255.255.255.224",
+        "10.3.34.16/255.255.255.240",
+        "10.3.34.0/255.255.255.248",
+        "10.3.34.12/255.255.255.252",
+        "10.3.34.8/255.255.255.254",
+        "10.3.34.10",
+        "::/1",
+        "8000::/1"
+      ],
+      "LocalPort": [
+        "22",
+        "2222",
+        "8188",
+        "9100",
+        "9201",
+        "9301"
+      ],
+      "Protocol": "TCP"
+    },
+    {
+      "Name": "GPUControl-worker-5070ti-01-WindowsSSH-From-Control",
+      "Enabled": "True",
+      "Direction": "Inbound",
+      "Action": "Allow",
+      "Profile": "Any",
+      "LocalAddress": [
+        "10.3.34.18"
+      ],
+      "RemoteAddress": [
+        "10.3.34.11"
+      ],
+      "LocalPort": [
+        "22"
+      ],
+      "Protocol": "TCP"
+    },
+    {
+      "Name": "GPUControl-worker-5070ti-01-WSL-From-Control",
+      "Enabled": "True",
+      "Direction": "Inbound",
+      "Action": "Allow",
+      "Profile": "Any",
+      "LocalAddress": [
+        "10.3.34.18"
+      ],
+      "RemoteAddress": [
+        "10.3.34.11"
+      ],
+      "LocalPort": [
+        "2222"
+      ],
+      "Protocol": "TCP"
+    },
+    {
+      "Name": "GPUControl-worker-5070ti-01-runtime-WSL-From-Control",
+      "Enabled": "True",
+      "Direction": "Inbound",
+      "Action": "Allow",
+      "Profile": "Any",
+      "LocalAddress": [
+        "10.3.34.18"
+      ],
+      "RemoteAddress": [
+        "10.3.34.11"
+      ],
+      "LocalPort": [
+        "8188",
+        "9100",
+        "9201",
+        "9301"
+      ],
+      "Protocol": "TCP"
+    }
+  ],
+  "Profiles": [
+    {
+      "Name": "Domain",
+      "Enabled": 1,
+      "DefaultInboundAction": "Block"
+    },
+    {
+      "Name": "Private",
+      "Enabled": 1,
+      "DefaultInboundAction": "Block"
+    },
+    {
+      "Name": "Public",
+      "Enabled": 1,
+      "DefaultInboundAction": "Block"
+    }
+  ],
+  "Files": [
+    {
+      "Path": "C:\\ProgramData\\GPUControl\\worker-5070ti-01\\Update-GPUControlWslProxy.ps1",
+      "SHA256": "01F695A3DAFA393A8C8BC2EB3A262919B2CFC9D7BA4E217CE1446F569A7BB1B0",
+      "LastWriteTimeUtc": "2026-09-09T21:12:04.5419695Z"
+    },
+    {
+      "Path": "C:\\ProgramData\\GPUControl\\worker-5070ti-01\\proxy-config.json",
+      "SHA256": "75B178564882D8E949A94977A54E8944C5CA755659BB592BC142C4A212C8B085",
+      "LastWriteTimeUtc": "2026-09-09T21:09:43.7739584Z"
+    },
+    {
+      "Path": "C:\\ProgramData\\GPUControl\\worker-5070ti-01\\proxy-ownership.json",
+      "SHA256": "ECB26FE50301B9AAC2D52386BD1EE2B3F68B4D6F08C0F135460B24965B47AAE7",
+      "LastWriteTimeUtc": "2026-09-10T12:01:16.8609808Z"
+    },
+    {
+      "Path": "C:\\ProgramData\\GPUControl\\worker-5070ti-01\\runtime-proxy\\proxy-config.json",
+      "SHA256": "46E6B157077364087279D2D3AFD06D2115EB35634C143CAAB053EC4C02DF49DC",
+      "LastWriteTimeUtc": "2026-09-10T11:56:57.2935008Z"
+    },
+    {
+      "Path": "C:\\ProgramData\\GPUControl\\worker-5070ti-01\\runtime-proxy\\proxy-ownership.json",
+      "SHA256": "E2A3BB40FC86C765882185FEBC828D01B147BEA90C7241EC6C3E60952303E560",
+      "LastWriteTimeUtc": "2026-09-10T12:00:45.3855339Z"
+    }
+  ],
+  "KeepaliveProcesses": [
+    {
+      "Name": "wsl.exe",
+      "ProcessId": 6292,
+      "ParentProcessId": 22856,
+      "CreationDate": "/Date(1788988187635)/",
+      "CommandLine": "\"C:\\windows\\System32\\wsl.exe\" -d Ubuntu-22.04 -u root -- /usr/bin/sleep infinity "
+    },
+    {
+      "Name": "wsl.exe",
+      "ProcessId": 15988,
+      "ParentProcessId": 6292,
+      "CreationDate": "/Date(1788988187683)/",
+      "CommandLine": "\"C:\\windows\\System32\\wsl.exe\" -d Ubuntu-22.04 -u root -- /usr/bin/sleep infinity "
+    },
+    {
+      "Name": "powershell.exe",
+      "ProcessId": 6128,
+      "ParentProcessId": 4016,
+      "CreationDate": "/Date(1788988324756)/",
+      "CommandLine": "\"C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"C:\\ProgramData\\GPUControl\\worker-5070ti-01\\Update-GPUControlWslProxy.ps1\" -ConfigPath \"C:\\ProgramData\\GPUControl\\worker-5070ti-01\\proxy-config.json\" -Apply -Watch"
+    },
+    {
+      "Name": "wsl.exe",
+      "ProcessId": 5244,
+      "ParentProcessId": 6128,
+      "CreationDate": "/Date(1788988325321)/",
+      "CommandLine": "\"C:\\windows\\System32\\wsl.exe\" -d Ubuntu-22.04 -u root -- /usr/bin/sleep infinity "
+    },
+    {
+      "Name": "wsl.exe",
+      "ProcessId": 2120,
+      "ParentProcessId": 5244,
+      "CreationDate": "/Date(1788988325369)/",
+      "CommandLine": "\"C:\\windows\\System32\\wsl.exe\" -d Ubuntu-22.04 -u root -- /usr/bin/sleep infinity "
+    },
+    {
+      "Name": "powershell.exe",
+      "ProcessId": 27820,
+      "ParentProcessId": 4016,
+      "CreationDate": "/Date(1789041459406)/",
+      "CommandLine": "\"C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"C:\\ProgramData\\GPUControl\\worker-5070ti-01\\Update-GPUControlWslProxy.ps1\" -ConfigPath \"C:\\ProgramData\\GPUControl\\worker-5070ti-01\\runtime-proxy\\proxy-config.json\" -Apply -Watch"
+    },
+    {
+      "Name": "wsl.exe",
+      "ProcessId": 21792,
+      "ParentProcessId": 27820,
+      "CreationDate": "/Date(1789041459882)/",
+      "CommandLine": "\"C:\\windows\\System32\\wsl.exe\" -d Ubuntu-22.04 -u root -- /usr/bin/sleep infinity "
+    },
+    {
+      "Name": "wsl.exe",
+      "ProcessId": 27156,
+      "ParentProcessId": 21792,
+      "CreationDate": "/Date(1789041459934)/",
+      "CommandLine": "\"C:\\windows\\System32\\wsl.exe\" -d Ubuntu-22.04 -u root -- /usr/bin/sleep infinity "
+    }
+  ],
+  "RuntimeLog": [
+    "2026-09-10T11:57:39.0224425Z firewall_updated local=10.3.34.18 remote=10.3.34.11 ports=8188,9100,9201,9301",
+    "2026-09-10T11:57:39.1129860Z proxy_updated local=10.3.34.18:8188 target=192.168.255.166:8188",
+    "2026-09-10T11:57:39.1734921Z proxy_updated local=10.3.34.18:9100 target=192.168.255.166:9100",
+    "2026-09-10T11:57:39.2324877Z proxy_updated local=10.3.34.18:9201 target=192.168.255.166:9201",
+    "2026-09-10T11:57:39.2930485Z proxy_updated local=10.3.34.18:9301 target=192.168.255.166:9301"
+  ],
+  "ManagementLog": [
+    "2026-09-09T21:09:46.6277916Z firewall_updated local=10.3.34.18 remote=10.3.34.11 ports=2222",
+    "2026-09-09T21:09:46.7134910Z proxy_updated local=10.3.34.18:2222 target=192.168.255.166:22",
+    "2026-09-09T21:09:49.7461405Z firewall_updated local=10.3.34.18 remote=10.3.34.11 ports=2222",
+    "2026-09-09T21:10:50.8927599Z firewall_updated local=10.3.34.18 remote=10.3.34.11 ports=2222",
+    "2026-09-09T21:11:51.9714710Z firewall_updated local=10.3.34.18 remote=10.3.34.11 ports=2222"
+  ],
+  "AutoAdminLogonEnabled": false,
+  "DefaultPasswordValuePresent": false,
+  "InteractiveSessions": [
+    " USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME",
+    " lilithgames           console             1  Active      none   10/9/2026 ���� 4:54"
+  ],
+  "Dhcp": [
+    {
+      "Description": "Killer E5000B 5 Gigabit Ethernet Controller",
+      "MACAddress": "34:5A:60:4B:2B:3D",
+      "DHCPEnabled": true,
+      "DHCPServer": "10.3.34.1",
+      "DHCPLeaseObtained": "/Date(1789030446000)/",
+      "DHCPLeaseExpires": "/Date(1789059246000)/"
+    }
+  ],
+  "WslBootId": "bd92343c-4da8-4d0c-abdc-1283794cb054",
+  "WslServiceEnabled": [
+    "enabled",
+    "enabled",
+    "enabled"
+  ],
+  "ExecutionPolicies": [
+    {
+      "Scope": "MachinePolicy",
+      "Policy": "Undefined"
+    },
+    {
+      "Scope": "UserPolicy",
+      "Policy": "Undefined"
+    },
+    {
+      "Scope": "Process",
+      "Policy": "Bypass"
+    },
+    {
+      "Scope": "CurrentUser",
+      "Policy": "Undefined"
+    },
+    {
+      "Scope": "LocalMachine",
+      "Policy": "Undefined"
+    }
+  ]
+}

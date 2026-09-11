@@ -1,0 +1,27 @@
+{
+  "control_utc": "2026-09-11T03:06:24.552187+00:00",
+  "gpu_node": [
+    {
+      "id": "worker-5070ti-01",
+      "mode": "DRAINING",
+      "health": "ONLINE",
+      "current_jobs": "0"
+    }
+  ],
+  "asset_worker": [
+    {
+      "id": "asset-worker-5070ti-01",
+      "node_id": "worker-5070ti-01",
+      "status": "ONLINE",
+      "current_jobs": "0",
+      "codex_auth_status": "INVALID",
+      "codex_probe_status": "FAILED",
+      "retopoflow_probe_status": "HEALTHY"
+    }
+  ],
+  "comfy_queue": {
+    "running": 0,
+    "pending": 0
+  },
+  "wsl_before": "bd92343c-4da8-4d0c-abdc-1283794cb054\nThu Sep 10 20:55:56 2026\nactive\nactive\nactive\ngpu-control-node-blender-worker-1 Up 34 minutes\ngpu-control-node-comfyui-1 Up 9 minutes (healthy)\ngpu-control-node-realesrgan-worker-1 Up 43 minutes (healthy)\ngpu-control-node-alloy-1 Up 43 minutes\ngpu-control-node-node-exporter-1 Up 43 minutes\n"
+}

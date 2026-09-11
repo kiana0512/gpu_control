@@ -1,0 +1,61 @@
+........................................................................ [ 10%]
+........................................................................ [ 20%]
+....s................................................................... [ 30%]
+.............F............................F......................ssss... [ 41%]
+........................................................................ [ 51%]
+........................................................................ [ 61%]
+........................................................................ [ 71%]
+.........................sss............................................ [ 82%]
+.............................................................sss........ [ 92%]
+................................................sssss                    [100%]
+=================================== FAILURES ===================================
+________ test_bundled_cherry_sources_are_byte_exact_to_upstream_commit _________
+
+    def test_bundled_cherry_sources_are_byte_exact_to_upstream_commit() -> None:
+        expected = {}
+>       for line in (PLUGIN / "UPSTREAM.sha256").read_text(encoding="utf-8").splitlines():
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/unit/test_modelview_truev3_bundle.py:177: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/local/lib/python3.11/pathlib.py:1058: in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = PosixPath('/src/workflows/production/modelview-inpaint/custom_nodes/Cherry_KleinWorkflowTools/UPSTREAM.sha256')
+mode = 'r', buffering = -1, encoding = 'utf-8', errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: '/src/workflows/production/modelview-inpaint/custom_nodes/Cherry_KleinWorkflowTools/UPSTREAM.sha256'
+
+/usr/local/lib/python3.11/pathlib.py:1044: FileNotFoundError
+________ test_source_release_versions_match_current_component_versions _________
+
+    def test_source_release_versions_match_current_component_versions() -> None:
+>       assert source_versions(REPOSITORY) == {
+            "python": "1.5.23",
+            "web": "1.5.23",
+            "web_lock": "1.5.23",
+        }
+E       AssertionError: assert {'python': '1...ck': '1.5.23'} == {'python': '1...ck': '1.5.23'}
+E         
+E         Omitting 2 identical items, use -vv to show
+E         Differing items:
+E         {'python': '1.5.23.post3'} != {'python': '1.5.23'}
+E         Use -v to get more diff
+
+tests/unit/test_release_identity.py:18: AssertionError
+=========================== short test summary info ============================
+FAILED tests/unit/test_modelview_truev3_bundle.py::test_bundled_cherry_sources_are_byte_exact_to_upstream_commit
+FAILED tests/unit/test_release_identity.py::test_source_release_versions_match_current_component_versions
+2 failed, 683 passed, 16 skipped in 386.21s (0:06:26)

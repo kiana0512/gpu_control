@@ -1,0 +1,83 @@
+{
+  "created_at": "2026-09-11T03:36:20.804757+00:00",
+  "images": [
+    {
+      "tag": "li3d/blender-worker:1.4.75-uv-overlap-v28-pins1-codex-auth2",
+      "local_image_id": "sha256:0c6ea65709566114544710dcac3255b94ac71f53138f158e4a678c6abcacb992",
+      "rootfs_layers": [
+        "sha256:aca83606673032726b42f8e1396ceb979c32bfb26b602732baf699053e46b33e",
+        "sha256:b3a19b5ba9637c600bb37a67b0a30d8349ebc8f7602fc9c46376f7855a9b3c57",
+        "sha256:933d50692269a20734b5e6e54c70c009b27a46d8fdd90c8fbb8a7f3941c97e70",
+        "sha256:ac1568d6117bb1cf7d91e2d4dc47b3b1907c568e1b60b6825599cf5763b1a0a8",
+        "sha256:02321f9dff4072f37c1d13549f9f902a8d68fa8ed5a1bdac739e51d6e11893ec",
+        "sha256:33df6ac564245ef8cd5a683b6bee9c495bd1bde27baa14ad8e7299e9e618dd5f",
+        "sha256:2779645efca8494d0374fb64373da08918f563ab27602af463900d00bbdc0b10",
+        "sha256:5f94a3bb685fa2a9dbf85c3a0bcfe5410737094263011208e37f535d0f68cd05",
+        "sha256:7e839539ec956ffbee896dd52d7d267ab49af14eec4dc0c00d33efd10fe25864",
+        "sha256:1cce41c4bf73b7fc61a86ec463a6c704ca1df2cee952d1f8cb70b5b7c04c34fc",
+        "sha256:86ad509e3cbcd99777cc6bd608cc294f78aed48f29d8e1476d434c6b4568076e",
+        "sha256:aed31788b91ff7dee945128603bce4280a7b7996b9d7f10b4b45185bb39012f9",
+        "sha256:95c30a97242f1503164f7b1453a0dddca23df365d4c2e877d2e27c4184323439",
+        "sha256:7caa0d29993724e0c5375536763546929b2e31fd1e3f1b8a0fafce5d45917708",
+        "sha256:60101022a808abf764d38ad923e8b62d0d3bc0f77b1053ee26168ddaae51bd4b",
+        "sha256:93aa7b31c95420801d54fb90f0569e5eca1cbf5e086e7d2b3d3dd38c656cc24d",
+        "sha256:5f92d6a279c234a4d88e84bddb4fbdc7e9f67477ebe79c8ce679c5d03c27da59",
+        "sha256:6363eaee50f20799fa89a427b96ef7bcb1ab2c33fd4e8868fadb909652ebd0b1",
+        "sha256:0cef5dd6ccc97c89478141bcd44170d05e641915b4ed03e6745eb8cfff1d3b35",
+        "sha256:978c1e5684fe9f0827942caff5702a370d6c8b64f4a95661d511deae9a582822",
+        "sha256:0f73906bc7206d9db8d64e42732432abfecfcf3f9498476d23f366dd4d15f349",
+        "sha256:ef6b230b6d602cbbf800038beb6c5e956db9de3c3092abf1009e88a7e3655d70",
+        "sha256:176021eb7520e8fd5f5468c93fb2cdab6f2350b25c0191f312964c0da61e4f2a",
+        "sha256:a6487bf55ad19c4f501c2793085fe0528184678e0067ce16b953ea700e01e4f4"
+      ],
+      "labels": {
+        "com.docker.compose.project": "gpu-control",
+        "com.docker.compose.service": "asset-worker-control",
+        "com.docker.compose.version": "5.3.1",
+        "li3d.blender.archive.sha256": "21a6ab66b2a8b9f035fdb39c6445cdbe91e2fe1dcff30786148b757df7f9a9c5",
+        "org.opencontainers.image.revision": "143098c479664e71d9743ae26ee56391726e462a",
+        "org.opencontainers.image.source": "https://github.com/kiana0512/gpu_control.git",
+        "org.opencontainers.image.title": "GPU Control Blender Worker",
+        "org.opencontainers.image.version": "1.4.75-uv-overlap-v28-pins1-codex-auth2"
+      },
+      "identity_semantics": "Docker Engine local ID; not asserted to be a registry digest"
+    }
+  ],
+  "archive_name": "runtime-images.tar.gz",
+  "archive_sha256": "d911f9bd18649e67e5b21f714033cc1fd6f66c0ff63174a457ad9fb236b44b2c",
+  "compressed_size_bytes": 689900572,
+  "parts": [
+    {
+      "file": "runtime-images.tar.gz.part-000",
+      "size_bytes": 134217728,
+      "sha256": "f6be35414c62bec36517b1b636edc716364ca040eebba038e970dd8da528bef8"
+    },
+    {
+      "file": "runtime-images.tar.gz.part-001",
+      "size_bytes": 134217728,
+      "sha256": "3f3eaf925ca838c8336afb2d7cd6c83f54bf4750ac07f909674e13deb9082193"
+    },
+    {
+      "file": "runtime-images.tar.gz.part-002",
+      "size_bytes": 134217728,
+      "sha256": "9aa36ef3cc5984e4eb80067434aeccfbf2f888bb3c401fdc422d3b45d7627181"
+    },
+    {
+      "file": "runtime-images.tar.gz.part-003",
+      "size_bytes": 134217728,
+      "sha256": "30dcd56a8d8abe566a06bc6775292b87df4160aceb247a4ccd97168b865a18bf"
+    },
+    {
+      "file": "runtime-images.tar.gz.part-004",
+      "size_bytes": 134217728,
+      "sha256": "53020a6ad1bb438556379b0fd9a3a004fdd29d285fb8364c07809b4f84a2262c"
+    },
+    {
+      "file": "runtime-images.tar.gz.part-005",
+      "size_bytes": 18811932,
+      "sha256": "aabb2909af3228f8495e4f6723bd99eaffaa7be51defdaae09bdfbca8dfcfd31"
+    }
+  ],
+  "parts_reread_verified": true,
+  "deployed_runtime_volumes_included": false
+}

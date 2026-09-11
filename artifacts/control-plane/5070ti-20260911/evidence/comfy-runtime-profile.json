@@ -1,0 +1,91 @@
+{
+  "image_id": "sha256:5bdf5c62118881afe5439ea69557618e13dc3da250764e308e245d0e0876844d",
+  "command": [
+    "--disable-dynamic-vram",
+    "--lowvram",
+    "--reserve-vram",
+    "3.0",
+    "--cpu-vae",
+    "--disable-async-offload",
+    "--disable-pinned-memory"
+  ],
+  "mounts": [
+    [
+      "/srv/comfyui/runtime/input",
+      "/opt/comfyui/input",
+      true
+    ],
+    [
+      "/opt/modelviewcreator/model",
+      "/opt/modelviewcreator/model",
+      false
+    ],
+    [
+      "/opt/imageclip/ComfyLiterals",
+      "/opt/comfyui/custom_nodes/ComfyLiterals",
+      false
+    ],
+    [
+      "/opt/imageclip/models",
+      "/opt/comfyui/models",
+      false
+    ],
+    [
+      "/opt/modelviewcreator/ModelViewCreator_flux_Single-view Generation.json",
+      "/opt/comfyui/user/default/workflows/ModelViewCreator_flux_Single-view Generation.json",
+      false
+    ],
+    [
+      "/opt/imageclip/Cherry_lizi",
+      "/opt/comfyui/custom_nodes/Cherry_lizi",
+      false
+    ],
+    [
+      "/opt/imageclip/ImageClip.json",
+      "/opt/comfyui/user/default/workflows/ImageClip.json",
+      false
+    ],
+    [
+      "/opt/modelviewcreator/Flux2 Klein TrueV3-\u53cc\u56fe\u6750\u8d28\u7f16\u8f91-\u5c40\u90e8\u91cd\u7ed8.json",
+      "/opt/comfyui/user/default/workflows/ModelViewCreator_flux_fill_inpaint.json",
+      false
+    ],
+    [
+      "/usr/lib/wsl/lib",
+      "/usr/lib/wsl/lib",
+      false
+    ],
+    [
+      "/srv/comfyui/runtime/user",
+      "/opt/comfyui/user",
+      true
+    ],
+    [
+      "/opt/modelviewcreator/custom_nodes/haoze-LiClick",
+      "/opt/comfyui/custom_nodes/haoze-LiClick",
+      false
+    ],
+    [
+      "/opt/gpu-control/configs/comfyui-extra-model-paths.yaml",
+      "/opt/comfyui/extra_model_paths.yaml",
+      false
+    ],
+    [
+      "/srv/comfyui/runtime/temp",
+      "/opt/comfyui/temp",
+      true
+    ],
+    [
+      "/srv/comfyui/runtime/output",
+      "/opt/comfyui/output",
+      true
+    ],
+    [
+      "/opt/modelviewcreator/ModelViewCreator_flux_fill_inpaint -View generation.json",
+      "/opt/comfyui/user/default/workflows/ModelViewCreator_flux_fill_inpaint -View generation.json",
+      false
+    ]
+  ],
+  "models_verification_log_sha256": "6217af33e86ba918372e61d6c9506cd5fabe30f2666bc24c6eb930cae39209a9",
+  "gpu_uuid": "GPU-5fa565eb-b1de-57ed-d43b-03c602cecf06"
+}

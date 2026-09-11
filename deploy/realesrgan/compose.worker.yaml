@@ -1,0 +1,23 @@
+name: gpu-control-realesrgan
+
+services:
+  worker:
+    image: registry.local:5000/gpu-control/realesrgan-worker:${REALESRGAN_IMAGE_TAG:-1.0.0}
+    restart: unless-stopped
+    environment:
+      NODE_ID: ${NODE_ID}
+      NODE_DISPLAY_NAME: ${NODE_ID}
+      REALESRGAN_INTERNAL_SECRET: ${REALESRGAN_INTERNAL_SECRET}
+      REALESRGAN_TILE: ${REALESRGAN_TILE:-256}
+      REALESRGAN_TILE_PAD: ${REALESRGAN_TILE_PAD:-16}
+    ports: ["0.0.0.0:9301:9301"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    logging:
+      driver: json-file
+      options: {max-size: "20m", max-file: "5"}

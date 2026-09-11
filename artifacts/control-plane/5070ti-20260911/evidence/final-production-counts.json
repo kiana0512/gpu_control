@@ -1,0 +1,18 @@
+{
+  "at": "2026-09-11T03:45:05.928456+00:00",
+  "node_id": "worker-5070ti-01",
+  "client_kind": "production",
+  "scope": "jobs assigned to this node, including individual batch item jobs",
+  "counts": {
+    "SUCCEEDED": 22,
+    "FAILED": 0
+  },
+  "workflows": [
+    {
+      "workflow_key": "imageclip-rgba",
+      "status": "SUCCEEDED",
+      "batch_item": true,
+      "count": 22
+    }
+  ]
+}

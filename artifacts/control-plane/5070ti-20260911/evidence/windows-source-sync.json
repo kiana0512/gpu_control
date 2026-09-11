@@ -1,0 +1,34 @@
+{
+  "files": {
+    "Update-GPUControlWslProxy.ps1": {
+      "before_sha256": "6048f5167fa84e14295cb193a2493543226a083a9bfdb3722292eacbef6d237b",
+      "authority_sha256": "01f695a3dafa393a8c8bc2eb3a262919b2cfc9d7ba4e217ce1446f569a7bb1b0",
+      "authority": "output/5070ti-deployment-20260911/windows-before/Update-GPUControlWslProxy.ps1",
+      "source_sha256": "01f695a3dafa393a8c8bc2eb3a262919b2cfc9d7ba4e217ce1446f569a7bb1b0",
+      "normalized_lf_sha256": "797a668e5e191657bb4bafc87053d30886181453874381f65ce35e220531dd26",
+      "checkout_crlf_sha256": "b7cb874577d51af1d42d4990b0bb2013ff5fe839f0e67705c58463fb7052cc9f",
+      "source_matches_authority_bytes": true,
+      "lf_count": 240,
+      "crlf_count": 2
+    },
+    "Initialize-GPUControlWindowsNode.ps1": {
+      "before_sha256": "4ba4c20c52fffc043ca77a47b4bb5fd2a0bfea10321f2639029614dab78033e0",
+      "authority_sha256": "afdce39c7dc8e985aeccb8812c5e3eac434fd1437f67ea95980e83b0002f44b5",
+      "authority": "output/5070ti-deployment-20260911/windows-before/adapted/Initialize-GPUControlWindowsNode.ps1",
+      "source_sha256": "caf33e77c8a8a6bf35421ad5f21c2c361c287ae4fa975fd75b5381ed46ade454",
+      "normalized_lf_sha256": "846bd03b78c88b42f9437d60ded873402e6152de30b2cdf31506fa20a0725a7e",
+      "checkout_crlf_sha256": "bc8214c64c153523fa83e66710f4997f9e056c40e1de6e8e604e2fd31750804d",
+      "source_matches_authority_bytes": false,
+      "lf_count": 503,
+      "crlf_count": 2
+    }
+  },
+  "verification": {
+    "local_powershell": "7.4.6 PASS",
+    "windows_powershell": "5.1.26100.8457 PASS",
+    "native_blender_stage": "NOT RUN; Windows native Blender is absent",
+    "production_scripts_changed": false,
+    "wsl_or_windows_restarted": false
+  },
+  "line_ending_note": "Git *.ps1 text eol=crlf stores normalized LF blobs and produces CRLF checkouts. Installed mixed-ending file hashes are deployment evidence and must not be replaced with normalized source hashes."
+}

@@ -1,0 +1,63 @@
+{
+    "WindowsUtc":  "2026-09-11T03:17:49.2802213Z",
+    "WindowsEpoch":  1789096669,
+    "StripChart":  [
+                       "���ڸ��� time.windows.com [52.148.114.188:123]��",
+                       "�����ռ� 3 ʾ����",
+                       "��ǰʱ���� 11/9/2026 ���� 11:17:44��",
+                       "11:17:44, +00.0112748s",
+                       "11:17:47, +00.0110829s",
+                       "11:17:49, +00.0096051s"
+                   ],
+    "StripExit":  0,
+    "Events":  [
+                   {
+                       "TimeCreated":  "\/Date(1789096358351)\/",
+                       "Id":  35,
+                       "LevelDisplayName":  "信息",
+                       "Message":  "The time service is now synchronizing the system time with the time source time.windows.com,0x9 (ntp.m|0x9|0.0.0.0:123-\u003e52.148.114.188:123) with reference id 3161625652. Current local stratum number is 5."
+                   },
+                   {
+                       "TimeCreated":  "\/Date(1789096358351)\/",
+                       "Id":  52,
+                       "LevelDisplayName":  "警告",
+                       "Message":  "The time service has set the time with offset 51528 seconds."
+                   },
+                   {
+                       "TimeCreated":  "\/Date(1789044829499)\/",
+                       "Id":  37,
+                       "LevelDisplayName":  "信息",
+                       "Message":  "The time provider NtpClient is currently receiving valid time data from time.windows.com,0x9 (ntp.m|0x9|0.0.0.0:123-\u003e52.148.114.188:123)."
+                   },
+                   {
+                       "TimeCreated":  "\/Date(1789044829151)\/",
+                       "Id":  158,
+                       "LevelDisplayName":  "信息",
+                       "Message":  "The time provider \u0027VMICTimeProvider\u0027 has indicated that the current hardware and operating environment is not supported and has stopped. This behavior is expected for VMICTimeProvider on non-HyperV-guest environments. This may be the expected behavior for the current provider in the current operating environment as well."
+                   },
+                   {
+                       "TimeCreated":  "\/Date(1788984316215)\/",
+                       "Id":  158,
+                       "LevelDisplayName":  "信息",
+                       "Message":  "The time provider \u0027VMICTimeProvider\u0027 has indicated that the current hardware and operating environment is not supported and has stopped. This behavior is expected for VMICTimeProvider on non-HyperV-guest environments. This may be the expected behavior for the current provider in the current operating environment as well."
+                   },
+                   {
+                       "TimeCreated":  "\/Date(1788983292209)\/",
+                       "Id":  158,
+                       "LevelDisplayName":  "信息",
+                       "Message":  "The time provider \u0027VMICTimeProvider\u0027 has indicated that the current hardware and operating environment is not supported and has stopped. This behavior is expected for VMICTimeProvider on non-HyperV-guest environments. This may be the expected behavior for the current provider in the current operating environment as well."
+                   },
+                   {
+                       "TimeCreated":  "\/Date(1788982268202)\/",
+                       "Id":  158,
+                       "LevelDisplayName":  "信息",
+                       "Message":  "The time provider \u0027VMICTimeProvider\u0027 has indicated that the current hardware and operating environment is not supported and has stopped. This behavior is expected for VMICTimeProvider on non-HyperV-guest environments. This may be the expected behavior for the current provider in the current operating environment as well."
+                   },
+                   {
+                       "TimeCreated":  "\/Date(1788981244193)\/",
+                       "Id":  158,
+                       "LevelDisplayName":  "信息",
+                       "Message":  "The time provider \u0027VMICTimeProvider\u0027 has indicated that the current hardware and operating environment is not supported and has stopped. This behavior is expected for VMICTimeProvider on non-HyperV-guest environments. This may be the expected behavior for the current provider in the current operating environment as well."
+                   }
+               ]
+}

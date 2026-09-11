@@ -1,0 +1,117 @@
+name: gpu-control-node
+
+x-logging: &logging
+  driver: json-file
+  options: {max-size: "20m", max-file: "5"}
+x-gpu: &gpu
+  resources:
+    reservations:
+      devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
+
+services:
+  comfyui:
+    image: registry.local:5000/gpu-control/comfyui:projects-0.2.6
+    restart: unless-stopped
+    # Reuse the validated small-VRAM WSL placement policy. Approved workflow
+    # graphs, models, sampling parameters and output contracts are unchanged.
+    command: [--disable-dynamic-vram, --lowvram, --reserve-vram, "3.0", --cpu-vae, --disable-async-offload, --disable-pinned-memory]
+    environment: {TRITON_LIBCUDA_PATH: /usr/lib/wsl/lib}
+    ports: ["0.0.0.0:8188:8188"]
+    deploy: *gpu
+    volumes:
+      - /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro
+      - /opt/imageclip/models:/opt/comfyui/models:ro
+      - /opt/modelviewcreator/model:/opt/modelviewcreator/model:ro
+      - /opt/gpu-control/configs/comfyui-extra-model-paths.yaml:/opt/comfyui/extra_model_paths.yaml:ro
+      - /opt/imageclip/Cherry_lizi:/opt/comfyui/custom_nodes/Cherry_lizi:ro
+      - /opt/imageclip/ComfyLiterals:/opt/comfyui/custom_nodes/ComfyLiterals:ro
+      - /opt/modelviewcreator/custom_nodes/haoze-LiClick:/opt/comfyui/custom_nodes/haoze-LiClick:ro
+      - /srv/comfyui/runtime/input:/opt/comfyui/input
+      - /srv/comfyui/runtime/output:/opt/comfyui/output
+      - /srv/comfyui/runtime/temp:/opt/comfyui/temp
+      - /srv/comfyui/runtime/user:/opt/comfyui/user
+      - /opt/imageclip/ImageClip.json:/opt/comfyui/user/default/workflows/ImageClip.json:ro
+      - /opt/modelviewcreator/Flux2 Klein TrueV3-双图材质编辑-局部重绘.json:/opt/comfyui/user/default/workflows/ModelViewCreator_flux_fill_inpaint.json:ro
+      - /opt/modelviewcreator/ModelViewCreator_flux_Single-view Generation.json:/opt/comfyui/user/default/workflows/ModelViewCreator_flux_Single-view Generation.json:ro
+      - /opt/modelviewcreator/ModelViewCreator_flux_fill_inpaint -View generation.json:/opt/comfyui/user/default/workflows/ModelViewCreator_flux_fill_inpaint -View generation.json:ro
+    healthcheck:
+      test: [CMD, python3.11, /usr/local/bin/comfy-healthcheck]
+      interval: 20s
+      timeout: 5s
+      start_period: 120s
+      retries: 6
+    logging: *logging
+
+  realesrgan-worker:
+    image: registry.local:5000/gpu-control/realesrgan-worker:1.0.0
+    restart: unless-stopped
+    environment:
+      NODE_ID: worker-5070ti-01
+      NODE_DISPLAY_NAME: RTX 5070 Ti
+      REALESRGAN_INTERNAL_SECRET: ${REALESRGAN_INTERNAL_SECRET:?required}
+      REALESRGAN_TILE: "256"
+      REALESRGAN_TILE_PAD: "16"
+    ports: ["0.0.0.0:9301:9301"]
+    deploy: *gpu
+    logging: *logging
+
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    restart: unless-stopped
+    ports: ["0.0.0.0:9100:9100"]
+    command: [--path.rootfs=/host]
+    volumes: ["/:/host:ro"]
+    logging: *logging
+
+  alloy:
+    image: grafana/alloy:v1.9.1
+    restart: unless-stopped
+    command: [run, /etc/alloy/config.alloy, --storage.path=/var/lib/alloy/data]
+    environment: {NODE_ID: worker-5070ti-01, CONTROL_HOST: 10.3.34.11}
+    volumes:
+      - /opt/gpu-control/deploy/gpu-node/alloy/worker.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/log/journal:/var/log/journal:ro
+      - /run/log/journal:/run/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      - alloy-data:/var/lib/alloy/data
+    logging: *logging
+
+  blender-worker:
+    profiles: [asset-plane]
+    image: li3d/blender-worker:1.4.75-uv-overlap-v28-pins1-codex-auth2
+    restart: unless-stopped
+    cap_add: [SYS_ADMIN]
+    security_opt: [seccomp=unconfined, apparmor=unconfined]
+    environment:
+      ASSET_API_URL: https://10.3.34.11
+      ASSET_WORKER_ID: asset-worker-5070ti-01
+      ASSET_NODE_ID: worker-5070ti-01
+      ASSET_WORKER_DISPLAY_NAME: RTX 5070 Ti CPU Worker
+      ASSET_WORKER_HMAC_SECRET: ${ASSET_WORKER_HMAC_SECRET:?required}
+      ASSET_WORKER_MAX_CONCURRENCY: "2"
+      BLENDER_VERSION: "5.1.2"
+      BLENDER_SKILL_VERSION: asset-skills-auto-retopo-align-v3.0.25
+      UV_SKILL_ROOT: /opt/codex/skills/blender-pbr-uv
+      ALIGNMENT_SKILL_ROOT: /opt/codex/skills/blender-align-bake-models
+      RETOPOLOGY_SKILL_ROOT: /opt/li3d/retopology-v6/skill/blender-retopology-compare-iterate
+      RETOPOLOGY_V6_ROOT: /opt/li3d/retopology-v6
+      RETOPOLOGY_DIRECT_V2_ROOT: /opt/li3d/retopology-direct-v2
+      CODEX_SKILLS_ROOT: /opt
+      RETOPOFLOW_ADDON_ROOT: /opt/blender-addons/RetopoFlow
+      CODEX_BINARY: /usr/local/bin/codex
+      CODEX_AUTH_SOURCE: /run/secrets/codex-auth.json
+      CODEX_RUNTIME_HOME: /home/assetworker/.codex
+      CODEX_JOB_TIMEOUT_SECONDS: "7200"
+      SSL_CERT_FILE: /run/certs/lan-ca.crt
+      CUDA_VISIBLE_DEVICES: ""
+    volumes:
+      - /etc/gpu-control/lan-ca.crt:/run/certs/lan-ca.crt:ro
+      - /opt/gpu-control/runtime/asset-skills:/opt/codex/skills:ro
+      - /opt/gpu-control/runtime/codex/codex:/usr/local/bin/codex:ro
+      - /opt/gpu-control/runtime/codex/worker-5070ti-01-retopology-v6-home:/home/assetworker/.codex
+      - /opt/gpu-control/runtime/retopoflow/RetopoFlow:/opt/blender-addons/RetopoFlow:ro
+    logging: *logging
+
+volumes:
+  alloy-data: {}

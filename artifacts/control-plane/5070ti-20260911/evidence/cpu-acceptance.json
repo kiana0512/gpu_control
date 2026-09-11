@@ -1,0 +1,25 @@
+{
+  "node_id": "worker-5070ti-01",
+  "classification_passed": true,
+  "retopoflow_passed": true,
+  "coordinate_restore_passed": true,
+  "legacy_icp_synthetic": {
+    "same_image_and_skill": "li3d/blender-worker:1.4.75-uv-overlap-v28-pins1",
+    "new_node_pass": false,
+    "control_baseline_pass": false,
+    "equal_fields": {
+      "gates": true,
+      "error": true,
+      "selected": true,
+      "pca_eigenvalue_ratios": true
+    },
+    "new_node_error": "ALIGNMENT_ORIENTATION_AMBIGUOUS",
+    "baseline_error": "ALIGNMENT_ORIENTATION_AMBIGUOUS",
+    "scope": "standalone legacy ICP synthetic fixture, not source-matrix restore production retopology contract"
+  },
+  "uv_cube_passed": true,
+  "notes": [
+    "RetopoFlow initial standalone xvfb-run as PID1 could not receive Xvfb ready notification; rerun with Docker --init passed, production Python parent unaffected.",
+    "No auth/network/production queue access in test containers."
+  ]
+}

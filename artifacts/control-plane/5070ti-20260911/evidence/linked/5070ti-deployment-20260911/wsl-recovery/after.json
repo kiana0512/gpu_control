@@ -1,0 +1,39 @@
+{
+  "control_utc": "2026-09-11T03:09:23.110740+00:00",
+  "wsl_after_exit": 0,
+  "wsl_after": "2026-09-11T03:09:22+00:00\nbd92343c-4da8-4d0c-abdc-1283794cb054\nFri Sep 11 11:08:06 2026\nactive\nactive\nactive\nenabled\nenabled\nenabled\ngpu-control-node-blender-worker-1 Up About a minute\ngpu-control-node-comfyui-1 Up About a minute (healthy)\ngpu-control-node-realesrgan-worker-1 Up About a minute (healthy)\ngpu-control-node-alloy-1 Up About a minute\ngpu-control-node-node-exporter-1 Up About a minute\nTLS_CONTROL_HTTP=200\n",
+  "wsl_stderr": "",
+  "gpu_node": [
+    {
+      "id": "worker-5070ti-01",
+      "mode": "DRAINING",
+      "health": "ONLINE",
+      "current_jobs": "0"
+    }
+  ],
+  "asset_worker": [
+    {
+      "id": "asset-worker-5070ti-01",
+      "node_id": "worker-5070ti-01",
+      "status": "ONLINE",
+      "current_jobs": "0",
+      "codex_auth_status": "INVALID",
+      "codex_probe_status": "FAILED",
+      "retopoflow_probe_status": "HEALTHY"
+    }
+  ],
+  "runtime_http": {
+    "8188": {
+      "http_status": 200
+    },
+    "9100": {
+      "http_status": 200
+    },
+    "9201": {
+      "http_status": 401
+    },
+    "9301": {
+      "http_status": 404
+    }
+  }
+}

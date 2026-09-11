@@ -1,0 +1,29 @@
+{
+  "status": "CANDIDATE_NOT_DEPLOYED",
+  "captured_at": "2026-09-10T16:58:00+08:00",
+  "reference_node": "worker-3090-b",
+  "ubuntu_codename": "jammy",
+  "architecture": "amd64",
+  "packages": [
+    {"name": "docker-ce", "version": "5:29.6.2-1~ubuntu.22.04~jammy", "sha256": "abda813589be3a9953c72181d2d1fa6064eb64966f917d70fe8996d9af485fc6"},
+    {"name": "docker-ce-cli", "version": "5:29.6.2-1~ubuntu.22.04~jammy", "sha256": "5ad09e85f123841a0ced843f748e4ec52209f1773a770bdb39eb64f24eff6ba5"},
+    {"name": "containerd.io", "version": "2.2.6-1~ubuntu.22.04~jammy", "sha256": "a5fd776785cf8482d1a342479d5eed53cccd6daf534ef129012797b6e817dee6"},
+    {"name": "docker-buildx-plugin", "version": "0.35.0-1~ubuntu.22.04~jammy", "sha256": "62b77b009803ebea4f9bc3cdecd00e3bf6c88266a3525046105c4449ceea94c7"},
+    {"name": "docker-compose-plugin", "version": "5.3.1-1~ubuntu.22.04~jammy", "sha256": "00784bd434f1fadde20cc047f5c88d97c9f2d17c82cef88ac69160421c553f2b"},
+    {"name": "nvidia-container-toolkit", "version": "1.19.1-1", "sha256": "e66acb5b33420a8417429cd217abc8400b4a409a2ae17a3852cf6feb34b5c8e6"},
+    {"name": "nvidia-container-toolkit-base", "version": "1.19.1-1", "sha256": "b6c5b4e77a28cde0197cc0e64edf75538604775d9f8aea502cef667e7e5b2132"},
+    {"name": "libnvidia-container-tools", "version": "1.19.1-1", "sha256": "5642763d51961a2295dff09990048a5dcee81edbea2a8c5084e47b09ccf17268"},
+    {"name": "libnvidia-container1", "version": "1.19.1-1", "sha256": "d73bb582af893135198ef81cb22135c790a75d2ad72910446477c6c4430f3e6b"}
+  ],
+  "image_candidates": [
+    {"reference": "registry.local:5000/gpu-control/comfyui:projects-0.2.6", "image_id": "sha256:5bdf5c62118881afe5439ea69557618e13dc3da250764e308e245d0e0876844d", "torch": "2.11.0+cu130", "cuda": "13.0", "compiled_architecture": "sm_120"},
+    {"reference": "gpu-control-realesrgan-worker:1.0.0", "image_id": "sha256:3c5010a6c51750ee19bb472309424abafd41fc6c05cd35995835e4a7bfcf3026", "torch": "2.7.1+cu128", "cuda": "12.8", "compiled_architecture": "sm_120"},
+    {"reference": "li3d/blender-worker:1.4.68-mof-worldspace-feedback-v1", "image_id": "sha256:cdb841b188e79b8c4547eeb54aa4e17bacaf1cf789c2bb488eb730dc5c0c6f5d", "requires": "Exact matching approved skill package from a healthy worker; do not copy mutable control-host runtime."}
+  ],
+  "notes": [
+    "Package versions were read from 3090-B; package hashes are from docs/116 and must be verified again after download.",
+    "image_id is Docker's local image configuration digest, not a registry manifest digest or archive checksum.",
+    "Nothing in this manifest certifies the new Windows host, driver, extensions or business canary.",
+    "A standard RTX 5070 Ti has 16 GB VRAM; existing 24000 MiB workflow contracts remain unchanged."
+  ]
+}

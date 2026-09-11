@@ -1,0 +1,11 @@
+# Add only after this new node has its own valid authorization. The base
+# deployment truthfully reports missing credentials and retains CPU features.
+services:
+  blender-worker:
+    volumes:
+      - type: bind
+        source: /srv/gpu-control/secrets/codex-auth.json
+        target: /run/secrets/codex-auth.json
+        read_only: true
+        bind:
+          create_host_path: false

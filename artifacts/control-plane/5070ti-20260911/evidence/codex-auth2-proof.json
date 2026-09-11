@@ -1,0 +1,27 @@
+{
+  "from_image_id": "sha256:9a871e05c74d6f2bffd4097dae379aea8affc380bc00006a3d0cafb0db36084b",
+  "image_id": "sha256:0c6ea65709566114544710dcac3255b94ac71f53138f158e4a678c6abcacb992",
+  "all_previous_layers_unchanged": true,
+  "metadata_audit": {
+    "imported_module": "/usr/local/lib/python3.11/site-packages/gpu_control_blender_worker/main.py",
+    "distributions": [
+      {
+        "path": "/usr/local/lib/python3.11/site-packages/gpu_control-1.5.23.dist-info",
+        "version": "1.5.23",
+        "record_present": true,
+        "mismatches": []
+      }
+    ]
+  },
+  "auth2_new_layer_count": 1,
+  "core_package_version_unchanged": "1.5.23",
+  "deployed": true,
+  "archive_sha256": "3e80a821254e1bf4b1a773fb74ac1ed520a76b8e9e4a52383ac61429ad949c14",
+  "archive_size_bytes": 693899264,
+  "image_config_digest": "sha256:a56f3503de9a620e4446fc0c180c258ab0cc11fb188d3d13a2971f21c93ad41f",
+  "only_modified_files": [
+    "usr/local/lib/python3.11/site-packages/gpu_control-1.5.23.dist-info/RECORD"
+  ],
+  "deployed_at": "2026-09-11T03:34:59.335990+00:00",
+  "target_runtime_acceptance": "auth2-target-runtime-acceptance.json"
+}

@@ -1,0 +1,14 @@
+[Unit]
+Description=GPU Control Real-ESRGAN tunnel to 4070 Ti WSL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lilithgames
+ExecStart=/usr/bin/ssh -NT -p 2222 -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes -L 10.3.34.11:19303:127.0.0.1:9301 gpucontrol@10.3.34.238
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

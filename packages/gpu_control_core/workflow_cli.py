@@ -42,6 +42,10 @@ async def refresh_compatibility(
             allowed_class_types=version.allowed_class_types,
             total_vram_mb=node.total_vram_mb,
             reported_labels=node.labels,
+            node_id=node.id,
+            workflow_key=version.workflow_key,
+            workflow_version=version.version,
+            template_sha256=version.template_sha256,
         )
         compatibility = await session.scalar(
             select(WorkflowNodeCompatibility).where(

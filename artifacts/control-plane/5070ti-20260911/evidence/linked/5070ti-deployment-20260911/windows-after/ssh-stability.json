@@ -1,0 +1,85 @@
+{
+  "control_timestamp": "2026-09-11T02:20:41.527250+00:00",
+  "checks": [
+    {
+      "endpoint": "windows",
+      "attempt": 1,
+      "exit": 0,
+      "seconds": 0.265,
+      "result": "lilithg-n0k4m0l\\lilithgames",
+      "stderr": ""
+    },
+    {
+      "endpoint": "wsl",
+      "attempt": 1,
+      "exit": 0,
+      "seconds": 0.225,
+      "result": "bd92343c-4da8-4d0c-abdc-1283794cb054",
+      "stderr": ""
+    },
+    {
+      "endpoint": "windows",
+      "attempt": 2,
+      "exit": 0,
+      "seconds": 0.262,
+      "result": "lilithg-n0k4m0l\\lilithgames",
+      "stderr": ""
+    },
+    {
+      "endpoint": "wsl",
+      "attempt": 2,
+      "exit": 0,
+      "seconds": 0.285,
+      "result": "bd92343c-4da8-4d0c-abdc-1283794cb054",
+      "stderr": ""
+    },
+    {
+      "endpoint": "windows",
+      "attempt": 3,
+      "exit": 0,
+      "seconds": 0.267,
+      "result": "lilithg-n0k4m0l\\lilithgames",
+      "stderr": ""
+    },
+    {
+      "endpoint": "wsl",
+      "attempt": 3,
+      "exit": 0,
+      "seconds": 0.251,
+      "result": "bd92343c-4da8-4d0c-abdc-1283794cb054",
+      "stderr": ""
+    },
+    {
+      "endpoint": "windows",
+      "attempt": 4,
+      "exit": 0,
+      "seconds": 0.264,
+      "result": "lilithg-n0k4m0l\\lilithgames",
+      "stderr": ""
+    },
+    {
+      "endpoint": "wsl",
+      "attempt": 4,
+      "exit": 0,
+      "seconds": 0.289,
+      "result": "bd92343c-4da8-4d0c-abdc-1283794cb054",
+      "stderr": ""
+    },
+    {
+      "endpoint": "windows",
+      "attempt": 5,
+      "exit": 0,
+      "seconds": 0.263,
+      "result": "lilithg-n0k4m0l\\lilithgames",
+      "stderr": ""
+    },
+    {
+      "endpoint": "wsl",
+      "attempt": 5,
+      "exit": 0,
+      "seconds": 0.241,
+      "result": "bd92343c-4da8-4d0c-abdc-1283794cb054",
+      "stderr": ""
+    }
+  ]
+}

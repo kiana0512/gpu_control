@@ -6,6 +6,7 @@ const Jobs = () => import("./views/Jobs.vue");
 const Analysis = () => import("./views/Analysis.vue");
 const Nodes = () => import("./views/Nodes.vue");
 const Assets = () => import("./views/Assets.vue");
+const Realesrgan = () => import("./views/Realesrgan.vue");
 const CodexRuntime = () => import("./views/CodexRuntime.vue");
 const ResourceList = () => import("./views/ResourceList.vue");
 const Scheduling = () => import("./views/Scheduling.vue");
@@ -22,6 +23,7 @@ export const router = createRouter({
     { path: "/analysis", component: Analysis },
     { path: "/nodes", component: Nodes },
     { path: "/asset-processing", component: Assets },
+    { path: "/realesrgan", component: Realesrgan },
     { path: "/codex", component: CodexRuntime },
     {
       path: "/workflows",

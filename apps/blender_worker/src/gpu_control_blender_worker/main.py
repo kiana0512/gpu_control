@@ -326,6 +326,20 @@ def prepare_codex_runtime_home(settings: WorkerSettings) -> Path:
     return codex_home
 
 
+def inspect_codex_auth(settings: WorkerSettings) -> tuple[Path | None, str, str | None]:
+    """Inspect local credentials without treating their presence as authentication."""
+    try:
+        codex_home = prepare_codex_runtime_home(settings)
+        auth = json.loads((codex_home / "auth.json").read_text("utf-8"))
+        if not isinstance(auth, dict) or not auth:
+            raise ValueError("empty auth object")
+    except FileNotFoundError:
+        return None, "MISSING", "AUTH_MISSING"
+    except (OSError, ValueError):
+        return None, "INVALID", "AUTH_INVALID"
+    return codex_home, "PRESENT", None
+
+
 def codex_environment(settings: WorkerSettings) -> dict[str, str]:
     environment = dict(os.environ)
     environment["CODEX_HOME"] = str(prepare_codex_runtime_home(settings))
@@ -412,7 +426,13 @@ def classify_codex_error(stderr: bytes) -> tuple[str, str]:
     diagnostic = stderr[-CODEX_ERROR_CAPTURE_LIMIT:].decode("utf-8", "replace").lower()
     if "refresh token was already used" in diagnostic:
         return "EXPIRED", "AUTH_REFRESH_REUSED"
-    if "token_expired" in diagnostic or "401 unauthorized" in diagnostic:
+    if "not logged in" in diagnostic or "missing bearer or basic authentication" in diagnostic:
+        return "MISSING", "AUTH_MISSING"
+    if "invalid_api_key" in diagnostic or "incorrect api key" in diagnostic:
+        return "INVALID", "AUTH_INVALID"
+    if any(marker in diagnostic for marker in (
+        "token_expired", "401 unauthorized", "refresh_token_expired", "refresh_token_invalidated"
+    )):
         return "EXPIRED", "AUTH_UNAUTHORIZED"
     if "429" in diagnostic or "rate limit" in diagnostic:
         return "PRESENT", "RATE_LIMITED"
@@ -473,16 +493,7 @@ async def inspect_codex_runtime(settings: WorkerSettings) -> dict[str, Any]:
             "codex_last_success_at": None,
             "codex_error_code": "BINARY_UNAVAILABLE",
         }
-    codex_home: Path | None = None
-    try:
-        codex_home = prepare_codex_runtime_home(settings)
-        auth_path = codex_home / "auth.json"
-        auth = json.loads(auth_path.read_text("utf-8"))
-        if not isinstance(auth, dict) or not auth:
-            raise ValueError("empty auth object")
-        auth_status = "PRESENT"
-    except (OSError, ValueError, json.JSONDecodeError):
-        auth_status = "INVALID"
+    codex_home, auth_status, auth_error = inspect_codex_auth(settings)
     skill_mount_valid = False
     if codex_home is not None:
         try:
@@ -511,6 +522,16 @@ async def inspect_codex_runtime(settings: WorkerSettings) -> dict[str, Any]:
             "codex_last_success_at": None,
             "codex_error_code": "VERSION_FAILED",
         }
+    if auth_error is not None:
+        return {
+            "codex_cli_version": version,
+            "codex_auth_status": auth_status,
+            "codex_probe_status": "BLOCKED",
+            "codex_probe_latency_ms": None,
+            "codex_last_checked_at": checked_at,
+            "codex_last_success_at": None,
+            "codex_error_code": auth_error,
+        }
     if not skill_mount_valid:
         return {
             "codex_cli_version": version,
@@ -537,12 +558,17 @@ async def run_codex_health_probe(settings: WorkerSettings, health: dict[str, Any
     started = time.monotonic()
     checked_at = datetime.now(UTC).isoformat()
     process: asyncio.subprocess.Process | None = None
+    codex_home, auth_status, auth_error = inspect_codex_auth(settings)
+    if auth_error is not None:
+        health.update(
+            codex_auth_status=auth_status,
+            codex_probe_status="BLOCKED",
+            codex_error_code=auth_error,
+            codex_last_checked_at=checked_at,
+            codex_probe_latency_ms=int((time.monotonic() - started) * 1000),
+        )
+        return
     try:
-        codex_home = prepare_codex_runtime_home(settings)
-        auth_path = codex_home / "auth.json"
-        auth = json.loads(auth_path.read_text("utf-8"))
-        if not isinstance(auth, dict) or not auth:
-            raise ValueError("empty auth object")
         try:
             validate_codex_business_skill_links(settings, codex_home)
         except BootstrapError:
@@ -583,7 +609,7 @@ async def run_codex_health_probe(settings: WorkerSettings, health: dict[str, Any
                 auth_status, error_code = classify_codex_error(stderr)
                 health.update(
                     codex_auth_status=auth_status,
-                    codex_probe_status="FAILED",
+                    codex_probe_status="BLOCKED" if auth_status == "MISSING" else "FAILED",
                     codex_error_code=error_code,
                     codex_last_checked_at=checked_at,
                     codex_probe_latency_ms=int((time.monotonic() - started) * 1000),
@@ -623,11 +649,13 @@ async def run_codex_health_probe(settings: WorkerSettings, health: dict[str, Any
         if process is not None:
             await terminate_subprocess(process)
         raise
-    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+    except (OSError, RuntimeError, ValueError):
+        # Auth was checked above. Spawn/output/local runtime errors do not
+        # demonstrate an invalid credential, and must not suggest re-login.
         health.update(
-            codex_auth_status="INVALID",
+            codex_auth_status="PRESENT",
             codex_probe_status="FAILED",
-            codex_error_code="AUTH_INVALID",
+            codex_error_code="PROBE_RUNTIME_ERROR",
             codex_last_checked_at=checked_at,
             codex_probe_latency_ms=int((time.monotonic() - started) * 1000),
         )

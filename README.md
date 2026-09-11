@@ -1,5 +1,11 @@
 # 统一调度中心（GPU Control）
 
+> **2026-09-11 五节点更新**：新增 Windows/WSL2 `worker-5070ti-01`（10.3.34.18），已 ACTIVE/ONLINE。
+> API/Scheduler 为 `1.5.23.post3`，WebUI 为 `1.5.23-5070-ui.2`。
+> 部署与功能边界见 [5070 Ti 最终验收](docs/5070TI_DEPLOYMENT_ACCEPTANCE_20260911.md)，
+> 路由、代码审计、GitHub/LFS 与清理见 [发布审计](docs/5070TI_RELEASE_AUDIT_20260911.md)。
+> 下方四节点版本与发布门禁描述保留作历史基线；新节点 Codex 授权、Windows 原生许可和完整宿主重启验收尚未完成。
+
 > 今天部署请先打开 [文档总入口](docs/00_START_HERE.md)；动画管家当前对接以
 > [四 GPU / 六 API 生产对接合同](docs/120_2026-08-13_ASSETCLAW_FOUR_GPU_1_5_14_ALIGNMENT_HANDOFF.md)
 > 为准；动画管家完成修复后的事实证据见
@@ -19,10 +25,10 @@
 > 全部 Markdown 与 Skill 的分类入口见
 > [文档分类目录](docs/00_DOCUMENT_CATALOG.md) 和 [Asset Skills 目录](docs/00_ASSET_SKILLS_CATALOG.md)。
 
-面向 RTX 4090 控制中心、两台 RTX 3090 和一台 RTX 4070Ti 的统一任务调度、运维与可观测平台；GPU
+面向 RTX 4090 控制中心、两台 RTX 3090、一台 RTX 4070 Ti 和一台 RTX 5070 Ti 的统一任务调度、运维与可观测平台；GPU
 推理平面负责 ComfyUI，独立 Asset Processing 平面负责 Blender CPU 资产任务。
 
-当前源码目标基线为 GPU Control API/Scheduler/Web `1.5.23`、Asset API/Node Agent 既有稳定版本、Blender Worker
+此前四节点源码目标基线为 GPU Control API/Scheduler/Web `1.5.23`、Asset API/Node Agent 既有稳定版本、Blender Worker
 `1.4.55-uv-multimesh-mof-v1`、数据库 `20260810_0013`。当前总状态为
 `FUNCTIONAL_RECOVERY_CONFIRMED / STABILITY_TESTING`：六 API 均已有真实功能成功证据；正式
 1.5.15 镜像/LFS、第三次正式 100 VU、registry digest/SBOM、固定基准、完整故障矩阵和连续七天观察

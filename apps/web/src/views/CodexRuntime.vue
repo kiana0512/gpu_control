@@ -1,39 +1,46 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { api } from "../api";
 import type { AssetProcessingOverview, NodeInfo } from "../types";
 import { useAutoRefresh } from "../composables/useAutoRefresh";
 import {
-  codexHealthLabel,
-  codexHealthMessage,
+  codexRuntimeState,
+  codexAdmissionLabel,
+  codexAuthLabel,
+  codexProbeLabel,
   healthyCodexProbeAverage,
 } from "../codexPresentation";
 
+import { compareNodes } from "../nodePresentation";
+
 const nodes = ref<NodeInfo[]>([]);
+const evaluatedAt = ref(Date.now());
+let freshnessTimer: number | undefined;
+onMounted(() => {
+  freshnessTimer = window.setInterval(() => {
+    evaluatedAt.value = Date.now();
+  }, 1000);
+});
+onBeforeUnmount(() => window.clearInterval(freshnessTimer));
 const assets = ref<AssetProcessingOverview | null>(null);
 const error = ref("");
 
-const runtimes = computed(() =>
-  nodes.value.filter(
-    (node) => node.last_heartbeat_at || node.health !== "OFFLINE",
-  ),
-);
+const runtimes = computed(() => [...nodes.value].sort(compareNodes));
+const runtimeState = (node: NodeInfo) =>
+  codexRuntimeState(node, evaluatedAt.value);
 const healthyCount = computed(
-  () =>
-    runtimes.value.filter((node) => node.codex_cli?.scheduler_eligible).length,
+  () => runtimes.value.filter((node) => runtimeState(node).healthy).length,
 );
 const activeCount = computed(
   () => runtimes.value.filter((node) => node.codex_cli?.task?.is_active).length,
 );
 const authenticatedCount = computed(
   () =>
-    runtimes.value.filter((node) =>
-      ["AUTHENTICATED", "HEALTHY", "READY"].includes(
-        node.codex_cli?.auth_status ?? "",
-      ),
-    ).length,
+    runtimes.value.filter((node) => runtimeState(node).authenticated).length,
 );
-const averageLatency = computed(() => healthyCodexProbeAverage(runtimes.value));
+const averageLatency = computed(() =>
+  healthyCodexProbeAverage(runtimes.value, evaluatedAt.value),
+);
 
 const workerNode = computed(() => {
   const result = new Map<string, string>();
@@ -53,17 +60,8 @@ const recentExecutions = computed(() =>
     .slice(0, 8),
 );
 
-function health(node: NodeInfo) {
-  return node.codex_cli?.health ?? "CHECKING";
-}
-function healthLabel(node: NodeInfo) {
-  return codexHealthLabel(node);
-}
-function healthMessage(node: NodeInfo) {
-  return codexHealthMessage(node);
-}
 function time(value: string | null | undefined) {
-  if (!value) return "尚未成功";
+  if (!value || !Number.isFinite(Date.parse(value))) return "待上报";
   return new Date(value).toLocaleString("zh-CN", { hour12: false });
 }
 function taskTitle(node: NodeInfo) {
@@ -84,18 +82,22 @@ function statusLabel(status: string) {
 }
 
 async function load() {
-  error.value = "";
-  try {
-    const [nodeData, assetData] = await Promise.all([
-      api.nodes(),
-      api.assetProcessing(100),
-    ]);
-    nodes.value = nodeData;
-    assets.value = assetData;
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : "Codex 状态加载失败";
-    throw cause;
-  }
+  evaluatedAt.value = Date.now();
+  const results = await Promise.allSettled([
+    api.nodes(),
+    api.assetProcessing(100),
+  ]);
+  if (results[0].status === "fulfilled") nodes.value = results[0].value;
+  if (results[1].status === "fulfilled") assets.value = results[1].value;
+  const failures = results.flatMap((result, index) =>
+    result.status === "rejected"
+      ? [
+          `${index === 0 ? "节点状态" : "任务历史"}：${result.reason instanceof Error ? result.reason.message : "加载失败"}`,
+        ]
+      : [],
+  );
+  error.value = failures.join("；");
+  if (failures.length) throw new Error(error.value);
 }
 
 const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
@@ -107,7 +109,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
       <div>
         <div class="eyebrow">AGENT RUNTIME OBSERVABILITY</div>
         <h1>Codex 运行中心</h1>
-        <p>独立查看四台主机的安装、认证、真实调用与资产任务上下文</p>
+        <p>查看全部已登记节点的安装、认证、真实调用与资产任务上下文</p>
       </div>
       <div class="heading-actions">
         <span class="refresh-state"
@@ -156,7 +158,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
         v-for="node in runtimes"
         :key="node.id"
         class="codex-runtime-card"
-        :class="health(node).toLowerCase()"
+        :class="runtimeState(node).tone"
       >
         <header>
           <div class="codex-machine">
@@ -166,9 +168,11 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
               <p>{{ node.id }}</p>
             </div>
           </div>
-          <span class="codex-health-pill"><i></i>{{ healthLabel(node) }}</span>
+          <span class="codex-health-pill"
+            ><i></i>{{ runtimeState(node).label }}</span
+          >
         </header>
-        <p class="codex-health-message">{{ healthMessage(node) }}</p>
+        <p class="codex-health-message">{{ runtimeState(node).message }}</p>
         <div class="codex-facts">
           <div>
             <span>主机 CLI</span
@@ -180,13 +184,18 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           </div>
           <div>
             <span>认证状态</span
-            ><strong>{{ node.codex_cli?.auth_status ?? "CHECKING" }}</strong>
+            ><strong>{{ codexAuthLabel(node.codex_cli?.auth_status) }}</strong>
           </div>
           <div>
             <span>调用探针</span
-            ><strong>{{ node.codex_cli?.probe_status ?? "NOT_RUN" }}</strong>
+            ><strong>{{
+              codexProbeLabel(node.codex_cli?.probe_status)
+            }}</strong>
           </div>
         </div>
+        <p class="codex-admission">
+          接单状态：{{ codexAdmissionLabel(node, evaluatedAt) }}
+        </p>
         <div
           class="codex-task-card"
           :class="{ active: node.codex_cli?.task?.is_active }"
@@ -223,12 +232,19 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           </template>
           <template v-else>
             <strong>没有占用中的 Codex 任务</strong>
-            <p>健康探针仍独立运行，不占资产任务槽。</p>
+            <p>真实调用状态以探针和 Worker 心跳为准。</p>
           </template>
         </div>
-        <footer>最近成功：{{ time(node.codex_cli?.last_success_at) }}</footer>
+        <footer>
+          <div>
+            Worker 心跳：{{ time(node.codex_cli?.worker_last_heartbeat_at) }}
+          </div>
+          <div>最近探针：{{ time(node.codex_cli?.last_checked_at) }}</div>
+          <div>最近成功：{{ time(node.codex_cli?.last_success_at) }}</div>
+        </footer>
       </article>
     </section>
+    <p v-if="!runtimes.length && !refreshing" class="empty">尚未登记节点</p>
 
     <section class="codex-history-panel">
       <header>
@@ -274,3 +290,14 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
     </section>
   </div>
 </template>
+
+<style scoped>
+.codex-admission {
+  color: #aeb7c6;
+  font-size: 12px;
+}
+.codex-runtime-card footer {
+  display: grid;
+  gap: 6px;
+}
+</style>

@@ -1,0 +1,597 @@
+{
+  "passed": true,
+  "new_node": "worker-5070ti-01",
+  "scope": "same approved templates and declared input bindings; no business semantic edits",
+  "accepted_workflow_runs": [
+    {
+      "report": "canary/5070ti-accept-imageclip-rgba-20ce028a/result.json",
+      "sha256": "c7f02e5c0b0c92c680410e7ece2527273147018e9f4b93cdc251f1cb173bca30",
+      "workflow_key": "imageclip-rgba",
+      "version": "2026.08.17-c39ed0b-colorfix-r1",
+      "approved_template_sha256": "ca92a69bd315d080c5526f5f151675319db91fc0f90e2d0f8a33e2bf41bb0438",
+      "node_id": "worker-5070ti-01",
+      "registry_min_vram_mb": 12000,
+      "test_scope": "isolated exact production template; only approved input bindings populated",
+      "passed": true,
+      "prompt_id": "ecd8b312-3d8e-49f9-b9de-076e5ea28533",
+      "elapsed_seconds": 30.03447761479765,
+      "status": {
+        "status_str": "success",
+        "completed": true,
+        "messages": [
+          [
+            "execution_start",
+            {
+              "prompt_id": "ecd8b312-3d8e-49f9-b9de-076e5ea28533",
+              "timestamp": 1789093678354
+            }
+          ],
+          [
+            "execution_cached",
+            {
+              "nodes": [],
+              "prompt_id": "ecd8b312-3d8e-49f9-b9de-076e5ea28533",
+              "timestamp": 1789093678356
+            }
+          ],
+          [
+            "execution_success",
+            {
+              "prompt_id": "ecd8b312-3d8e-49f9-b9de-076e5ea28533",
+              "timestamp": 1789093708333
+            }
+          ]
+        ]
+      },
+      "artifacts": [
+        {
+          "approved_output_node": "109",
+          "mode": "RGBA",
+          "size": [
+            512,
+            512
+          ],
+          "sha256": "611ec78b5a2beaa400d6a6f7704128aa2613718fe34cd0e497fd4e5107afb1ae",
+          "file": "109-0.png"
+        }
+      ]
+    },
+    {
+      "report": "canary/5070ti-accept-modelview-inpaint-12b5c8a2/result.json",
+      "sha256": "43e6144fe2ade628d83475ad748af05f2dfc52b34e2254f64ba70d82821b7b46",
+      "workflow_key": "modelview-inpaint",
+      "version": "2026.08.29-cba4414-truev3-gguf-mask-4input-rseed-steps2-r1",
+      "approved_template_sha256": "cc95d74d69df5f1ec96add1f1205e83c0e7bff1f2f1f3198a7ca3b6fa9520b32",
+      "node_id": "worker-5070ti-01",
+      "registry_min_vram_mb": 24000,
+      "test_scope": "isolated exact production template; only approved input bindings populated",
+      "passed": true,
+      "prompt_id": "7702be32-7d0f-4c59-9648-7b37900785c9",
+      "elapsed_seconds": 66.07353250822052,
+      "status": {
+        "status_str": "success",
+        "completed": true,
+        "messages": [
+          [
+            "execution_start",
+            {
+              "prompt_id": "7702be32-7d0f-4c59-9648-7b37900785c9",
+              "timestamp": 1789093966736
+            }
+          ],
+          [
+            "execution_cached",
+            {
+              "nodes": [
+                "2",
+                "3"
+              ],
+              "prompt_id": "7702be32-7d0f-4c59-9648-7b37900785c9",
+              "timestamp": 1789093966739
+            }
+          ],
+          [
+            "execution_success",
+            {
+              "prompt_id": "7702be32-7d0f-4c59-9648-7b37900785c9",
+              "timestamp": 1789094031795
+            }
+          ]
+        ]
+      },
+      "artifacts": [
+        {
+          "approved_output_node": "29",
+          "mode": "RGB",
+          "size": [
+            2048,
+            2048
+          ],
+          "sha256": "45f99efc510cf71df55d800b219da03f0374b479446dfd74ae7d65d77c964d84",
+          "file": "29-0.png"
+        }
+      ]
+    },
+    {
+      "report": "canary/5070ti-accept-modelview-inpaint-75e7ea02/result.json",
+      "sha256": "514cfc98266cdd3a9c5110e27b407d4a0e3f3057d0b8968e958c19d58619fe62",
+      "workflow_key": "modelview-inpaint",
+      "version": "2026.08.29-cba4414-truev3-gguf-mask-4input-rseed-steps2-r1",
+      "approved_template_sha256": "cc95d74d69df5f1ec96add1f1205e83c0e7bff1f2f1f3198a7ca3b6fa9520b32",
+      "node_id": "worker-5070ti-01",
+      "registry_min_vram_mb": 24000,
+      "test_scope": "isolated exact production template; only approved input bindings populated",
+      "passed": true,
+      "input_size": [
+        1536,
+        1024
+      ],
+      "prompt_id": "bc1ea90c-0ba0-452e-867a-c3e6e19dee0d",
+      "elapsed_seconds": 51.05316787818447,
+      "status": {
+        "status_str": "success",
+        "completed": true,
+        "messages": [
+          [
+            "execution_start",
+            {
+              "prompt_id": "bc1ea90c-0ba0-452e-867a-c3e6e19dee0d",
+              "timestamp": 1789094354838
+            }
+          ],
+          [
+            "execution_cached",
+            {
+              "nodes": [],
+              "prompt_id": "bc1ea90c-0ba0-452e-867a-c3e6e19dee0d",
+              "timestamp": 1789094354841
+            }
+          ],
+          [
+            "execution_success",
+            {
+              "prompt_id": "bc1ea90c-0ba0-452e-867a-c3e6e19dee0d",
+              "timestamp": 1789094402996
+            }
+          ]
+        ]
+      },
+      "artifacts": [
+        {
+          "approved_output_node": "29",
+          "mode": "RGB",
+          "size": [
+            2048,
+            2048
+          ],
+          "sha256": "a3b7a996f450ce2b448e1ecca6708eaa37d4e94343dbbb940bc578fc9c02c6d4",
+          "file": "29-0.png"
+        }
+      ]
+    },
+    {
+      "report": "canary/5070ti-accept-modelview-roughness-d6ddc032/result.json",
+      "sha256": "a7ad0755be66514037efb9a2f6e9cefbb56eda9e2bf809335f4698973ddec911",
+      "workflow_key": "modelview-roughness",
+      "version": "2026.08.12-d318bb39-roughness-12g-r1",
+      "approved_template_sha256": "bbc80df2c8fc8eb148c671ea1b97a3d77ed2bd1f64593701c68d3bba1438d42f",
+      "node_id": "worker-5070ti-01",
+      "registry_min_vram_mb": 12000,
+      "test_scope": "isolated exact production template; only approved input bindings populated",
+      "passed": true,
+      "input_size": [
+        1536,
+        1024
+      ],
+      "prompt_id": "6f8605bc-ec73-4b9e-8031-d7dc417affea",
+      "elapsed_seconds": 72.06652762601152,
+      "status": {
+        "status_str": "success",
+        "completed": true,
+        "messages": [
+          [
+            "execution_start",
+            {
+              "prompt_id": "6f8605bc-ec73-4b9e-8031-d7dc417affea",
+              "timestamp": 1789094282095
+            }
+          ],
+          [
+            "execution_cached",
+            {
+              "nodes": [],
+              "prompt_id": "6f8605bc-ec73-4b9e-8031-d7dc417affea",
+              "timestamp": 1789094282097
+            }
+          ],
+          [
+            "execution_success",
+            {
+              "prompt_id": "6f8605bc-ec73-4b9e-8031-d7dc417affea",
+              "timestamp": 1789094352833
+            }
+          ]
+        ]
+      },
+      "artifacts": [
+        {
+          "approved_output_node": "355",
+          "mode": "RGB",
+          "size": [
+            1248,
+            832
+          ],
+          "sha256": "a57088f24859396607ecde132636f260e87d018ab6d9b8cd6d884b3d90eaa582",
+          "file": "355-0.png"
+        }
+      ]
+    },
+    {
+      "report": "canary/5070ti-accept-modelview-single-view-0814753b/result.json",
+      "sha256": "9d4fd3685fc6e7dfb32e67199b0e2503f62b668eae0d6d66c411b33cc89725a0",
+      "workflow_key": "modelview-single-view",
+      "version": "2026.08.26-c0e6218-single-view-4step-r1",
+      "approved_template_sha256": "13cc9c17e4ceecc6149351b119e84c987d813003319758c661cc6237ab2e2818",
+      "node_id": "worker-5070ti-01",
+      "registry_min_vram_mb": 24000,
+      "test_scope": "isolated exact production template; only approved input bindings populated",
+      "passed": true,
+      "prompt_id": "db076cdf-3361-4294-9d9d-d13c9cc172d3",
+      "elapsed_seconds": 48.04733023792505,
+      "status": {
+        "status_str": "success",
+        "completed": true,
+        "messages": [
+          [
+            "execution_start",
+            {
+              "prompt_id": "db076cdf-3361-4294-9d9d-d13c9cc172d3",
+              "timestamp": 1789094034283
+            }
+          ],
+          [
+            "execution_cached",
+            {
+              "nodes": [
+                "1",
+                "14",
+                "16",
+                "2",
+                "3",
+                "41"
+              ],
+              "prompt_id": "db076cdf-3361-4294-9d9d-d13c9cc172d3",
+              "timestamp": 1789094034286
+            }
+          ],
+          [
+            "execution_success",
+            {
+              "prompt_id": "db076cdf-3361-4294-9d9d-d13c9cc172d3",
+              "timestamp": 1789094080444
+            }
+          ]
+        ]
+      },
+      "artifacts": [
+        {
+          "approved_output_node": "29",
+          "mode": "RGB",
+          "size": [
+            2048,
+            2048
+          ],
+          "sha256": "d97e46fd66fc4ef496c72a0ec649ad2c6a375dd720545991616b215a1d98a61e",
+          "file": "29-0.png"
+        }
+      ]
+    },
+    {
+      "report": "canary/5070ti-accept-modelview-single-view-6e8e35a4/result.json",
+      "sha256": "bbde9dbc3d1da5da8564c83a51cc31d1a57ad0a1c9d69446d5739111803c644d",
+      "workflow_key": "modelview-single-view",
+      "version": "2026.08.26-c0e6218-single-view-4step-r1",
+      "approved_template_sha256": "13cc9c17e4ceecc6149351b119e84c987d813003319758c661cc6237ab2e2818",
+      "node_id": "worker-5070ti-01",
+      "registry_min_vram_mb": 24000,
+      "test_scope": "isolated exact production template; only approved input bindings populated",
+      "passed": true,
+      "input_size": [
+        1536,
+        1024
+      ],
+      "prompt_id": "42914d0b-e9d8-4edd-a712-bc46d31b4861",
+      "elapsed_seconds": 66.07056498900056,
+      "status": {
+        "status_str": "success",
+        "completed": true,
+        "messages": [
+          [
+            "execution_start",
+            {
+              "prompt_id": "42914d0b-e9d8-4edd-a712-bc46d31b4861",
+              "timestamp": 1789094405068
+            }
+          ],
+          [
+            "execution_cached",
+            {
+              "nodes": [
+                "1",
+                "14",
+                "16",
+                "2",
+                "3",
+                "41"
+              ],
+              "prompt_id": "42914d0b-e9d8-4edd-a712-bc46d31b4861",
+              "timestamp": 1789094405070
+            }
+          ],
+          [
+            "execution_success",
+            {
+              "prompt_id": "42914d0b-e9d8-4edd-a712-bc46d31b4861",
+              "timestamp": 1789094469582
+            }
+          ]
+        ]
+      },
+      "artifacts": [
+        {
+          "approved_output_node": "29",
+          "mode": "RGB",
+          "size": [
+            2048,
+            2048
+          ],
+          "sha256": "b25ff643992e7fc1254a5bb3b607a3598b449feb887344c0c3398db15a632dc6",
+          "file": "29-0.png"
+        }
+      ]
+    },
+    {
+      "report": "canary/5070ti-accept-modelview-single-view-c260e179/result.json",
+      "sha256": "384aca4e9b041bf12e85af35d7a02c69be874306468499d31c6287335175004f",
+      "workflow_key": "modelview-single-view",
+      "version": "2026.08.26-c0e6218-single-view-4step-r1",
+      "approved_template_sha256": "13cc9c17e4ceecc6149351b119e84c987d813003319758c661cc6237ab2e2818",
+      "node_id": "worker-5070ti-01",
+      "registry_min_vram_mb": 24000,
+      "test_scope": "isolated exact production template; only approved input bindings populated",
+      "passed": true,
+      "input_size": [
+        1024,
+        1536
+      ],
+      "prompt_id": "aace7aee-9cac-4053-801c-321638b7e15b",
+      "elapsed_seconds": 63.05812717275694,
+      "status": {
+        "status_str": "success",
+        "completed": true,
+        "messages": [
+          [
+            "execution_start",
+            {
+              "prompt_id": "aace7aee-9cac-4053-801c-321638b7e15b",
+              "timestamp": 1789094609614
+            }
+          ],
+          [
+            "execution_cached",
+            {
+              "nodes": [
+                "1",
+                "14",
+                "16",
+                "2",
+                "3",
+                "41"
+              ],
+              "prompt_id": "aace7aee-9cac-4053-801c-321638b7e15b",
+              "timestamp": 1789094609616
+            }
+          ],
+          [
+            "execution_success",
+            {
+              "prompt_id": "aace7aee-9cac-4053-801c-321638b7e15b",
+              "timestamp": 1789094672653
+            }
+          ]
+        ]
+      },
+      "artifacts": [
+        {
+          "approved_output_node": "29",
+          "mode": "RGB",
+          "size": [
+            2048,
+            2048
+          ],
+          "sha256": "ee9869c038849717a13041d9a914921406f705c096da58b11032b12124a48241",
+          "file": "29-0.png"
+        }
+      ]
+    },
+    {
+      "report": "canary/5070ti-accept-modelview-single-view-inpaint-d5deae6e/result.json",
+      "sha256": "dec14e5cf324f14badeee994d3bb8ab7ea58f21fabf00f952fbbaf661f0b4da1",
+      "workflow_key": "modelview-single-view-inpaint",
+      "version": "2026.09.05-d49d622-single-view-inpaint-prompt-r2",
+      "approved_template_sha256": "ebee4ba19608e43420a783576a0fa1c7b2c81f41db34f0a7dcf683ccf041fd37",
+      "node_id": "worker-5070ti-01",
+      "registry_min_vram_mb": 24000,
+      "test_scope": "isolated exact production template; only approved input bindings populated",
+      "passed": true,
+      "input_size": [
+        1536,
+        1024
+      ],
+      "prompt_id": "4046ccc4-e641-49a7-9264-a55eb3ce9324",
+      "elapsed_seconds": 54.04815092217177,
+      "status": {
+        "status_str": "success",
+        "completed": true,
+        "messages": [
+          [
+            "execution_start",
+            {
+              "prompt_id": "4046ccc4-e641-49a7-9264-a55eb3ce9324",
+              "timestamp": 1789094472658
+            }
+          ],
+          [
+            "execution_cached",
+            {
+              "nodes": [
+                "1",
+                "14",
+                "16",
+                "2",
+                "3",
+                "61"
+              ],
+              "prompt_id": "4046ccc4-e641-49a7-9264-a55eb3ce9324",
+              "timestamp": 1789094472660
+            }
+          ],
+          [
+            "execution_success",
+            {
+              "prompt_id": "4046ccc4-e641-49a7-9264-a55eb3ce9324",
+              "timestamp": 1789094526622
+            }
+          ]
+        ]
+      },
+      "artifacts": [
+        {
+          "approved_output_node": "29",
+          "mode": "RGB",
+          "size": [
+            2048,
+            2048
+          ],
+          "sha256": "81c69690840efaa9144d182dfc1c04ab844db242aa0c24e74e91575942ebf5ce",
+          "file": "29-0.png"
+        }
+      ]
+    },
+    {
+      "report": "canary/5070ti-accept-modelview-single-view-inpaint-fcd33859/result.json",
+      "sha256": "4d72eb5f03117f57800dd8faefd60acf44dec1cd0b16170ef5f3c447a0c15395",
+      "workflow_key": "modelview-single-view-inpaint",
+      "version": "2026.09.05-d49d622-single-view-inpaint-prompt-r2",
+      "approved_template_sha256": "ebee4ba19608e43420a783576a0fa1c7b2c81f41db34f0a7dcf683ccf041fd37",
+      "node_id": "worker-5070ti-01",
+      "registry_min_vram_mb": 24000,
+      "test_scope": "isolated exact production template; only approved input bindings populated",
+      "passed": true,
+      "prompt_id": "544a9afc-e1cd-4391-9045-b2bf1d67b37e",
+      "elapsed_seconds": 42.04120859131217,
+      "status": {
+        "status_str": "success",
+        "completed": true,
+        "messages": [
+          [
+            "execution_start",
+            {
+              "prompt_id": "544a9afc-e1cd-4391-9045-b2bf1d67b37e",
+              "timestamp": 1789094085728
+            }
+          ],
+          [
+            "execution_cached",
+            {
+              "nodes": [
+                "1",
+                "14",
+                "16",
+                "2",
+                "3",
+                "61"
+              ],
+              "prompt_id": "544a9afc-e1cd-4391-9045-b2bf1d67b37e",
+              "timestamp": 1789094085730
+            }
+          ],
+          [
+            "execution_success",
+            {
+              "prompt_id": "544a9afc-e1cd-4391-9045-b2bf1d67b37e",
+              "timestamp": 1789094124778
+            }
+          ]
+        ]
+      },
+      "artifacts": [
+        {
+          "approved_output_node": "29",
+          "mode": "RGB",
+          "size": [
+            2048,
+            2048
+          ],
+          "sha256": "429dd1bf28ac3d54ee52da115c333041ebf7383651d8479be097e4ff356658c5",
+          "file": "29-0.png"
+        }
+      ]
+    }
+  ],
+  "models_sha256_and_size_check": "20/20 PASS",
+  "models_check_log_sha256": "6217af33e86ba918372e61d6c9506cd5fabe30f2666bc24c6eb930cae39209a9",
+  "realesrgan": {
+    "passed": true,
+    "elapsed_seconds": 0.3545581907965243,
+    "ready": {
+      "ready": true,
+      "model": "RealESRGAN_x4plus_anime_6B",
+      "model_sha256": "f872d837d3c90ed2e05227bed711af5671a6fd1c9f7d7e91c911a61f155e99da",
+      "python": "3.11.13",
+      "pytorch": "2.7.1+cu128",
+      "cuda_runtime": "12.8",
+      "cuda_available": true,
+      "device": "NVIDIA GeForce RTX 5070 Ti",
+      "tile": 256,
+      "tile_pad": 16,
+      "precision": "FP16",
+      "vram_free_mb": 14951,
+      "vram_total_mb": 16303,
+      "last_metrics": {
+        "processing_ms": 228,
+        "allocated_before_mb": 9,
+        "peak_additional_mb": 552,
+        "vram_free_before_mb": 14951,
+        "vram_free_after_mb": 14951,
+        "vram_total_mb": 16303
+      },
+      "last_error": null,
+      "node_id": "worker-5070ti-01",
+      "display_name": "RTX 5070 Ti",
+      "active": false
+    },
+    "image_mode": "RGBA",
+    "image_size": [
+      256,
+      256
+    ],
+    "headers": {
+      "date": "Fri, 11 Sep 2026 02:23:46 GMT",
+      "server": "uvicorn",
+      "x-request-id": "5070ti-deploy-canary-20260911",
+      "x-compute-node": "RTX 5070 Ti",
+      "x-compute-node-id": "worker-5070ti-01",
+      "x-model": "RealESRGAN_x4plus_anime_6B",
+      "x-processing-ms": "298",
+      "x-peak-additional-vram-mb": "552",
+      "x-vram-free-after-mb": "14951",
+      "x-output-sha256": "32cd2f532e8f2e7c3e9ce1cb299319918579347768b66d775249fe52b70d6111",
+      "content-length": "16198",
+      "content-type": "image/png",
+      "connection": "close"
+    },
+    "sha256": "32cd2f532e8f2e7c3e9ce1cb299319918579347768b66d775249fe52b70d6111"
+  },
+  "uv_acceptance": "blender-acceptance.log"
+}

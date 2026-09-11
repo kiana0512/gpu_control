@@ -1,0 +1,14 @@
+[Unit]
+Description=GPU Control Real-ESRGAN SSH bridge to 3090-B WSL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lilithgames
+ExecStart=/usr/bin/socat TCP-LISTEN:19302,bind=10.3.34.11,reuseaddr,fork EXEC:/opt/gpu-control/deploy/realesrgan/bridge-3090b.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

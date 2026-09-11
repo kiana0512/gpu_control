@@ -1,0 +1,14 @@
+{
+  "gpu_control_api/main.py": {
+    "component": "api",
+    "source": "apps/api/src/gpu_control_api/main.py",
+    "base_sha256": "f6f33cf99c0e9544d91a48560199335f6a8e0afca9a7378c78679fb65916550b",
+    "new_sha256": "102019d2ced507bacb32b80c0e6dc6bac5da9dabba986087fb6eef8daf5b0ea3"
+  },
+  "gpu_control_scheduler/main.py": {
+    "component": "scheduler",
+    "source": "apps/scheduler/src/gpu_control_scheduler/main.py",
+    "base_sha256": "bec1a02992827da1eb3ec94c61683d069e81cff472c273e15ffb92a8552d656b",
+    "new_sha256": "9aa92d411435aac137ede79545ee4ffe3f4247bb0e59171d96eec12201e92f6e"
+  }
+}

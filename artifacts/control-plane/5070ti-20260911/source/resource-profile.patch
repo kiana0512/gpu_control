@@ -1,0 +1,319 @@
+diff --git a/apps/api/src/gpu_control_api/main.py b/apps/api/src/gpu_control_api/main.py
+index 16c1cfc..a876a93 100644
+--- a/apps/api/src/gpu_control_api/main.py
++++ b/apps/api/src/gpu_control_api/main.py
+@@ -5485,6 +5485,10 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
+                 allowed_class_types=version.allowed_class_types,
+                 total_vram_mb=node.total_vram_mb,
+                 reported_labels=node.labels,
++                node_id=node.id,
++                workflow_key=version.workflow_key,
++                workflow_version=version.version,
++                template_sha256=version.template_sha256,
+             )
+             compatibility = await db.scalar(
+                 select(WorkflowNodeCompatibility).where(
+diff --git a/apps/scheduler/src/gpu_control_scheduler/main.py b/apps/scheduler/src/gpu_control_scheduler/main.py
+index a776cc4..689c272 100644
+--- a/apps/scheduler/src/gpu_control_scheduler/main.py
++++ b/apps/scheduler/src/gpu_control_scheduler/main.py
+@@ -1654,6 +1654,10 @@ class Scheduler:
+                                             allowed_class_types=version.allowed_class_types,
+                                             total_vram_mb=current.total_vram_mb,
+                                             reported_labels=labels,
++                                            node_id=current.id,
++                                            workflow_key=version.workflow_key,
++                                            workflow_version=version.version,
++                                            template_sha256=version.template_sha256,
+                                         )
+                                         compatibility = await write_session.scalar(
+                                             select(WorkflowNodeCompatibility).where(
+diff --git a/deploy/control-plane/5070-resource/Dockerfile b/deploy/control-plane/5070-resource/Dockerfile
+new file mode 100644
+index 0000000..5988c4b
+--- /dev/null
++++ b/deploy/control-plane/5070-resource/Dockerfile
+@@ -0,0 +1,14 @@
++ARG BASE_IMAGE
++FROM ${BASE_IMAGE}
++ARG SOURCE_REVISION
++ARG COMPONENT
++USER root
++ENV GPU_CONTROL_BUILD_VERSION=1.5.23.post2 \
++    GPU_CONTROL_BUILD_REVISION=${SOURCE_REVISION} \
++    GPU_CONTROL_RESOURCE_COMPONENT=${COMPONENT}
++COPY layer /tmp/resource-layer
++RUN python /tmp/resource-layer/apply_resource_layer.py && rm -rf /tmp/resource-layer
++LABEL org.opencontainers.image.version="1.5.23.post2" \
++      org.opencontainers.image.revision="${SOURCE_REVISION}" \
++      io.gpu-control.adapter.scope="node-hmac-and-verified-workflow-capacity"
++USER gpucontrol
+diff --git a/deploy/control-plane/5070-resource/apply_resource_layer.py b/deploy/control-plane/5070-resource/apply_resource_layer.py
+new file mode 100644
+index 0000000..7a2871e
+--- /dev/null
++++ b/deploy/control-plane/5070-resource/apply_resource_layer.py
+@@ -0,0 +1,55 @@
++"""Install only verified compatibility modules over the reviewed HMAC images."""
++
++import base64
++import csv
++import hashlib
++import importlib.metadata
++import json
++import os
++import shutil
++from pathlib import Path
++
++dist = importlib.metadata.distribution("gpu-control")
++assert dist.version == "1.5.23.post1"
++site = Path(dist.locate_file(""))
++component = os.environ["GPU_CONTROL_RESOURCE_COMPONENT"]
++manifest = json.loads(Path("/tmp/resource-layer/base-modules.json").read_text())
++changed = []
++for relative, detail in manifest.items():
++    if detail["component"] not in ("common", component):
++        continue
++    target = site / relative
++    assert hashlib.sha256(target.read_bytes()).hexdigest() == detail["base_sha256"], relative
++    content = (Path("/tmp/resource-layer") / detail["source"]).read_bytes()
++    assert hashlib.sha256(content).hexdigest() == detail["new_sha256"], relative
++    target.write_bytes(content)
++    changed.append(relative)
++
++before = site / "gpu_control-1.5.23.post1.dist-info"
++after = site / "gpu_control-1.5.23.post2.dist-info"
++assert before.is_dir() and not after.exists()
++records = list(csv.reader((before / "RECORD").open(newline="")))
++shutil.copytree(before, after)
++shutil.rmtree(before)
++metadata = (after / "METADATA").read_text()
++assert metadata.count("\nVersion: 1.5.23.post1\n") == 1
++(after / "METADATA").write_text(metadata.replace("\nVersion: 1.5.23.post1\n", "\nVersion: 1.5.23.post2\n"))
++changed.append(f"{after.name}/METADATA")
++evidence = after / "gpu-control-resource-layer.json"
++evidence.write_text(json.dumps({
++    "source_revision": os.environ["GPU_CONTROL_BUILD_REVISION"],
++    "component": component,
++    "scope": "exact node and workflow acceptance profiles; original workflow declaration retained",
++    "modules": manifest,
++}, indent=2) + "\n")
++records.append([f"{after.name}/{evidence.name}", "", ""])
++changed.append(f"{after.name}/{evidence.name}")
++for row in records:
++    row[0] = row[0].replace(before.name + "/", after.name + "/", 1)
++    if row[0] in changed:
++        content = (site / row[0]).read_bytes()
++        row[1] = "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(content).digest()).decode().rstrip("=")
++        row[2] = str(len(content))
++with (after / "RECORD").open("w", newline="") as stream:
++    csv.writer(stream).writerows(records)
++print("VERIFIED_RESOURCE_PROFILE_LAYER", component, len(changed))
+diff --git a/packages/gpu_control_core/workflow.py b/packages/gpu_control_core/workflow.py
+index 69aee57..c792616 100644
+--- a/packages/gpu_control_core/workflow.py
++++ b/packages/gpu_control_core/workflow.py
+@@ -111,6 +111,50 @@ def template_digest(template: dict[str, Any]) -> str:
+     return hashlib.sha256(raw).hexdigest()
+ 
+ 
++def validated_node_vram_requirement(
++    *,
++    declared_min_vram_mb: int,
++    reported_labels: dict[str, Any],
++    node_id: str | None,
++    workflow_key: str | None,
++    workflow_version: str | None,
++    template_sha256: str | None,
++) -> int:
++    """Use only an explicitly recorded acceptance for this exact node/template.
++
++    These profiles are control-plane inventory, never accepted from a Node
++    Agent heartbeat. A new workflow revision, GPU replacement, missing proof,
++    or malformed profile falls back to the unchanged workflow declaration.
++    """
++    if not all((node_id, workflow_key, workflow_version, template_sha256)):
++        return declared_min_vram_mb
++    profiles = reported_labels.get("validated_vram_profiles")
++    if not isinstance(profiles, dict):
++        return declared_min_vram_mb
++    profile = profiles.get(workflow_key)
++    if not isinstance(profile, dict):
++        return declared_min_vram_mb
++    if (
++        profile.get("status") != "PASSED"
++        or profile.get("node_id") != node_id
++        or profile.get("version") != workflow_version
++        or profile.get("template_sha256") != template_sha256
++        or not reported_labels.get("gpu_uuid")
++        or profile.get("gpu_uuid") != reported_labels.get("gpu_uuid")
++    ):
++        return declared_min_vram_mb
++    for field in ("evidence_sha256", "runtime_profile_sha256"):
++        digest = profile.get(field)
++        if not isinstance(digest, str) or len(digest) != 64 or any(
++            char not in "0123456789abcdef" for char in digest
++        ):
++            return declared_min_vram_mb
++    minimum = profile.get("min_vram_mb")
++    if type(minimum) is not int or not 12000 <= minimum <= declared_min_vram_mb:
++        return declared_min_vram_mb
++    return minimum
++
++
+ def node_compatibility_reasons(
+     *,
+     min_vram_mb: int,
+@@ -118,11 +162,23 @@ def node_compatibility_reasons(
+     allowed_class_types: list[str] | set[str] | frozenset[str],
+     total_vram_mb: int,
+     reported_labels: dict[str, Any],
++    node_id: str | None = None,
++    workflow_key: str | None = None,
++    workflow_version: str | None = None,
++    template_sha256: str | None = None,
+ ) -> list[str]:
+     """Return fail-closed workflow compatibility reasons for one node."""
+     reasons: list[str] = []
+-    if total_vram_mb < min_vram_mb:
+-        reasons.append(f"vram {total_vram_mb}MB < required {min_vram_mb}MB")
++    effective_minimum = validated_node_vram_requirement(
++        declared_min_vram_mb=min_vram_mb,
++        reported_labels=reported_labels,
++        node_id=node_id,
++        workflow_key=workflow_key,
++        workflow_version=workflow_version,
++        template_sha256=template_sha256,
++    )
++    if total_vram_mb < effective_minimum:
++        reasons.append(f"vram {total_vram_mb}MB < required {effective_minimum}MB")
+     for key, value in required_labels.items():
+         if str(reported_labels.get(key)) != str(value):
+             reasons.append(f"label {key} must equal {value}")
+diff --git a/packages/gpu_control_core/workflow_cli.py b/packages/gpu_control_core/workflow_cli.py
+index 0b741a9..1a75b1a 100644
+--- a/packages/gpu_control_core/workflow_cli.py
++++ b/packages/gpu_control_core/workflow_cli.py
+@@ -42,6 +42,10 @@ async def refresh_compatibility(
+             allowed_class_types=version.allowed_class_types,
+             total_vram_mb=node.total_vram_mb,
+             reported_labels=node.labels,
++            node_id=node.id,
++            workflow_key=version.workflow_key,
++            workflow_version=version.version,
++            template_sha256=version.template_sha256,
+         )
+         compatibility = await session.scalar(
+             select(WorkflowNodeCompatibility).where(
+diff --git a/pyproject.toml b/pyproject.toml
+index 3ce402a..1de0313 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
+ 
+ [project]
+ name = "gpu-control"
+-version = "1.5.23.post1"
++version = "1.5.23.post2"
+ description = "ComfyUI GPU scheduling and operations platform"
+ readme = "README.md"
+ requires-python = ">=3.11,<3.13"
+diff --git a/tests/unit/test_validated_vram_profiles.py b/tests/unit/test_validated_vram_profiles.py
+new file mode 100644
+index 0000000..45b0970
+--- /dev/null
++++ b/tests/unit/test_validated_vram_profiles.py
+@@ -0,0 +1,93 @@
++import copy
++
++import pytest
++
++from packages.gpu_control_core.workflow import node_compatibility_reasons
++
++
++def compatibility(**changes):
++    labels = {
++        "gpu_uuid": "GPU-5070-verified",
++        "comfy_class_types": ["LoadImage", "SaveImage"],
++        "validated_vram_profiles": {
++            "modelview-inpaint": {
++                "status": "PASSED",
++                "node_id": "worker-5070ti-01",
++                "version": "approved-v1",
++                "template_sha256": "a" * 64,
++                "gpu_uuid": "GPU-5070-verified",
++                "min_vram_mb": 16000,
++                "evidence_sha256": "b" * 64,
++                "runtime_profile_sha256": "c" * 64,
++            }
++        },
++    }
++    args = {
++        "min_vram_mb": 24000,
++        "required_labels": {},
++        "allowed_class_types": ["LoadImage", "SaveImage"],
++        "total_vram_mb": 16303,
++        "reported_labels": labels,
++        "node_id": "worker-5070ti-01",
++        "workflow_key": "modelview-inpaint",
++        "workflow_version": "approved-v1",
++        "template_sha256": "a" * 64,
++    }
++    args.update(changes)
++    return args
++
++
++def test_exact_accepted_node_and_template_can_use_verified_capacity():
++    args = compatibility()
++    before = copy.deepcopy(args)
++    assert node_compatibility_reasons(**args) == []
++    assert args == before
++
++
++@pytest.mark.parametrize("field,value", [
++    ("node_id", "worker-4070ti-animation-host-01"),
++    ("workflow_key", "modelview-single-view"),
++    ("workflow_version", "unverified-v2"),
++    ("template_sha256", "d" * 64),
++    ("node_id", None),
++])
++def test_acceptance_cannot_transfer_between_nodes_or_workflow_revisions(field, value):
++    assert node_compatibility_reasons(**compatibility(**{field: value})) == [
++        "vram 16303MB < required 24000MB"
++    ]
++
++
++@pytest.mark.parametrize("field,value", [
++    ("status", "PENDING"),
++    ("gpu_uuid", "GPU-other-device"),
++    ("min_vram_mb", 0),
++    ("min_vram_mb", True),
++    ("min_vram_mb", "16000"),
++    ("min_vram_mb", 24001),
++    ("evidence_sha256", "missing-proof"),
++    ("runtime_profile_sha256", None),
++])
++def test_invalid_acceptance_falls_back_to_declared_requirement(field, value):
++    args = compatibility()
++    args["reported_labels"]["validated_vram_profiles"]["modelview-inpaint"][field] = value
++    assert node_compatibility_reasons(**args) == ["vram 16303MB < required 24000MB"]
++
++
++def test_profile_does_not_bypass_labels_or_class_inventory():
++    args = compatibility(required_labels={"pipeline_sha256": "required"})
++    args["reported_labels"]["comfy_class_types"] = ["LoadImage"]
++    assert node_compatibility_reasons(**args) == [
++        "label pipeline_sha256 must equal required",
++        "missing ComfyUI classes: SaveImage",
++    ]
++
++
++def test_verified_minimum_still_enforced_and_unprofiled_nodes_unchanged():
++    assert node_compatibility_reasons(**compatibility(total_vram_mb=12282)) == [
++        "vram 12282MB < required 16000MB"
++    ]
++    args = compatibility()
++    del args["reported_labels"]["validated_vram_profiles"]
++    assert node_compatibility_reasons(**args) == ["vram 16303MB < required 24000MB"]
++    args["total_vram_mb"] = 24576
++    assert node_compatibility_reasons(**args) == []

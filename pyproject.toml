@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpu-control"
-version = "1.5.23"
-description = "Four-node ComfyUI GPU scheduling and operations platform"
+version = "1.5.23.post3"
+description = "ComfyUI GPU scheduling and operations platform"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
@@ -54,7 +54,7 @@ include = ["packages*", "gpu_control_api*", "gpu_control_scheduler*", "gpu_node_
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-pythonpath = [".", "apps/api/src", "apps/scheduler/src", "apps/node_agent/src", "apps/asset_api/src", "apps/blender_worker/src"]
+pythonpath = [".", "apps/api/src", "apps/scheduler/src", "apps/node_agent/src", "apps/asset_api/src", "apps/blender_worker/src", "apps/realesrgan/src"]
 testpaths = ["tests", "apps/api/tests", "apps/scheduler/tests", "apps/node_agent/tests"]
 
 [tool.ruff]

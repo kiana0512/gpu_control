@@ -1,0 +1,35 @@
+{
+  "imported_module": "/usr/local/lib/python3.11/site-packages/gpu_control_blender_worker/main.py",
+  "distributions": [
+    {
+      "path": "gpu_control.egg-info",
+      "version": "1.5.23",
+      "record_present": false,
+      "mismatches": []
+    },
+    {
+      "path": "/usr/local/lib/python3.11/site-packages/gpu_control-1.5.23.dist-info",
+      "version": "1.5.23",
+      "record_present": true,
+      "mismatches": []
+    }
+  ],
+  "worker_version": "1.4.75-uv-overlap-v28-pins1-codex-auth2",
+  "module_sha_matches_auth1": true,
+  "skill_validations": {
+    "uv_skill_root": "PASS",
+    "alignment_skill_root": "PASS",
+    "retopology_skill_root": "PASS"
+  },
+  "retopology_v6": "PASS",
+  "direct_v2": "PASS",
+  "health": {
+    "codex_cli_version": "codex-cli 0.146.0-alpha.3.1",
+    "codex_auth_status": "MISSING",
+    "codex_probe_status": "BLOCKED",
+    "codex_probe_latency_ms": 0,
+    "codex_last_checked_at": "2026-09-11T03:35:37.041204+00:00",
+    "codex_last_success_at": null,
+    "codex_error_code": "AUTH_MISSING"
+  }
+}

@@ -1,0 +1,270 @@
+diff --git a/apps/api/src/gpu_control_api/main.py b/apps/api/src/gpu_control_api/main.py
+index a876a93..2f257ff 100644
+--- a/apps/api/src/gpu_control_api/main.py
++++ b/apps/api/src/gpu_control_api/main.py
+@@ -4640,6 +4640,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
+                 ),
+                 "heartbeat_fresh": heartbeat_fresh,
+                 "probe_fresh": probe_fresh,
++                "heartbeat_timeout_seconds": cfg.asset_worker_heartbeat_timeout_seconds,
++                "probe_max_age_seconds": cfg.asset_codex_probe_max_age_seconds,
+                 "eligibility_reason": eligibility_reason,
+                 "error_code": (
+                     worker.codex_error_code
+diff --git a/apps/scheduler/src/gpu_control_scheduler/main.py b/apps/scheduler/src/gpu_control_scheduler/main.py
+index 689c272..c633416 100644
+--- a/apps/scheduler/src/gpu_control_scheduler/main.py
++++ b/apps/scheduler/src/gpu_control_scheduler/main.py
+@@ -44,6 +44,7 @@ from packages.gpu_control_core.database import (
+     SchedulerLockLost,
+ )
+ from packages.gpu_control_core.enums import (
++    TERMINAL_BATCH_STATUSES,
+     TERMINAL_JOB_STATUSES,
+     BatchItemStatus,
+     BatchStatus,
+@@ -2060,6 +2061,10 @@ class Scheduler:
+             )
+             if batch is None:
+                 return False
++            # Assembly can finish after reconcile_batches reads its active ID
++            # snapshot. Recheck the locked row before changing items or progress.
++            if BatchStatus(batch.status) in TERMINAL_BATCH_STATUSES:
++                return False
+             if batch.status == BatchStatus.ASSEMBLING.value:
+                 return True
+             previous_progress = batch.progress
+diff --git a/deploy/control-plane/5070-final/Dockerfile b/deploy/control-plane/5070-final/Dockerfile
+new file mode 100644
+index 0000000..600c628
+--- /dev/null
++++ b/deploy/control-plane/5070-final/Dockerfile
+@@ -0,0 +1,17 @@
++ARG BASE_IMAGE
++FROM ${BASE_IMAGE}
++ARG SOURCE_REVISION
++ARG BASE_IMAGE_ID
++ARG COMPONENT
++USER root
++ENV GPU_CONTROL_BUILD_VERSION=1.5.23.post3 \
++    GPU_CONTROL_BUILD_REVISION=${SOURCE_REVISION} \
++    GPU_CONTROL_ADAPTER_BASE_IMAGE_ID=${BASE_IMAGE_ID} \
++    GPU_CONTROL_RESOURCE_COMPONENT=${COMPONENT}
++COPY layer /tmp/control-layer
++RUN python /tmp/control-layer/apply_control_layer.py && rm -rf /tmp/control-layer
++LABEL org.opencontainers.image.version="1.5.23.post3" \
++      org.opencontainers.image.revision="${SOURCE_REVISION}" \
++      io.gpu-control.adapter.base-image-id="${BASE_IMAGE_ID}" \
++      io.gpu-control.adapter.scope="terminal-batch-guard-and-codex-freshness-limits"
++USER gpucontrol
+diff --git a/deploy/control-plane/5070-final/apply_control_layer.py b/deploy/control-plane/5070-final/apply_control_layer.py
+new file mode 100644
+index 0000000..dda1327
+--- /dev/null
++++ b/deploy/control-plane/5070-final/apply_control_layer.py
+@@ -0,0 +1,55 @@
++"""Install only verified compatibility modules over the reviewed HMAC images."""
++
++import base64
++import csv
++import hashlib
++import importlib.metadata
++import json
++import os
++import shutil
++from pathlib import Path
++
++dist = importlib.metadata.distribution("gpu-control")
++assert dist.version == "1.5.23.post2"
++site = Path(dist.locate_file(""))
++component = os.environ["GPU_CONTROL_RESOURCE_COMPONENT"]
++manifest = json.loads(Path("/tmp/control-layer/base-modules.json").read_text())
++changed = []
++for relative, detail in manifest.items():
++    if detail["component"] not in ("common", component):
++        continue
++    target = site / relative
++    assert hashlib.sha256(target.read_bytes()).hexdigest() == detail["base_sha256"], relative
++    content = (Path("/tmp/control-layer") / detail["source"]).read_bytes()
++    assert hashlib.sha256(content).hexdigest() == detail["new_sha256"], relative
++    target.write_bytes(content)
++    changed.append(relative)
++
++before = site / "gpu_control-1.5.23.post2.dist-info"
++after = site / "gpu_control-1.5.23.post3.dist-info"
++assert before.is_dir() and not after.exists()
++records = list(csv.reader((before / "RECORD").open(newline="")))
++shutil.copytree(before, after)
++shutil.rmtree(before)
++metadata = (after / "METADATA").read_text()
++assert metadata.count("\nVersion: 1.5.23.post2\n") == 1
++(after / "METADATA").write_text(metadata.replace("\nVersion: 1.5.23.post2\n", "\nVersion: 1.5.23.post3\n"))
++changed.append(f"{after.name}/METADATA")
++evidence = after / "gpu-control-final-control-layer.json"
++evidence.write_text(json.dumps({
++    "source_revision": os.environ["GPU_CONTROL_BUILD_REVISION"],
++    "component": component,
++    "scope": "terminal batch reconciliation guard and authoritative Codex freshness limits",
++    "modules": manifest,
++}, indent=2) + "\n")
++records.append([f"{after.name}/{evidence.name}", "", ""])
++changed.append(f"{after.name}/{evidence.name}")
++for row in records:
++    row[0] = row[0].replace(before.name + "/", after.name + "/", 1)
++    if row[0] in changed:
++        content = (site / row[0]).read_bytes()
++        row[1] = "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(content).digest()).decode().rstrip("=")
++        row[2] = str(len(content))
++with (after / "RECORD").open("w", newline="") as stream:
++    csv.writer(stream).writerows(records)
++print("VERIFIED_FINAL_CONTROL_LAYER", component, len(changed))
+diff --git a/pyproject.toml b/pyproject.toml
+index 1de0313..28af7c2 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
+ 
+ [project]
+ name = "gpu-control"
+-version = "1.5.23.post2"
++version = "1.5.23.post3"
+ description = "ComfyUI GPU scheduling and operations platform"
+ readme = "README.md"
+ requires-python = ">=3.11,<3.13"
+diff --git a/tests/integration/test_api.py b/tests/integration/test_api.py
+index ea4d17c..c5c6a3f 100644
+--- a/tests/integration/test_api.py
++++ b/tests/integration/test_api.py
+@@ -2212,6 +2212,8 @@ async def test_admin_nodes_selects_linux_codex_worker_not_newer_windows_baker(
+     tmp_path: Path,
+ ) -> None:
+     async for app, client in prepared_app(tmp_path):
++        app.state.settings.asset_worker_heartbeat_timeout_seconds = 75
++        app.state.settings.asset_codex_probe_max_age_seconds = 900
+         now = datetime.now(UTC)
+         async with app.state.db.session() as db:
+             node = await db.get(Node, "worker-3090-b")
+@@ -2283,6 +2285,8 @@ async def test_admin_nodes_selects_linux_codex_worker_not_newer_windows_baker(
+         assert runtime["probe_fresh"] is True
+         assert runtime["scheduler_eligible"] is True
+         assert runtime["eligibility_reason"] == "ELIGIBLE"
++        assert runtime["heartbeat_timeout_seconds"] == app.state.settings.asset_worker_heartbeat_timeout_seconds
++        assert runtime["probe_max_age_seconds"] == app.state.settings.asset_codex_probe_max_age_seconds
+ 
+ 
+ async def test_admin_nodes_exposes_optional_gpu_temperature_and_power(tmp_path: Path) -> None:
+diff --git a/tests/integration/test_scheduler_batch_hot_path.py b/tests/integration/test_scheduler_batch_hot_path.py
+index 36e75e0..1f846c8 100644
+--- a/tests/integration/test_scheduler_batch_hot_path.py
++++ b/tests/integration/test_scheduler_batch_hot_path.py
+@@ -21,6 +21,7 @@ from packages.gpu_control_core.models import (
+     ApiClient,
+     Base,
+     BatchArtifact,
++    BatchEvent,
+     Job,
+     JobArtifact,
+     JobBatch,
+@@ -381,6 +382,102 @@ async def test_sync_and_assembly_bulk_read_latest_artifacts_in_ordinal_order(
+         await close_scheduler(scheduler)
+ 
+ 
++async def test_reconcile_stale_snapshot_preserves_completed_assembly(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    scheduler = await make_scheduler(tmp_path)
++    batch_id = "batch-reconcile-race"
++    await add_completed_batch(scheduler, batch_id, 2)
++    assert await scheduler.sync_batch_state(batch_id) is True
++    snapshot_taken = asyncio.Event()
++    resume_sync = asyncio.Event()
++    original_sync = scheduler.sync_batch_state
++    sync_results: list[bool] = []
++    published: list[dict[str, Any]] = []
++    archive_payload = b"completed-before-reconciliation-lock"
++
++    async def delayed_sync(selected_batch_id: str) -> bool:
++        assert selected_batch_id == batch_id
++        # reconcile_batches has already read its active ID snapshot and closed
++        # that transaction, but sync_batch_state has not locked the batch yet.
++        snapshot_taken.set()
++        await resume_sync.wait()
++        result = await original_sync(selected_batch_id)
++        sync_results.append(result)
++        return result
++
++    def fake_archive(
++        _batch_id: str,
++        _external_batch_id: str,
++        _batch_dir: Path,
++        _frames: list[batch_module.ArchiveFrame],
++        _workflow_identity: dict[str, str | None],
++        staging_path: Path,
++        _cancel_event: threading.Event,
++        _total_items: int,
++    ) -> BuiltBatchArchive:
++        staging_path.parent.mkdir(parents=True, exist_ok=True)
++        staging_path.write_bytes(archive_payload)
++        return BuiltBatchArchive(
++            path=staging_path,
++            size_bytes=len(archive_payload),
++            sha256=hashlib.sha256(archive_payload).hexdigest(),
++            manifest={},
++        )
++
++    async def record_publish(payload: dict[str, Any]) -> None:
++        published.append(payload)
++
++    async def saved_rows() -> list[list[dict[str, Any]]]:
++        rows: list[list[dict[str, Any]]] = []
++        async with scheduler.db.session() as session:
++            for model in (JobBatch, JobBatchItem, BatchArtifact, BatchEvent):
++                table = model.__table__
++                batch_column = table.c.id if model is JobBatch else table.c.batch_id
++                result = await session.execute(
++                    select(table).where(batch_column == batch_id).order_by(table.c.id)
++                )
++                rows.append([dict(row) for row in result.mappings()])
++        return rows
++
++    monkeypatch.setattr(scheduler, "sync_batch_state", delayed_sync)
++    monkeypatch.setattr(scheduler, "publish", record_publish)
++    monkeypatch.setattr(scheduler_main, "build_result_archive", fake_archive)
++    tasks: list[asyncio.Task[None]] = []
++    try:
++        reconciliation = asyncio.create_task(scheduler.reconcile_batches())
++        tasks.append(reconciliation)
++        await asyncio.wait_for(snapshot_taken.wait(), timeout=10)
++        assembly = asyncio.create_task(scheduler.assemble_batch(batch_id))
++        tasks.append(assembly)
++        await asyncio.wait_for(assembly, timeout=10)
++        before = await saved_rows()
++        assert before[0][0]["status"] == BatchStatus.SUCCEEDED.value
++        assert len(before[2]) == 1
++        assert before[2][0]["sha256"] == hashlib.sha256(archive_payload).hexdigest()
++        published_before = list(published)
++
++        resume_sync.set()
++        await asyncio.wait_for(reconciliation, timeout=10)
++
++        assert sync_results == [False]
++        assert scheduler.batch_assemblies == {}
++        assert await saved_rows() == before
++        assert published == published_before
++        final_path = (
++            tmp_path / "jobs" / "batch-fixtures" / batch_id / "output" / f"{batch_id}-rgba.zip"
++        )
++        assert final_path.read_bytes() == archive_payload
++    finally:
++        resume_sync.set()
++        for task in tasks:
++            if not task.done():
++                task.cancel()
++        await asyncio.gather(*tasks, return_exceptions=True)
++        await close_scheduler(scheduler)
++
++
+ async def test_cancelled_old_archive_thread_cannot_overwrite_new_publish(
+     tmp_path: Path,
+     monkeypatch: pytest.MonkeyPatch,

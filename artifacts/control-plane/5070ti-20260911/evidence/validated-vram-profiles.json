@@ -1,0 +1,32 @@
+{
+  "modelview-inpaint": {
+    "status": "PASSED",
+    "node_id": "worker-5070ti-01",
+    "version": "2026.08.29-cba4414-truev3-gguf-mask-4input-rseed-steps2-r1",
+    "template_sha256": "cc95d74d69df5f1ec96add1f1205e83c0e7bff1f2f1f3198a7ca3b6fa9520b32",
+    "gpu_uuid": "GPU-5fa565eb-b1de-57ed-d43b-03c602cecf06",
+    "min_vram_mb": 16000,
+    "evidence_sha256": "023c4583e07052f5aa604c3a23cfa6e83292fbdbfb6abc3a5f6b3d0a543ed974",
+    "runtime_profile_sha256": "cb676848c08b2fe9d9a21575c3a00a4626b6148f0b3440f6a0eab3dc3b3ad6bb"
+  },
+  "modelview-single-view": {
+    "status": "PASSED",
+    "node_id": "worker-5070ti-01",
+    "version": "2026.08.26-c0e6218-single-view-4step-r1",
+    "template_sha256": "13cc9c17e4ceecc6149351b119e84c987d813003319758c661cc6237ab2e2818",
+    "gpu_uuid": "GPU-5fa565eb-b1de-57ed-d43b-03c602cecf06",
+    "min_vram_mb": 16000,
+    "evidence_sha256": "023c4583e07052f5aa604c3a23cfa6e83292fbdbfb6abc3a5f6b3d0a543ed974",
+    "runtime_profile_sha256": "cb676848c08b2fe9d9a21575c3a00a4626b6148f0b3440f6a0eab3dc3b3ad6bb"
+  },
+  "modelview-single-view-inpaint": {
+    "status": "PASSED",
+    "node_id": "worker-5070ti-01",
+    "version": "2026.09.05-d49d622-single-view-inpaint-prompt-r2",
+    "template_sha256": "ebee4ba19608e43420a783576a0fa1c7b2c81f41db34f0a7dcf683ccf041fd37",
+    "gpu_uuid": "GPU-5fa565eb-b1de-57ed-d43b-03c602cecf06",
+    "min_vram_mb": 16000,
+    "evidence_sha256": "023c4583e07052f5aa604c3a23cfa6e83292fbdbfb6abc3a5f6b3d0a543ed974",
+    "runtime_profile_sha256": "cb676848c08b2fe9d9a21575c3a00a4626b6148f0b3440f6a0eab3dc3b3ad6bb"
+  }
+}

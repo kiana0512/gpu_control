@@ -97,3 +97,12 @@ runtime/asset-skills/**/*.py[cod]
 artifacts/mof-native-api-canary-*/
 artifacts/uv-multimesh-mof-canary-*/
 artifacts/uv-multimesh-mof-canary-*.json
+
+# 5070 Ti host-local transfer images, pipeline bundles, and detailed probe logs.
+# Reviewed receipts and LFS release parts are curated under artifacts/ instead.
+output/5070ti-*/
+output/5070Ti_Windows_WSL2_预处理包_20260910.zip
+
+# Preserve the existing checksum ledger for the approved, unchanged upstream bundle.
+!workflows/production/modelview-inpaint/custom_nodes/Cherry_KleinWorkflowTools/UPSTREAM.sha256
+!artifacts/control-plane/5070ti-20260911/windows-prep/GPU_CONTROL_LAN_CA.crt

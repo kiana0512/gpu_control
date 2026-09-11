@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-09-11T03:34:59.335990+00:00",
+  "container": "gpu-control-node-blender-worker-1",
+  "before_image_id": "sha256:9a871e05c74d6f2bffd4097dae379aea8affc380bc00006a3d0cafb0db36084b",
+  "after_image_id": "sha256:0c6ea65709566114544710dcac3255b94ac71f53138f158e4a678c6abcacb992",
+  "configured_image": "li3d/blender-worker:1.4.75-uv-overlap-v28-pins1-codex-auth2",
+  "status": "running",
+  "compose_sha256": "ac6db76b24ce59a5e605a057117cbf9ca0545efeb2f95e51446a7a7a7d219b11",
+  "only_service_recreated": "blender-worker",
+  "device_auth_container_untouched": true
+}

@@ -1,0 +1,5 @@
+[{"workflow_key":"imageclip-rgba","version":"2026.08.17-c39ed0b-colorfix-r1","min_vram_mb":12000,"compatible":true,"reasons":[]}, 
+ {"workflow_key":"modelview-inpaint","version":"2026.08.29-cba4414-truev3-gguf-mask-4input-rseed-steps2-r1","min_vram_mb":24000,"compatible":true,"reasons":[]}, 
+ {"workflow_key":"modelview-roughness","version":"2026.08.12-d318bb39-roughness-12g-r1","min_vram_mb":12000,"compatible":true,"reasons":[]}, 
+ {"workflow_key":"modelview-single-view","version":"2026.08.26-c0e6218-single-view-4step-r1","min_vram_mb":24000,"compatible":true,"reasons":[]}, 
+ {"workflow_key":"modelview-single-view-inpaint","version":"2026.09.05-d49d622-single-view-inpaint-prompt-r2","min_vram_mb":24000,"compatible":true,"reasons":[]}]

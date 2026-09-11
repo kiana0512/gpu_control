@@ -1,0 +1,15 @@
+{
+  "markdown_relative_links_checked": 47,
+  "broken_relative_links": [],
+  "windows_payload_index_zip_matches": [
+    "GPU_CONTROL_LAN_CA.crt",
+    "Initialize-GPUControlWindowsNode.ps1",
+    "README.md",
+    "Update-GPUControlWslProxy.ps1",
+    "gpu-control-5070ti-management.pub"
+  ],
+  "zip_sha256": "c910e645d62e877681e4cd8742091292831a26ef4f1495e5d0e1086e4429039c",
+  "zip_size": 24281,
+  "historical_wording_corrected": true,
+  "passed": true
+}

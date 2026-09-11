@@ -1,0 +1,22 @@
+{
+  "passed": true,
+  "node": "worker-5070ti-01",
+  "elapsed_seconds": 0.13784908317029476,
+  "width": 256,
+  "height": 256,
+  "output_sha256": "379cbeec95a473146d9c22d591ff96c9d5477f972d3ade3ff317845feb0ecb82",
+  "response_headers": {
+    "x-request-id": "5070ti-public-accept-0984adc27125477b8a33e5c3d0e07abd",
+    "x-compute-node": "5070 Ti",
+    "x-model": "RealESRGAN_x4plus_anime_6B",
+    "x-queue-ms": "0",
+    "x-processing-ms": "104",
+    "x-input-sha256": "ca8ee8112a3b6a3748c69678ef0c36addc097253529d16da7c5f3aaa296cf431",
+    "x-output-sha256": "379cbeec95a473146d9c22d591ff96c9d5477f972d3ade3ff317845feb0ecb82",
+    "x-idempotency-cache": "MISS",
+    "x-peak-additional-vram-mb": "552",
+    "x-vram-free-after-mb": "13858",
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY"
+  }
+}

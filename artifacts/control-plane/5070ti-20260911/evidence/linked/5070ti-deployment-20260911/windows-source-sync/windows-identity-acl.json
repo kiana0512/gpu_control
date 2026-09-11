@@ -1,0 +1,57 @@
+{
+    "TaskOwnerForms":  [
+                           {
+                               "AccountForm":  "LILITHG-N0K4M0L\\lilithgames",
+                               "SameOwner":  true
+                           },
+                           {
+                               "AccountForm":  "lilithgames",
+                               "SameOwner":  true
+                           },
+                           {
+                               "AccountForm":  "S-1-5-21-729800975-1068271290-1542459589-1000",
+                               "SameOwner":  true
+                           }
+                       ],
+    "InstalledAcl":  [
+                         {
+                             "Path":  "C:\\ProgramData\\ssh\\administrators_authorized_keys",
+                             "Owner":  "BUILTIN\\Administrators",
+                             "InheritanceProtected":  true,
+                             "Access":  [
+                                            {
+                                                "Identity":  "NT AUTHORITY\\SYSTEM",
+                                                "Rights":  "FullControl",
+                                                "Type":  "Allow",
+                                                "Inherited":  false
+                                            },
+                                            {
+                                                "Identity":  "BUILTIN\\Administrators",
+                                                "Rights":  "FullControl",
+                                                "Type":  "Allow",
+                                                "Inherited":  false
+                                            }
+                                        ]
+                         },
+                         {
+                             "Path":  "C:\\ProgramData\\GPUControl\\worker-5070ti-01",
+                             "Owner":  "BUILTIN\\Administrators",
+                             "InheritanceProtected":  true,
+                             "Access":  [
+                                            {
+                                                "Identity":  "NT AUTHORITY\\SYSTEM",
+                                                "Rights":  "FullControl",
+                                                "Type":  "Allow",
+                                                "Inherited":  false
+                                            },
+                                            {
+                                                "Identity":  "BUILTIN\\Administrators",
+                                                "Rights":  "FullControl",
+                                                "Type":  "Allow",
+                                                "Inherited":  false
+                                            }
+                                        ]
+                         }
+                     ],
+    "Mutations":  false
+}

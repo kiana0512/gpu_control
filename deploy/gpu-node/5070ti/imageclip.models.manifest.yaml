@@ -1,0 +1,18 @@
+# Adds the production FP8 model approved in docs/117; external manifest is untouched.
+manifest_version: 1
+models:
+- path: unet/flux-2-klein-9b-Q6_K.gguf
+  size_bytes: 7865424160
+  sha256: 1cd667293607431e79c9e7e01ecf5c602bd00539c2c0f49d4817a62998b5fe98
+- path: text_encoders/qwen_3_8b_fp8mixed.safetensors
+  size_bytes: 8664848742
+  sha256: abad16806e0cbabc54e0325d6565847443fe396d5f0be38bb3cd3fe75a1201d6
+- path: vae/flux2-vae.safetensors
+  size_bytes: 336213556
+  sha256: d64f3a68e1cc4f9f4e29b6e0da38a0204fe9a49f2d4053f0ec1fa1ca02f9c4b5
+- path: loras/Koutu_Flux2klein_v2_000007250.safetensors
+  size_bytes: 165704392
+  sha256: 79838cfe96bc7508f4d5e6aca6588191eda333ec983a3b202afe694857ccd27d
+- path: unet/flux-2-klein-9b-fp8.safetensors
+  size_bytes: 9433061528
+  sha256: 865ba09f5b4c3cbd3468a4bd3acb9fcb2f8740c54317482f0bcd4ed1d3655cee

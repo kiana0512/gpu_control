@@ -1,0 +1,122 @@
+--- before/Update-GPUControlWslProxy.ps1
++++ scripts/Update-GPUControlWslProxy.ps1
+@@ -12,6 +12,21 @@
+     [switch]$Watch
+ )
+ 
++# Local adaptation: accept overlapping allow rules only while an exact,
++# all-profile block rule independently rejects every source except the controller.
++function Test-GpuControlSourceBlock([string]$Control, [int[]]$ManagedPorts) {
++    if ($Control -ne '10.3.34.11') { return $false }
++    $b = Get-NetFirewallRule -PolicyStore ActiveStore -Name 'GPUControl-worker-5070ti-01-Management-BlockOtherSources' -ErrorAction SilentlyContinue
++    if (-not $b -or [string]$b.Enabled -ne 'True' -or [string]$b.Direction -ne 'Inbound' -or [string]$b.Action -ne 'Block' -or [string]$b.Profile -ne 'Any') { return $false }
++    $a = $b | Get-NetFirewallAddressFilter
++    $p = $b | Get-NetFirewallPortFilter
++    $expected = '["128.0.0.0/128.0.0.0","64.0.0.0/192.0.0.0","32.0.0.0/224.0.0.0","16.0.0.0/240.0.0.0","0.0.0.0/248.0.0.0","12.0.0.0/252.0.0.0","8.0.0.0/254.0.0.0","11.0.0.0/255.0.0.0","10.128.0.0/255.128.0.0","10.64.0.0/255.192.0.0","10.32.0.0/255.224.0.0","10.16.0.0/255.240.0.0","10.8.0.0/255.248.0.0","10.4.0.0/255.252.0.0","10.0.0.0/255.254.0.0","10.2.0.0/255.255.0.0","10.3.128.0/255.255.128.0","10.3.64.0/255.255.192.0","10.3.0.0/255.255.224.0","10.3.48.0/255.255.240.0","10.3.40.0/255.255.248.0","10.3.36.0/255.255.252.0","10.3.32.0/255.255.254.0","10.3.35.0/255.255.255.0","10.3.34.128/255.255.255.128","10.3.34.64/255.255.255.192","10.3.34.32/255.255.255.224","10.3.34.16/255.255.255.240","10.3.34.0/255.255.255.248","10.3.34.12/255.255.255.252","10.3.34.8/255.255.255.254","10.3.34.10","::/1","8000::/1"]' | ConvertFrom-Json
++    if ((@($a.LocalAddress) -join ',') -ne 'Any' -or (@($a.RemoteAddress | Sort-Object) -join ',') -ne (@($expected | Sort-Object) -join ',')) { return $false }
++    if ([string]$p.Protocol -notin @('TCP','6')) { return $false }
++    foreach ($port in $ManagedPorts) { if ([string]$port -notin @($p.LocalPort)) { return $false } }
++    if ([string]($b | Get-NetFirewallApplicationFilter).Program -ne 'Any' -or [string]($b | Get-NetFirewallServiceFilter).Service -ne 'Any') { return $false }
++    return $true
++}
+ $ErrorActionPreference = 'Stop'
+ Set-StrictMode -Version Latest
+ if ($Watch -and -not $Apply) { throw '-Watch requires -Apply.' }
+@@ -79,7 +94,9 @@
+             throw "Firewall profile '$($Profile.Name)' must be enabled with inbound blocking before publishing ports."
+         }
+     }
++    $ControlOnlyBlockVerified = Test-GpuControlSourceBlock -Control $Config.ControlAddress -ManagedPorts @($Ports | ForEach-Object { [int]$_ })
+     foreach ($Rule in @(Get-NetFirewallRule -PolicyStore ActiveStore -Enabled True -Direction Inbound -Action Allow)) {
++        if ($ControlOnlyBlockVerified) { continue }
+         if ($Rule.Name -eq $RuleName) { continue }
+         $Filter = $Rule | Get-NetFirewallPortFilter
+         if ([string]$Filter.Protocol -notin @('TCP', '6', 'Any', '256')) { continue }
+@@ -154,8 +171,8 @@
+         $PortFilter = $Rule | Get-NetFirewallPortFilter
+         $RuleMatches = $Rule.Enabled -eq 'True' -and $Rule.Direction -eq 'Inbound' -and $Rule.Action -eq 'Allow' -and
+             [string]$PortFilter.Protocol -in @('TCP', '6') -and
+-            @($AddressFilter.LocalAddress).Count -eq 1 -and $AddressFilter.LocalAddress[0] -eq $Config.WindowsIP -and
+-            @($AddressFilter.RemoteAddress).Count -eq 1 -and $AddressFilter.RemoteAddress[0] -eq $Config.ControlAddress -and
++            @($AddressFilter.LocalAddress).Count -eq 1 -and @($AddressFilter.LocalAddress)[0] -eq $Config.WindowsIP -and
++            @($AddressFilter.RemoteAddress).Count -eq 1 -and @($AddressFilter.RemoteAddress)[0] -eq $Config.ControlAddress -and
+             (@($PortFilter.LocalPort | Sort-Object) -join ',') -eq (@($Ports | Sort-Object) -join ',')
+     }
+     if (-not $RuleMatches) {
+--- before/Initialize-GPUControlWindowsNode.ps1
++++ scripts/Initialize-GPUControlWindowsNode.ps1
+@@ -22,6 +22,21 @@
+     [switch]$EnableWslSudo
+ )
+ 
++# Local adaptation: accept overlapping allow rules only while an exact,
++# all-profile block rule independently rejects every source except the controller.
++function Test-GpuControlSourceBlock([string]$Control, [int[]]$ManagedPorts) {
++    if ($Control -ne '10.3.34.11') { return $false }
++    $b = Get-NetFirewallRule -PolicyStore ActiveStore -Name 'GPUControl-worker-5070ti-01-Management-BlockOtherSources' -ErrorAction SilentlyContinue
++    if (-not $b -or [string]$b.Enabled -ne 'True' -or [string]$b.Direction -ne 'Inbound' -or [string]$b.Action -ne 'Block' -or [string]$b.Profile -ne 'Any') { return $false }
++    $a = $b | Get-NetFirewallAddressFilter
++    $p = $b | Get-NetFirewallPortFilter
++    $expected = '["128.0.0.0/128.0.0.0","64.0.0.0/192.0.0.0","32.0.0.0/224.0.0.0","16.0.0.0/240.0.0.0","0.0.0.0/248.0.0.0","12.0.0.0/252.0.0.0","8.0.0.0/254.0.0.0","11.0.0.0/255.0.0.0","10.128.0.0/255.128.0.0","10.64.0.0/255.192.0.0","10.32.0.0/255.224.0.0","10.16.0.0/255.240.0.0","10.8.0.0/255.248.0.0","10.4.0.0/255.252.0.0","10.0.0.0/255.254.0.0","10.2.0.0/255.255.0.0","10.3.128.0/255.255.128.0","10.3.64.0/255.255.192.0","10.3.0.0/255.255.224.0","10.3.48.0/255.255.240.0","10.3.40.0/255.255.248.0","10.3.36.0/255.255.252.0","10.3.32.0/255.255.254.0","10.3.35.0/255.255.255.0","10.3.34.128/255.255.255.128","10.3.34.64/255.255.255.192","10.3.34.32/255.255.255.224","10.3.34.16/255.255.255.240","10.3.34.0/255.255.255.248","10.3.34.12/255.255.255.252","10.3.34.8/255.255.255.254","10.3.34.10","::/1","8000::/1"]' | ConvertFrom-Json
++    if ((@($a.LocalAddress) -join ',') -ne 'Any' -or (@($a.RemoteAddress | Sort-Object) -join ',') -ne (@($expected | Sort-Object) -join ',')) { return $false }
++    if ([string]$p.Protocol -notin @('TCP','6')) { return $false }
++    foreach ($port in $ManagedPorts) { if ([string]$port -notin @($p.LocalPort)) { return $false } }
++    if ([string]($b | Get-NetFirewallApplicationFilter).Program -ne 'Any' -or [string]($b | Get-NetFirewallServiceFilter).Service -ne 'Any') { return $false }
++    return $true
++}
+ $ErrorActionPreference = 'Stop'
+ Set-StrictMode -Version Latest
+ $WslExe = Join-Path $env:SystemRoot 'System32\wsl.exe'
+@@ -39,7 +54,9 @@
+ 
+ function Get-Distros {
+     if (-not (Test-Path -LiteralPath $WslExe)) { return @() }
+-    $Output = & $WslExe --list --quiet 2>$null
++    # Windows may provide wsl.exe before the optional platform is installed.
++    # Native stderr must not abort the read-only inventory under Stop policy.
++    try { $Output = & $WslExe --list --quiet 2>$null } catch { return @() }
+     if ($LASTEXITCODE -ne 0) { return @() }
+     @($Output | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Object { $_ })
+ }
+@@ -67,7 +84,9 @@
+                 @{ Name = 'LogonType'; Expression = { [string]$_.Principal.LogonType } })
+     } | ConvertTo-Json -Depth 6
+     if (Test-Path -LiteralPath $WslExe) {
+-        & $WslExe --list --verbose
++        try { & $WslExe --list --verbose 2>$null } catch {
++            Write-Output 'WSL_LIST_UNAVAILABLE=true. Inspect Windows WSL optional features before installation.'
++        }
+     }
+     if (Test-Path -LiteralPath (Join-Path $env:USERPROFILE '.wslconfig')) {
+         Write-Output 'WSL resource configuration exists; review locally before choosing CPU/memory/disk limits.'
+@@ -189,7 +208,9 @@
+             throw "Firewall profile '$($Profile.Name)' must be enabled with inbound blocking before publishing SSH."
+         }
+     }
++    $ControlOnlyBlockVerified = Test-GpuControlSourceBlock -Control $ControlAddress -ManagedPorts @(22)
+     foreach ($Rule in @(Get-NetFirewallRule -PolicyStore ActiveStore -Enabled True -Direction Inbound -Action Allow)) {
++        if ($ControlOnlyBlockVerified) { continue }
+         if ($Rule.Name -eq $RuleName) { continue }
+         $Filter = $Rule | Get-NetFirewallPortFilter
+         if ([string]$Filter.Protocol -notin @('TCP', '6', 'Any', '256')) { continue }
+@@ -441,13 +462,19 @@
+     $Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ConfigPath "{1}" -Apply -Watch' -f $ProxyPath, $ConfigPath
+     $ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+     if ($ExistingTask -and $ExistingTask.State -eq 'Running') {
++        $ExistingTaskOwnerSid = [string]$ExistingTask.Principal.UserId
++        if ($ExistingTaskOwnerSid -notmatch '^S-1-') {
++            $ExistingTaskOwnerSid = (New-Object Security.Principal.NTAccount($ExistingTaskOwnerSid)).Translate(
++                [Security.Principal.SecurityIdentifier]
++            ).Value
++        }
+         $SamePorts = $null -ne $Previous -and
+             (@($Previous.Mappings.ListenPort | Sort-Object) -join ',') -eq (@($Mappings.ListenPort | Sort-Object) -join ',')
+         $SameScript = (Test-Path -LiteralPath $ProxyPath) -and
+             (Get-FileHash -LiteralPath $SourceProxy -Algorithm SHA256).Hash -eq
+             (Get-FileHash -LiteralPath $ProxyPath -Algorithm SHA256).Hash
+         $SameTask = [string]$ExistingTask.Principal.LogonType -eq 'Interactive' -and
+-            $ExistingTask.Principal.UserId -in @($Identity.Name, $OwnerSid) -and
++            $ExistingTaskOwnerSid -eq $OwnerSid -and
+             @($ExistingTask.Actions).Count -eq 1 -and $ExistingTask.Actions[0].Execute -eq $PowerShellExe -and
+             $ExistingTask.Actions[0].Arguments -eq $Arguments
+         if ($SamePorts -and $SameScript -and $SameTask) {

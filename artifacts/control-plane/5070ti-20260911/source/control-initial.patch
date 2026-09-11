@@ -1,0 +1,1042 @@
+diff --git a/apps/web/src/views/CodexRuntime.vue b/apps/web/src/views/CodexRuntime.vue
+index d3217f0..483dee7 100644
+--- a/apps/web/src/views/CodexRuntime.vue
++++ b/apps/web/src/views/CodexRuntime.vue
+@@ -107,7 +107,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
+       <div>
+         <div class="eyebrow">AGENT RUNTIME OBSERVABILITY</div>
+         <h1>Codex 运行中心</h1>
+-        <p>独立查看四台主机的安装、认证、真实调用与资产任务上下文</p>
++        <p>独立查看各台主机的安装、认证、真实调用与资产任务上下文</p>
+       </div>
+       <div class="heading-actions">
+         <span class="refresh-state"
+diff --git a/apps/web/src/views/Nodes.vue b/apps/web/src/views/Nodes.vue
+index ea00388..77ede83 100644
+--- a/apps/web/src/views/Nodes.vue
++++ b/apps/web/src/views/Nodes.vue
+@@ -251,10 +251,10 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
+ 
+     <section class="gpu-specialization-guide">
+       <div>
+-        <strong>普通任务四卡共享</strong>
++        <strong>普通任务共享 GPU</strong>
+         <span
+           >局部重绘、单视图生成和单视图局部重绘只分配到 4090、3090-A、3090-B
+-          三台 24 GiB GPU； 4070Ti 继续参与其它兼容任务。</span
++          三台 24 GiB GPU；其它节点继续参与兼容任务。</span
+         >
+       </div>
+       <div>
+diff --git a/deploy/control-plane/5070-adapter/Dockerfile.api b/deploy/control-plane/5070-adapter/Dockerfile.api
+new file mode 100644
+index 0000000..726bae8
+--- /dev/null
++++ b/deploy/control-plane/5070-adapter/Dockerfile.api
+@@ -0,0 +1,17 @@
++ARG BASE_IMAGE
++FROM ${BASE_IMAGE}
++ARG SOURCE_REVISION
++ARG BASE_IMAGE_ID
++USER root
++ENV GPU_CONTROL_BUILD_VERSION=1.5.23.post1 \
++    GPU_CONTROL_BUILD_REVISION=${SOURCE_REVISION} \
++    GPU_CONTROL_ADAPTER_BASE_IMAGE_ID=${BASE_IMAGE_ID}
++COPY packages/gpu_control_core/settings.py /tmp/5070-settings.py
++COPY deploy/control-plane/5070-adapter/apply_runtime_layer.py /tmp/apply_runtime_layer.py
++RUN python /tmp/apply_runtime_layer.py && rm /tmp/apply_runtime_layer.py /tmp/5070-settings.py
++COPY --chown=10001:10001 scripts/bootstrap_nodes.py /app/scripts/bootstrap_nodes.py
++LABEL org.opencontainers.image.version="1.5.23.post1" \
++      org.opencontainers.image.revision="${SOURCE_REVISION}" \
++      io.gpu-control.adapter.base-image-id="${BASE_IMAGE_ID}" \
++      io.gpu-control.adapter.scope="additional-node-hmac-and-additive-registration"
++USER gpucontrol
+diff --git a/deploy/control-plane/5070-adapter/Dockerfile.scheduler b/deploy/control-plane/5070-adapter/Dockerfile.scheduler
+new file mode 100644
+index 0000000..8f32e50
+--- /dev/null
++++ b/deploy/control-plane/5070-adapter/Dockerfile.scheduler
+@@ -0,0 +1,16 @@
++ARG BASE_IMAGE
++FROM ${BASE_IMAGE}
++ARG SOURCE_REVISION
++ARG BASE_IMAGE_ID
++USER root
++ENV GPU_CONTROL_BUILD_VERSION=1.5.23.post1 \
++    GPU_CONTROL_BUILD_REVISION=${SOURCE_REVISION} \
++    GPU_CONTROL_ADAPTER_BASE_IMAGE_ID=${BASE_IMAGE_ID}
++COPY packages/gpu_control_core/settings.py /tmp/5070-settings.py
++COPY deploy/control-plane/5070-adapter/apply_runtime_layer.py /tmp/apply_runtime_layer.py
++RUN python /tmp/apply_runtime_layer.py && rm /tmp/apply_runtime_layer.py /tmp/5070-settings.py
++LABEL org.opencontainers.image.version="1.5.23.post1" \
++      org.opencontainers.image.revision="${SOURCE_REVISION}" \
++      io.gpu-control.adapter.base-image-id="${BASE_IMAGE_ID}" \
++      io.gpu-control.adapter.scope="additional-node-hmac"
++USER gpucontrol
+diff --git a/deploy/control-plane/5070-adapter/README.md b/deploy/control-plane/5070-adapter/README.md
+new file mode 100644
+index 0000000..7d7daf1
+--- /dev/null
++++ b/deploy/control-plane/5070-adapter/README.md
+@@ -0,0 +1,36 @@
++# 5070 Ti control adapter
++
++This source patch starts at `143098c479664e71d9743ae26ee56391726e462a`.
++Both live API/Scheduler settings modules were verified byte-for-byte against
++that commit before editing. The derived images retain all other application
++modules and dependencies from the exact running image IDs.
++
++The image build changes the settings module, the API bootstrap script,
++and installed wheel version/RECORD metadata. No UV, MOF, workflow or model
++changes are included. The image environment, OCI revision, package version and
++in-wheel `gpu-control-5070-layer.json` record the new source commit and exact
++base image. This local source commit is not a claim of remote publication.
++
++Runtime configuration is `NODE_AGENT_HMAC_SECRETS`, a JSON object mapping node
++IDs to distinct secrets. Load it from a mode-0600 local file through the
++replacement preparation script; do not put secrets in command arguments or logs.
++Existing four per-node environment variables remain valid, and the new mapping
++is excluded from settings dumps and repr output.
++
++Registration is explicit and additive:
++
++```sh
++python /app/scripts/bootstrap_nodes.py --config /path/to/one-reviewed-node.yaml --add-only
++```
++
++The inventory must contain exactly one node, its verified physical IPv4/MAC/GPU
++UUID/hostname, and `mode: DISABLED` or `DRAINING` (omitted mode defaults to
++DISABLED). Existing IDs and physical identities are rejected. No old Node row
++is updated. Keep the new node isolated until ComfyUI and asset acceptance pass;
++RealESRGAN has separate admission and must not be prematurely listed in its
++production controller configuration.
++
++The optional Prometheus/UI source changes are separate from the two Python
++runtime image layers. Apply the alert file only after reviewing its diff and
++validating with promtool; rendering the new node does not require rebuilding
++the web image because node enumeration is already dynamic.
+diff --git a/deploy/control-plane/5070-adapter/apply_runtime_layer.py b/deploy/control-plane/5070-adapter/apply_runtime_layer.py
+new file mode 100644
+index 0000000..f8fec7b
+--- /dev/null
++++ b/deploy/control-plane/5070-adapter/apply_runtime_layer.py
+@@ -0,0 +1,85 @@
++"""Apply a verified single-module layer and keep installed wheel metadata honest."""
++
++import base64
++import csv
++import hashlib
++import importlib.metadata
++import json
++import os
++import shutil
++from pathlib import Path
++
++BASE_SETTINGS_SHA256 = "f319d60c07f0966ab049c8229782ae9203fdaa385aebffd80441145457aa85f9"
++VERSION = "1.5.23.post1"
++
++
++def main() -> None:
++    dist = importlib.metadata.distribution("gpu-control")
++    if dist.version != "1.5.23":
++        raise SystemExit("unexpected base package version")
++    site = Path(dist.locate_file(""))
++    settings = site / "packages/gpu_control_core/settings.py"
++    if hashlib.sha256(settings.read_bytes()).hexdigest() != BASE_SETTINGS_SHA256:
++        raise SystemExit("base settings do not match the approved running images")
++    before = site / "gpu_control-1.5.23.dist-info"
++    after = site / f"gpu_control-{VERSION}.dist-info"
++    if not before.is_dir() or after.exists():
++        raise SystemExit("unexpected package metadata directory")
++    with (before / "RECORD").open(newline="") as source:
++        records = list(csv.reader(source))
++    metadata = (before / "METADATA").read_text()
++    if metadata.count("\nVersion: 1.5.23\n") != 1:
++        raise SystemExit("base package METADATA version is ambiguous")
++    settings.write_bytes(Path("/tmp/5070-settings.py").read_bytes())  # noqa: S108 - build-only COPY
++    # OverlayFS cannot rename directories inherited from a lower image layer.
++    shutil.copytree(before, after)
++    shutil.rmtree(before)
++    (after / "METADATA").write_text(
++        metadata.replace("\nVersion: 1.5.23\n", f"\nVersion: {VERSION}\n")
++    )
++    evidence = after / "gpu-control-5070-layer.json"
++    evidence.write_text(
++        json.dumps(
++            {
++                "package_version": VERSION,
++                "source_revision": os.environ["GPU_CONTROL_BUILD_REVISION"],
++                "base_image_id": os.environ["GPU_CONTROL_ADAPTER_BASE_IMAGE_ID"],
++                "base_settings_sha256": BASE_SETTINGS_SHA256,
++                "settings_sha256": hashlib.sha256(settings.read_bytes()).hexdigest(),
++                "scope": "node HMAC map; additive node registration in API scripts",
++            },
++            indent=2,
++        )
++        + "\n"
++    )
++    changed = {
++        "packages/gpu_control_core/settings.py",
++        f"{after.name}/METADATA",
++        f"{after.name}/gpu-control-5070-layer.json",
++    }
++    output = []
++    for row in records:
++        row[0] = row[0].replace(before.name + "/", after.name + "/", 1)
++        if row[0] in changed:
++            content = (site / row[0]).read_bytes()
++            row[1] = "sha256=" + base64.urlsafe_b64encode(
++                hashlib.sha256(content).digest()
++            ).decode().rstrip("=")
++            row[2] = str(len(content))
++        output.append(row)
++    content = evidence.read_bytes()
++    output.append(
++        [
++            f"{after.name}/{evidence.name}",
++            "sha256="
++            + base64.urlsafe_b64encode(hashlib.sha256(content).digest()).decode().rstrip("="),
++            str(len(content)),
++        ]
++    )
++    with (after / "RECORD").open("w", newline="") as destination:
++        csv.writer(destination).writerows(output)
++    print("VERIFIED_SINGLE_MODULE_LAYER", VERSION)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/deploy/control-plane/5070-adapter/prepare_replacements.py b/deploy/control-plane/5070-adapter/prepare_replacements.py
+new file mode 100644
+index 0000000..6862272
+--- /dev/null
++++ b/deploy/control-plane/5070-adapter/prepare_replacements.py
+@@ -0,0 +1,152 @@
++"""Write private Docker Engine create specs from live containers; never deploy."""
++
++import argparse
++import copy
++import hashlib
++import json
++import os
++import stat
++import subprocess
++from datetime import datetime, timezone
++from pathlib import Path
++
++BASE_IMAGES = {
++    "api": "sha256:4fbb7361a1ff809e3387cb9adcc8f180f789f1d7676182cdbaf71087ff7f29c0",
++    "scheduler": "sha256:f4849efaffd48e020ff86d277014d38a0c12e5b6fcd80c5a2bb0c232a27189a4",
++}
++NODE_ID = "worker-5070ti-01"
++
++
++def inspect(kind: str, reference: str) -> dict:
++    return json.loads(subprocess.check_output(["/usr/bin/docker", kind, "inspect", "--", reference]))[0]  # noqa: S603 - fixed argv, operator-selected image
++
++
++def private_json(path: Path, value: dict) -> str:
++    data = (json.dumps(value, indent=2) + "\n").encode()
++    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
++    with os.fdopen(descriptor, "wb") as output:
++        output.write(data)
++    return hashlib.sha256(data).hexdigest()
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--node-secret-file", type=Path, required=True)
++    parser.add_argument("--out-dir", type=Path, required=True)
++    parser.add_argument("--review-file", type=Path, required=True)
++    parser.add_argument("--api-image", required=True)
++    parser.add_argument("--scheduler-image", required=True)
++    args = parser.parse_args()
++    secret_path = args.node_secret_file
++    if secret_path.is_symlink() or stat.S_IMODE(secret_path.stat().st_mode) & 0o077:
++        raise SystemExit("secret source must be a private regular file")
++    secret = secret_path.read_text().strip()
++    if len(secret) < 32 or any(char.isspace() for char in secret) or secret.startswith("CHANGE_ME"):
++        raise SystemExit("new node secret is invalid")
++    args.out_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
++    review = {
++        "status": "PREPARED_NOT_DEPLOYED",
++        "created_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017 - host Python 3.10
++        "node_id": NODE_ID,
++        "services": [],
++        "network_note": "Assigned IPv4 addresses are retained explicitly. Stop and detach the old endpoint before creation; never start two schedulers. Reverse detach/reconnect for rollback.",
++        "operation_note": "This tool made no Docker or database mutations. Each private spec contains existing production environment variables and must remain mode 0600.",
++    }
++    for component in BASE_IMAGES:
++        name = f"gpu-control-{component}-1"
++        current = inspect("container", name)
++        if current["Image"] != BASE_IMAGES[component] or not current["State"]["Running"]:
++            raise SystemExit("running control service identity changed; re-review before preparing")
++        candidate = inspect("image", getattr(args, f"{component}_image"))
++        labels = candidate["Config"].get("Labels") or {}
++        if labels.get("io.gpu-control.adapter.base-image-id") != BASE_IMAGES[component]:
++            raise SystemExit("candidate image does not descend from the reviewed component")
++        if labels.get("org.opencontainers.image.version") != "1.5.23.post1":
++            raise SystemExit("unexpected candidate version")
++        spec = copy.deepcopy(current["Config"])
++        original_env = dict(item.split("=", 1) for item in spec["Env"])
++        updated_env = dict(original_env)
++        existing_map = json.loads(updated_env.get("NODE_AGENT_HMAC_SECRETS", "{}"))
++        if not isinstance(existing_map, dict) or any(
++            not isinstance(v, str) for v in existing_map.values()
++        ):
++            raise SystemExit("existing node secret map needs review")
++        if NODE_ID in existing_map and existing_map[NODE_ID] != secret:
++            raise SystemExit("new node already has a different registered secret")
++        legacy_secrets = [
++            value
++            for key, value in original_env.items()
++            if key.startswith("NODE_AGENT_HMAC_SECRET") and key != "NODE_AGENT_HMAC_SECRETS"
++        ]
++        if secret in legacy_secrets or any(
++            value == secret for key, value in existing_map.items() if key != NODE_ID
++        ):
++            raise SystemExit("new node secret must be independent from existing nodes")
++        existing_map[NODE_ID] = secret
++        updated_env["NODE_AGENT_HMAC_SECRETS"] = json.dumps(
++            existing_map, separators=(",", ":"), sort_keys=True
++        )
++        for key in (
++            "GPU_CONTROL_BUILD_VERSION",
++            "GPU_CONTROL_BUILD_REVISION",
++            "GPU_CONTROL_ADAPTER_BASE_IMAGE_ID",
++        ):
++            candidate_env = dict(item.split("=", 1) for item in candidate["Config"]["Env"])
++            updated_env[key] = candidate_env[key]
++        spec["Env"] = [f"{key}={value}" for key, value in updated_env.items()]
++        spec["Image"] = candidate["Id"]
++        spec["Labels"] = {
++            **spec.get("Labels", {}),
++            **labels,
++            "com.docker.compose.image": candidate["Id"],
++            "io.gpu-control.adapter.prepared-from-container": current["Id"],
++        }
++        spec["HostConfig"] = copy.deepcopy(current["HostConfig"])
++        endpoints = {}
++        for network, endpoint in current["NetworkSettings"]["Networks"].items():
++            retained = {
++                key: copy.deepcopy(endpoint[key])
++                for key in ("IPAMConfig", "Links", "Aliases", "DriverOpts", "GwPriority")
++                if key in endpoint
++            }
++            if endpoint.get("IPAddress"):
++                retained["IPAMConfig"] = {
++                    **(retained.get("IPAMConfig") or {}),
++                    "IPv4Address": endpoint["IPAddress"],
++                }
++            endpoints[network] = retained
++        spec["NetworkingConfig"] = {"EndpointsConfig": endpoints}
++        snapshot_sha = private_json(args.out_dir / f"{component}.before.inspect.json", current)
++        spec_path = args.out_dir / f"{component}.create.json"
++        spec_sha = private_json(spec_path, spec)
++        review["services"].append(
++            {
++                "component": component,
++                "container_name": name,
++                "expected_old_container_id": current["Id"],
++                "old_image_id": current["Image"],
++                "candidate_image_id": candidate["Id"],
++                "source_revision": labels["org.opencontainers.image.revision"],
++                "version": labels["org.opencontainers.image.version"],
++                "private_spec_path": str(spec_path),
++                "private_spec_sha256": spec_sha,
++                "private_snapshot_sha256": snapshot_sha,
++                "changed_environment_names": sorted(
++                    key for key in updated_env if original_env.get(key) != updated_env[key]
++                ),
++                "environment_values_omitted": True,
++                "host_config_preserved": spec["HostConfig"] == current["HostConfig"],
++                "command_preserved": spec["Cmd"] == current["Config"]["Cmd"],
++                "healthcheck_preserved": spec.get("Healthcheck")
++                == current["Config"].get("Healthcheck"),
++                "mounts": current["HostConfig"]["Binds"],
++                "network_endpoints": endpoints,
++                "compose_note": "Existing compose config-hash is inherited for inventory continuity; these specs, not the mutable workspace compose/.env, define this replacement.",
++            }
++        )
++    args.review_file.write_text(json.dumps(review, indent=2) + "\n")
++    print("PREPARED_NOT_DEPLOYED", args.review_file)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/deploy/control-plane/prometheus/alerts.yml b/deploy/control-plane/prometheus/alerts.yml
+index 8839ee4..41f2877 100644
+--- a/deploy/control-plane/prometheus/alerts.yml
++++ b/deploy/control-plane/prometheus/alerts.yml
+@@ -5,13 +5,13 @@ groups:
+       - {alert: QueueBacklog, expr: "gpu_control_jobs_queued > 50", for: 5m, labels: {severity: warning}, annotations: {summary: "任务队列持续积压", action: "检查所有 GPU 节点健康和工作流兼容性"}}
+       - {alert: OldestJobWaiting, expr: "gpu_control_oldest_queued_job_seconds > 600", for: 2m, labels: {severity: critical}, annotations: {summary: "最老任务等待超过 10 分钟", action: "检查节点模式、模型与 ComfyUI 队列"}}
+       - {alert: NodeDown, expr: "up{job=~\"workers|control-node\"} == 0", for: 1m, labels: {severity: critical}, annotations: {summary: "GPU 节点指标中断", action: "检查网络、Exporter 和节点电源"}}
+-      - {alert: WSLComfyUnhealthy, expr: "gpu_control_node_health{node_id=~\"worker-3090-b|worker-4070ti-animation-host-01\"} == 0", for: 30s, labels: {severity: warning}, annotations: {summary: "WSL2 GPU 节点的 ComfyUI 持续不可用", action: "检查 Windows/WSL2 界面、端口转发、ComfyUI 与 Node Agent；不要在运行任务时直接重启"}}
+-      - {alert: WSLNodeHealthFlapping, expr: "changes(gpu_control_node_health{node_id=~\"worker-3090-b|worker-4070ti-animation-host-01\"}[10m]) >= 4", for: 1m, labels: {severity: warning}, annotations: {summary: "WSL2 GPU 节点在 10 分钟内反复上下线", action: "检查 WSL2、宿主网络、GPU 驱动和 ComfyUI 健康日志"}}
+-      - {alert: WSLSystemProbeMissing, expr: "gpu_control_wsl_system_probe_up{node_id=~\"worker-3090-b|worker-4070ti-animation-host-01\"} == 0", for: 2m, labels: {severity: warning}, annotations: {summary: "WSL2 GPU 节点深度状态探针持续不可用", action: "检查 9201 Node Agent、WSL2 内核状态和 HMAC 配置；该告警本身不会将节点下线"}}
+-      - {alert: WSLMemoryPressure, expr: "gpu_control_wsl_memory_available_ratio{node_id=~\"worker-3090-b|worker-4070ti-animation-host-01\"} < 0.08 or gpu_control_wsl_pressure_avg10{node_id=~\"worker-3090-b|worker-4070ti-animation-host-01\",resource=\"memory\",level=\"full\"} > 10", for: 2m, labels: {severity: warning}, annotations: {summary: "WSL2 GPU 节点内存或内存阻塞压力持续过高", action: "先 Drain 并等待当前任务结束，再检查 WSL2 内存、交换分区和 Windows 后台进程"}}
+-      - {alert: WSLSustainedLoad, expr: "gpu_control_wsl_load1_per_cpu{node_id=~\"worker-3090-b|worker-4070ti-animation-host-01\"} > 1.5", for: 5m, labels: {severity: warning}, annotations: {summary: "WSL2 GPU 节点持续超出可见 CPU 容量", action: "检查 WSL2 CPU 配额、异常进程和宿主负载；不要直接修改业务工作流"}}
+-      - {alert: WSLBootChanged, expr: "increase(gpu_control_wsl_boot_changes_total{node_id=~\"worker-3090-b|worker-4070ti-animation-host-01\"}[5m]) > 0", labels: {severity: warning}, annotations: {summary: "WSL2 GPU 节点内核已发生重启", action: "核对重启是否已授权，并验证 8188、9201、容器健康、GPU 与任务恢复"}}
+-      - {alert: WSLGPUHot, expr: "gpu_control_node_gpu_temperature_c{node_id=~\"worker-3090-b|worker-4070ti-animation-host-01\"} > 85", for: 5m, labels: {severity: critical}, annotations: {summary: "WSL2 GPU 温度持续超过 85°C", action: "先 Drain 并等待任务结束，再检查 Windows/WSL2 散热、功耗与后台负载"}}
++      - {alert: WSLComfyUnhealthy, expr: "gpu_control_node_health{node_id=~\"worker-3090-b|worker-4070ti-animation-host-01|worker-5070ti-01\"} == 0", for: 30s, labels: {severity: warning}, annotations: {summary: "WSL2 GPU 节点的 ComfyUI 持续不可用", action: "检查 Windows/WSL2 界面、端口转发、ComfyUI 与 Node Agent；不要在运行任务时直接重启"}}
++      - {alert: WSLNodeHealthFlapping, expr: "changes(gpu_control_node_health{node_id=~\"worker-3090-b|worker-4070ti-animation-host-01|worker-5070ti-01\"}[10m]) >= 4", for: 1m, labels: {severity: warning}, annotations: {summary: "WSL2 GPU 节点在 10 分钟内反复上下线", action: "检查 WSL2、宿主网络、GPU 驱动和 ComfyUI 健康日志"}}
++      - {alert: WSLSystemProbeMissing, expr: "gpu_control_wsl_system_probe_up{node_id=~\"worker-3090-b|worker-4070ti-animation-host-01|worker-5070ti-01\"} == 0", for: 2m, labels: {severity: warning}, annotations: {summary: "WSL2 GPU 节点深度状态探针持续不可用", action: "检查 9201 Node Agent、WSL2 内核状态和 HMAC 配置；该告警本身不会将节点下线"}}
++      - {alert: WSLMemoryPressure, expr: "gpu_control_wsl_memory_available_ratio{node_id=~\"worker-3090-b|worker-4070ti-animation-host-01|worker-5070ti-01\"} < 0.08 or gpu_control_wsl_pressure_avg10{node_id=~\"worker-3090-b|worker-4070ti-animation-host-01|worker-5070ti-01\",resource=\"memory\",level=\"full\"} > 10", for: 2m, labels: {severity: warning}, annotations: {summary: "WSL2 GPU 节点内存或内存阻塞压力持续过高", action: "先 Drain 并等待当前任务结束，再检查 WSL2 内存、交换分区和 Windows 后台进程"}}
++      - {alert: WSLSustainedLoad, expr: "gpu_control_wsl_load1_per_cpu{node_id=~\"worker-3090-b|worker-4070ti-animation-host-01|worker-5070ti-01\"} > 1.5", for: 5m, labels: {severity: warning}, annotations: {summary: "WSL2 GPU 节点持续超出可见 CPU 容量", action: "检查 WSL2 CPU 配额、异常进程和宿主负载；不要直接修改业务工作流"}}
++      - {alert: WSLBootChanged, expr: "increase(gpu_control_wsl_boot_changes_total{node_id=~\"worker-3090-b|worker-4070ti-animation-host-01|worker-5070ti-01\"}[5m]) > 0", labels: {severity: warning}, annotations: {summary: "WSL2 GPU 节点内核已发生重启", action: "核对重启是否已授权，并验证 8188、9201、容器健康、GPU 与任务恢复"}}
++      - {alert: WSLGPUHot, expr: "gpu_control_node_gpu_temperature_c{node_id=~\"worker-3090-b|worker-4070ti-animation-host-01|worker-5070ti-01\"} > 85", for: 5m, labels: {severity: critical}, annotations: {summary: "WSL2 GPU 温度持续超过 85°C", action: "先 Drain 并等待任务结束，再检查 Windows/WSL2 散热、功耗与后台负载"}}
+       - {alert: WSLImageClipSevereSlowdown, expr: "gpu_control_wsl_imageclip_performance_anomaly{node_id=\"worker-3090-b\"} == 1", for: 2m, labels: {severity: warning}, annotations: {summary: "3090-B 抠图速度持续超过原生 3090-A 的 2 倍", action: "先 Drain 3090-B，再检查 WSL2 状态、GPU 温度/功耗/驱动和后台进程"}}
+       - {alert: GPUHot, expr: "DCGM_FI_DEV_GPU_TEMP > 85", for: 5m, labels: {severity: critical}, annotations: {summary: "GPU 温度过高", action: "Drain 节点并检查散热"}}
+       - {alert: DiskLow, expr: "node_filesystem_avail_bytes{mountpoint=\"/srv\"}/node_filesystem_size_bytes{mountpoint=\"/srv\"} < 0.1", for: 5m, labels: {severity: critical}, annotations: {summary: "/srv 磁盘不足", action: "预览并执行保留策略清理"}}
+diff --git a/packages/gpu_control_core/settings.py b/packages/gpu_control_core/settings.py
+index e4daf08..127573f 100644
+--- a/packages/gpu_control_core/settings.py
++++ b/packages/gpu_control_core/settings.py
+@@ -1,14 +1,27 @@
++import json
++import re
+ from datetime import time
+ from functools import lru_cache
+ from pathlib import Path
+-from typing import Literal
++from typing import Annotated, Any, Literal
+ 
+-from pydantic import Field, field_validator, model_validator
+-from pydantic_settings import BaseSettings, SettingsConfigDict
++from pydantic import Field, SecretStr, field_validator, model_validator
++from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
++
++
++def _unique_secret_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
++    result: dict[str, Any] = {}
++    for key, value in pairs:
++        if key in result:
++            raise ValueError("node secret map contains duplicate keys")
++        result[key] = value
++    return result
+ 
+ 
+ class Settings(BaseSettings):
+-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", case_sensitive=False)
++    model_config = SettingsConfigDict(
++        env_file=".env", extra="ignore", case_sensitive=False, hide_input_in_errors=True
++    )
+ 
+     environment: str = "development"
+     database_url: str = "postgresql+asyncpg://gpu_control:gpu_control@localhost/gpu_control"
+@@ -20,6 +33,11 @@ class Settings(BaseSettings):
+     node_agent_hmac_secret_worker_3090_b: str = ""
+     node_agent_hmac_secret_worker_4070ti: str = ""
+     node_agent_hmac_secret_control_4090: str = ""
++    # Explicit secrets for additional nodes. Legacy fields remain valid during
++    # rolling upgrades. Never serialize this map into diagnostics or settings APIs.
++    node_agent_hmac_secrets: Annotated[dict[str, SecretStr], NoDecode] = Field(
++        default_factory=dict, repr=False, exclude=True
++    )
+     alertmanager_webhook_token: str = "development-only-change-me"
+     job_root: Path = Path("storage/jobs")
+     model_root: Path = Path("storage/models")
+@@ -49,9 +67,7 @@ class Settings(BaseSettings):
+     max_image_pixels: int = Field(40_000_000, ge=1, le=500_000_000)
+     batch_max_frames: int = Field(5_000, ge=1, le=100_000)
+     batch_max_archive_bytes: int = Field(107_374_182_400, ge=1024, le=1_099_511_627_776)
+-    batch_max_uncompressed_bytes: int = Field(
+-        107_374_182_400, ge=1024, le=1_099_511_627_776
+-    )
++    batch_max_uncompressed_bytes: int = Field(107_374_182_400, ge=1024, le=1_099_511_627_776)
+     batch_max_frame_bytes: int = Field(67_108_864, ge=1024, le=2_147_483_648)
+     batch_feed_window: int = Field(12, ge=1, le=10_000)
+     batch_max_running_per_tenant: int = Field(3, ge=1, le=10)
+@@ -69,6 +85,40 @@ class Settings(BaseSettings):
+     uv_qa_enforcement: Literal["strict", "advisory"] = "strict"
+     retopology_qa_enforcement: Literal["strict", "advisory"] = "advisory"
+ 
++    @field_validator("node_agent_hmac_secrets", mode="before")
++    @classmethod
++    def validate_node_agent_secret_map(cls, value: Any) -> dict[str, SecretStr]:
++        if isinstance(value, str):
++            try:
++                value = json.loads(value, object_pairs_hook=_unique_secret_pairs)
++            except (ValueError, TypeError):
++                raise ValueError("node secret map must be valid JSON with unique keys") from None
++        if not isinstance(value, dict):
++            raise ValueError("node secret map must be an object")
++        result: dict[str, SecretStr] = {}
++        seen: set[str] = set()
++        for node_id, secret in value.items():
++            if (
++                not isinstance(node_id, str)
++                or not re.fullmatch(r"(?:worker|control)-[a-z0-9-]+", node_id)
++                or len(node_id) > 64
++            ):
++                raise ValueError("node secret map contains an invalid node ID")
++            raw = secret.get_secret_value() if isinstance(secret, SecretStr) else secret
++            if (
++                not isinstance(raw, str)
++                or not 32 <= len(raw) <= 4096
++                or any(char.isspace() for char in raw)
++                or raw.startswith("CHANGE_ME")
++                or raw == "development-only-change-me"
++            ):
++                raise ValueError("node secrets must be dedicated strings of 32 to 4096 characters")
++            if raw in seen:
++                raise ValueError("each node must have a distinct secret")
++            seen.add(raw)
++            result[node_id] = SecretStr(raw)
++        return result
++
+     @field_validator(
+         "jwt_secret",
+         "api_key_pepper",
+@@ -98,6 +148,9 @@ class Settings(BaseSettings):
+         return self
+ 
+     def node_agent_secret(self, node_id: str) -> str:
++        explicit = self.node_agent_hmac_secrets.get(node_id)
++        if explicit is not None:
++            return explicit.get_secret_value()
+         per_node = {
+             "worker-3090-a": self.node_agent_hmac_secret_worker_3090_a,
+             "worker-3090-b": self.node_agent_hmac_secret_worker_3090_b,
+diff --git a/pyproject.toml b/pyproject.toml
+index dfbd2a8..3ce402a 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
+ 
+ [project]
+ name = "gpu-control"
+-version = "1.5.23"
+-description = "Four-node ComfyUI GPU scheduling and operations platform"
++version = "1.5.23.post1"
++description = "ComfyUI GPU scheduling and operations platform"
+ readme = "README.md"
+ requires-python = ">=3.11,<3.13"
+ dependencies = [
+diff --git a/scripts/bootstrap_nodes.py b/scripts/bootstrap_nodes.py
+index aa7c864..0985743 100644
+--- a/scripts/bootstrap_nodes.py
++++ b/scripts/bootstrap_nodes.py
+@@ -1,13 +1,18 @@
+ #!/usr/bin/env python3
+-"""Apply the reviewed four-node inventory to PostgreSQL after migration."""
++"""Apply the legacy inventory or safely add one isolated, approved node."""
+ 
+ import argparse
+ import asyncio
++import ipaddress
++import re
+ from datetime import UTC, datetime
+ from pathlib import Path
+ from typing import Any
++from uuid import UUID
+ 
+ import yaml
++from sqlalchemy import select
++from sqlalchemy.ext.asyncio import AsyncSession
+ 
+ from packages.gpu_control_core.database import Database
+ from packages.gpu_control_core.models import Node
+@@ -23,7 +28,7 @@ EXPECTED_IDS = {
+ }
+ 
+ 
+-def load_inventory(path: Path) -> list[dict[str, Any]]:
++def load_inventory(path: Path, *, add_only: bool = False) -> list[dict[str, Any]]:
+     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+     if not isinstance(payload, dict) or not isinstance(payload.get("nodes"), list):
+         raise ValueError("inventory must contain a nodes list")
+@@ -32,6 +37,8 @@ def load_inventory(path: Path) -> list[dict[str, Any]]:
+         if not isinstance(raw, dict):
+             raise ValueError("each node must be an object")
+         item = {str(key): value for key, value in raw.items()}
++        if add_only:
++            item.setdefault("mode", "DISABLED")
+         required = {"id", "host", "pool", "mode"}
+         if not required.issubset(item):
+             raise ValueError(f"node is missing fields: {sorted(required - item.keys())}")
+@@ -39,54 +46,124 @@ def load_inventory(path: Path) -> list[dict[str, Any]]:
+             raise ValueError(f"invalid pool/mode for {item['id']}")
+         if int(item.get("max_concurrency", 1)) != 1:
+             raise ValueError("every GPU node must use max_concurrency=1")
++        if add_only:
++            node_id = item["id"]
++            if (
++                not isinstance(node_id, str)
++                or len(node_id) > 64
++                or not re.fullmatch(r"(?:worker|control)-[a-z0-9-]+", node_id)
++            ):
++                raise ValueError("invalid new node ID")
++            if item["mode"] not in {"DISABLED", "DRAINING"}:
++                raise ValueError("new nodes must begin DISABLED or DRAINING")
++            host = str(ipaddress.IPv4Address(str(item["host"])))
++            if (
++                ipaddress.IPv4Address(host).is_unspecified
++                or ipaddress.IPv4Address(host).is_loopback
++            ):
++                raise ValueError("new node host must be a reachable physical host address")
++            item["host"] = host
++            for field in ("hostname", "gpu", "mac", "gpu_uuid"):
++                if not isinstance(item.get(field), str) or not item[field].strip():
++                    raise ValueError(f"new node requires its verified {field}")
++            if not re.fullmatch(r"[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}", item["mac"]):
++                raise ValueError("new node MAC address is invalid")
++            gpu_uuid = item["gpu_uuid"]
++            if not gpu_uuid.startswith("GPU-") or str(UUID(gpu_uuid[4:])) != gpu_uuid[4:].lower():
++                raise ValueError("new node GPU UUID is invalid")
++            # Heartbeat later uses these exact host ports. Do not register an
++            # unrelated endpoint only to overwrite it on the first heartbeat.
++            for field, port in (("base_url", 8188), ("agent_url", 9201)):
++                expected = f"http://{host}:{port}"
++                if field in item and item[field] != expected:
++                    raise ValueError(f"new node {field} must match its physical host")
++            for field in ("wsl_runtime", "dcgm_exporter_enabled"):
++                if field in item and not isinstance(item[field], bool):
++                    raise ValueError(f"new node {field} must be boolean")
+         nodes.append(item)
+     inventory_ids = {str(item["id"]) for item in nodes}
+-    if inventory_ids != EXPECTED_IDS:
++    if len(inventory_ids) != len(nodes):
++        raise ValueError("inventory contains duplicate node IDs")
++    if add_only and len(nodes) != 1:
++        raise ValueError("--add-only requires exactly one node")
++    if not add_only and inventory_ids != EXPECTED_IDS:
+         raise ValueError(f"inventory node ids must be exactly {sorted(EXPECTED_IDS)}")
+     return nodes
+ 
+ 
+-async def apply(path: Path) -> None:
+-    inventory = load_inventory(path)
++async def apply_inventory(
++    session: AsyncSession, inventory: list[dict[str, Any]], *, add_only: bool = False
++) -> None:
++    if add_only:
++        if len(inventory) != 1 or inventory[0]["mode"] not in {"DISABLED", "DRAINING"}:
++            raise ValueError("add-only registration requires one isolated node")
++        item = inventory[0]
++        # Only reads existing nodes. No assignments, timestamps, mode changes or
++        # label merges are performed on any existing row in add-only mode.
++        for existing in (await session.scalars(select(Node))).all():
++            if existing.id == item["id"]:
++                raise ValueError("node already exists; add-only made no changes")
++            labels = existing.labels or {}
++            for key in ("host", "mac", "gpu_uuid"):
++                value = str(labels.get(key, ""))
++                if value and value.lower() == str(item.get(key, "")).lower():
++                    raise ValueError(f"new node {key} is already assigned; no changes made")
++    for item in inventory:
++        node_id = str(item["id"])
++        host = str(item["host"])
++        node = await session.get(Node, node_id)
++        if add_only and node is not None:
++            raise ValueError("node already exists; add-only made no changes")
++        if node is None:
++            node = Node(
++                id=node_id, display_name=str(item.get("display_name", node_id)), base_url=""
++            )
++            session.add(node)
++        node.display_name = str(item.get("display_name", node_id))
++        node.base_url = str(item.get("base_url", f"http://{host}:8188"))
++        node.agent_url = str(item.get("agent_url", f"http://{host}:9201"))
++        node.pool = str(item["pool"])
++        node.mode = str(item["mode"])
++        node.manual_reserved = node.mode == "RESERVED"
++        node.max_concurrency = 1
++        labels = dict(node.labels or {})
++        labels.update({"gpu": str(item.get("gpu", "unknown")), "host": host})
++        for identity_field in ("hostname", "mac", "gpu_uuid"):
++            if item.get(identity_field):
++                value = str(item[identity_field])
++                labels[identity_field] = value.lower() if identity_field == "mac" else value
++        for label_field in ("wsl_runtime", "dcgm_exporter_enabled", "vram_class"):
++            if label_field in item:
++                labels[label_field] = item[label_field]
++        node.labels = labels
++        node.approved_at = node.approved_at or datetime.now(UTC)
++
++
++async def apply(path: Path, *, add_only: bool = False) -> None:
++    inventory = load_inventory(path, add_only=add_only)
+     db = Database(get_settings())
+-    async with db.session() as session:
+-        for item in inventory:
+-            node_id = str(item["id"])
+-            host = str(item["host"])
+-            node = await session.get(Node, node_id)
+-            if node is None:
+-                node = Node(
+-                    id=node_id, display_name=str(item.get("display_name", node_id)), base_url=""
+-                )
+-                session.add(node)
+-            node.display_name = str(item.get("display_name", node_id))
+-            node.base_url = str(item.get("base_url", f"http://{host}:8188"))
+-            node.agent_url = str(item.get("agent_url", f"http://{host}:9201"))
+-            node.pool = str(item["pool"])
+-            node.mode = str(item["mode"])
+-            node.manual_reserved = node.mode == "RESERVED"
+-            node.max_concurrency = 1
+-            labels = dict(node.labels or {})
+-            labels.update({"gpu": str(item.get("gpu", "unknown")), "host": host})
+-            for identity_field in ("hostname", "mac", "gpu_uuid"):
+-                if item.get(identity_field):
+-                    value = str(item[identity_field])
+-                    labels[identity_field] = value.lower() if identity_field == "mac" else value
+-            for label_field in ("wsl_runtime", "dcgm_exporter_enabled", "vram_class"):
+-                if label_field in item:
+-                    labels[label_field] = item[label_field]
+-            node.labels = labels
+-            node.approved_at = node.approved_at or datetime.now(UTC)
+-        await session.commit()
+-    await db.close()
+-    print(f"已应用 {len(inventory)} 个节点；运行任务和健康字段未被覆盖")
++    try:
++        async with db.session() as session:
++            await apply_inventory(session, inventory, add_only=add_only)
++            await session.commit()
++    finally:
++        await db.close()
++    if add_only:
++        print(f"已新增隔离节点 {inventory[0]['id']}；已有节点未修改")
++    else:
++        print(f"已应用 {len(inventory)} 个节点；运行任务和健康字段未被覆盖")
+ 
+ 
+ def main() -> None:
+-    parser = argparse.ArgumentParser(description="应用经过审核的四节点清单")
++    parser = argparse.ArgumentParser(description="应用原四节点清单，或安全增量注册单个隔离节点")
+     parser.add_argument("--config", type=Path, required=True)
++    parser.add_argument(
++        "--add-only",
++        action="store_true",
++        help="只新增一个 DISABLED/DRAINING 节点；拒绝修改已有节点",
++    )
+     args = parser.parse_args()
+-    asyncio.run(apply(args.config.resolve()))
++    asyncio.run(apply(args.config.resolve(), add_only=args.add_only))
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/tests/integration/test_api.py b/tests/integration/test_api.py
+index 234036a..ea4d17c 100644
+--- a/tests/integration/test_api.py
++++ b/tests/integration/test_api.py
+@@ -3822,6 +3822,71 @@ async def test_admin_client_kind_update_uses_global_then_client_row_lock(
+             assert stored.client_kind == "test"
+ 
+ 
++async def test_additional_node_uses_own_hmac_and_stays_isolated(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    new_id = "worker-5070ti-01"
++    new_secret = "additional-node-secret-" + "z" * 40
++    monkeypatch.setenv("NODE_AGENT_HMAC_SECRETS", json.dumps({new_id: new_secret}))
++    async for app, client in prepared_app(tmp_path):
++        async with app.state.db.session() as db:
++            db.add(
++                Node(
++                    id=new_id,
++                    display_name="5070 Ti",
++                    base_url="http://10.3.34.18:8188",
++                    mode="DISABLED",
++                    labels={
++                        "host": "10.3.34.18",
++                        "wsl_runtime": True,
++                        "dcgm_exporter_enabled": False,
++                    },
++                )
++            )
++            await db.commit()
++        body = json.dumps(
++            {
++                "node_id": new_id,
++                "ip": "10.3.34.18",
++                "hostname": "worker-5070ti-wsl",
++                "mac": "12:34:56:78:90:ab",
++                "gpu_uuid": "GPU-12345678-1234-1234-1234-123456789abc",
++                "gpu_model": "NVIDIA GeForce RTX 5070 Ti",
++            },
++            separators=(",", ":"),
++        ).encode()
++        timestamp = str(int(time.time()))
++        headers = {
++            "content-type": "application/json",
++            "x-real-ip": "10.3.34.18",
++            "x-gpu-timestamp": timestamp,
++        }
++        for nonce, secret, expected in [
++            ("wrong-key", app.state.settings.node_agent_secret("control-4090"), 401),
++            ("new-key", new_secret, 200),
++        ]:
++            response = await client.post(
++                "/api/v1/nodes/heartbeat",
++                content=body,
++                headers={
++                    **headers,
++                    "x-gpu-nonce": nonce,
++                    "x-gpu-signature": sign_agent_request(
++                        "POST", "/api/v1/nodes/heartbeat", body, timestamp, nonce, secret
++                    ),
++                },
++            )
++            assert response.status_code == expected, response.text
++        async with app.state.db.session() as db:
++            node = await db.get(Node, new_id)
++            assert node is not None and node.mode == "DISABLED" and node.current_jobs == 0
++            node.mode = "DRAINING"
++            await db.commit()
++        targets = (await client.get("/internal/prometheus/workers")).json()
++        assert any(group["targets"] == ["10.3.34.18:9100"] for group in targets)
++        assert not any(group["targets"] == ["10.3.34.18:9400"] for group in targets)
++
++
+ async def test_signed_node_heartbeat_updates_address_and_dynamic_monitoring(
+     tmp_path: Path,
+ ) -> None:
+diff --git a/tests/unit/test_additive_node_bootstrap.py b/tests/unit/test_additive_node_bootstrap.py
+new file mode 100644
+index 0000000..6322f1d
+--- /dev/null
++++ b/tests/unit/test_additive_node_bootstrap.py
+@@ -0,0 +1,151 @@
++from pathlib import Path
++
++import pytest
++import yaml
++from sqlalchemy import select
++
++from packages.gpu_control_core.database import Database
++from packages.gpu_control_core.models import Node
++from packages.gpu_control_core.settings import Settings
++from scripts.bootstrap_nodes import apply_inventory, load_inventory
++
++
++def node_spec(**changes: object) -> dict[str, object]:
++    return {
++        "id": "worker-5070ti-01",
++        "display_name": "5070 Ti",
++        "host": "10.3.34.18",
++        "pool": "PRIMARY",
++        "hostname": "worker-5070ti-wsl",
++        "gpu": "RTX5070Ti",
++        "mac": "12:34:56:78:90:ab",
++        "gpu_uuid": "GPU-12345678-1234-1234-1234-123456789abc",
++        "wsl_runtime": True,
++        "dcgm_exporter_enabled": False,
++        "vram_class": "16gb",
++        **changes,
++    }
++
++
++def inventory_file(tmp_path: Path, *nodes: dict[str, object]) -> Path:
++    path = tmp_path / "new-node.yaml"
++    path.write_text(yaml.safe_dump({"nodes": list(nodes)}), encoding="utf-8")
++    return path
++
++
++def test_additive_defaults_to_disabled_and_cannot_bootstrap_full_cluster(tmp_path: Path) -> None:
++    path = inventory_file(tmp_path, node_spec())
++    assert load_inventory(path, add_only=True)[0]["mode"] == "DISABLED"
++    with pytest.raises(ValueError):
++        load_inventory(path)
++    path = inventory_file(tmp_path, node_spec(), node_spec(id="worker-other"))
++    with pytest.raises(ValueError, match="exactly one"):
++        load_inventory(path, add_only=True)
++
++
++@pytest.mark.parametrize(
++    "changes",
++    [
++        {"mode": "ACTIVE"},
++        {"mode": "RESERVED"},
++        {"mode": "OVERFLOW"},
++        {"host": "127.0.0.1"},
++        {"host": "0.0.0.0"},  # noqa: S104 - rejected fixture
++        {"host": "other.example"},
++        {"mac": ""},
++        {"gpu_uuid": "GPU-invalid"},
++        {"hostname": ""},
++        {"agent_url": "http://10.3.34.14:9201"},
++        {"wsl_runtime": "true"},
++    ],
++)
++def test_additive_rejects_unverified_or_schedulable_inventory(
++    tmp_path: Path, changes: dict[str, object]
++) -> None:
++    with pytest.raises(ValueError):
++        load_inventory(inventory_file(tmp_path, node_spec(**changes)), add_only=True)
++
++
++async def test_additive_preserves_active_drained_reserved_nodes_and_jobs(tmp_path: Path) -> None:
++    db = Database(
++        Settings(_env_file=None, database_url=f"sqlite+aiosqlite:///{tmp_path / 'nodes.sqlite'}")
++    )
++    try:
++        async with db.engine.begin() as connection:
++            await connection.run_sync(Node.__table__.create)
++        async with db.session() as session:
++            for index, (name, mode) in enumerate(
++                [
++                    ("control-4090", "ACTIVE"),
++                    ("worker-3090-a", "RESERVED"),
++                    ("worker-3090-b", "DRAINING"),
++                    ("worker-4070ti-animation-host-01", "ACTIVE"),
++                ]
++            ):
++                session.add(
++                    Node(
++                        id=name,
++                        display_name=name,
++                        base_url=f"http://10.3.34.{40 + index}:8188",
++                        mode=mode,
++                        current_jobs=1,
++                        manual_reserved=mode == "RESERVED",
++                        health="ONLINE",
++                        labels={
++                            "host": f"10.3.34.{40 + index}",
++                            "substance_bake_fence_job_ids": ["live-bake"],
++                        },
++                    )
++                )
++            await session.commit()
++        async with db.session() as session:
++            before = {
++                n.id: {c.name: getattr(n, c.name) for c in Node.__table__.columns}
++                for n in (await session.scalars(select(Node))).all()
++            }
++            inventory = load_inventory(inventory_file(tmp_path, node_spec()), add_only=True)
++            await apply_inventory(session, inventory, add_only=True)
++            await session.commit()
++        async with db.session() as session:
++            nodes = {n.id: n for n in (await session.scalars(select(Node))).all()}
++            assert len(nodes) == 5
++            for node_id, snapshot in before.items():
++                assert {
++                    c.name: getattr(nodes[node_id], c.name) for c in Node.__table__.columns
++                } == snapshot
++            assert nodes["worker-5070ti-01"].mode == "DISABLED"
++            assert nodes["worker-5070ti-01"].health == "OFFLINE"
++            assert nodes["worker-5070ti-01"].current_jobs == 0
++            assert nodes["worker-5070ti-01"].labels["vram_class"] == "16gb"
++            with pytest.raises(ValueError, match="already exists"):
++                await apply_inventory(session, inventory, add_only=True)
++    finally:
++        await db.close()
++
++
++@pytest.mark.parametrize("duplicate", ["host", "mac", "gpu_uuid"])
++async def test_additive_rejects_existing_physical_identity(tmp_path: Path, duplicate: str) -> None:
++    db = Database(
++        Settings(_env_file=None, database_url=f"sqlite+aiosqlite:///{tmp_path / 'identity.sqlite'}")
++    )
++    try:
++        async with db.engine.begin() as connection:
++            await connection.run_sync(Node.__table__.create)
++        spec = node_spec()
++        async with db.session() as session:
++            session.add(
++                Node(
++                    id="worker-existing",
++                    display_name="existing",
++                    base_url="http://10.3.34.99:8188",
++                    labels={duplicate: spec[duplicate]},
++                )
++            )
++            await session.commit()
++        async with db.session() as session:
++            inventory = load_inventory(inventory_file(tmp_path, spec), add_only=True)
++            with pytest.raises(ValueError, match="already assigned"):
++                await apply_inventory(session, inventory, add_only=True)
++            assert len((await session.scalars(select(Node))).all()) == 1
++    finally:
++        await db.close()
+diff --git a/tests/unit/test_node_secret_map.py b/tests/unit/test_node_secret_map.py
+new file mode 100644
+index 0000000..828cb89
+--- /dev/null
++++ b/tests/unit/test_node_secret_map.py
+@@ -0,0 +1,84 @@
++import json
++
++import pytest
++from pydantic import ValidationError
++
++from packages.gpu_control_core.security import sign_agent_request
++from packages.gpu_control_core.settings import Settings
++
++NEW_NODE = "worker-5070ti-01"
++NEW_SECRET = "new-node-test-secret-" + "n" * 40
++
++
++def test_new_node_hmac_does_not_change_legacy_identity(monkeypatch: pytest.MonkeyPatch) -> None:
++    monkeypatch.setenv("NODE_AGENT_HMAC_SECRETS", json.dumps({NEW_NODE: NEW_SECRET}))
++    cfg = Settings(
++        _env_file=None,
++        node_agent_hmac_secret="legacy-default-" + "d" * 40,
++        node_agent_hmac_secret_worker_3090_a="legacy-a-" + "a" * 40,
++        node_agent_hmac_secret_worker_3090_b="legacy-b-" + "b" * 40,
++        node_agent_hmac_secret_worker_4070ti="legacy-4070-" + "c" * 40,
++        node_agent_hmac_secret_control_4090="legacy-4090-" + "e" * 40,
++    )
++    assert cfg.node_agent_secret(NEW_NODE) == NEW_SECRET
++    assert cfg.node_agent_secret("worker-3090-a") == "legacy-a-" + "a" * 40
++    assert cfg.node_agent_secret("worker-3090-b") == "legacy-b-" + "b" * 40
++    assert cfg.node_agent_secret("worker-4070ti-animation-host-01") == "legacy-4070-" + "c" * 40
++    assert cfg.node_agent_secret("control-4090") == "legacy-4090-" + "e" * 40
++    assert cfg.node_agent_secret("worker-legacy-unspecified") == cfg.node_agent_hmac_secret
++    payload = b'{"node_id":"worker-5070ti-01"}'
++    new_signature = sign_agent_request(
++        "POST", "/api/v1/nodes/heartbeat", payload, "1", "nonce", cfg.node_agent_secret(NEW_NODE)
++    )
++    legacy_signature = sign_agent_request(
++        "POST",
++        "/api/v1/nodes/heartbeat",
++        payload,
++        "1",
++        "nonce",
++        cfg.node_agent_secret("control-4090"),
++    )
++    assert new_signature != legacy_signature
++
++
++def test_new_secret_is_excluded_from_repr_and_serialization() -> None:
++    cfg = Settings(_env_file=None, node_agent_hmac_secrets={NEW_NODE: NEW_SECRET})
++    assert "node_agent_hmac_secrets" not in cfg.model_dump()
++    assert NEW_SECRET not in repr(cfg)
++    assert NEW_SECRET not in cfg.model_dump_json()
++    assert NEW_SECRET not in repr(cfg.node_agent_hmac_secrets)
++
++
++@pytest.mark.parametrize(
++    "value",
++    [
++        "not-json-sensitive-value",
++        "[]",
++        {"invalid-node": NEW_SECRET},
++        {NEW_NODE: "short-sensitive-value"},
++        {NEW_NODE: "CHANGE_ME" + "x" * 40},
++        {NEW_NODE: "x" * 40 + "\n"},
++        {NEW_NODE: 12345678901234567890123456789012345678},
++        {NEW_NODE: {"nested": NEW_SECRET}},
++        {NEW_NODE: NEW_SECRET, "worker-5070ti-02": NEW_SECRET},
++        '{"worker-5070ti-01":"' + NEW_SECRET + '","worker-5070ti-01":"' + "y" * 40 + '"}',
++    ],
++)
++def test_invalid_secret_maps_fail_without_leaking_input(value: object) -> None:
++    with pytest.raises(ValidationError) as error:
++        Settings(_env_file=None, node_agent_hmac_secrets=value)
++    assert NEW_SECRET not in str(error.value)
++    assert "sensitive-value" not in str(error.value)
++
++
++def test_invalid_json_from_environment_is_sanitized(monkeypatch: pytest.MonkeyPatch) -> None:
++    monkeypatch.setenv("NODE_AGENT_HMAC_SECRETS", '{"worker-5070ti-01":"private-broken-value')
++    with pytest.raises(ValidationError) as error:
++        Settings(_env_file=None)
++    assert "private-broken-value" not in str(error.value)
++
++
++def test_explicit_map_can_migrate_a_legacy_node_without_reusing_default() -> None:
++    cfg = Settings(_env_file=None, node_agent_hmac_secrets={"worker-3090-a": NEW_SECRET})
++    assert cfg.node_agent_secret("worker-3090-a") == NEW_SECRET
++    assert cfg.node_agent_secret("worker-3090-b") == cfg.node_agent_hmac_secret

@@ -1,0 +1,30 @@
+FROM li3d/blender-worker:1.4.75-uv-overlap-v28-pins1-codex-auth1
+USER root
+RUN python3 - <<'PY'
+import base64
+import csv
+import hashlib
+import io
+from pathlib import Path
+
+site = Path('/usr/local/lib/python3.11/site-packages')
+records = list(site.glob('gpu_control-*.dist-info/RECORD'))
+assert len(records) == 1
+record = records[0]
+rows = list(csv.reader(io.StringIO(record.read_text())))
+updated = set()
+allowed = {'gpu_control_blender_worker/main.py', 'gpu_control_blender_worker/bootstrap.py'}
+for row in rows:
+    if row[0] in allowed:
+        content = (site / row[0]).read_bytes()
+        row[1] = 'sha256=' + base64.urlsafe_b64encode(hashlib.sha256(content).digest()).decode().rstrip('=')
+        row[2] = str(len(content))
+        updated.add(row[0])
+assert updated == allowed
+buffer = io.StringIO(newline='')
+csv.writer(buffer, lineterminator='\n').writerows(rows)
+record.write_text(buffer.getvalue())
+PY
+USER assetworker
+ENV ASSET_WORKER_BUILD_VERSION=1.4.75-uv-overlap-v28-pins1-codex-auth2
+LABEL org.opencontainers.image.version="1.4.75-uv-overlap-v28-pins1-codex-auth2"

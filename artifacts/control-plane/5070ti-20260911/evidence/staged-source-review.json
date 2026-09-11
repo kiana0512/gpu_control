@@ -1,0 +1,54 @@
+{
+  "snapshot_path": "/tmp/gpu-control-5070-publish-check",
+  "snapshot_preserved": true,
+  "control_files": [
+    {
+      "path": "apps/api/src/gpu_control_api/main.py",
+      "snapshot_matches_current_index": true,
+      "matches_reviewed_c61648f": true,
+      "sha256": "102019d2ced507bacb32b80c0e6dc6bac5da9dabba986087fb6eef8daf5b0ea3"
+    },
+    {
+      "path": "apps/scheduler/src/gpu_control_scheduler/main.py",
+      "snapshot_matches_current_index": true,
+      "matches_reviewed_c61648f": true,
+      "sha256": "9aa92d411435aac137ede79545ee4ffe3f4247bb0e59171d96eec12201e92f6e"
+    },
+    {
+      "path": "packages/gpu_control_core/settings.py",
+      "snapshot_matches_current_index": true,
+      "matches_reviewed_c61648f": true,
+      "sha256": "78aec884429b71d7fd4d26e364720bf0381813f22fd371af7f3cec217dea3963"
+    },
+    {
+      "path": "packages/gpu_control_core/workflow.py",
+      "snapshot_matches_current_index": true,
+      "matches_reviewed_c61648f": true,
+      "sha256": "e9c13bf5a5c4172868d10a9b16041b1762a3b7ed4afda64c9d928edbc82b3f80"
+    },
+    {
+      "path": "packages/gpu_control_core/workflow_cli.py",
+      "snapshot_matches_current_index": true,
+      "matches_reviewed_c61648f": true,
+      "sha256": "b27d475028bb4851e5df5602cf6d64d4d760ed14c06100b79de57cd466020bde"
+    },
+    {
+      "path": "scripts/bootstrap_nodes.py",
+      "snapshot_matches_current_index": true,
+      "matches_reviewed_c61648f": true,
+      "sha256": "121133ba3b6782bec35675c493ed07595f5100abdd0f8853b58a4d677ce513d5"
+    }
+  ],
+  "codex_changed_definitions": [
+    "inspect_codex_auth",
+    "classify_codex_error",
+    "inspect_codex_runtime",
+    "run_codex_health_probe"
+  ],
+  "staged_tests": {
+    "passed": 99,
+    "failed": 0,
+    "seconds": 2.15
+  },
+  "review": "No new blocking integration issue identified in reviewed staged scope. Runtime VRAM fingerprint limitation remains documented."
+}

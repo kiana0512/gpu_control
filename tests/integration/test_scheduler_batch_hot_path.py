@@ -21,6 +21,7 @@ from packages.gpu_control_core.models import (
     ApiClient,
     Base,
     BatchArtifact,
+    BatchEvent,
     Job,
     JobArtifact,
     JobBatch,
@@ -378,6 +379,102 @@ async def test_sync_and_assembly_bulk_read_latest_artifacts_in_ordinal_order(
             assert artifact is not None and artifact.sha256 == expected_archive_sha
     finally:
         event.remove(scheduler.db.engine.sync_engine, "before_cursor_execute", recorder)
+        await close_scheduler(scheduler)
+
+
+async def test_reconcile_stale_snapshot_preserves_completed_assembly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = await make_scheduler(tmp_path)
+    batch_id = "batch-reconcile-race"
+    await add_completed_batch(scheduler, batch_id, 2)
+    assert await scheduler.sync_batch_state(batch_id) is True
+    snapshot_taken = asyncio.Event()
+    resume_sync = asyncio.Event()
+    original_sync = scheduler.sync_batch_state
+    sync_results: list[bool] = []
+    published: list[dict[str, Any]] = []
+    archive_payload = b"completed-before-reconciliation-lock"
+
+    async def delayed_sync(selected_batch_id: str) -> bool:
+        assert selected_batch_id == batch_id
+        # reconcile_batches has already read its active ID snapshot and closed
+        # that transaction, but sync_batch_state has not locked the batch yet.
+        snapshot_taken.set()
+        await resume_sync.wait()
+        result = await original_sync(selected_batch_id)
+        sync_results.append(result)
+        return result
+
+    def fake_archive(
+        _batch_id: str,
+        _external_batch_id: str,
+        _batch_dir: Path,
+        _frames: list[batch_module.ArchiveFrame],
+        _workflow_identity: dict[str, str | None],
+        staging_path: Path,
+        _cancel_event: threading.Event,
+        _total_items: int,
+    ) -> BuiltBatchArchive:
+        staging_path.parent.mkdir(parents=True, exist_ok=True)
+        staging_path.write_bytes(archive_payload)
+        return BuiltBatchArchive(
+            path=staging_path,
+            size_bytes=len(archive_payload),
+            sha256=hashlib.sha256(archive_payload).hexdigest(),
+            manifest={},
+        )
+
+    async def record_publish(payload: dict[str, Any]) -> None:
+        published.append(payload)
+
+    async def saved_rows() -> list[list[dict[str, Any]]]:
+        rows: list[list[dict[str, Any]]] = []
+        async with scheduler.db.session() as session:
+            for model in (JobBatch, JobBatchItem, BatchArtifact, BatchEvent):
+                table = model.__table__
+                batch_column = table.c.id if model is JobBatch else table.c.batch_id
+                result = await session.execute(
+                    select(table).where(batch_column == batch_id).order_by(table.c.id)
+                )
+                rows.append([dict(row) for row in result.mappings()])
+        return rows
+
+    monkeypatch.setattr(scheduler, "sync_batch_state", delayed_sync)
+    monkeypatch.setattr(scheduler, "publish", record_publish)
+    monkeypatch.setattr(scheduler_main, "build_result_archive", fake_archive)
+    tasks: list[asyncio.Task[None]] = []
+    try:
+        reconciliation = asyncio.create_task(scheduler.reconcile_batches())
+        tasks.append(reconciliation)
+        await asyncio.wait_for(snapshot_taken.wait(), timeout=10)
+        assembly = asyncio.create_task(scheduler.assemble_batch(batch_id))
+        tasks.append(assembly)
+        await asyncio.wait_for(assembly, timeout=10)
+        before = await saved_rows()
+        assert before[0][0]["status"] == BatchStatus.SUCCEEDED.value
+        assert len(before[2]) == 1
+        assert before[2][0]["sha256"] == hashlib.sha256(archive_payload).hexdigest()
+        published_before = list(published)
+
+        resume_sync.set()
+        await asyncio.wait_for(reconciliation, timeout=10)
+
+        assert sync_results == [False]
+        assert scheduler.batch_assemblies == {}
+        assert await saved_rows() == before
+        assert published == published_before
+        final_path = (
+            tmp_path / "jobs" / "batch-fixtures" / batch_id / "output" / f"{batch_id}-rgba.zip"
+        )
+        assert final_path.read_bytes() == archive_payload
+    finally:
+        resume_sync.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await close_scheduler(scheduler)
 
 

@@ -41,6 +41,7 @@ const menuGroups: MenuGroup[] = [
     items: [
       { path: "/nodes", label: "GPU 节点", icon: Box },
       { path: "/asset-processing", label: "资产处理", icon: SetUp },
+      { path: "/realesrgan", label: "AI 高清化", icon: Cpu },
       { path: "/codex", label: "Codex Workers", icon: Connection },
     ],
   },
@@ -100,7 +101,7 @@ function logout() {
       <div class="cluster-state">
         <i></i><span>控制平面在线</span
         ><small
-          >Scheduler {{ buildVersion }}<br />Revision {{ buildRevision }}</small
+          >WebUI {{ buildVersion }}<br />Revision {{ buildRevision }}</small
         >
       </div>
     </aside>

@@ -1,0 +1,26 @@
+{
+  "packages/gpu_control_core/workflow.py": {
+    "source": "packages/gpu_control_core/workflow.py",
+    "component": "common",
+    "base_sha256": "c86018928e2c2a0ea30ef57c2c641e8287fc9ec45bea79ab0643b256f82f3f80",
+    "new_sha256": "e9c13bf5a5c4172868d10a9b16041b1762a3b7ed4afda64c9d928edbc82b3f80"
+  },
+  "packages/gpu_control_core/workflow_cli.py": {
+    "source": "packages/gpu_control_core/workflow_cli.py",
+    "component": "common",
+    "base_sha256": "ce44c2659bedc9dbd92c71c506cce438577a0551c06ac78f5b6d9270c9927dc0",
+    "new_sha256": "b27d475028bb4851e5df5602cf6d64d4d760ed14c06100b79de57cd466020bde"
+  },
+  "gpu_control_api/main.py": {
+    "source": "apps/api/src/gpu_control_api/main.py",
+    "component": "api",
+    "base_sha256": "febb26c9f9f082822db9af79d69830d84bee875ecf6cc5746940b6c60aa8261f",
+    "new_sha256": "f6f33cf99c0e9544d91a48560199335f6a8e0afca9a7378c78679fb65916550b"
+  },
+  "gpu_control_scheduler/main.py": {
+    "source": "apps/scheduler/src/gpu_control_scheduler/main.py",
+    "component": "scheduler",
+    "base_sha256": "2d0f6f9abee6d37dae15beadf289fe8c31f3e11bbda6f9828e2ba32ae188f95a",
+    "new_sha256": "bec1a02992827da1eb3ec94c61683d069e81cff472c273e15ffb92a8552d656b"
+  }
+}

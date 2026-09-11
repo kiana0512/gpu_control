@@ -1,0 +1,281 @@
+{
+  "schema_version": "retopology_coordinate_restoration.v3",
+  "mode": "high_world_linear_aabb_center_and_fbx_meter",
+  "passed": true,
+  "allowed_change": "generated_low_object_world_transform_only",
+  "maximum_dimension_relative_error": 0.05,
+  "input_blend_sha256": "222714d06977b6d7cbd63f10826d24bbca2fcd26a5164467ba2e81c567b70454",
+  "output_blend_sha256": "69d1c37ccc75d5864ed3ceb19ebbf5b50d386f03befffae65c1a3200031d5f8c",
+  "source_high_preserved": true,
+  "blend_translation_changed": true,
+  "blend_linear_transform_changed": true,
+  "blend_transform_changed": true,
+  "pairs": [
+    {
+      "high_object": "AcceptHigh",
+      "low_object": "AcceptLow",
+      "coordinate_action": "full_transform_restored",
+      "translation_applied": [
+        -4.300000190734863,
+        -5.400000095367432,
+        -5.900000095367432
+      ],
+      "world_linear_before": [
+        [
+          0.800000011920929,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.8999999761581421,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "world_linear_after": [
+        [
+          1.8478385210037231,
+          -0.25447770953178406,
+          -0.3976686894893646
+        ],
+        [
+          0.571603536605835,
+          0.6394011974334717,
+          -0.393358051776886
+        ],
+        [
+          0.817778468132019,
+          0.12809062004089355,
+          1.1735113859176636
+        ]
+      ],
+      "authoritative_high_world_linear": [
+        [
+          1.8478385210037231,
+          -0.25447767972946167,
+          -0.3976686894893646
+        ],
+        [
+          0.5716034770011902,
+          0.6394011974334717,
+          -0.3933580219745636
+        ],
+        [
+          0.817778468132019,
+          0.12809060513973236,
+          1.1735113859176636
+        ]
+      ],
+      "linear_transform_max_abs_delta_before": 1.0478385090827942,
+      "linear_transform_max_abs_residual": 5.960464477539063e-08,
+      "linear_transform_tolerance": 1e-06,
+      "high_bounds": {
+        "minimum": [
+          1.2000151872634888,
+          -4.0043625831604,
+          -1.0193804502487183
+        ],
+        "maximum": [
+          6.199985027313232,
+          -0.7956373691558838,
+          3.2193803787231445
+        ],
+        "center": [
+          3.700000047683716,
+          -2.4000000953674316,
+          1.0999999046325684
+        ],
+        "dimensions": [
+          4.999969959259033,
+          3.2087252140045166,
+          4.238760948181152
+        ]
+      },
+      "low_bounds_before": {
+        "minimum": [
+          7.199999809265137,
+          2.0999999046325684,
+          6.0
+        ],
+        "maximum": [
+          8.800000190734863,
+          3.9000000953674316,
+          8.0
+        ],
+        "center": [
+          8.0,
+          3.0,
+          7.0
+        ],
+        "dimensions": [
+          1.6000003814697266,
+          1.8000001907348633,
+          2.0
+        ]
+      },
+      "low_bounds_after_linear_restore": {
+        "minimum": [
+          5.5000152587890625,
+          1.3956372737884521,
+          4.880619525909424
+        ],
+        "maximum": [
+          10.499984741210938,
+          4.604362487792969,
+          9.119380950927734
+        ],
+        "center": [
+          8.0,
+          3.0,
+          7.0
+        ],
+        "dimensions": [
+          4.999969482421875,
+          3.2087252140045166,
+          4.2387614250183105
+        ]
+      },
+      "low_bounds_after_envelope_restore": {
+        "minimum": [
+          5.5000152587890625,
+          1.3956372737884521,
+          4.880619525909424
+        ],
+        "maximum": [
+          10.499984741210938,
+          4.604362487792969,
+          9.119380950927734
+        ],
+        "center": [
+          8.0,
+          3.0,
+          7.0
+        ],
+        "dimensions": [
+          4.999969482421875,
+          3.2087252140045166,
+          4.2387614250183105
+        ]
+      },
+      "low_bounds_after": {
+        "minimum": [
+          1.2000148296356201,
+          -4.004363059997559,
+          -1.0193805694580078
+        ],
+        "maximum": [
+          6.199984550476074,
+          -0.795637309551239,
+          3.2193803787231445
+        ],
+        "center": [
+          3.6999998092651367,
+          -2.4000000953674316,
+          1.0999999046325684
+        ],
+        "dimensions": [
+          4.999969482421875,
+          3.208725690841675,
+          4.238760948181152
+        ]
+      },
+      "center_residual": 2.384185791015625e-07,
+      "dimensions_max_abs_change": 3.3999691009521484,
+      "pre_alignment_dimension_relative_error": [
+        9.536800462572969e-08,
+        0.0,
+        1.1249446808453195e-07
+      ],
+      "pre_alignment_maximum_dimension_relative_error": 1.1249446808453195e-07,
+      "envelope_scale_applied": false,
+      "envelope_scale_factors_world": [
+        1.0000000953680137,
+        1.0,
+        0.9999998875055446
+      ],
+      "high_low_dimension_relative_error": [
+        9.536800462572969e-08,
+        0.0,
+        1.1249446808453195e-07
+      ],
+      "high_low_maximum_dimension_relative_error": 1.1249446808453195e-07,
+      "maximum_dimension_relative_error_limit": 0.05,
+      "transform_tolerance": 4.999969959259033e-06,
+      "high_preserved": true,
+      "low_mesh_preserved": true,
+      "low_rotation_scale_preserved": false,
+      "low_rotation_scale_restored": true
+    }
+  ],
+  "fbx_readback": {
+    "passed": true,
+    "sha256": "aed011403772292fcedc6495949a7819c31daad163968e960a936e4c424db6e3",
+    "size_bytes": 11964,
+    "mesh_object_count": 1,
+    "expected_bounds": {
+      "minimum": [
+        1.2000148296356201,
+        -4.004363059997559,
+        -1.0193805694580078
+      ],
+      "maximum": [
+        6.199984550476074,
+        -0.795637309551239,
+        3.2193803787231445
+      ],
+      "center": [
+        3.6999998092651367,
+        -2.4000000953674316,
+        1.0999999046325684
+      ],
+      "dimensions": [
+        4.999969482421875,
+        3.208725690841675,
+        4.238760948181152
+      ]
+    },
+    "readback_bounds": {
+      "minimum": [
+        1.2000148296356201,
+        -4.004363059997559,
+        -1.0193805694580078
+      ],
+      "maximum": [
+        6.199984550476074,
+        -0.7956373691558838,
+        3.2193803787231445
+      ],
+      "center": [
+        3.6999998092651367,
+        -2.4000000953674316,
+        1.0999999046325684
+      ],
+      "dimensions": [
+        4.999969482421875,
+        3.208725690841675,
+        4.238760948181152
+      ]
+    },
+    "center_max_abs_delta": 0.0,
+    "dimensions_max_abs_delta": 0.0,
+    "tolerance": 0.0004999969482421875,
+    "unit_contract": {
+      "schema_version": "retopology_fbx_units.v1",
+      "passed": true,
+      "coordinate_unit": "meter",
+      "unit_scale_factor_centimeters": 100.0,
+      "original_unit_scale_factor_centimeters": 100.0,
+      "raw_coordinates_are_meters": true,
+      "global_scale": 1.0,
+      "apply_unit_scale": true,
+      "apply_scale_options": "FBX_SCALE_UNITS",
+      "axis_forward": "-Z",
+      "axis_up": "Y"
+    }
+  }
+}

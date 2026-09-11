@@ -1,0 +1,15 @@
+{
+  "runtime_change": {
+    "initial_minimum": 16000,
+    "changed_runtime_minimum": 16000
+  },
+  "interleaved_add_only": {
+    "registered_rows": 1,
+    "host_unique_count": 1,
+    "gpu_uuid_unique_count": 1,
+    "modes": [
+      "DISABLED"
+    ]
+  },
+  "scope": "synthetic inputs and isolated temporary SQLite only; no production changes"
+}

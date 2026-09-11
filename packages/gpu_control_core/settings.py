@@ -1,14 +1,27 @@
+import json
+import re
 from datetime import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+
+def _unique_secret_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("node secret map contains duplicate keys")
+        result[key] = value
+    return result
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", case_sensitive=False)
+    model_config = SettingsConfigDict(
+        env_file=".env", extra="ignore", case_sensitive=False, hide_input_in_errors=True
+    )
 
     environment: str = "development"
     database_url: str = "postgresql+asyncpg://gpu_control:gpu_control@localhost/gpu_control"
@@ -20,6 +33,11 @@ class Settings(BaseSettings):
     node_agent_hmac_secret_worker_3090_b: str = ""
     node_agent_hmac_secret_worker_4070ti: str = ""
     node_agent_hmac_secret_control_4090: str = ""
+    # Explicit secrets for additional nodes. Legacy fields remain valid during
+    # rolling upgrades. Never serialize this map into diagnostics or settings APIs.
+    node_agent_hmac_secrets: Annotated[dict[str, SecretStr], NoDecode] = Field(
+        default_factory=dict, repr=False, exclude=True
+    )
     alertmanager_webhook_token: str = "development-only-change-me"
     job_root: Path = Path("storage/jobs")
     model_root: Path = Path("storage/models")
@@ -49,9 +67,7 @@ class Settings(BaseSettings):
     max_image_pixels: int = Field(40_000_000, ge=1, le=500_000_000)
     batch_max_frames: int = Field(5_000, ge=1, le=100_000)
     batch_max_archive_bytes: int = Field(107_374_182_400, ge=1024, le=1_099_511_627_776)
-    batch_max_uncompressed_bytes: int = Field(
-        107_374_182_400, ge=1024, le=1_099_511_627_776
-    )
+    batch_max_uncompressed_bytes: int = Field(107_374_182_400, ge=1024, le=1_099_511_627_776)
     batch_max_frame_bytes: int = Field(67_108_864, ge=1024, le=2_147_483_648)
     batch_feed_window: int = Field(12, ge=1, le=10_000)
     batch_max_running_per_tenant: int = Field(3, ge=1, le=10)
@@ -68,6 +84,40 @@ class Settings(BaseSettings):
     substance_pending_reservation_seconds: int = Field(60, ge=30, le=86_400)
     uv_qa_enforcement: Literal["strict", "advisory"] = "strict"
     retopology_qa_enforcement: Literal["strict", "advisory"] = "advisory"
+
+    @field_validator("node_agent_hmac_secrets", mode="before")
+    @classmethod
+    def validate_node_agent_secret_map(cls, value: Any) -> dict[str, SecretStr]:
+        if isinstance(value, str):
+            try:
+                value = json.loads(value, object_pairs_hook=_unique_secret_pairs)
+            except (ValueError, TypeError):
+                raise ValueError("node secret map must be valid JSON with unique keys") from None
+        if not isinstance(value, dict):
+            raise ValueError("node secret map must be an object")
+        result: dict[str, SecretStr] = {}
+        seen: set[str] = set()
+        for node_id, secret in value.items():
+            if (
+                not isinstance(node_id, str)
+                or not re.fullmatch(r"(?:worker|control)-[a-z0-9-]+", node_id)
+                or len(node_id) > 64
+            ):
+                raise ValueError("node secret map contains an invalid node ID")
+            raw = secret.get_secret_value() if isinstance(secret, SecretStr) else secret
+            if (
+                not isinstance(raw, str)
+                or not 32 <= len(raw) <= 4096
+                or any(char.isspace() for char in raw)
+                or raw.startswith("CHANGE_ME")
+                or raw == "development-only-change-me"
+            ):
+                raise ValueError("node secrets must be dedicated strings of 32 to 4096 characters")
+            if raw in seen:
+                raise ValueError("each node must have a distinct secret")
+            seen.add(raw)
+            result[node_id] = SecretStr(raw)
+        return result
 
     @field_validator(
         "jwt_secret",
@@ -98,6 +148,9 @@ class Settings(BaseSettings):
         return self
 
     def node_agent_secret(self, node_id: str) -> str:
+        explicit = self.node_agent_hmac_secrets.get(node_id)
+        if explicit is not None:
+            return explicit.get_secret_value()
         per_node = {
             "worker-3090-a": self.node_agent_hmac_secret_worker_3090_a,
             "worker-3090-b": self.node_agent_hmac_secret_worker_3090_b,

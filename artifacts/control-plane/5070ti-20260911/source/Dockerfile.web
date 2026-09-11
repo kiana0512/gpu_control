@@ -1,0 +1,4 @@
+FROM gpu-control-web-5070-label-base:92257d4
+LABEL org.opencontainers.image.revision="350c388d83a7d64ed7bc5e9148c54d1b89d3f43d" org.opencontainers.image.version="1.5.23-5070-ui.2" gpu-control.base.image="sha256:5a7044be87a5af8c05d905de0f6b06866ec1d5849e76ad84ba7af09bf0fa6395"
+RUN rm -rf /usr/share/nginx/html/*
+COPY dist/ /usr/share/nginx/html/

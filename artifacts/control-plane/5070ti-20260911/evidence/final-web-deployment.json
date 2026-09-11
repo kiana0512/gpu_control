@@ -1,0 +1,13 @@
+{
+  "status": "DEPLOYED",
+  "old_container": "4ea4350e144e27c8db818d6f5a947d1483cad673849f8ca6aa088dc8f42075fa",
+  "new_container": "7daef3e63ee5ac5256d833992c914a4e771a4ecbca5a2c55fe23830c87933549",
+  "source_revision": "350c388d83a7d64ed7bc5e9148c54d1b89d3f43d",
+  "version": "1.5.23-5070-ui.2",
+  "image_tag": "gpu-control-web:1.5.23-5070-ui-350c388",
+  "image_id": "sha256:82dfe654a884fbc6c4e71a79b17a4c211d73eec9c20d5c4b19a1b3f3ff3da251",
+  "base_image": "sha256:5a7044be87a5af8c05d905de0f6b06866ec1d5849e76ad84ba7af09bf0fa6395",
+  "base_layers_preserved": true,
+  "verified_static_file_count": 29,
+  "gateway_https_verified": true
+}

@@ -1,0 +1,18 @@
+..F.........                                                             [100%]
+=================================== FAILURES ===================================
+________ test_worker_release_versions_and_evidence_contract_are_aligned ________
+
+    def test_worker_release_versions_and_evidence_contract_are_aligned() -> None:
+        versions = source_worker_versions(REPOSITORY)
+        assert len(versions) == 9
+>       assert len(set(versions.values())) == 1
+E       AssertionError: assert 2 == 1
+E        +  where 2 = len({'1.4.55-uv-multimesh-mof-v1', '1.4.72-mof-feedback-spatial-v1'})
+E        +    where {'1.4.55-uv-multimesh-mof-v1', '1.4.72-mof-feedback-spatial-v1'} = set(dict_values(['1.4.72-mof-feedback-spatial-v1', '1.4.72-mof-feedback-spatial-v1', '1.4.72-mof-feedback-spatial-v1', '1....ack-spatial-v1', '1.4.72-mof-feedback-spatial-v1', '1.4.72-mof-feedback-spatial-v1', '1.4.72-mof-feedback-spatial-v1']))
+E        +      where dict_values(['1.4.72-mof-feedback-spatial-v1', '1.4.72-mof-feedback-spatial-v1', '1.4.72-mof-feedback-spatial-v1', '1....ack-spatial-v1', '1.4.72-mof-feedback-spatial-v1', '1.4.72-mof-feedback-spatial-v1', '1.4.72-mof-feedback-spatial-v1']) = <built-in method values of dict object at 0x77a590a60dc0>()
+E        +        where <built-in method values of dict object at 0x77a590a60dc0> = {'control_compose_tag': '1.4.72-mof-feedback-spatial-v1', 'control_compose_version': '1.4.72-mof-feedback-spatial-v1', 'dockerfile': '1.4.72-mof-feedback-spatial-v1', 'environment_tag': '1.4.72-mof-feedback-spatial-v1', ...}.values
+
+tests/unit/test_release_identity.py:61: AssertionError
+=========================== short test summary info ============================
+FAILED tests/unit/test_release_identity.py::test_worker_release_versions_and_evidence_contract_are_aligned
+1 failed, 11 passed in 0.10s

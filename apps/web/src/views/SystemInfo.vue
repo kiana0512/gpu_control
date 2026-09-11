@@ -14,6 +14,7 @@ const modelviewUrl = `${origin}/api/v1/services/modelview-inpaint`;
 const modelviewSingleViewUrl = `${origin}/api/v1/services/modelview-single-view`;
 const modelviewSingleViewInpaintUrl = `${origin}/api/v1/services/modelview-single-view-inpaint`;
 const roughnessUrl = `${origin}/api/v1/services/modelview-roughness`;
+const realesrganUrl = `${origin}/api/v1/realesrgan/enhance?strength=0.7`;
 const uvUrl = `${origin}/api/v1/assets/uv/process`;
 const retopologyUrl = `${origin}/api/v1/assets/retopology/process`;
 const controlNode = computed(() =>
@@ -189,7 +190,16 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             ><small>POST · image 必填 · 固定生产提示词</small></span
           ><code>{{ roughnessUrl }}</code>
         </div>
+        <div>
+          <span
+            ><strong>Real-ESRGAN AI 高清化</strong
+            ><small>POST · 原始 PNG 请求体 · 原尺寸 RGBA 响应</small></span
+          ><code>{{ realesrganUrl }}</code>
+        </div>
       </div>
+      <router-link class="inline-link" to="/realesrgan"
+        >查看节点状态和完整调用方法 →</router-link
+      >
       <router-link class="inline-link" to="/clients"
         >查看完整调用方法 →</router-link
       >

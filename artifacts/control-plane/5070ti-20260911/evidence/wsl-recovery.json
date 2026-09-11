@@ -1,0 +1,40 @@
+{
+  "result": "PASS_WSL_AUTOMATIC_RECOVERY",
+  "control_verified_at": "2026-09-11T03:11:12.919675+00:00",
+  "action": "wsl --terminate Ubuntu-22.04 once via Windows SSH",
+  "manual_wsl_start": false,
+  "windows_reboot": false,
+  "initial_recovery": "first passive SSH attempt after terminate returned succeeded",
+  "kernel_boot_id": "bd92343c-4da8-4d0c-abdc-1283794cb054",
+  "kernel_boot_id_note": "kernel VM remained; distro systemd PID1 restarted",
+  "pid1_start_ticks_after": 5111541,
+  "windows_ssh": "before/after probes succeeded",
+  "new_node_mode": "DRAINING",
+  "gpu_current_jobs": 0,
+  "asset_current_jobs": 0,
+  "runtime_ports": {
+    "8188": 200,
+    "9100": 200,
+    "9201_unsigned": 401,
+    "9301": {
+      "/health/live": {
+        "status": 200,
+        "result": {
+          "status": "live",
+          "node_id": "worker-5070ti-01"
+        }
+      },
+      "/internal/v1/ready": {
+        "status": 401
+      }
+    }
+  },
+  "wsl_control_https_ca_verified": 200,
+  "sudo_noninteractive": true,
+  "independent_issue": "Windows W32Time stopped and Windows clock is about 14h19 behind control/WSL; no clock changes made",
+  "limitations": [
+    "Windows full reboot/logout not tested",
+    "WSL NAT address remained the same, so this run does not prove address-change recovery",
+    "Codex-specific CPU execution remains separately gated on new authorization"
+  ]
+}

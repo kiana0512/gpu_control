@@ -1,5 +1,7 @@
 # 统一调度中心（GPU Control）文档总入口
 
+> 2026-09-11 新增 5070 Ti：先看 [部署验收](5070TI_DEPLOYMENT_ACCEPTANCE_20260911.md) 与 [路由 / 代码 / GitHub LFS / 清理审计](5070TI_RELEASE_AUDIT_20260911.md)。此前四节点资料保留为历史记录。
+
 本页是仓库文档导航。全部 Markdown 的分类与历史边界见
 `00_DOCUMENT_CATALOG.md`；全部业务 Skill 的来源、用途和发布边界见
 `00_ASSET_SKILLS_CATALOG.md`。历史文件不移动、不重编号，以免破坏已有链接；编号重复时以完整文件名为准。

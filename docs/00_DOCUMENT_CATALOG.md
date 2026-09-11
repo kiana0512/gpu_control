@@ -1,5 +1,7 @@
 # GPU Control Markdown 分类目录
 
+> 2026-09-11 新增 5070 Ti：先看 [部署验收](5070TI_DEPLOYMENT_ACCEPTANCE_20260911.md) 与 [路由 / 代码 / GitHub LFS / 清理审计](5070TI_RELEASE_AUDIT_20260911.md)。此前四节点资料保留为历史记录。
+
 本目录覆盖仓库自有 Markdown。文件继续保留原路径，避免破坏部署手册、发布记录和外部交接中的既有链接。
 第三方依赖下的 `node_modules/`、Python `site-packages/`、RetopoFlow 上游文档以及 `output/` 生成目录不属于仓库文档，不上传、不重新分类。
 

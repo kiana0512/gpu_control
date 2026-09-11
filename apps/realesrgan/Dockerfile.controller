@@ -1,0 +1,20 @@
+FROM python:3.11.13-slim-bookworm
+ARG GPU_CONTROL_VERSION=1.0.0
+ARG GPU_CONTROL_REVISION=unknown
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app/src \
+    GPU_CONTROL_BUILD_VERSION=${GPU_CONTROL_VERSION} GPU_CONTROL_BUILD_REVISION=${GPU_CONTROL_REVISION}
+LABEL org.opencontainers.image.title="GPU Control Real-ESRGAN Controller" \
+      org.opencontainers.image.version="${GPU_CONTROL_VERSION}" \
+      org.opencontainers.image.revision="${GPU_CONTROL_REVISION}"
+RUN python -m pip install --no-cache-dir --upgrade pip==26.2.1 \
+    && python -m pip install --no-cache-dir \
+       asyncpg==0.30.0 fastapi==0.141.1 httpx==0.28.1 Pillow==12.3.0 \
+       PyJWT==2.13.0 uvicorn==0.35.0 \
+    && groupadd --gid 10001 gpucontrol \
+    && useradd --uid 10001 --gid gpucontrol --create-home gpucontrol
+WORKDIR /app
+COPY apps/realesrgan/src ./src
+USER gpucontrol
+EXPOSE 9300
+HEALTHCHECK --interval=15s --timeout=3s --retries=5 CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9300/health/live',timeout=2)"
+CMD ["uvicorn", "gpu_control_realesrgan.controller:app", "--host", "0.0.0.0", "--port", "9300", "--proxy-headers", "--forwarded-allow-ips=*"]

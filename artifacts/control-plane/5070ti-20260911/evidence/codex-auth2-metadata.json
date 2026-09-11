@@ -1,0 +1,11 @@
+{
+  "imported_module": "/usr/local/lib/python3.11/site-packages/gpu_control_blender_worker/main.py",
+  "distributions": [
+    {
+      "path": "/usr/local/lib/python3.11/site-packages/gpu_control-1.5.23.dist-info",
+      "version": "1.5.23",
+      "record_present": true,
+      "mismatches": []
+    }
+  ]
+}

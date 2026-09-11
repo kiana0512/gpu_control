@@ -5,6 +5,8 @@ import { api } from "../api";
 import type { AssetProcessingOverview, NodeInfo } from "../types";
 import { useAutoRefresh } from "../composables/useAutoRefresh";
 
+import { compareNodes } from "../nodePresentation";
+
 type SchedulingForm = {
   overflow_4090_auto_enabled: boolean;
   overflow_queue_threshold: number;
@@ -40,23 +42,7 @@ const saving = ref(false);
 const changed = computed(
   () => JSON.stringify(form) !== JSON.stringify(saved.value),
 );
-const orderedNodes = computed(() =>
-  [...nodes.value].sort((left, right) => {
-    const order = [
-      "control-4090",
-      "worker-3090-a",
-      "worker-3090-b",
-      "worker-4070ti-animation-host-01",
-    ];
-    const leftIndex = order.indexOf(left.id);
-    const rightIndex = order.indexOf(right.id);
-    return (
-      (leftIndex === -1 ? order.length : leftIndex) -
-        (rightIndex === -1 ? order.length : rightIndex) ||
-      left.display_name.localeCompare(right.display_name, "zh-CN")
-    );
-  }),
-);
+const orderedNodes = computed(() => [...nodes.value].sort(compareNodes));
 const activeNodes = computed(() =>
   orderedNodes.value.filter(
     (node) => node.health === "ONLINE" && node.mode === "ACTIVE",
@@ -78,7 +64,7 @@ const clusterMode = computed(() => {
   if (!nodes.value.length) return "等待节点状态";
   if (activeNodes.value.length === nodes.value.length)
     return `${nodes.value.length} 节点并行（${activeSlots.value} 个 GPU 槽位）`;
-  return `降级运行（${activeNodes.value.length}/${nodes.value.length} 节点可接单）`;
+  return `${activeNodes.value.length}/${nodes.value.length} 节点参与接单`;
 });
 const assetWorkers = computed(() => assetOverview.value?.workers ?? []);
 const onlineAssetWorkers = computed(() =>
@@ -509,13 +495,12 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           <li>
             <b>05</b>
             <div>
-              <strong>4090：ModelView 交互任务首选 + 三台 24 GiB 扩展</strong>
+              <strong>4090：ModelView 交互任务首选 + 已验收兼容节点</strong>
               <p>
-                局部重绘、单视图生成和单视图局部重绘只在 4090、3090-A、3090-B
-                上执行；发生抠图冲突时， 4090 的抠图帧安全中断并改派其它物理
-                GPU，清显存后 优先响应 ModelView
-                交互任务；没有同类任务排队时，4090 继续接兼容普通任务。 4070Ti
-                因 12 GiB 显存被兼容表硬排除。
+                ModelView 任务按工作流版本、资源门槛与节点专项验收结果分配。
+                发生抠图冲突时，4090 的抠图帧安全中断并改派其它物理
+                GPU，清显存后
+                优先响应交互任务；没有同类任务排队时继续接兼容普通任务。
               </p>
             </div>
             <dl>
@@ -523,7 +508,8 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
               <dd>新 ModelView 交互任务到达后 10 分钟，可续期且硬过期</dd>
               <dt>影响</dt>
               <dd>
-                仅 4090 GPU 单槽优先级；空闲时不阻塞普通任务，3090 作为兼容回退
+                仅 4090 GPU
+                单槽优先级；空闲时不阻塞普通任务，已验收兼容节点作为回退
               </dd>
             </dl>
           </li>

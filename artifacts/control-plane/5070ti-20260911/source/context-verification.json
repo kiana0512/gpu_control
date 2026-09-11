@@ -1,0 +1,80 @@
+{
+  "status": "PASS",
+  "required_tag": "runtime/5070-control-c61648f",
+  "locked_revisions": {
+    "resource": "13ef0a129759404c2313bc7d7a31827c1244eea8",
+    "final": "c61648fe96fd5be429cd1f7b470da43131b88204"
+  },
+  "removed_curated_module_copies": [
+    {
+      "stage": "resource",
+      "path": "artifacts/control-plane/5070ti-20260911/source/resource/layer/packages/gpu_control_core/workflow.py",
+      "sha256": "e9c13bf5a5c4172868d10a9b16041b1762a3b7ed4afda64c9d928edbc82b3f80",
+      "bytes": 7863,
+      "lines": 193,
+      "matches_pinned_git_and_manifest": true
+    },
+    {
+      "stage": "resource",
+      "path": "artifacts/control-plane/5070ti-20260911/source/resource/layer/packages/gpu_control_core/workflow_cli.py",
+      "sha256": "b27d475028bb4851e5df5602cf6d64d4d760ed14c06100b79de57cd466020bde",
+      "bytes": 7497,
+      "lines": 192,
+      "matches_pinned_git_and_manifest": true
+    },
+    {
+      "stage": "resource",
+      "path": "artifacts/control-plane/5070ti-20260911/source/resource/layer/apps/api/src/gpu_control_api/main.py",
+      "sha256": "f6f33cf99c0e9544d91a48560199335f6a8e0afca9a7378c78679fb65916550b",
+      "bytes": 246797,
+      "lines": 5945,
+      "matches_pinned_git_and_manifest": true
+    },
+    {
+      "stage": "resource",
+      "path": "artifacts/control-plane/5070ti-20260911/source/resource/layer/apps/scheduler/src/gpu_control_scheduler/main.py",
+      "sha256": "bec1a02992827da1eb3ec94c61683d069e81cff472c273e15ffb92a8552d656b",
+      "bytes": 194235,
+      "lines": 4324,
+      "matches_pinned_git_and_manifest": true
+    },
+    {
+      "stage": "final",
+      "path": "artifacts/control-plane/5070ti-20260911/source/final/layer/apps/api/src/gpu_control_api/main.py",
+      "sha256": "102019d2ced507bacb32b80c0e6dc6bac5da9dabba986087fb6eef8daf5b0ea3",
+      "bytes": 246966,
+      "lines": 5947,
+      "matches_pinned_git_and_manifest": true
+    },
+    {
+      "stage": "final",
+      "path": "artifacts/control-plane/5070ti-20260911/source/final/layer/apps/scheduler/src/gpu_control_scheduler/main.py",
+      "sha256": "9aa92d411435aac137ede79545ee4ffe3f4247bb0e59171d96eec12201e92f6e",
+      "bytes": 194522,
+      "lines": 4329,
+      "matches_pinned_git_and_manifest": true
+    }
+  ],
+  "removed_file_count": 6,
+  "removed_bytes": 897880,
+  "removed_lines": 20930,
+  "contexts_identical_before_and_after_removal": true,
+  "main_worktree_modules_unchanged": true,
+  "runtime_or_production_operations": false,
+  "retained_build_descriptors_and_manifests": {
+    "resource": {
+      "Dockerfile": "ca739a85081153428ba8b038d806f35851a56f89dc395a1a3950926e082a6dd1",
+      "layer/apply_resource_layer.py": "faf04f94df319794086893a448cd6d39a1e0de6ca7e5b2c8d4997d3bffbb22b6",
+      "layer/base-modules.json": "46ab6c8b7afa1796fedb9fee38463d5ab0f6395bbc82f533cf750968e8a77e39"
+    },
+    "final": {
+      "Dockerfile": "479d87a7df88536d7d4b20e4249149c9c1dfbe08fba6a617cd3be7746ba49e8f",
+      "layer/apply_control_layer.py": "f89d6a3e589c4338a94a3754e0cf99e3f8255a861499cdc93af55b2451ad0cb9",
+      "layer/base-modules.json": "76e4a268e9d6566588ff060eea886535d664183681de3d00e2e624afc92eb9bb"
+    }
+  },
+  "verification_contexts": {
+    "resource": "/tmp/5070-context-resource-after-20260911",
+    "final": "/tmp/5070-context-final-after-20260911"
+  }
+}

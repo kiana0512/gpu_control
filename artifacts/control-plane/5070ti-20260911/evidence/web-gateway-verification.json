@@ -1,0 +1,52 @@
+{
+  "kind": "live-production-gateway",
+  "url": "https://10.3.34.11",
+  "at": "2026-09-11T03:22:14.596Z",
+  "checks": [
+    "live five-node API and three registered validation profiles render; node controls fully visible at 1440/1280/390px; release revision matches",
+    "live 5070 MISSING/BLOCKED/AUTH_MISSING displayed as 尚未授权, never healthy, at desktop/mobile widths",
+    "live RealESRGAN five-worker response and UI readiness count match"
+  ],
+  "errors": [],
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/admin/nodes"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/nodes"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/asset-processing"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/realesrgan"
+    }
+  ],
+  "tls": "LAN CA validated independently; browser pinned to verified server SPKI",
+  "node": {
+    "id": "worker-5070ti-01",
+    "mode": "DRAINING",
+    "health": "ONLINE",
+    "auth": "MISSING",
+    "probe": "BLOCKED",
+    "error": "AUTH_MISSING"
+  },
+  "codex": {
+    "auth_status": "MISSING",
+    "probe_status": "BLOCKED",
+    "error_code": "AUTH_MISSING",
+    "heartbeat_fresh": true,
+    "probe_fresh": true,
+    "heartbeat_timeout_seconds": "frontend fallback 30",
+    "probe_max_age_seconds": "frontend fallback 3600"
+  },
+  "realesrgan": {
+    "ready": 5,
+    "total": 5
+  },
+  "status": "PASSED"
+}

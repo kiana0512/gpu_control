@@ -135,6 +135,60 @@ export const api = {
     request<AssetProcessingOverview>(
       `/admin/asset-processing?limit=${encodeURIComponent(limit)}`,
     ),
+  realesrgan: () =>
+    request<{
+      status: string;
+      model: string;
+      model_sha256: string;
+      image_version: string;
+      ready_nodes: number;
+      total_nodes: number;
+      queue_depth: number;
+      max_queue: number;
+      capacity: number;
+      nodes: Array<{
+        id: string;
+        name: string;
+        ready: boolean;
+        active: number;
+        capacity: number;
+        device: string | null;
+        pytorch: string | null;
+        cuda_runtime: string | null;
+        python: string | null;
+        precision: string | null;
+        tile: number | null;
+        tile_pad: number | null;
+        vram_free_mb: number | null;
+        vram_total_mb: number | null;
+        last_metrics: Record<string, number>;
+        last_error: string | null;
+      }>;
+      tasks: Array<{
+        request_id: string;
+        status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED";
+        created_at: string;
+        finished_at: string | null;
+        node: string | null;
+        strength: number;
+        width: number;
+        height: number;
+        input_sha256: string;
+        output_sha256: string | null;
+        queue_ms: number | null;
+        processing_ms: number | null;
+        cache: "MISS" | "HIT" | "COALESCED";
+        error_code: string | null;
+      }>;
+      api: {
+        enhance: string;
+        ready: string;
+        capacity: string;
+        content_type: string;
+        authentication: string;
+        idempotency: string;
+      };
+    }>("/admin/realesrgan"),
   cancelAssetJob: (id: string) =>
     request<{ job_id: string; status: string; cancel_requested: boolean }>(
       `/admin/asset-jobs/${encodeURIComponent(id)}/cancel`,
