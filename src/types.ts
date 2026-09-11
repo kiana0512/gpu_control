@@ -28,6 +28,8 @@ export interface NodeInfo {
     last_success_at: string | null;
     worker_status: string | null;
     worker_last_heartbeat_at: string | null;
+    heartbeat_timeout_seconds?: number;
+    probe_max_age_seconds?: number;
     heartbeat_fresh: boolean;
     probe_fresh: boolean;
     eligibility_reason: string;

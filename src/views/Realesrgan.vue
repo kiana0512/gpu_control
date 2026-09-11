@@ -4,9 +4,13 @@ import { ElMessage } from "element-plus";
 import { api } from "../api";
 import { useAutoRefresh } from "../composables/useAutoRefresh";
 
+import { compareNodes } from "../nodePresentation";
+
 type Status = Awaited<ReturnType<typeof api.realesrgan>>;
 const status = ref<Status | null>(null);
 const error = ref("");
+const orderedNodes = computed(() => [...(status.value?.nodes ?? [])].sort(compareNodes));
+const allReady = computed(() => orderedNodes.value.length > 0 && readyNodes.value.length === orderedNodes.value.length);
 const origin = window.location.origin;
 const enhanceUrl = computed(
   () => `${origin}${status.value?.api.enhance ?? "/api/v1/realesrgan/enhance?strength=0.7"}`,
@@ -47,7 +51,7 @@ async function load() {
 }
 
 async function copy(value: string) {
-  await navigator.clipboard.writeText(value);
+  await window.navigator.clipboard.writeText(value);
   ElMessage.success("已复制");
 }
 
@@ -71,7 +75,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
     <div class="page-heading">
       <div>
         <h1>Real-ESRGAN AI 高清化</h1>
-        <p>4090 统一排队与调度 · 四节点单并发 · RGBA / Alpha 原样保留</p>
+        <p>4090 统一排队与调度 · 每节点独立槽位 · RGBA / Alpha 原样保留</p>
       </div>
       <div class="heading-actions">
         <span class="refresh-state"
@@ -93,8 +97,8 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 
     <section class="summary-grid">
       <article>
-        <small>集群状态</small><strong :class="readyNodes.length === 4 ? 'ok' : 'bad'">
-          {{ readyNodes.length === 4 ? "四节点就绪" : `${readyNodes.length} / 4 就绪` }}
+        <small>集群状态</small><strong :class="allReady ? 'ok' : 'bad'">
+          {{ orderedNodes.length ? `${readyNodes.length} / ${orderedNodes.length} 节点就绪` : "等待节点接入" }}
         </strong><span>禁止 CPU 回退</span>
       </article>
       <article>
@@ -113,11 +117,11 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 
     <section class="panel">
       <header>
-        <div><h2>四台 GPU Worker</h2><p>每次请求结束释放中间张量并清理 CUDA 缓存。</p></div>
+        <div><h2>GPU Worker · {{ orderedNodes.length }} 台</h2><p>每次请求结束释放中间张量并清理 CUDA 缓存。</p></div>
         <code>{{ status?.image_version ?? "realesrgan-worker-1.0.0" }}</code>
       </header>
       <div class="node-grid">
-        <article v-for="node in status?.nodes ?? []" :key="node.id" :class="{ offline: !node.ready }">
+        <article v-for="node in orderedNodes" :key="node.id" :class="{ offline: !node.ready }">
           <div class="node-title">
             <span class="health-dot" :class="node.ready ? 'online' : 'offline'"></span>
             <span><strong>{{ node.name }}</strong><small>{{ node.id }}</small></span>

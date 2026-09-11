@@ -13,6 +13,8 @@ import NodeTable from "../components/NodeTable.vue";
 import { useSystemStore } from "../stores/system";
 import { useAutoRefresh } from "../composables/useAutoRefresh";
 
+import { compareNodes } from "../nodePresentation";
+
 const store = useSystemStore();
 const router = useRouter();
 const assetOverview = ref<AssetProcessingOverview | null>(null);
@@ -53,23 +55,7 @@ const metrics = computed(() => [
     hint: "当前队列最长等待",
   },
 ]);
-const connectedNodes = computed(() => {
-  const order = [
-    "control-4090",
-    "worker-3090-a",
-    "worker-3090-b",
-    "worker-4070ti-animation-host-01",
-  ];
-  return [...store.nodes].sort((left, right) => {
-    const leftIndex = order.indexOf(left.id);
-    const rightIndex = order.indexOf(right.id);
-    return (
-      (leftIndex === -1 ? order.length : leftIndex) -
-        (rightIndex === -1 ? order.length : rightIndex) ||
-      left.display_name.localeCompare(right.display_name, "zh-CN")
-    );
-  });
-});
+const connectedNodes = computed(() => [...store.nodes].sort(compareNodes));
 const assetActive = computed(() => {
   const counts = assetOverview.value?.summary.counts ?? {};
   return (counts.QUEUED ?? 0) + (counts.CLAIMED ?? 0) + (counts.RUNNING ?? 0);
@@ -99,7 +85,7 @@ const clusterHeadline = computed(() => {
   if (!connectedNodes.value.length) return "等待 GPU 节点心跳";
   if (!activeGpuNodes.value.length) return "节点在线，但当前没有接单槽位";
   if (activeGpuNodes.value.length < connectedNodes.value.length)
-    return "GPU 集群正在降级接单";
+    return `${activeGpuNodes.value.length} / ${connectedNodes.value.length} 节点参与接单`;
   return "GPU 集群运行正常";
 });
 const queueClearText = computed(() => {

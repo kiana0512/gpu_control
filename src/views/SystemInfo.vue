@@ -198,7 +198,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
         </div>
       </div>
       <router-link class="inline-link" to="/realesrgan"
-        >查看四节点状态和完整调用方法 →</router-link
+        >查看节点状态和完整调用方法 →</router-link
       >
       <router-link class="inline-link" to="/clients"
         >查看完整调用方法 →</router-link

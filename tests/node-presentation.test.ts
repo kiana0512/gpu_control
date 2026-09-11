@@ -35,3 +35,42 @@ describe("GPU node telemetry presentation", () => {
     expect(formatGpuTemperature(node({ health: "OFFLINE" }))).toBe("—");
   });
 });
+
+it("naturally orders dynamically registered nodes without a fixed worker list", async () => {
+  const { compareNodes } = await import("../src/nodePresentation");
+  const nodes = [
+    "worker-6000-10",
+    "worker-5070ti-01",
+    "control-4090",
+    "worker-6000-2",
+  ].map((id) => ({ id }));
+  expect(nodes.sort(compareNodes).map((node) => node.id)).toEqual([
+    "control-4090",
+    "worker-5070ti-01",
+    "worker-6000-2",
+    "worker-6000-10",
+  ]);
+});
+
+it("shows registered validation profiles without making an admission decision", async () => {
+  const { validatedVramSummary } = await import("../src/nodePresentation");
+  const item = {
+    id: "worker-new",
+    labels: {
+      validated_vram_profiles: {
+        modelview: {
+          status: "PASSED",
+          node_id: "worker-new",
+          version: "1.0",
+          min_vram_mb: 16000,
+        },
+      },
+    },
+  } as Pick<NodeInfo, "id" | "labels">;
+  expect(validatedVramSummary(item)).toContain(
+    "专项验收 1 个工作流版本 / 16 GB",
+  );
+  expect(validatedVramSummary(item)).toContain("以后端兼容性校验为准");
+  item.id = "other-node";
+  expect(validatedVramSummary(item)).toBeNull();
+});
