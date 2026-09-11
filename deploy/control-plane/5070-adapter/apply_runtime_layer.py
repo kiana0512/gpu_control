@@ -6,6 +6,7 @@ import hashlib
 import importlib.metadata
 import json
 import os
+import shutil
 from pathlib import Path
 
 BASE_SETTINGS_SHA256 = "f319d60c07f0966ab049c8229782ae9203fdaa385aebffd80441145457aa85f9"
@@ -30,7 +31,9 @@ def main() -> None:
     if metadata.count("\nVersion: 1.5.23\n") != 1:
         raise SystemExit("base package METADATA version is ambiguous")
     settings.write_bytes(Path("/tmp/5070-settings.py").read_bytes())  # noqa: S108 - build-only COPY
-    before.rename(after)
+    # OverlayFS cannot rename directories inherited from a lower image layer.
+    shutil.copytree(before, after)
+    shutil.rmtree(before)
     (after / "METADATA").write_text(
         metadata.replace("\nVersion: 1.5.23\n", f"\nVersion: {VERSION}\n")
     )
