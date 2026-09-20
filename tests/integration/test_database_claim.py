@@ -376,12 +376,8 @@ async def test_health_probe_merges_concurrent_substance_interlocks(
             assert node.labels["concurrent_marker"] == "preserve-me"
             assert node.labels[SUBSTANCE_DRAIN_OWNER_LABEL] == SUBSTANCE_DRAIN_OWNER
             assert node.labels[SUBSTANCE_FENCE_LABEL] == ["running-bake"]
-            assert node.labels[SUBSTANCE_RECOVERY_REQUIRED_LABEL][0]["job_id"] == (
-                "ambiguous-bake"
-            )
-            assert node.labels[SUBSTANCE_PENDING_RESERVATION_LABEL]["job_ids"] == [
-                "queued-bake"
-            ]
+            assert node.labels[SUBSTANCE_RECOVERY_REQUIRED_LABEL][0]["job_id"] == ("ambiguous-bake")
+            assert node.labels[SUBSTANCE_PENDING_RESERVATION_LABEL]["job_ids"] == ["queued-bake"]
             assert node.labels["comfy_class_types"] == ["SaveImage"]
             assert node.health == "ONLINE"
             heartbeat = node.last_heartbeat_at
@@ -578,12 +574,8 @@ async def test_completion_merges_labels_committed_after_node_snapshot(
             assert node.labels["concurrent_marker"] == "preserve-me"
             assert node.labels[SUBSTANCE_DRAIN_OWNER_LABEL] == SUBSTANCE_DRAIN_OWNER
             assert node.labels[SUBSTANCE_FENCE_LABEL] == ["running-bake"]
-            assert node.labels[SUBSTANCE_PENDING_RESERVATION_LABEL]["job_ids"] == [
-                "queued-bake"
-            ]
-            assert node.labels[SUBSTANCE_RECOVERY_REQUIRED_LABEL][0]["job_id"] == (
-                "ambiguous-bake"
-            )
+            assert node.labels[SUBSTANCE_PENDING_RESERVATION_LABEL]["job_ids"] == ["queued-bake"]
+            assert node.labels[SUBSTANCE_RECOVERY_REQUIRED_LABEL][0]["job_id"] == ("ambiguous-bake")
             assert node.labels["warm_workflow"] == "fake"
             assert "warm_workflow_at" in node.labels
     finally:
@@ -660,11 +652,14 @@ async def test_callback_unknown_delivery_reuses_attempt_and_idempotency_key(
             assert callback is not None
             assert callback.status == "DELIVERING"
             assert callback.next_attempt_at is not None
-            assert await session.scalar(
-                select(func.count(CallbackAttempt.id)).where(
-                    CallbackAttempt.callback_id == callback_id
+            assert (
+                await session.scalar(
+                    select(func.count(CallbackAttempt.id)).where(
+                        CallbackAttempt.callback_id == callback_id
+                    )
                 )
-            ) == 0
+                == 0
+            )
 
         # An unexpired ambiguous lease is not eligible for a concurrent replay.
         assert await scheduler.dispatch_one_callback() is False
@@ -686,9 +681,7 @@ async def test_callback_unknown_delivery_reuses_attempt_and_idempotency_key(
             attempts = list(
                 (
                     await session.scalars(
-                        select(CallbackAttempt).where(
-                            CallbackAttempt.callback_id == callback_id
-                        )
+                        select(CallbackAttempt).where(CallbackAttempt.callback_id == callback_id)
                     )
                 ).all()
             )
@@ -760,11 +753,14 @@ async def test_callback_takeover_keeps_live_lease_and_ignores_late_result(
             callback = await session.get(JobCallback, callback_id)
             assert callback is not None
             assert callback.status == "DELIVERING"
-            assert await session.scalar(
-                select(func.count(CallbackAttempt.id)).where(
-                    CallbackAttempt.callback_id == callback_id
+            assert (
+                await session.scalar(
+                    select(func.count(CallbackAttempt.id)).where(
+                        CallbackAttempt.callback_id == callback_id
+                    )
                 )
-            ) == 0
+                == 0
+            )
 
         assert await scheduler.finalize_callback_delivery(
             callback_id=callback_id,
@@ -777,9 +773,7 @@ async def test_callback_takeover_keeps_live_lease_and_ignores_late_result(
         async with database.session() as session:
             callback = await session.get(JobCallback, callback_id)
             attempt = await session.scalar(
-                select(CallbackAttempt).where(
-                    CallbackAttempt.callback_id == callback_id
-                )
+                select(CallbackAttempt).where(CallbackAttempt.callback_id == callback_id)
             )
             assert callback is not None and attempt is not None
             assert callback.status == "SUCCEEDED"
@@ -1097,9 +1091,7 @@ async def test_scheduler_skips_incompatible_node_and_claims_on_compatible_fallba
         async with scheduler.db.session() as session:
             claimed = list(
                 (
-                    await session.scalars(
-                        select(Job).where(Job.status == JobStatus.CLAIMED.value)
-                    )
+                    await session.scalars(select(Job).where(Job.status == JobStatus.CLAIMED.value))
                 ).all()
             )
             assert len(claimed) == 1
@@ -1165,9 +1157,7 @@ async def seed_modelview_cloud_lanes(
                     pool="PRIMARY",
                     mode="ACTIVE",
                     health="ONLINE",
-                    labels={
-                        "workflow_allowlist": [MODELVIEW_INPAINT_WORKFLOW_KEY]
-                    },
+                    labels={"workflow_allowlist": [MODELVIEW_INPAINT_WORKFLOW_KEY]},
                     max_concurrency=1,
                     current_jobs=0,
                     free_vram_mb=free_vram_mb,
@@ -1396,9 +1386,10 @@ async def test_batch_materialization_fails_closed_on_identity_drift(tmp_path: Pa
             assert batch is not None
             assert batch.status == BatchStatus.FAILED.value
             assert batch.error_code == "WORKFLOW_IDENTITY_DRIFT"
-            assert await session.scalar(
-                select(func.count(Job.id)).where(Job.batch_id == batch_id)
-            ) == 0
+            assert (
+                await session.scalar(select(func.count(Job.id)).where(Job.batch_id == batch_id))
+                == 0
+            )
     finally:
         await scheduler.redis.aclose()
         await scheduler.db.close()
@@ -1417,9 +1408,7 @@ async def test_production_jobs_precede_test_jobs_and_tests_use_idle_capacity(
         production_jobs = list(
             (await session.scalars(select(Job).where(Job.tenant_id == "tenant-a"))).all()
         )
-        test_job = await session.scalar(
-            select(Job).where(Job.tenant_id == "tenant-b")
-        )
+        test_job = await session.scalar(select(Job).where(Job.tenant_id == "tenant-b"))
         assert test_job is not None
         # Make the test job much older; production isolation must still win.
         test_job.created_at = datetime(2020, 1, 1, tzinfo=UTC)
@@ -1526,9 +1515,7 @@ async def test_retry_reuses_durable_lease_with_fresh_token(tmp_path: Path) -> No
         job.status = JobStatus.QUEUED.value
         job.node_id = None
         job.prompt_id = None
-        for other in (
-            await session.scalars(select(Job).where(Job.id != job_id))
-        ).all():
+        for other in (await session.scalars(select(Job).where(Job.id != job_id))).all():
             other.status = JobStatus.CANCELLED.value
         await session.commit()
 
@@ -1557,9 +1544,10 @@ async def test_retry_reuses_durable_lease_with_fresh_token(tmp_path: Path) -> No
         ]
         assert attempts[0].finished_at is not None
         assert attempts[0].error == {"code": "TEST_FAILURE"}
-        assert await session.scalar(
-            select(func.count(NodeLease.id)).where(NodeLease.job_id == job_id)
-        ) == 1
+        assert (
+            await session.scalar(select(func.count(NodeLease.id)).where(NodeLease.job_id == job_id))
+            == 1
+        )
     await database.close()
 
 
@@ -1580,9 +1568,7 @@ async def test_prompt_submission_intent_is_durable_and_counted_once(tmp_path: Pa
 
     async with database.session() as session:
         job = await session.get(Job, claimed[0].id)
-        attempt = await session.scalar(
-            select(JobAttempt).where(JobAttempt.job_id == claimed[0].id)
-        )
+        attempt = await session.scalar(select(JobAttempt).where(JobAttempt.job_id == claimed[0].id))
         assert job is not None and attempt is not None
         assert job.submission_client_id == expected
         assert job.submission_intent_at is not None and first_intent_at is not None
@@ -1613,9 +1599,7 @@ async def test_recovered_completion_does_not_fabricate_gpu_start_time(
         await session.commit()
 
     async with database.session() as session:
-        attempt = await session.scalar(
-            select(JobAttempt).where(JobAttempt.job_id == claimed[0].id)
-        )
+        attempt = await session.scalar(select(JobAttempt).where(JobAttempt.job_id == claimed[0].id))
         assert attempt is not None
         assert attempt.gpu_started_at is None
         assert attempt.gpu_finished_at is not None
@@ -1661,9 +1645,12 @@ async def test_scheduler_restart_routes_submit_intent_to_reconciliation(
             assert durable_job.status == JobStatus.CLAIMED.value
             assert durable_job.attempt_count == 1
             assert durable_job.submission_intent_at is not None
-            assert await session.scalar(
-                select(func.count(JobAttempt.id)).where(JobAttempt.job_id == job_id)
-            ) == 1
+            assert (
+                await session.scalar(
+                    select(func.count(JobAttempt.id)).where(JobAttempt.job_id == job_id)
+                )
+                == 1
+            )
     finally:
         await restarted.redis.aclose()
         await restarted.db.close()
@@ -1708,9 +1695,7 @@ async def test_post_accepted_then_persistence_crash_never_requeues_or_resubmits(
         raise RuntimeError("injected crash before prompt_id commit")
 
     monkeypatch.setattr(scheduler_main, "ComfyClient", fake_comfy_client)
-    monkeypatch.setattr(
-        scheduler_main, "persist_prompt_id", crash_before_prompt_id_commit
-    )
+    monkeypatch.setattr(scheduler_main, "persist_prompt_id", crash_before_prompt_id_commit)
     scheduler = Scheduler(
         Settings(
             database_url=f"sqlite+aiosqlite:///{path.as_posix()}",
@@ -1762,9 +1747,7 @@ async def test_cancelled_batch_requires_locked_valid_cancel_audit(tmp_path: Path
     await seed(database)
     now = datetime.now(UTC)
 
-    async def add_terminal_cancel(
-        batch_id: str, *, with_operation: bool
-    ) -> None:
+    async def add_terminal_cancel(batch_id: str, *, with_operation: bool) -> None:
         async with database.session() as session:
             session.add(
                 JobBatch(
@@ -1978,8 +1961,7 @@ async def test_cancel_committed_after_upload_prevents_prompt_submission(
             subfolder: str,
         ) -> list[dict[str, object]]:
             return [
-                await self.upload(path, mask=mask, subfolder=subfolder)
-                for path, mask in inputs
+                await self.upload(path, mask=mask, subfolder=subfolder) for path, mask in inputs
             ]
 
         async def submit(self, _: dict[str, object], __: str) -> str:
@@ -2009,12 +1991,8 @@ async def test_cancel_committed_after_upload_prevents_prompt_submission(
         assert submit_calls == 0
         async with scheduler.db.session() as session:
             job = await session.get(Job, job_id)
-            attempt = await session.scalar(
-                select(JobAttempt).where(JobAttempt.job_id == job_id)
-            )
-            lease = await session.scalar(
-                select(NodeLease).where(NodeLease.job_id == job_id)
-            )
+            attempt = await session.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+            lease = await session.scalar(select(NodeLease).where(NodeLease.job_id == job_id))
             node = await session.get(Node, "3090-a")
             assert job is not None and attempt is not None and lease is not None
             assert node is not None
@@ -2104,12 +2082,8 @@ async def test_cancel_during_submission_recovery_interrupts_before_terminal_canc
         assert cancel_calls == ["scheduler.cancelled_after_submission_recovery"]
         async with scheduler.db.session() as session:
             job = await session.get(Job, job_id)
-            attempt = await session.scalar(
-                select(JobAttempt).where(JobAttempt.job_id == job_id)
-            )
-            lease = await session.scalar(
-                select(NodeLease).where(NodeLease.job_id == job_id)
-            )
+            attempt = await session.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+            lease = await session.scalar(select(NodeLease).where(NodeLease.job_id == job_id))
             node = await session.get(Node, "3090-a")
             forbidden_events = await session.scalar(
                 select(func.count(JobEvent.id)).where(
@@ -2227,12 +2201,8 @@ async def test_cancel_committed_during_download_prevents_artifact_publish(
         assert list((job_root / "output").glob("000-*")) == []
         async with scheduler.db.session() as session:
             job = await session.get(Job, job_id)
-            attempt = await session.scalar(
-                select(JobAttempt).where(JobAttempt.job_id == job_id)
-            )
-            lease = await session.scalar(
-                select(NodeLease).where(NodeLease.job_id == job_id)
-            )
+            attempt = await session.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+            lease = await session.scalar(select(NodeLease).where(NodeLease.job_id == job_id))
             node = await session.get(Node, "3090-a")
             artifact_count = await session.scalar(
                 select(func.count(JobArtifact.id)).where(JobArtifact.job_id == job_id)
@@ -2335,12 +2305,8 @@ async def test_late_start_and_progress_events_cannot_revive_cancelled_job(
         await scheduler.execute(job_id)
         async with scheduler.db.session() as session:
             job = await session.get(Job, job_id)
-            attempt = await session.scalar(
-                select(JobAttempt).where(JobAttempt.job_id == job_id)
-            )
-            lease = await session.scalar(
-                select(NodeLease).where(NodeLease.job_id == job_id)
-            )
+            attempt = await session.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+            lease = await session.scalar(select(NodeLease).where(NodeLease.job_id == job_id))
             node = await session.get(Node, "3090-a")
             running_events = await session.scalar(
                 select(func.count(JobEvent.id)).where(
@@ -2419,12 +2385,8 @@ async def test_timeout_watchdog_preserves_authenticated_cancellation(
         assert published == [{"event": "job.cancelled", "job_id": job_id}]
         async with scheduler.db.session() as session:
             job = await session.get(Job, job_id)
-            attempt = await session.scalar(
-                select(JobAttempt).where(JobAttempt.job_id == job_id)
-            )
-            lease = await session.scalar(
-                select(NodeLease).where(NodeLease.job_id == job_id)
-            )
+            attempt = await session.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+            lease = await session.scalar(select(NodeLease).where(NodeLease.job_id == job_id))
             node = await session.get(Node, "3090-a")
             timed_out_events = await session.scalar(
                 select(func.count(JobEvent.id)).where(
@@ -2535,9 +2497,7 @@ async def test_autodl_disconnect_keeps_lease_until_workflow_timeout(
         async with scheduler.db.session() as session:
             active_job = await session.get(Job, job_id)
             active_node = await session.get(Node, "3090-a")
-            active_lease = await session.scalar(
-                select(NodeLease).where(NodeLease.job_id == job_id)
-            )
+            active_lease = await session.scalar(select(NodeLease).where(NodeLease.job_id == job_id))
             assert active_job is not None and active_node is not None and active_lease is not None
             assert active_job.status == JobStatus.SUBMITTED.value
             assert active_node.current_jobs == 1
@@ -2597,12 +2557,8 @@ async def test_executor_error_racing_with_cancel_does_not_retry_or_fail(
         await scheduler.fail_job(job_id, "COMFY_CONNECT_ERROR", "connection dropped")
         async with scheduler.db.session() as session:
             job = await session.get(Job, job_id)
-            attempt = await session.scalar(
-                select(JobAttempt).where(JobAttempt.job_id == job_id)
-            )
-            lease = await session.scalar(
-                select(NodeLease).where(NodeLease.job_id == job_id)
-            )
+            attempt = await session.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+            lease = await session.scalar(select(NodeLease).where(NodeLease.job_id == job_id))
             node = await session.get(Node, "3090-a")
             assert job is not None and attempt is not None and lease is not None
             assert node is not None
@@ -2621,9 +2577,7 @@ async def test_executor_error_racing_with_cancel_does_not_retry_or_fail(
             terminal.error_code = None
             terminal.error_message = None
             await session.commit()
-        await scheduler.fail_job(
-            terminal_id, "LATE_TRANSPORT_ERROR", "must not rewrite success"
-        )
+        await scheduler.fail_job(terminal_id, "LATE_TRANSPORT_ERROR", "must not rewrite success")
         async with scheduler.db.session() as session:
             terminal = await session.get(Job, terminal_id)
             assert terminal is not None
@@ -2666,9 +2620,7 @@ async def test_execution_interrupted_finishes_gpu_timing_and_durable_cancel(
         ) -> AsyncIterator[dict[str, object]]:
             assert candidate_prompt_id == prompt_id
             async with database.session() as cancellation_session:
-                cancelling = await cancellation_session.get(
-                    Job, job_id, with_for_update=True
-                )
+                cancelling = await cancellation_session.get(Job, job_id, with_for_update=True)
                 assert cancelling is not None
                 cancelling.cancel_requested = True
                 cancelling.status = JobStatus.CANCELLING.value
@@ -2698,12 +2650,8 @@ async def test_execution_interrupted_finishes_gpu_timing_and_durable_cancel(
         await scheduler.execute(job_id)
         async with scheduler.db.session() as session:
             job = await session.get(Job, job_id)
-            attempt = await session.scalar(
-                select(JobAttempt).where(JobAttempt.job_id == job_id)
-            )
-            lease = await session.scalar(
-                select(NodeLease).where(NodeLease.job_id == job_id)
-            )
+            attempt = await session.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+            lease = await session.scalar(select(NodeLease).where(NodeLease.job_id == job_id))
             node = await session.get(Node, "3090-a")
             assert job is not None and attempt is not None and lease is not None
             assert node is not None
@@ -2838,6 +2786,104 @@ async def test_terminal_history_fetch_overlaps_gpu_finished_commit(
     finally:
         release_history.set()
         await asyncio.gather(execution, return_exceptions=True)
+        await scheduler.redis.aclose()
+        await scheduler.db.close()
+        await database.close()
+
+
+async def test_terminal_executed_output_skips_redundant_history_round_trip(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "terminal-executed-output.db"
+    database = await make_database(path)
+    await seed(database)
+    prompt_id = "terminal-executed-prompt"
+    job_root = tmp_path / "terminal-executed-job"
+    for directory in ("comfy", "output"):
+        (job_root / directory).mkdir(parents=True, exist_ok=True)
+    async with database.session() as session:
+        async with session.begin():
+            claimed = await claim_next_job(session, "3090-a", 300)
+        assert claimed is not None
+        job_id = claimed[0].id
+        job = await session.get(Job, job_id, with_for_update=True)
+        assert job is not None
+        await prepare_prompt_submission(session, job)
+        await persist_prompt_id(session, job, prompt_id)
+        job.status = JobStatus.RUNNING.value
+        job.job_dir = str(job_root)
+        await session.commit()
+
+    history_calls = 0
+
+    class TerminalClient:
+        def __init__(self, _: str) -> None:
+            pass
+
+        async def events(
+            self, candidate_prompt_id: str, _: str
+        ) -> AsyncIterator[dict[str, object]]:
+            assert candidate_prompt_id == prompt_id
+            yield {
+                "type": "executed",
+                "data": {
+                    "prompt_id": candidate_prompt_id,
+                    "node": "9",
+                    "output": {
+                        "images": [
+                            {
+                                "filename": "result.png",
+                                "subfolder": "",
+                                "type": "output",
+                            }
+                        ]
+                    },
+                },
+            }
+            yield {
+                "type": "execution_success",
+                "data": {"prompt_id": candidate_prompt_id},
+            }
+
+        async def history(self, _: str) -> dict[str, object]:
+            nonlocal history_calls
+            history_calls += 1
+            raise AssertionError("complete executed metadata must skip history")
+
+        outputs = staticmethod(ComfyClient.outputs)
+
+        @staticmethod
+        async def download(_: ComfyOutput, destination: Path) -> tuple[int, str]:
+            payload = b"terminal-executed-output"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(payload)
+            return len(payload), hashlib.sha256(payload).hexdigest()
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(scheduler_main, "ComfyClient", TerminalClient)
+    scheduler = Scheduler(
+        Settings(
+            database_url=f"sqlite+aiosqlite:///{path.as_posix()}",
+            job_root=tmp_path / "jobs",
+        )
+    )
+
+    async def no_publish(_: dict[str, object]) -> None:
+        return None
+
+    scheduler.publish = no_publish  # type: ignore[method-assign]
+    try:
+        await asyncio.wait_for(scheduler.execute(job_id), timeout=2)
+
+        async with scheduler.db.session() as session:
+            completed = await session.get(Job, job_id)
+            assert completed is not None
+            assert completed.status == JobStatus.SUCCEEDED.value
+        assert history_calls == 0
+    finally:
         await scheduler.redis.aclose()
         await scheduler.db.close()
         await database.close()

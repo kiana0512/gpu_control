@@ -136,6 +136,7 @@ CALLBACK_FAILURES = Counter(
     "gpu_control_callback_failures_total", "Callback deliveries that exhausted retries"
 )
 NODE_TELEMETRY_GRACE = timedelta(minutes=3)
+AUTODL_BUSY_PROBE_DEFER = timedelta(seconds=15)
 
 
 def node_has_recent_telemetry(node: Node, now: datetime) -> bool:
@@ -151,6 +152,69 @@ def node_has_recent_telemetry(node: Node, now: datetime) -> bool:
     )
     current = now if now.tzinfo else now.replace(tzinfo=UTC)
     return current - observed_at <= NODE_TELEMETRY_GRACE
+
+
+def defer_busy_autodl_probe(node: Node, now: datetime) -> bool:
+    """Keep health traffic off the shared AutoDL SSH transport during hot work.
+
+    AutoDL Comfy traffic, health probes, input uploads and output downloads all
+    share one verified SSH transport. A full ``system_stats``/``queue`` probe
+    during a short interactive job can therefore contend with the final PNG
+    transfer. The running prompt and its WebSocket are already stronger live
+    evidence than an additional probe, so defer only while the node is busy
+    and its last independent heartbeat is still very recent. The 15-second
+    ceiling is below the normal heartbeat timeout and therefore cannot hide a
+    stuck executor indefinitely.
+    """
+
+    if (node.labels or {}).get("provider") != "autodl" or node.current_jobs < 1:
+        return False
+    observed_at = node.last_heartbeat_at
+    if observed_at is None:
+        return False
+    observed_at = (
+        observed_at.replace(tzinfo=UTC)
+        if observed_at.tzinfo is None
+        else observed_at.astimezone(UTC)
+    )
+    current = now if now.tzinfo else now.replace(tzinfo=UTC)
+    age = current - observed_at
+    return timedelta(0) <= age <= AUTODL_BUSY_PROBE_DEFER
+
+
+def terminal_history_from_executed_outputs(
+    prompt_id: str,
+    output_nodes: set[str],
+    executed_outputs: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Build success history from Comfy's authoritative WebSocket outputs.
+
+    Comfy emits an ``executed`` event containing the final output metadata
+    immediately before ``execution_success``. When every approved output node
+    is present, that event is sufficient to start the verified download and an
+    extra WAN ``GET /history`` only adds tail latency. Any missing or malformed
+    output remains on the existing history fallback path.
+    """
+
+    required = {str(node_id) for node_id in output_nodes}
+    if not prompt_id or not required or not required.issubset(executed_outputs):
+        return None
+    outputs: dict[str, dict[str, Any]] = {}
+    for node_id in required:
+        output = executed_outputs.get(node_id)
+        if not isinstance(output, dict):
+            return None
+        for media_key in ("images", "gifs", "audio"):
+            items = output.get(media_key)
+            if items is not None and not isinstance(items, list):
+                return None
+        outputs[node_id] = output
+    return {
+        prompt_id: {
+            "status": {"status_str": "success", "completed": True, "messages": []},
+            "outputs": outputs,
+        }
+    }
 
 
 def uses_comfy_mask_upload_endpoint(workflow_key: str, filename: str) -> bool:
@@ -196,9 +260,7 @@ def autodl_runtime_gpu_identity(
     # ``cuda:0 <vendor model> : cudaMallocAsync``. Those transport/allocator
     # details are not hardware identity and make the control-plane label noisy.
     gpu_model = re.sub(r"^cuda:\d+\s+", "", gpu_model, flags=re.IGNORECASE)
-    gpu_model = re.sub(
-        r"\s+:\s+(?:cudaMallocAsync|native)$", "", gpu_model, flags=re.IGNORECASE
-    )
+    gpu_model = re.sub(r"\s+:\s+(?:cudaMallocAsync|native)$", "", gpu_model, flags=re.IGNORECASE)
     if not gpu_model:
         return None
     gpu_model = gpu_model[:96]
@@ -338,15 +400,9 @@ def wsl_system_state_snapshot(
         "load_1m_per_cpu": required_number("load_1m_per_cpu", 0, 10**5),
         "memory_available_ratio": required_number("memory_available_ratio", 0, 1),
         "swap_used_ratio": optional_number("swap_used_ratio", 0, 1),
-        "cpu_pressure_some_avg10": optional_number(
-            "cpu_pressure_some_avg10", 0, 100
-        ),
-        "memory_pressure_some_avg10": optional_number(
-            "memory_pressure_some_avg10", 0, 100
-        ),
-        "memory_pressure_full_avg10": optional_number(
-            "memory_pressure_full_avg10", 0, 100
-        ),
+        "cpu_pressure_some_avg10": optional_number("cpu_pressure_some_avg10", 0, 100),
+        "memory_pressure_some_avg10": optional_number("memory_pressure_some_avg10", 0, 100),
+        "memory_pressure_full_avg10": optional_number("memory_pressure_full_avg10", 0, 100),
         "io_pressure_some_avg10": optional_number("io_pressure_some_avg10", 0, 100),
         "io_pressure_full_avg10": optional_number("io_pressure_full_avg10", 0, 100),
     }
@@ -372,12 +428,12 @@ def wsl_imageclip_performance_snapshot(
 
     candidates: list[tuple[datetime, int, int, list[float], list[float]]] = []
     for (width, height), by_node in grouped.items():
-        target = sorted(
-            by_node.get(WSL_PERFORMANCE_TARGET_NODE_ID, []), reverse=True
-        )[:WSL_PERFORMANCE_RECENT_SAMPLES]
-        reference = sorted(
-            by_node.get(WSL_PERFORMANCE_REFERENCE_NODE_ID, []), reverse=True
-        )[:WSL_PERFORMANCE_RECENT_SAMPLES]
+        target = sorted(by_node.get(WSL_PERFORMANCE_TARGET_NODE_ID, []), reverse=True)[
+            :WSL_PERFORMANCE_RECENT_SAMPLES
+        ]
+        reference = sorted(by_node.get(WSL_PERFORMANCE_REFERENCE_NODE_ID, []), reverse=True)[
+            :WSL_PERFORMANCE_RECENT_SAMPLES
+        ]
         if (
             len(target) < WSL_PERFORMANCE_MIN_SAMPLES
             or len(reference) < WSL_PERFORMANCE_MIN_SAMPLES
@@ -486,16 +542,10 @@ def prompt_submission_was_rejected(error: ComfyError) -> bool:
     """
 
     status = error.details.get("status")
-    return (
-        error.code == "COMFY_HTTP_ERROR"
-        and type(status) is int
-        and 400 <= status < 500
-    )
+    return error.code == "COMFY_HTTP_ERROR" and type(status) is int and 400 <= status < 500
 
 
-async def current_job_attempt(
-    session: AsyncSession, job: Job, *, lock: bool = False
-) -> JobAttempt:
+async def current_job_attempt(session: AsyncSession, job: Job, *, lock: bool = False) -> JobAttempt:
     query = select(JobAttempt).where(
         JobAttempt.job_id == job.id,
         JobAttempt.attempt == job.attempt_count,
@@ -556,9 +606,7 @@ async def mark_gpu_finished(session: AsyncSession, job: Job) -> None:
         attempt.gpu_finished_at = now
 
 
-async def fail_closed_prompt_submission(
-    session: AsyncSession, job: Job, error: ComfyError
-) -> None:
+async def fail_closed_prompt_submission(session: AsyncSession, job: Job, error: ComfyError) -> None:
     job.error_code = error.code
     job.error_message = str(error)[:1000]
     if JobStatus(job.status) not in TERMINAL_JOB_STATUSES:
@@ -790,9 +838,7 @@ class Scheduler:
         self.gpu_metrics_retry_at: dict[str, float] = {}
         self.wsl_system_metrics_retry_at: dict[str, float] = {}
         self.wsl_system_metrics_checked_at: dict[str, float] = {}
-        self.wsl_system_metrics_cache: dict[
-            str, dict[str, str | int | float | None]
-        ] = {}
+        self.wsl_system_metrics_cache: dict[str, dict[str, str | int | float | None]] = {}
         self.wsl_boot_ids: dict[str, str] = {}
         self.wsl_performance_checked_at = 0.0
 
@@ -889,9 +935,7 @@ class Scheduler:
     ) -> None:
         async with self.db.session() as session:
             await self.assert_scheduler_epoch(session)
-            node = await session.scalar(
-                select(Node).where(Node.id == node_id).with_for_update()
-            )
+            node = await session.scalar(select(Node).where(Node.id == node_id).with_for_update())
             if node is not None:
                 labels = dict(node.labels or {})
                 labels.pop("warm_workflow", None)
@@ -985,10 +1029,7 @@ class Scheduler:
 
     async def update_wsl_performance_probe(self) -> None:
         now_monotonic = asyncio.get_running_loop().time()
-        if (
-            now_monotonic - self.wsl_performance_checked_at
-            < WSL_PERFORMANCE_PROBE_INTERVAL_SECONDS
-        ):
+        if now_monotonic - self.wsl_performance_checked_at < WSL_PERFORMANCE_PROBE_INTERVAL_SECONDS:
             return
         self.wsl_performance_checked_at = now_monotonic
         cutoff = datetime.now(UTC) - timedelta(seconds=WSL_PERFORMANCE_LOOKBACK_SECONDS)
@@ -1047,12 +1088,8 @@ class Scheduler:
         if snapshot is None:
             WSL_IMAGECLIP_SLOWDOWN.labels(**labels).set(float("nan"))
             WSL_IMAGECLIP_ANOMALY.labels(**labels).set(0)
-            WSL_IMAGECLIP_SAMPLES.labels(
-                WSL_PERFORMANCE_TARGET_NODE_ID, "target"
-            ).set(0)
-            WSL_IMAGECLIP_SAMPLES.labels(
-                WSL_PERFORMANCE_TARGET_NODE_ID, "reference"
-            ).set(0)
+            WSL_IMAGECLIP_SAMPLES.labels(WSL_PERFORMANCE_TARGET_NODE_ID, "target").set(0)
+            WSL_IMAGECLIP_SAMPLES.labels(WSL_PERFORMANCE_TARGET_NODE_ID, "reference").set(0)
             return
 
         WSL_IMAGECLIP_SLOWDOWN.labels(**labels).set(float(snapshot["slowdown_ratio"]))
@@ -1060,9 +1097,9 @@ class Scheduler:
         WSL_IMAGECLIP_SAMPLES.labels(WSL_PERFORMANCE_TARGET_NODE_ID, "target").set(
             int(snapshot["target_samples"])
         )
-        WSL_IMAGECLIP_SAMPLES.labels(
-            WSL_PERFORMANCE_TARGET_NODE_ID, "reference"
-        ).set(int(snapshot["reference_samples"]))
+        WSL_IMAGECLIP_SAMPLES.labels(WSL_PERFORMANCE_TARGET_NODE_ID, "reference").set(
+            int(snapshot["reference_samples"])
+        )
         logger().info(
             "node.wsl_performance_probe",
             node_id=WSL_PERFORMANCE_TARGET_NODE_ID,
@@ -1131,9 +1168,7 @@ class Scheduler:
             return False
         try:
             records = await asyncio.wait_for(
-                asyncio.to_thread(
-                    socket.getaddrinfo, host, 443, type=socket.SOCK_STREAM
-                ),
+                asyncio.to_thread(socket.getaddrinfo, host, 443, type=socket.SOCK_STREAM),
                 timeout=CALLBACK_DNS_TIMEOUT_SECONDS,
             )
         except (OSError, TimeoutError):
@@ -1281,9 +1316,7 @@ class Scheduler:
             # Delivery is explicitly at-least-once. Receivers must persist this
             # attempt-scoped key and return the prior result for an ambiguous
             # replay of that same attempt.
-            "Idempotency-Key": (
-                f"gpu-control-callback:{callback_id}:{attempt_number}"
-            ),
+            "Idempotency-Key": (f"gpu-control-callback:{callback_id}:{attempt_number}"),
             "X-GPU-Control-Callback-ID": callback_id,
             "X-GPU-Control-Attempt": str(attempt_number),
         }
@@ -1453,9 +1486,7 @@ class Scheduler:
                 ),
             }
         except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
-            self.gpu_metrics_retry_at[node.id] = (
-                asyncio.get_running_loop().time() + 30.0
-            )
+            self.gpu_metrics_retry_at[node.id] = asyncio.get_running_loop().time() + 30.0
             logger().warning(
                 "node.gpu_metrics_failed",
                 node_id=node.id,
@@ -1473,8 +1504,7 @@ class Scheduler:
         now_monotonic = asyncio.get_running_loop().time()
         if (
             node.id in self.wsl_system_metrics_cache
-            and now_monotonic - self.wsl_system_metrics_checked_at.get(node.id, 0.0)
-            < 10.0
+            and now_monotonic - self.wsl_system_metrics_checked_at.get(node.id, 0.0) < 10.0
         ):
             return self.wsl_system_metrics_cache[node.id]
         if now_monotonic < self.wsl_system_metrics_retry_at.get(node.id, 0.0):
@@ -1518,16 +1548,12 @@ class Scheduler:
         self.wsl_system_metrics_cache[node.id] = snapshot
         WSL_SYSTEM_PROBE_UP.labels(node.id).set(1)
         WSL_BOOT_UPTIME.labels(node.id).set(cast(float, snapshot["uptime_seconds"]))
-        WSL_MEMORY_AVAILABLE.labels(node.id).set(
-            cast(float, snapshot["memory_available_ratio"])
-        )
+        WSL_MEMORY_AVAILABLE.labels(node.id).set(cast(float, snapshot["memory_available_ratio"]))
         swap_used = snapshot["swap_used_ratio"]
         WSL_SWAP_USED.labels(node.id).set(
             float(swap_used) if swap_used is not None else float("nan")
         )
-        WSL_LOAD_PER_CPU.labels(node.id).set(
-            cast(float, snapshot["load_1m_per_cpu"])
-        )
+        WSL_LOAD_PER_CPU.labels(node.id).set(cast(float, snapshot["load_1m_per_cpu"]))
         pressure_metrics = {
             ("cpu", "some"): snapshot["cpu_pressure_some_avg10"],
             ("memory", "some"): snapshot["memory_pressure_some_avg10"],
@@ -1595,15 +1621,21 @@ class Scheduler:
                 probe_session.expunge_all()
                 await probe_session.rollback()
                 for node in nodes:
+                    if defer_busy_autodl_probe(node, datetime.now(UTC)):
+                        # The active execution WebSocket is the liveness signal
+                        # for this short window. Avoid opening competing SSH
+                        # channels while inputs or the final PNG are moving.
+                        NODE_HEALTH.labels(node.id).set(
+                            1 if node.health == NodeHealth.ONLINE.value else 0
+                        )
+                        NODE_JOBS.labels(node.id).set(node.current_jobs)
+                        continue
                     try:
                         now_monotonic = asyncio.get_running_loop().time()
-                        refresh_inventory = (
-                            now_monotonic
-                            - self.object_info_checked_at.get(node.id, 0)
-                            >= 60
-                            or not isinstance(
-                                (node.labels or {}).get("comfy_class_types"), list
-                            )
+                        refresh_inventory = now_monotonic - self.object_info_checked_at.get(
+                            node.id, 0
+                        ) >= 60 or not isinstance(
+                            (node.labels or {}).get("comfy_class_types"), list
                         )
                         async with ComfyClient(
                             node.base_url, connect_timeout=2, read_timeout=5
@@ -1673,9 +1705,7 @@ class Scheduler:
                                 labels.pop("comfy_probe_error_type", None)
                                 labels.pop("comfy_probe_failed_at", None)
                                 if gpu_metrics is not None:
-                                    current.gpu_util_percent = gpu_metrics[
-                                        "gpu_util_percent"
-                                    ]
+                                    current.gpu_util_percent = gpu_metrics["gpu_util_percent"]
                                     current.free_vram_mb = gpu_metrics["free_vram_mb"]
                                     current.total_vram_mb = gpu_metrics["total_vram_mb"]
                                     for label_key in (
@@ -1698,9 +1728,9 @@ class Scheduler:
                                     labels.pop("gpu_metrics_observed_at", None)
                                     if devices:
                                         device = devices[0]
-                                        current.free_vram_mb = int(
-                                            device.get("vram_free", 0)
-                                        ) // (1024 * 1024)
+                                        current.free_vram_mb = int(device.get("vram_free", 0)) // (
+                                            1024 * 1024
+                                        )
                                         current.total_vram_mb = int(
                                             device.get("vram_total", 0)
                                         ) // (1024 * 1024)
@@ -1721,18 +1751,16 @@ class Scheduler:
                                         )
                                     labels["gpu_model"] = gpu_model
                                     labels["gpu_model_source"] = "comfy_system_stats"
-                                    labels["gpu_model_observed_at"] = (
-                                        probe_completed_at.isoformat()
-                                    )
+                                    labels["gpu_model_observed_at"] = probe_completed_at.isoformat()
                                     current.display_name = display_name
                                 current.labels = labels
                                 if isinstance(inventory, dict):
                                     labels["comfy_class_types"] = sorted(
                                         required_classes.intersection(inventory)
                                     )
-                                    labels[
-                                        "comfy_class_inventory_checked_at"
-                                    ] = probe_completed_at.isoformat()
+                                    labels["comfy_class_inventory_checked_at"] = (
+                                        probe_completed_at.isoformat()
+                                    )
                                     current.labels = labels
                                     for version in workflow_versions:
                                         reasons = node_compatibility_reasons(
@@ -1778,9 +1806,7 @@ class Scheduler:
                             NODE_GPU_UTILIZATION.labels(node.id).set(
                                 gpu_metrics["gpu_util_percent"]
                             )
-                            NODE_GPU_FREE_VRAM.labels(node.id).set(
-                                gpu_metrics["free_vram_mb"]
-                            )
+                            NODE_GPU_FREE_VRAM.labels(node.id).set(gpu_metrics["free_vram_mb"])
                             for metric, metric_key in (
                                 (NODE_GPU_TEMPERATURE, "gpu_temperature_c"),
                                 (NODE_GPU_POWER, "gpu_power_w"),
@@ -1865,9 +1891,7 @@ class Scheduler:
                             agent_error_type=(
                                 type(agent_error).__name__ if agent_error is not None else None
                             ),
-                            comfy_error_code=(
-                                exc.code if isinstance(exc, ComfyError) else None
-                            ),
+                            comfy_error_code=(exc.code if isinstance(exc, ComfyError) else None),
                         )
             try:
                 await self.update_wsl_performance_probe()
@@ -2171,11 +2195,11 @@ class Scheduler:
                 ).all()
             )
             job_ids = [item.job_id for item in items if item.job_id]
-            jobs = list(
-                (
-                    await session.scalars(select(Job).where(Job.id.in_(job_ids)))
-                ).all()
-            ) if job_ids else []
+            jobs = (
+                list((await session.scalars(select(Job).where(Job.id.in_(job_ids)))).all())
+                if job_ids
+                else []
+            )
             jobs_by_id = {job.id: job for job in jobs}
             artifacts_by_job = await latest_output_artifacts(
                 session,
@@ -2373,14 +2397,9 @@ class Scheduler:
                 batch.failed_items,
                 batch.cancelled_items,
             )
-            if (
-                batch.progress > previous_progress
-                or progress_counts != previous_progress_counts
-            ):
+            if batch.progress > previous_progress or progress_counts != previous_progress_counts:
                 batch.last_progress_at = datetime.now(UTC)
-            terminal_count = (
-                batch.succeeded_items + batch.failed_items + batch.cancelled_items
-            )
+            terminal_count = batch.succeeded_items + batch.failed_items + batch.cancelled_items
             if (
                 terminal_count == batch.total_items
                 and batch.execution_finished_at is None
@@ -2389,16 +2408,29 @@ class Scheduler:
                 and gpu_started_attempts == gpu_finished_attempts
             ):
                 batch.execution_finished_at = last_gpu_finished
-            if terminal_count == batch.total_items and batch.failed_items and not batch.cancel_requested:
+            if (
+                terminal_count == batch.total_items
+                and batch.failed_items
+                and not batch.cancel_requested
+            ):
                 if batch.succeeded_items:
                     await transition_batch(
-                        session, batch, BatchStatus.ASSEMBLING, "batch.partial_assembling",
-                        {"succeeded_items": batch.succeeded_items, "failed_items": batch.failed_items},
+                        session,
+                        batch,
+                        BatchStatus.ASSEMBLING,
+                        "batch.partial_assembling",
+                        {
+                            "succeeded_items": batch.succeeded_items,
+                            "failed_items": batch.failed_items,
+                        },
                     )
                     await self.commit_as_leader(session)
                     return True
                 await transition_batch(
-                    session, batch, BatchStatus.FAILED, "batch.failed_after_all_items",
+                    session,
+                    batch,
+                    BatchStatus.FAILED,
+                    "batch.failed_after_all_items",
                     {"failed_items": batch.failed_items},
                 )
                 await self.commit_as_leader(session)
@@ -2421,9 +2453,7 @@ class Scheduler:
                 )
                 if not batch.cancel_requested or not valid_cancel_audit:
                     batch.error_code = "CANCEL_AUDIT_MISSING"
-                    batch.error_message = (
-                        "取消终态缺少完整且有效的 BatchCancelOperation 审计记录"
-                    )
+                    batch.error_message = "取消终态缺少完整且有效的 BatchCancelOperation 审计记录"
                     await transition_batch(
                         session,
                         batch,
@@ -2432,9 +2462,7 @@ class Scheduler:
                         {"cancel_operation_id": operation.id if operation else None},
                     )
                 else:
-                    await transition_batch(
-                        session, batch, BatchStatus.CANCELLED, "batch.cancelled"
-                    )
+                    await transition_batch(session, batch, BatchStatus.CANCELLED, "batch.cancelled")
                     assert operation is not None
                     operation.status = "COMPLETED"
                     if operation.finished_at is None:
@@ -2445,18 +2473,11 @@ class Scheduler:
                 return False
             if batch.succeeded_items == batch.total_items:
                 if batch.status == BatchStatus.QUEUED.value:
-                    await transition_batch(
-                        session, batch, BatchStatus.RUNNING, "batch.running"
-                    )
-                await transition_batch(
-                    session, batch, BatchStatus.ASSEMBLING, "batch.assembling"
-                )
+                    await transition_batch(session, batch, BatchStatus.RUNNING, "batch.running")
+                await transition_batch(session, batch, BatchStatus.ASSEMBLING, "batch.assembling")
                 await self.commit_as_leader(session)
                 return True
-            if (
-                batch.status == BatchStatus.QUEUED.value
-                and batch.started_at is not None
-            ):
+            if batch.status == BatchStatus.QUEUED.value and batch.started_at is not None:
                 await transition_batch(session, batch, BatchStatus.RUNNING, "batch.running")
             await self.commit_as_leader(session)
             return False
@@ -2486,9 +2507,7 @@ class Scheduler:
         try:
             async with self.db.session() as session:
                 persisted_ids = set(
-                    (
-                        await session.scalars(select(Job.id).where(Job.id.in_(job_ids)))
-                    ).all()
+                    (await session.scalars(select(Job.id).where(Job.id.in_(job_ids)))).all()
                 )
         except Exception:
             logger().warning(
@@ -2613,8 +2632,7 @@ class Scheduler:
                     max(0, batch.pending_items),
                     max(
                         0,
-                        self.settings.batch_feed_window
-                        - in_window_by_batch.get(batch.id, 0),
+                        self.settings.batch_feed_window - in_window_by_batch.get(batch.id, 0),
                     ),
                 )
             tick_budget = materialization_tick_budget(
@@ -2633,10 +2651,7 @@ class Scheduler:
 
             batch_by_id = {batch.id: batch for batch in batches}
             locked_tenant_ids = sorted(
-                {
-                    batch_by_id[batch_id].tenant_id
-                    for batch_id in preliminary_allocations
-                }
+                {batch_by_id[batch_id].tenant_id for batch_id in preliminary_allocations}
             )
             for tenant_id in locked_tenant_ids:
                 await self.db.acquire_tenant_transaction_lock(session, tenant_id)
@@ -2684,8 +2699,7 @@ class Scheduler:
                     max(0, batch_by_id[batch_id].pending_items),
                     max(
                         0,
-                        self.settings.batch_feed_window
-                        - in_window_by_batch.get(batch_id, 0),
+                        self.settings.batch_feed_window - in_window_by_batch.get(batch_id, 0),
                     ),
                 )
                 for batch_id in candidate_ids
@@ -2731,10 +2745,7 @@ class Scheduler:
             locked_batch_ids = [batch.id for batch in locked_batches]
             in_window_by_batch = await batch_in_window_counts(session, locked_batch_ids)
             workflow_keys = list(
-                {
-                    (batch.workflow_key, batch.workflow_version)
-                    for batch in locked_batches
-                }
+                {(batch.workflow_key, batch.workflow_version) for batch in locked_batches}
             )
             workflows = list(
                 (
@@ -2807,8 +2818,7 @@ class Scheduler:
                     max(0, batch.pending_items),
                     max(
                         0,
-                        self.settings.batch_feed_window
-                        - in_window_by_batch.get(batch.id, 0),
+                        self.settings.batch_feed_window - in_window_by_batch.get(batch.id, 0),
                     ),
                 )
                 for batch in eligible_batches
@@ -2832,18 +2842,12 @@ class Scheduler:
                 batch.id: [] for batch in eligible_batches if batch.id in final_allocations
             }
             pending_items = list(
-                (
-                    await session.scalars(
-                        bounded_pending_items_statement(final_allocations)
-                    )
-                ).all()
+                (await session.scalars(bounded_pending_items_statement(final_allocations))).all()
             )
             for item in pending_items:
                 pending_by_batch[item.batch_id].append(item)
 
-            batch_remaining = {
-                batch_id: len(items) for batch_id, items in pending_by_batch.items()
-            }
+            batch_remaining = {batch_id: len(items) for batch_id, items in pending_by_batch.items()}
 
             # The persisted ordering rotates batches across scheduler loops.
             # Within this loop, repeated passes grant each eligible batch at
@@ -3003,9 +3007,7 @@ class Scheduler:
                     # reconcile until this exact filesystem/DB publish ends.
                     await self.assert_scheduler_epoch(session)
                     batch = await session.scalar(
-                        select(JobBatch)
-                        .where(JobBatch.id == batch_id)
-                        .with_for_update()
+                        select(JobBatch).where(JobBatch.id == batch_id).with_for_update()
                     )
                     if batch is None or batch.status != BatchStatus.ASSEMBLING.value:
                         return
@@ -3023,9 +3025,9 @@ class Scheduler:
                         os.fsync(directory_fd)
                     finally:
                         os.close(directory_fd)
-                    relative_path = str(
-                        destination.relative_to(Path(batch.batch_dir))
-                    ).replace("\\", "/")
+                    relative_path = str(destination.relative_to(Path(batch.batch_dir))).replace(
+                        "\\", "/"
+                    )
                     if existing is None:
                         session.add(
                             BatchArtifact(
@@ -3047,9 +3049,7 @@ class Scheduler:
                         existing.sha256 = built.sha256
                     batch.progress = 100
                     target = (
-                        BatchStatus.PARTIAL_SUCCESS
-                        if batch.failed_items
-                        else BatchStatus.SUCCEEDED
+                        BatchStatus.PARTIAL_SUCCESS if batch.failed_items else BatchStatus.SUCCEEDED
                     )
                     await transition_batch(
                         session,
@@ -3070,7 +3070,9 @@ class Scheduler:
             staging_path.unlink(missing_ok=True)
         await self.publish(
             {
-                "event": "batch.partial_success" if target == BatchStatus.PARTIAL_SUCCESS else "batch.succeeded",
+                "event": "batch.partial_success"
+                if target == BatchStatus.PARTIAL_SUCCESS
+                else "batch.succeeded",
                 "batch_id": batch_id,
             }
         )
@@ -3175,9 +3177,7 @@ class Scheduler:
                         )
                     )
                 if not candidates:
-                    logger().debug(
-                        "scheduler.no_node", exclusions=exclusions
-                    )
+                    logger().debug("scheduler.no_node", exclusions=exclusions)
                     break
                 candidate_nodes = [(candidate.id, candidate.pool) for candidate in candidates]
                 # rollback() expires ORM instances. Keep scalar values before
@@ -3299,9 +3299,7 @@ class Scheduler:
                 parent_task = asyncio.current_task()
                 if parent_task is None:
                     raise RuntimeError("executor task is unavailable")
-                workflow_deadline = (
-                    asyncio.get_running_loop().time() + workflow.timeout_seconds
-                )
+                workflow_deadline = asyncio.get_running_loop().time() + workflow.timeout_seconds
                 timeout_task = asyncio.create_task(
                     self.timeout_watchdog(
                         job.id,
@@ -3312,6 +3310,7 @@ class Scheduler:
                     )
                 )
                 terminal_history_task: asyncio.Task[dict[str, Any]] | None = None
+                terminal_event_outputs: dict[str, dict[str, Any]] = {}
                 try:
                     current_job = await self.lock_job_as_leader(session, job.id)
                     if current_job is None:
@@ -3352,19 +3351,14 @@ class Scheduler:
                             if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
                                 await self.commit_as_leader(session)
                                 return
-                            if (
-                                job.cancel_requested
-                                or job.status == JobStatus.CANCELLING.value
-                            ):
+                            if job.cancel_requested or job.status == JobStatus.CANCELLING.value:
                                 await self.cancel_locked_job(
                                     session,
                                     job,
                                     event="scheduler.cancelled_during_submission_recovery",
                                 )
                                 await self.commit_as_leader(session)
-                                await self.publish(
-                                    {"event": "job.cancelled", "job_id": job.id}
-                                )
+                                await self.publish({"event": "job.cancelled", "job_id": job.id})
                                 return
                             await fail_closed_prompt_submission(session, job, exc)
                             await self.commit_as_leader(session)
@@ -3396,10 +3390,7 @@ class Scheduler:
                             await self.commit_as_leader(session)
                             return
                         await persist_prompt_id(session, job, recovered_prompt_id)
-                        if (
-                            job.cancel_requested
-                            or job.status == JobStatus.CANCELLING.value
-                        ):
+                        if job.cancel_requested or job.status == JobStatus.CANCELLING.value:
                             try:
                                 await asyncio.wait_for(client.interrupt(), timeout=5)
                             except Exception as interrupt_error:
@@ -3415,9 +3406,7 @@ class Scheduler:
                                 event="scheduler.cancelled_after_submission_recovery",
                             )
                             await self.commit_as_leader(session)
-                            await self.publish(
-                                {"event": "job.cancelled", "job_id": job.id}
-                            )
+                            await self.publish({"event": "job.cancelled", "job_id": job.id})
                             return
                         if job.status == JobStatus.CLAIMED.value:
                             await transition_job(
@@ -3473,19 +3462,14 @@ class Scheduler:
                             if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
                                 await self.commit_as_leader(session)
                                 return
-                            if (
-                                job.cancel_requested
-                                or job.status == JobStatus.CANCELLING.value
-                            ):
+                            if job.cancel_requested or job.status == JobStatus.CANCELLING.value:
                                 await self.cancel_locked_job(
                                     session,
                                     job,
                                     event="scheduler.cancelled_during_prompt_recovery",
                                 )
                                 await self.commit_as_leader(session)
-                                await self.publish(
-                                    {"event": "job.cancelled", "job_id": job.id}
-                                )
+                                await self.publish({"event": "job.cancelled", "job_id": job.id})
                                 return
                             await fail_closed_prompt_submission(session, job, error)
                             await self.commit_as_leader(session)
@@ -3497,9 +3481,7 @@ class Scheduler:
                             .where(
                                 Job.node_id == node.id,
                                 Job.id != job.id,
-                                Job.status.in_(
-                                    [status.value for status in TERMINAL_JOB_STATUSES]
-                                ),
+                                Job.status.in_([status.value for status in TERMINAL_JOB_STATUSES]),
                                 Job.finished_at.is_not(None),
                             )
                             .order_by(Job.finished_at.desc())
@@ -3555,9 +3537,7 @@ class Scheduler:
                                 workflow_key=job.workflow_key,
                             )
                         root = Path(job.job_dir)
-                        self.storage.atomic_json(
-                            root / "comfy" / "free.response.json", free_result
-                        )
+                        self.storage.atomic_json(root / "comfy" / "free.response.json", free_result)
                         upload_inputs = [
                             (
                                 path,
@@ -3598,9 +3578,7 @@ class Scheduler:
                                 event="executor.cancelled_before_submit",
                             )
                             await self.commit_as_leader(session)
-                            await self.publish(
-                                {"event": "job.cancelled", "job_id": job.id}
-                            )
+                            await self.publish({"event": "job.cancelled", "job_id": job.id})
                             return
                         if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
                             await self.commit_as_leader(session)
@@ -3650,9 +3628,8 @@ class Scheduler:
                                 if refreshed_job is None:
                                     return
                                 job = refreshed_job
-                                current_client_id = (
-                                    job.submission_client_id
-                                    or prompt_client_id(job.id, job.attempt_count)
+                                current_client_id = job.submission_client_id or prompt_client_id(
+                                    job.id, job.attempt_count
                                 )
                                 if (
                                     job.attempt_count != submission_attempt
@@ -3664,19 +3641,14 @@ class Scheduler:
                                 if JobStatus(job.status) in TERMINAL_JOB_STATUSES:
                                     await self.commit_as_leader(session)
                                     return
-                                if (
-                                    job.cancel_requested
-                                    or job.status == JobStatus.CANCELLING.value
-                                ):
+                                if job.cancel_requested or job.status == JobStatus.CANCELLING.value:
                                     await self.cancel_locked_job(
                                         session,
                                         job,
                                         event="executor.cancelled_during_submit_reconcile",
                                     )
                                     await self.commit_as_leader(session)
-                                    await self.publish(
-                                        {"event": "job.cancelled", "job_id": job.id}
-                                    )
+                                    await self.publish({"event": "job.cancelled", "job_id": job.id})
                                     return
                                 await fail_closed_prompt_submission(session, job, error)
                                 await self.commit_as_leader(session)
@@ -3700,10 +3672,7 @@ class Scheduler:
                         if (
                             job.attempt_count != submission_attempt
                             or current_client_id != client_id
-                            or (
-                                job.prompt_id is not None
-                                and job.prompt_id != submitted_prompt_id
-                            )
+                            or (job.prompt_id is not None and job.prompt_id != submitted_prompt_id)
                         ):
                             await self.commit_as_leader(session)
                             return
@@ -3724,8 +3693,7 @@ class Scheduler:
                             },
                         )
                         cancelled_after_submit = bool(
-                            job.cancel_requested
-                            or job.status == JobStatus.CANCELLING.value
+                            job.cancel_requested or job.status == JobStatus.CANCELLING.value
                         )
                         if cancelled_after_submit:
                             try:
@@ -3743,9 +3711,7 @@ class Scheduler:
                                 event="executor.cancelled_after_submit",
                             )
                             await self.commit_as_leader(session)
-                            await self.publish(
-                                {"event": "job.cancelled", "job_id": job.id}
-                            )
+                            await self.publish({"event": "job.cancelled", "job_id": job.id})
                             return
                         await transition_job(
                             session,
@@ -3795,9 +3761,7 @@ class Scheduler:
                     # Do not retain the validation locks while waiting on the
                     # websocket. Every meaningful event reacquires them.
                     await self.commit_as_leader(session)
-                    cancellation_task = asyncio.create_task(
-                        self.watch_cancellation(job.id, client)
-                    )
+                    cancellation_task = asyncio.create_task(self.watch_cancellation(job.id, client))
                     recovered_terminal_history: dict[str, Any] | None = None
                     try:
                         try:
@@ -3825,6 +3789,15 @@ class Scheduler:
                                     )
                                     if isinstance(candidate_history, dict):
                                         recovered_terminal_history = candidate_history
+                                elif event_type == "executed":
+                                    event_data = event.get("data")
+                                    if isinstance(event_data, dict):
+                                        node_id = str(event_data.get("node") or "")
+                                        output = event_data.get("output")
+                                        if node_id in {
+                                            str(item) for item in workflow.output_nodes
+                                        } and isinstance(output, dict):
+                                            terminal_event_outputs[node_id] = output
                                 elif (
                                     event_type
                                     in {
@@ -3833,13 +3806,31 @@ class Scheduler:
                                     }
                                     and terminal_history_task is None
                                 ):
-                                    # Comfy history becomes available at the
-                                    # terminal event. Fetch it immediately and
-                                    # overlap that network round trip with the
-                                    # durable GPU-finished transition below.
-                                    terminal_history_task = asyncio.create_task(
-                                        client.history(execution_prompt_id or "")
+                                    event_history = (
+                                        terminal_history_from_executed_outputs(
+                                            execution_prompt_id or "",
+                                            {str(item) for item in workflow.output_nodes},
+                                            terminal_event_outputs,
+                                        )
+                                        if event_type == "execution_success"
+                                        else None
                                     )
+                                    if event_history is not None:
+                                        recovered_terminal_history = event_history
+                                        logger().info(
+                                            "executor.terminal_output_reused",
+                                            job_id=job.id,
+                                            output_nodes=sorted(
+                                                event_history[execution_prompt_id or ""]["outputs"]
+                                            ),
+                                        )
+                                    else:
+                                        # Older Comfy versions and cached final
+                                        # nodes may omit ``executed``. Preserve
+                                        # the proven history-prefetch fallback.
+                                        terminal_history_task = asyncio.create_task(
+                                            client.history(execution_prompt_id or "")
+                                        )
                                 if event_type in {
                                     "execution_start",
                                     "executing",
@@ -3864,8 +3855,7 @@ class Scheduler:
                                         await self.commit_as_leader(session)
                                         return
                                 cancelling = bool(
-                                    job.cancel_requested
-                                    or job.status == JobStatus.CANCELLING.value
+                                    job.cancel_requested or job.status == JobStatus.CANCELLING.value
                                 )
                                 if event_type == "progress" and not cancelling:
                                     await mark_gpu_started(session, job)
@@ -3993,9 +3983,7 @@ class Scheduler:
                     )
                 ).one_or_none()
                 cancel_requested = bool(intent and intent[0])
-                inpaint_preemption = bool(
-                    intent and intent[1] == IMAGECLIP_INPAINT_PREEMPTION_CODE
-                )
+                inpaint_preemption = bool(intent and intent[1] == IMAGECLIP_INPAINT_PREEMPTION_CODE)
                 if cancel_requested or inpaint_preemption:
                     try:
                         await asyncio.wait_for(client.interrupt(), timeout=5)
@@ -4141,13 +4129,21 @@ class Scheduler:
                         error_message = f"node {node} {node_type}: {exception}"
                     break
             oom_evidence = " ".join(
-                str(error_details.get(key) or "")
-                for key in ("exception_type", "raw_summary")
+                str(error_details.get(key) or "") for key in ("exception_type", "raw_summary")
             ).lower()
-            code = "GPU_OOM" if any(
-                marker in oom_evidence
-                for marker in ("outofmemory", "out of memory", "cuda oom", "cuda error: out of memory")
-            ) else "COMFY_EXECUTION_ERROR"
+            code = (
+                "GPU_OOM"
+                if any(
+                    marker in oom_evidence
+                    for marker in (
+                        "outofmemory",
+                        "out of memory",
+                        "cuda oom",
+                        "cuda error: out of memory",
+                    )
+                )
+                else "COMFY_EXECUTION_ERROR"
+            )
             raise ComfyError(code, error_message[:1000], error_details)
         outputs = client.outputs(
             history,
@@ -4314,7 +4310,12 @@ class Scheduler:
                     session,
                     job,
                     attempt_status=JobStatus.CANCELLED,
-                    attempt_error={"code": code, "message": message[:1000], "node_id": job.node_id, **(details or {})},
+                    attempt_error={
+                        "code": code,
+                        "message": message[:1000],
+                        "node_id": job.node_id,
+                        **(details or {}),
+                    },
                 )
                 cancelled = True
             elif (
@@ -4333,7 +4334,12 @@ class Scheduler:
                     session,
                     job,
                     attempt_status=JobStatus.FAILED,
-                    attempt_error={"code": code, "message": message[:1000], "node_id": job.node_id, **(details or {})},
+                    attempt_error={
+                        "code": code,
+                        "message": message[:1000],
+                        "node_id": job.node_id,
+                        **(details or {}),
+                    },
                 )
                 await transition_job(session, job, JobStatus.QUEUED, "executor.retry_queued")
                 job.node_id = None
@@ -4354,7 +4360,12 @@ class Scheduler:
                     session,
                     job,
                     attempt_status=JobStatus.FAILED,
-                    attempt_error={"code": code, "message": message[:1000], "node_id": job.node_id, **(details or {})},
+                    attempt_error={
+                        "code": code,
+                        "message": message[:1000],
+                        "node_id": job.node_id,
+                        **(details or {}),
+                    },
                 )
             await self.commit_as_leader(session)
         if cancelled:
@@ -4430,9 +4441,7 @@ class Scheduler:
             raise self.scheduler_lock_failure
 
     @staticmethod
-    async def cancel_tasks_bounded(
-        tasks: list[asyncio.Task[Any]], timeout_seconds: float
-    ) -> int:
+    async def cancel_tasks_bounded(tasks: list[asyncio.Task[Any]], timeout_seconds: float) -> int:
         """Cancel tasks without allowing a failed lock holder to block takeover."""
 
         unique_tasks = list(dict.fromkeys(tasks))
@@ -4467,9 +4476,7 @@ class Scheduler:
                     )
                     await self.establish_scheduler_epoch(lock_handle)
                     self.raise_if_scheduler_lock_lost()
-                    self.event_loop_lag_task = asyncio.create_task(
-                        self.monitor_event_loop_lag()
-                    )
+                    self.event_loop_lag_task = asyncio.create_task(self.monitor_event_loop_lag())
                     # Arm the independent lag probe before startup reconciliation.
                     await asyncio.sleep(0)
                     await self.reconcile()
@@ -4524,9 +4531,7 @@ class Scheduler:
                             task.cancel()
                         await asyncio.gather(*auxiliary_tasks, return_exceptions=True)
                         if self.executions:
-                            await asyncio.gather(
-                                *self.executions.values(), return_exceptions=True
-                            )
+                            await asyncio.gather(*self.executions.values(), return_exceptions=True)
                         if self.batch_assemblies:
                             for task in self.batch_assemblies.values():
                                 task.cancel()

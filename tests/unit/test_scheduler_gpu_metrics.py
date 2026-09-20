@@ -4,7 +4,11 @@ from types import SimpleNamespace
 import httpx
 
 from apps.scheduler.src.gpu_control_scheduler import main as scheduler_main
-from apps.scheduler.src.gpu_control_scheduler.main import Scheduler, node_has_recent_telemetry
+from apps.scheduler.src.gpu_control_scheduler.main import (
+    Scheduler,
+    defer_busy_autodl_probe,
+    node_has_recent_telemetry,
+)
 from packages.gpu_control_core.models import Node
 
 
@@ -22,6 +26,22 @@ def test_stale_node_telemetry_does_not_mask_real_offline_node() -> None:
     node.last_heartbeat_at = now - timedelta(minutes=4)
 
     assert not node_has_recent_telemetry(node, now)
+
+
+def test_busy_autodl_probe_is_deferred_only_inside_short_fresh_window() -> None:
+    now = datetime.now(UTC)
+    node = Node(id="autodl-cloud")
+    node.labels = {"provider": "autodl"}
+    node.current_jobs = 1
+    node.last_heartbeat_at = now - timedelta(seconds=10)
+
+    assert defer_busy_autodl_probe(node, now)
+
+    node.last_heartbeat_at = now - timedelta(seconds=16)
+    assert not defer_busy_autodl_probe(node, now)
+    node.last_heartbeat_at = now - timedelta(seconds=1)
+    node.current_jobs = 0
+    assert not defer_busy_autodl_probe(node, now)
 
 
 async def test_comfy_failure_keeps_independent_agent_evidence(monkeypatch) -> None:
@@ -45,9 +65,7 @@ async def test_comfy_failure_keeps_independent_agent_evidence(monkeypatch) -> No
     monkeypatch.setattr(scheduler, "node_agent_identity", identity)
     monkeypatch.setattr(scheduler, "node_agent_gpu_metrics", gpu_metrics)
 
-    reported_identity, reported_metrics, error = (
-        await scheduler.node_agent_fallback_evidence(node)
-    )
+    reported_identity, reported_metrics, error = await scheduler.node_agent_fallback_evidence(node)
 
     assert reported_identity == {"node_id": node.id}
     assert reported_metrics == metrics
@@ -65,9 +83,7 @@ async def test_comfy_failure_marks_agent_evidence_unavailable_on_agent_error(
 
     monkeypatch.setattr(scheduler, "node_agent_identity", identity)
 
-    reported_identity, reported_metrics, error = (
-        await scheduler.node_agent_fallback_evidence(node)
-    )
+    reported_identity, reported_metrics, error = await scheduler.node_agent_fallback_evidence(node)
 
     assert reported_identity is None
     assert reported_metrics is None
