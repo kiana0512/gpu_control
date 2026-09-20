@@ -136,7 +136,16 @@ CALLBACK_FAILURES = Counter(
     "gpu_control_callback_failures_total", "Callback deliveries that exhausted retries"
 )
 NODE_TELEMETRY_GRACE = timedelta(minutes=3)
-AUTODL_BUSY_PROBE_DEFER = timedelta(seconds=15)
+AUTODL_PROBE_DEFER_JOB_STATUSES = frozenset(
+    {
+        JobStatus.CLAIMED.value,
+        JobStatus.UPLOADING.value,
+        JobStatus.SUBMITTED.value,
+        JobStatus.RUNNING.value,
+        JobStatus.DOWNLOADING.value,
+        JobStatus.CANCELLING.value,
+    }
+)
 
 
 def node_has_recent_telemetry(node: Node, now: datetime) -> bool:
@@ -160,26 +169,14 @@ def defer_busy_autodl_probe(node: Node, now: datetime) -> bool:
     AutoDL Comfy traffic, health probes, input uploads and output downloads all
     share one verified SSH transport. A full ``system_stats``/``queue`` probe
     during a short interactive job can therefore contend with the final PNG
-    transfer. The running prompt and its WebSocket are already stronger live
-    evidence than an additional probe, so defer only while the node is busy
-    and its last independent heartbeat is still very recent. The 15-second
-    ceiling is below the normal heartbeat timeout and therefore cannot hide a
-    stuck executor indefinitely.
+    transfer. The running prompt, its WebSocket and the workflow timeout are
+    already stronger live evidence than an additional probe, so defer for the
+    complete active lease instead of periodically stealing bandwidth from it.
     """
 
     if (node.labels or {}).get("provider") != "autodl" or node.current_jobs < 1:
         return False
-    observed_at = node.last_heartbeat_at
-    if observed_at is None:
-        return False
-    observed_at = (
-        observed_at.replace(tzinfo=UTC)
-        if observed_at.tzinfo is None
-        else observed_at.astimezone(UTC)
-    )
-    current = now if now.tzinfo else now.replace(tzinfo=UTC)
-    age = current - observed_at
-    return timedelta(0) <= age <= AUTODL_BUSY_PROBE_DEFER
+    return True
 
 
 def terminal_history_from_executed_outputs(
@@ -1621,6 +1618,38 @@ class Scheduler:
                 probe_session.expunge_all()
                 await probe_session.rollback()
                 for node in nodes:
+                    if (node.labels or {}).get("provider") == "autodl":
+                        # ``nodes`` was snapshotted before probing the other
+                        # workers. An interactive job may have claimed AutoDL
+                        # meanwhile, so refresh its lease count and check the
+                        # authoritative job state immediately before opening a
+                        # competing SSH channel.
+                        async with self.db.session() as busy_session:
+                            current_state = (
+                                await busy_session.execute(
+                                    select(
+                                        Node.current_jobs,
+                                        Node.last_heartbeat_at,
+                                        Node.health,
+                                    ).where(Node.id == node.id)
+                                )
+                            ).one_or_none()
+                            active_job_id = await busy_session.scalar(
+                                select(Job.id)
+                                .where(
+                                    Job.node_id == node.id,
+                                    Job.status.in_(AUTODL_PROBE_DEFER_JOB_STATUSES),
+                                )
+                                .limit(1)
+                            )
+                            await busy_session.rollback()
+                        if current_state is not None:
+                            node.current_jobs = max(
+                                int(current_state.current_jobs),
+                                1 if active_job_id is not None else 0,
+                            )
+                            node.last_heartbeat_at = current_state.last_heartbeat_at
+                            node.health = current_state.health
                     if defer_busy_autodl_probe(node, datetime.now(UTC)):
                         # The active execution WebSocket is the liveness signal
                         # for this short window. Avoid opening competing SSH

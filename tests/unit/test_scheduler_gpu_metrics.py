@@ -28,7 +28,7 @@ def test_stale_node_telemetry_does_not_mask_real_offline_node() -> None:
     assert not node_has_recent_telemetry(node, now)
 
 
-def test_busy_autodl_probe_is_deferred_only_inside_short_fresh_window() -> None:
+def test_busy_autodl_probe_is_deferred_for_the_complete_active_lease() -> None:
     now = datetime.now(UTC)
     node = Node(id="autodl-cloud")
     node.labels = {"provider": "autodl"}
@@ -37,8 +37,8 @@ def test_busy_autodl_probe_is_deferred_only_inside_short_fresh_window() -> None:
 
     assert defer_busy_autodl_probe(node, now)
 
-    node.last_heartbeat_at = now - timedelta(seconds=16)
-    assert not defer_busy_autodl_probe(node, now)
+    node.last_heartbeat_at = now - timedelta(minutes=30)
+    assert defer_busy_autodl_probe(node, now)
     node.last_heartbeat_at = now - timedelta(seconds=1)
     node.current_jobs = 0
     assert not defer_busy_autodl_probe(node, now)
