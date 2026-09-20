@@ -16,6 +16,7 @@ import websockets
 TRANSFER_CHUNK_BYTES = 1024 * 1024
 CACHE_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 CACHE_CONTROL_TIMEOUT_SECONDS = 3.0
+WEBSOCKET_CLOSE_TIMEOUT_SECONDS = 0.1
 
 # ComfyUI reports an operator/API interrupt as ``execution_interrupted``.
 # It is a terminal websocket event just like success and execution_error; if
@@ -196,9 +197,7 @@ class ComfyClient:
                 if str(metadata.get("client_id", "")) == client_id:
                     found.add(str(item[1]))
 
-        history = await self._json(
-            "GET", "/history", params={"max_items": max_history_items}
-        )
+        history = await self._json("GET", "/history", params={"max_items": max_history_items})
         for raw_prompt_id, raw_entry in history.items():
             if not isinstance(raw_entry, dict):
                 continue
@@ -680,6 +679,12 @@ class ComfyClient:
                         ws_url,
                         open_timeout=max(0.1, min(5, remaining)),
                         ping_interval=20,
+                        # Once a terminal event has been received, waiting on
+                        # a WAN close handshake only delays artifact download.
+                        # The prompt result is already durable in ComfyUI and
+                        # reconnect/history recovery still protects every
+                        # pre-terminal disconnect.
+                        close_timeout=WEBSOCKET_CLOSE_TIMEOUT_SECONDS,
                     ) as socket:
                         while True:
                             remaining = reconnect_deadline - asyncio.get_running_loop().time()
@@ -747,7 +752,12 @@ class ComfyClient:
 
         for attempt in range(max_reconnects + 1):
             try:
-                async with websockets.connect(ws_url, open_timeout=5, ping_interval=20) as socket:
+                async with websockets.connect(
+                    ws_url,
+                    open_timeout=5,
+                    ping_interval=20,
+                    close_timeout=WEBSOCKET_CLOSE_TIMEOUT_SECONDS,
+                ) as socket:
                     async for message in socket:
                         if isinstance(message, bytes):
                             continue

@@ -778,9 +778,7 @@ async def test_interrupted_execution_ends_event_stream_without_reconnect(
     try:
         events = [
             event
-            async for event in client.events(
-                "target-prompt", "target-client", max_reconnects=3
-            )
+            async for event in client.events("target-prompt", "target-client", max_reconnects=3)
         ]
     finally:
         await client.close()
@@ -794,6 +792,7 @@ async def test_interrupted_execution_ends_event_stream_without_reconnect(
     assert socket.read_count == 2
     assert len(connect_calls) == 1
     assert connect_calls[0][0] == "ws://fake/ws?clientId=target-client"
+    assert connect_calls[0][1]["close_timeout"] == 0.1
 
 
 async def test_deadline_recovery_retries_and_recovers_from_prompt_history(
@@ -854,9 +853,7 @@ async def test_deadline_recovery_retries_and_recovers_from_prompt_history(
             "type": "history_recovered",
             "data": {
                 "prompt_id": "persisted-prompt",
-                "history": {
-                    "persisted-prompt": {"status": {"completed": True}}
-                },
+                "history": {"persisted-prompt": {"status": {"completed": True}}},
             },
         }
     ]
