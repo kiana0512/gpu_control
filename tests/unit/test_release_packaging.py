@@ -290,6 +290,7 @@ def test_plan_exposes_two_safe_solves_per_component(tmp_path: Path) -> None:
     )
     assert set(payload["build_commands"]) == {
         "api",
+        "provider-controller",
         "scheduler",
         "asset-api",
         "web",

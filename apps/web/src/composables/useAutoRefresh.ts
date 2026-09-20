@@ -7,19 +7,35 @@ export function useAutoRefresh(
   const lastUpdatedAt = ref<Date | null>(null);
   const refreshing = ref(false);
   let timer: number | undefined;
+  let activeRuns = 0;
+  let latestRun = 0;
 
-  async function run() {
-    if (refreshing.value) return;
+  async function performRun(force: boolean) {
+    if (refreshing.value && !force) return;
+    const runId = ++latestRun;
+    activeRuns += 1;
     refreshing.value = true;
     try {
       await refresh();
-      lastUpdatedAt.value = new Date();
+      // A forced refresh is used when an operator changes the production/test
+      // scope. Do not let an older request claim it produced the displayed
+      // snapshot once a newer one has started.
+      if (runId === latestRun) lastUpdatedAt.value = new Date();
     } catch {
       // The page owns and renders its request error. Keep polling so a
       // transient API restart heals without an F5 or an unhandled rejection.
     } finally {
-      refreshing.value = false;
+      activeRuns -= 1;
+      if (!activeRuns) refreshing.value = false;
     }
+  }
+
+  function run() {
+    return performRun(false);
+  }
+
+  function forceRun() {
+    return performRun(true);
   }
 
   function onVisible() {
@@ -41,5 +57,5 @@ export function useAutoRefresh(
     document.removeEventListener("visibilitychange", onVisible);
   });
 
-  return { run, refreshing, lastUpdatedAt };
+  return { run, forceRun, refreshing, lastUpdatedAt };
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "../api";
@@ -24,6 +24,8 @@ import JobsTable from "../components/JobsTable.vue";
 import StatusMark from "../components/StatusMark.vue";
 import { useAutoRefresh } from "../composables/useAutoRefresh";
 
+type FocusTarget = { focus: () => void };
+
 const route = useRoute();
 const jobs = ref<TaskJob[]>([]);
 const loading = ref(false);
@@ -45,6 +47,11 @@ const apiFilter = ref("all");
 const statusFilter = ref("all");
 const currentPage = ref(1);
 const pageSize = ref(20);
+const taskDrawer = ref<FocusTarget | null>(null);
+let scopeGeneration = 0;
+let jobsRequestGeneration = 0;
+let batchRequestGeneration = 0;
+let drawerReturnFocus: FocusTarget | null = null;
 
 const terminalStatuses = [
   "SUCCEEDED",
@@ -194,26 +201,47 @@ watch(pageCount, (count) => {
 });
 
 async function loadBatch(id: string, offset = batchOffset.value) {
+  const requestGeneration = ++batchRequestGeneration;
+  const requestedScope = scopeGeneration;
   batchLoading.value = true;
   try {
     const [detail, page] = await Promise.all([
       api.batch(id),
       api.batchItems(id, offset, batchPageSize),
     ]);
+    if (
+      requestedScope !== scopeGeneration ||
+      requestGeneration !== batchRequestGeneration ||
+      selectedJob.value?.job_id !== id
+    )
+      return;
     selectedJob.value = detail as TaskJob;
     batchItems.value = page.items;
     batchItemsTotal.value = page.total;
     batchOffset.value = page.offset;
+    await nextTick();
+    taskDrawer.value?.focus();
   } finally {
-    batchLoading.value = false;
+    if (requestGeneration === batchRequestGeneration)
+      batchLoading.value = false;
   }
 }
 
 async function load() {
+  const requestGeneration = ++jobsRequestGeneration;
+  const requestedScope = scopeGeneration;
+  const requestedKind = clientKind.value;
   loading.value = true;
   error.value = "";
   try {
-    jobs.value = (await api.jobs(undefined, clientKind.value)) as TaskJob[];
+    const nextJobs = (await api.jobs(undefined, requestedKind)) as TaskJob[];
+    if (
+      requestedScope !== scopeGeneration ||
+      requestGeneration !== jobsRequestGeneration ||
+      requestedKind !== clientKind.value
+    )
+      return;
+    jobs.value = nextJobs;
     const requestedJob =
       typeof route.query.job === "string" ? route.query.job : "";
     if (requestedJob && !selectedJob.value)
@@ -227,11 +255,27 @@ async function load() {
         selectedJob.value;
     }
   } catch (cause) {
+    if (
+      requestedScope !== scopeGeneration ||
+      requestGeneration !== jobsRequestGeneration
+    )
+      return;
     error.value = cause instanceof Error ? cause.message : "任务数据加载失败";
     throw cause;
   } finally {
-    loading.value = false;
+    if (requestGeneration === jobsRequestGeneration) loading.value = false;
   }
+}
+
+function clearSelectedJob(restoreFocus = true) {
+  batchRequestGeneration += 1;
+  selectedJob.value = null;
+  batchItems.value = [];
+  batchItemsTotal.value = 0;
+  batchOffset.value = 0;
+  const returnFocus = drawerReturnFocus;
+  drawerReturnFocus = null;
+  if (restoreFocus && returnFocus) void nextTick(() => returnFocus.focus());
 }
 
 async function retry(id: string) {
@@ -244,7 +288,7 @@ async function retry(id: string) {
     actionBusy.value = "retry";
     await api.retry(id);
     ElMessage.success("任务已重新排队");
-    selectedJob.value = null;
+    clearSelectedJob();
     await load();
   } catch (cause) {
     if (cause !== "cancel" && cause !== "close")
@@ -265,7 +309,7 @@ async function cancel(id: string) {
     if (isBatch.value) await api.cancelBatch(id);
     else await api.cancel(id);
     ElMessage.success("取消请求已提交");
-    selectedJob.value = null;
+    clearSelectedJob();
     await load();
   } catch (cause) {
     if (cause !== "cancel" && cause !== "close")
@@ -296,19 +340,30 @@ async function diagnostics(id: string) {
 }
 
 async function selectJob(job: JobInfo) {
+  drawerReturnFocus =
+    document.activeElement &&
+    typeof (document.activeElement as unknown as FocusTarget).focus ===
+      "function"
+      ? (document.activeElement as unknown as FocusTarget)
+      : null;
+  batchRequestGeneration += 1;
   selectedJob.value = job as TaskJob;
   batchItems.value = [];
   batchOffset.value = 0;
   batchItemsTotal.value = 0;
   if (job.kind === "batch") await loadBatch(job.job_id, 0);
+  else await nextTick(() => taskDrawer.value?.focus());
 }
 
 async function changeClientKind(kind: "production" | "test") {
   if (clientKind.value === kind) return;
+  scopeGeneration += 1;
+  jobsRequestGeneration += 1;
+  batchRequestGeneration += 1;
   clientKind.value = kind;
   clearFilters();
-  selectedJob.value = null;
-  await run();
+  clearSelectedJob(false);
+  await forceRun();
 }
 
 async function changeBatchPage(offset: number) {
@@ -340,122 +395,199 @@ function shortHash(value: string | null | undefined) {
   return value.length > 20 ? `${value.slice(0, 12)}…${value.slice(-6)}` : value;
 }
 
-const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
+const { run, forceRun, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 </script>
 
 <template>
   <div class="page jobs-operations-page">
-    <header class="jobs-hero">
-      <div>
-        <span class="hero-eyebrow">GPU CONTROL · OPERATIONS</span>
-        <h1>GPU 任务运行中心</h1>
+    <header class="ops-command-header">
+      <div class="ops-heading">
+        <div class="ops-kicker">
+          <span>GPU CONTROL</span><i></i><b>任务运营</b>
+        </div>
+        <h1>任务运行中心</h1>
         <p>
-          按业务功能、工作流与 API
-          快速定位任务；时间字段只展示服务端真实上报值。
+          从业务入口到执行节点，集中观察每一条 GPU 任务的实时状态与完整证据。
         </p>
-        <nav class="view-switch" aria-label="任务与分析视图">
-          <router-link to="/jobs">任务中心</router-link>
-          <router-link to="/analysis">性能分析</router-link>
-          <router-link to="/asset-processing">CPU 资产任务</router-link>
+        <nav class="ops-view-switch" aria-label="任务运营视图">
+          <router-link to="/jobs"><span>01</span>任务队列</router-link>
+          <router-link to="/analysis"><span>02</span>性能洞察</router-link>
+          <router-link to="/asset-processing"
+            ><span>03</span>资产处理</router-link
+          >
         </nav>
       </div>
-      <div class="hero-actions">
-        <span class="refresh-copy">
-          <i :class="{ spinning: refreshing }"></i>
-          自动刷新 10 秒
-          <small>
-            {{
-              lastUpdatedAt?.toLocaleTimeString("zh-CN", { hour12: false }) ??
-              "等待首次同步"
-            }}
-          </small>
-        </span>
-        <button class="secondary" :disabled="loading" @click="run">
-          {{ loading ? "同步中…" : "立即刷新" }}
-        </button>
-      </div>
-    </header>
-
-    <div v-if="error" class="error-banner persistent-error">
-      <strong>任务同步失败</strong><span>{{ error }}</span
-      ><button @click="run">重试</button>
-    </div>
-
-    <section class="task-metrics" aria-label="任务摘要">
-      <article>
-        <span>当前范围</span>
-        <strong>{{ metrics.total }}</strong>
-        <small>{{
-          clientKind === "production" ? "真实任务" : "压力测试"
-        }}</small>
-      </article>
-      <article>
-        <span>正在处理</span>
-        <strong>{{ metrics.active }}</strong>
-        <small>{{ metrics.queued }} 个排队 / 校验中</small>
-      </article>
-      <article>
-        <span>已成功</span>
-        <strong>{{ metrics.successful }}</strong>
-        <small>{{ metrics.attention }} 个异常或取消</small>
-      </article>
-      <article class="accent-metric">
-        <span>成功任务端到端中位数</span>
-        <strong>{{ formatDuration(metrics.medianDuration) }}</strong>
-        <small>{{ metrics.timedSamples }} 个具有完整时间的样本</small>
-      </article>
-    </section>
-
-    <section class="task-center">
-      <div class="task-center-heading">
-        <div>
-          <span class="section-eyebrow">TASK CENTER</span>
-          <h2>任务中心</h2>
-          <p>父批次保持为一条任务，逐帧明细在详情中查看。</p>
-        </div>
+      <div class="ops-header-tools">
         <div class="scope-tabs" aria-label="任务数据范围">
           <button
             :class="{ active: clientKind === 'production' }"
             @click="changeClientKind('production')"
           >
-            真实任务
+            生产流量
           </button>
           <button
             :class="{ active: clientKind === 'test' }"
             @click="changeClientKind('test')"
           >
-            测试任务
+            测试流量
+          </button>
+        </div>
+        <div class="sync-state">
+          <i :class="{ spinning: refreshing }"></i>
+          <span>
+            {{ refreshing ? "正在同步" : "自动同步已开启" }}
+            <small>
+              最近更新
+              {{
+                lastUpdatedAt?.toLocaleTimeString("zh-CN", {
+                  hour12: false,
+                }) ?? "等待首次同步"
+              }}
+            </small>
+          </span>
+          <button class="sync-button" :disabled="loading" @click="run">
+            {{ loading ? "同步中" : "刷新" }}
           </button>
         </div>
       </div>
+    </header>
 
-      <div class="filter-panel">
-        <div class="filter-row service-filter-row">
-          <span class="filter-label">按功能</span>
+    <div v-if="error" class="ops-alert" role="alert">
+      <span>!</span>
+      <div>
+        <strong>任务数据暂时不可用</strong><small>{{ error }}</small>
+      </div>
+      <button @click="run">重新连接</button>
+    </div>
+
+    <section
+      v-if="loading && !jobs.length"
+      class="initial-loading"
+      aria-live="polite"
+    >
+      <i></i><span>正在建立任务视图…</span>
+    </section>
+
+    <section v-else class="task-overview" aria-label="任务摘要">
+      <article class="overview-primary">
+        <div>
+          <span>当前任务范围</span>
+          <strong>{{ metrics.total }}</strong>
+          <small>{{
+            clientKind === "production" ? "生产任务" : "测试任务"
+          }}</small>
+        </div>
+        <div class="overview-composition" aria-label="任务状态构成">
+          <i
+            class="active"
+            :style="{
+              width: `${metrics.total ? (metrics.active / metrics.total) * 100 : 0}%`,
+            }"
+          ></i>
+          <i
+            class="queued"
+            :style="{
+              width: `${metrics.total ? (metrics.queued / metrics.total) * 100 : 0}%`,
+            }"
+          ></i>
+          <i
+            class="success"
+            :style="{
+              width: `${metrics.total ? (metrics.successful / metrics.total) * 100 : 0}%`,
+            }"
+          ></i>
+          <i
+            class="attention"
+            :style="{
+              width: `${metrics.total ? (metrics.attention / metrics.total) * 100 : 0}%`,
+            }"
+          ></i>
+        </div>
+      </article>
+      <article>
+        <span>执行中</span><strong>{{ metrics.active }}</strong
+        ><small>正在占用计算资源</small>
+      </article>
+      <article>
+        <span>等待中</span><strong>{{ metrics.queued }}</strong
+        ><small>排队或校验阶段</small>
+      </article>
+      <article>
+        <span>需关注</span><strong>{{ metrics.attention }}</strong
+        ><small>异常、超时或取消</small>
+      </article>
+      <article class="latency-metric">
+        <span>成功任务中位耗时</span>
+        <strong>{{ formatDuration(metrics.medianDuration) }}</strong>
+        <small>{{ metrics.timedSamples }} 个完整时间样本</small>
+      </article>
+    </section>
+
+    <section v-if="!(loading && !jobs.length)" class="task-workspace">
+      <aside class="task-facets" aria-label="任务快速筛选">
+        <div class="facet-heading">
+          <span>QUEUE NAVIGATOR</span>
+          <strong>快速聚焦</strong>
+        </div>
+        <div class="facet-group">
+          <small>状态</small>
           <button
-            class="filter-chip"
+            v-for="option in statusOptions"
+            :key="option.key"
+            :class="{ active: statusFilter === option.key }"
+            @click="statusFilter = option.key"
+          >
+            <span>{{ option.label }}</span
+            ><b>{{ option.count }}</b>
+          </button>
+        </div>
+        <div class="facet-group service-facets">
+          <small>业务功能</small>
+          <button
             :class="{ active: serviceFilter === 'all' }"
             @click="serviceFilter = 'all'"
           >
-            全部 <b>{{ jobs.length }}</b>
+            <span>全部功能</span><b>{{ jobs.length }}</b>
           </button>
           <button
             v-for="option in serviceOptions"
             :key="option.key"
-            class="filter-chip"
             :class="{ active: serviceFilter === option.key }"
             @click="serviceFilter = option.key"
           >
-            {{ option.label }} <b>{{ option.count }}</b>
+            <span>{{ option.label }}</span
+            ><b>{{ option.count }}</b>
           </button>
         </div>
-        <div class="filter-grid">
-          <label class="search-control">
-            <span>搜索任务</span>
+        <div class="facet-note">
+          <span>数据口径</span>
+          <p>批次以父任务呈现；逐帧证据与产物在详情中按需加载。</p>
+        </div>
+      </aside>
+
+      <div class="task-surface">
+        <header class="surface-heading">
+          <div>
+            <span>LIVE TASK INDEX</span>
+            <h2>任务队列</h2>
+            <p>当前显示 {{ filteredJobs.length }} / {{ jobs.length }} 条记录</p>
+          </div>
+          <button
+            v-if="filteredJobs.length !== jobs.length"
+            class="reset-filter"
+            @click="clearFilters"
+          >
+            重置全部筛选
+          </button>
+        </header>
+
+        <div class="task-toolbar">
+          <label class="command-search">
+            <span>搜索</span>
             <input
               v-model="query"
               type="search"
-              placeholder="任务 ID、业务批次、节点、API…"
+              placeholder="任务 ID、批次、节点或 API"
             />
           </label>
           <label>
@@ -468,7 +600,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             </select>
           </label>
           <label>
-            <span>API</span>
+            <span>API 入口</span>
             <select v-model="apiFilter">
               <option value="all">全部 API</option>
               <option v-for="endpoint in apiOptions" :key="endpoint">
@@ -476,80 +608,58 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
               </option>
             </select>
           </label>
+        </div>
+
+        <div class="result-summary">
+          <span
+            >记录 <strong>{{ visibleStart }}–{{ visibleEnd }}</strong> /
+            {{ filteredJobs.length }}</span
+          >
+          <span>第 {{ currentPage }} / {{ pageCount }} 页</span>
+        </div>
+
+        <JobsTable :jobs="pagedJobs" @select="selectJob" />
+
+        <nav class="jobs-pagination" aria-label="GPU 任务分页">
           <label>
-            <span>状态</span>
-            <select v-model="statusFilter">
-              <option
-                v-for="option in statusOptions"
-                :key="option.key"
-                :value="option.key"
-              >
-                {{ option.label }} · {{ option.count }}
-              </option>
+            每页
+            <select v-model.number="pageSize">
+              <option :value="20">20</option>
+              <option :value="50">50</option>
+              <option :value="100">100</option>
             </select>
           </label>
-          <button class="clear-filter" @click="clearFilters">清除筛选</button>
-        </div>
+          <button :disabled="currentPage <= 1" @click="currentPage--">
+            ← 上一页
+          </button>
+          <button :disabled="currentPage >= pageCount" @click="currentPage++">
+            下一页 →
+          </button>
+        </nav>
       </div>
-
-      <div class="result-summary">
-        <span>
-          显示 <strong>{{ visibleStart }}–{{ visibleEnd }}</strong> /
-          {{ filteredJobs.length }}
-          条
-        </span>
-        <span v-if="filteredJobs.length !== jobs.length">
-          已从 {{ jobs.length }} 条任务中筛选
-        </span>
-      </div>
-
-      <JobsTable :jobs="pagedJobs" @select="selectJob" />
-
-      <nav class="jobs-pagination" aria-label="GPU 任务分页">
-        <span>第 {{ currentPage }} / {{ pageCount }} 页</span>
-        <label>
-          每页
-          <select v-model.number="pageSize">
-            <option :value="20">20</option>
-            <option :value="50">50</option>
-            <option :value="100">100</option>
-          </select>
-        </label>
-        <button
-          class="secondary"
-          :disabled="currentPage <= 1"
-          @click="currentPage--"
-        >
-          上一页
-        </button>
-        <button
-          class="secondary"
-          :disabled="currentPage >= pageCount"
-          @click="currentPage++"
-        >
-          下一页
-        </button>
-      </nav>
     </section>
 
     <div
       v-if="selectedJob"
       class="panel-backdrop task-backdrop"
-      @click.self="selectedJob = null"
+      @click.self="clearSelectedJob()"
     >
       <aside
+        ref="taskDrawer"
         class="task-drawer"
         :class="{ 'batch-drawer': isBatch }"
         role="dialog"
         aria-modal="true"
-        aria-label="任务详情"
+        aria-labelledby="task-drawer-title"
+        tabindex="-1"
+        @keydown.esc.stop.prevent="clearSelectedJob()"
       >
         <header>
           <div>
             <span class="eyebrow">{{
               isBatch ? "父批次详情" : "独立任务详情"
             }}</span>
-            <h2>
+            <h2 id="task-drawer-title">
               {{ selectedJob.external_batch_id || selectedJob.job_id }}
             </h2>
             <p>
@@ -560,7 +670,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
           <button
             class="icon-button"
             aria-label="关闭"
-            @click="selectedJob = null"
+            @click="clearSelectedJob()"
           >
             ×
           </button>
@@ -850,12 +960,12 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 
 <style scoped>
 .jobs-operations-page {
-  --task-panel: #11141f;
-  --task-panel-raised: #171a27;
-  --task-line: #2b3040;
-  --task-muted: #929bad;
-  --task-pink: #e34eb2;
-  --task-purple: #a550f2;
+  --task-panel: #0c171e;
+  --task-panel-raised: #102029;
+  --task-line: rgba(173, 218, 232, 0.14);
+  --task-muted: #8da2ad;
+  --task-pink: #50cfee;
+  --task-purple: #20b8e2;
   padding-bottom: 50px;
 }
 
@@ -871,7 +981,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 .section-eyebrow {
   display: block;
   margin-bottom: 8px;
-  color: #e660bc;
+  color: #50cfee;
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.14em;
@@ -915,8 +1025,8 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 
 .view-switch a.router-link-active {
   color: #fff3fc;
-  border-color: rgb(223 76 178 / 28%);
-  background: rgb(223 76 178 / 10%);
+  border-color: rgb(80 207 238 / 28%);
+  background: rgb(80 207 238 / 10%);
 }
 
 .hero-actions {
@@ -946,7 +1056,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 }
 
 .refresh-copy i.spinning {
-  background: #df4cb4;
+  background: #50cfee;
   animation: task-pulse 900ms infinite alternate;
 }
 
@@ -1000,13 +1110,13 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 .task-metrics .accent-metric {
   background: linear-gradient(
     135deg,
-    rgb(156 65 223 / 15%),
-    rgb(223 76 178 / 8%)
+    rgb(32 184 226 / 15%),
+    rgb(80 207 238 / 8%)
   );
 }
 
 .task-metrics .accent-metric strong {
-  color: #f36cc3;
+  color: #77def4;
 }
 
 .task-center {
@@ -1082,16 +1192,16 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 
 .filter-chip.active {
   color: #fff4fc;
-  border-color: rgb(223 76 178 / 45%);
+  border-color: rgb(80 207 238 / 45%);
   background: linear-gradient(
     110deg,
-    rgb(160 75 235 / 23%),
-    rgb(223 76 178 / 16%)
+    rgb(32 184 226 / 23%),
+    rgb(80 207 238 / 16%)
   );
 }
 
 .filter-chip.active b {
-  color: #f08ccf;
+  color: #8ce5f8;
 }
 
 .filter-grid {
@@ -1133,8 +1243,8 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 
 .filter-grid input:focus,
 .filter-grid select:focus {
-  border-color: #c352e4;
-  box-shadow: 0 0 0 3px rgb(195 82 228 / 10%);
+  border-color: #50cfee;
+  box-shadow: 0 0 0 3px rgb(80 207 238 / 10%);
 }
 
 .clear-filter {
@@ -1460,6 +1570,782 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
   .task-facts {
     margin-right: 18px;
     margin-left: 18px;
+  }
+}
+
+/* WebUI 2.0 · task operations workspace */
+.jobs-operations-page {
+  --ops-bg: #081116;
+  --ops-surface: #0c181e;
+  --ops-surface-2: #102129;
+  --ops-line: rgb(166 215 226 / 13%);
+  --ops-line-strong: rgb(166 215 226 / 23%);
+  --ops-text: #eef6f7;
+  --ops-muted: #81949a;
+  --ops-cyan: #58d4e8;
+  --ops-green: #66d7a5;
+  --ops-amber: #e7b85b;
+  position: relative;
+  isolation: isolate;
+  padding-bottom: 56px;
+}
+
+.jobs-operations-page::before {
+  position: absolute;
+  z-index: -1;
+  top: -42px;
+  right: -40px;
+  width: 420px;
+  height: 280px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgb(57 184 205 / 12%), transparent 68%);
+  content: "";
+  pointer-events: none;
+}
+
+.ops-command-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 40px;
+  margin-bottom: 24px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--ops-line);
+}
+
+.ops-heading {
+  min-width: 0;
+}
+
+.ops-kicker {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 12px;
+  color: #779096;
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.14em;
+}
+
+.ops-kicker i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--ops-cyan);
+}
+
+.ops-kicker b {
+  color: var(--ops-cyan);
+  font-weight: inherit;
+}
+
+.ops-command-header h1 {
+  margin: 0;
+  color: var(--ops-text);
+  font-size: clamp(34px, 3.4vw, 50px);
+  font-weight: 680;
+  letter-spacing: -0.045em;
+  line-height: 1;
+}
+
+.ops-command-header p {
+  max-width: 720px;
+  margin: 13px 0 0;
+  color: #90a2a8;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.ops-view-switch {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  margin-top: 22px;
+  padding: 4px;
+  border: 1px solid var(--ops-line);
+  border-radius: 10px;
+  background: rgb(5 14 18 / 68%);
+}
+
+.ops-view-switch a {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 14px;
+  color: #82969c;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 650;
+  text-decoration: none;
+  transition: 160ms ease;
+}
+
+.ops-view-switch a span {
+  color: #52656b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+
+.ops-view-switch a:hover {
+  color: #cbdadd;
+  background: rgb(255 255 255 / 3%);
+}
+
+.ops-view-switch a.router-link-active {
+  color: #eaf9fa;
+  background: #152930;
+  box-shadow: inset 0 0 0 1px rgb(88 212 232 / 17%);
+}
+
+.ops-view-switch a.router-link-active span {
+  color: var(--ops-cyan);
+}
+
+.ops-header-tools {
+  display: grid;
+  justify-items: end;
+  gap: 14px;
+}
+
+.ops-header-tools .scope-tabs {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--ops-line);
+  border-radius: 9px;
+  background: #09151a;
+}
+
+.ops-header-tools .scope-tabs button {
+  min-height: 34px;
+  padding: 0 13px;
+  color: #73888e;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 680;
+  cursor: pointer;
+}
+
+.ops-header-tools .scope-tabs button.active {
+  color: #dff7f8;
+  background: #183039;
+}
+
+.sync-state {
+  display: flex;
+  min-width: 285px;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 10px 10px 13px;
+  border: 1px solid var(--ops-line);
+  border-radius: 10px;
+  background: #0a161b;
+}
+
+.sync-state > i {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ops-green);
+  box-shadow: 0 0 0 4px rgb(102 215 165 / 9%);
+}
+
+.sync-state > i.spinning {
+  background: var(--ops-cyan);
+  animation: task-pulse 900ms infinite alternate;
+}
+
+.sync-state > span {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  color: #c6d5d8;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.sync-state small {
+  color: #62777d;
+  font-size: 10px;
+  font-weight: 520;
+}
+
+.sync-button,
+.ops-alert button,
+.reset-filter,
+.jobs-pagination button {
+  border: 1px solid var(--ops-line-strong);
+  border-radius: 7px;
+  background: #112229;
+  color: #bad1d5;
+  font-size: 12px;
+  font-weight: 680;
+  cursor: pointer;
+}
+
+.sync-button {
+  min-height: 32px;
+  padding: 0 11px;
+}
+
+.sync-button:disabled,
+.jobs-pagination button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.ops-alert {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 13px;
+  margin-bottom: 18px;
+  padding: 13px 14px;
+  color: #f4d7d5;
+  border: 1px solid rgb(238 120 110 / 28%);
+  border-radius: 10px;
+  background: rgb(95 31 29 / 20%);
+}
+
+.ops-alert > span {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  color: #ffaaa2;
+  border-radius: 8px;
+  background: rgb(238 120 110 / 13%);
+  font-weight: 800;
+}
+
+.ops-alert div {
+  display: grid;
+  gap: 3px;
+}
+
+.ops-alert strong {
+  font-size: 13px;
+}
+
+.ops-alert small {
+  color: #b8908d;
+  font-size: 11px;
+}
+
+.ops-alert button {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+.initial-loading {
+  display: flex;
+  min-height: 360px;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: #84979d;
+  border: 1px solid var(--ops-line);
+  border-radius: 14px;
+  background: linear-gradient(145deg, #0b171c, #0d1c22);
+  font-size: 13px;
+}
+
+.initial-loading i {
+  width: 15px;
+  height: 15px;
+  border: 2px solid rgb(88 212 232 / 18%);
+  border-top-color: var(--ops-cyan);
+  border-radius: 50%;
+  animation: ops-spin 900ms linear infinite;
+}
+
+@keyframes ops-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.task-overview {
+  display: grid;
+  grid-template-columns: minmax(250px, 1.35fr) repeat(4, minmax(145px, 0.75fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.task-overview article {
+  display: flex;
+  min-height: 112px;
+  flex-direction: column;
+  justify-content: center;
+  padding: 18px 20px;
+  border: 1px solid var(--ops-line);
+  border-radius: 11px;
+  background: linear-gradient(150deg, #0d1a20, #0a151a);
+}
+
+.task-overview article > span,
+.task-overview article small {
+  color: var(--ops-muted);
+  font-size: 11px;
+}
+
+.task-overview article > strong {
+  margin: 9px 0 7px;
+  color: var(--ops-text);
+  font-size: 26px;
+  font-weight: 670;
+  letter-spacing: -0.035em;
+}
+
+.task-overview .overview-primary {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 13px;
+  background: linear-gradient(135deg, #11242b, #0b171c);
+}
+
+.overview-primary > div:first-child {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.overview-primary > div:first-child span {
+  color: #a6b7bb;
+  font-size: 11px;
+}
+
+.overview-primary > div:first-child strong {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  color: var(--ops-cyan);
+  font-size: 38px;
+  font-weight: 620;
+  line-height: 1;
+}
+
+.overview-primary > div:first-child small {
+  color: #61767c;
+  font-size: 10px;
+}
+
+.overview-composition {
+  display: flex;
+  height: 5px;
+  overflow: hidden;
+  gap: 2px;
+  border-radius: 99px;
+  background: #1a2a30;
+}
+
+.overview-composition i {
+  height: 100%;
+}
+.overview-composition .active {
+  background: var(--ops-cyan);
+}
+.overview-composition .queued {
+  background: var(--ops-amber);
+}
+.overview-composition .success {
+  background: var(--ops-green);
+}
+.overview-composition .attention {
+  background: #e87971;
+}
+
+.task-overview .latency-metric strong {
+  color: #b8eef4;
+  font-size: 20px;
+}
+
+.task-workspace {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--ops-line);
+  border-radius: 14px;
+  background: #091419;
+  box-shadow: 0 24px 70px rgb(0 0 0 / 18%);
+}
+
+.task-facets {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  padding: 18px 12px;
+  border-right: 1px solid var(--ops-line);
+  background: #0a161b;
+}
+
+.facet-heading {
+  display: grid;
+  gap: 5px;
+  padding: 2px 8px 17px;
+  border-bottom: 1px solid var(--ops-line);
+}
+
+.facet-heading span,
+.surface-heading > div > span {
+  color: var(--ops-cyan);
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: 0.15em;
+}
+
+.facet-heading strong {
+  color: #d9e6e8;
+  font-size: 14px;
+}
+
+.facet-group {
+  display: grid;
+  gap: 4px;
+  padding: 16px 0 0;
+}
+
+.facet-group > small {
+  padding: 0 8px 6px;
+  color: #596d73;
+  font-size: 9px;
+  font-weight: 740;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.facet-group button {
+  display: flex;
+  min-height: 35px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 8px 0 10px;
+  color: #81969c;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.facet-group button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.facet-group button b {
+  min-width: 25px;
+  padding: 3px 6px;
+  color: #61767c;
+  border-radius: 99px;
+  background: #101f25;
+  font-size: 10px;
+  text-align: center;
+}
+
+.facet-group button:hover {
+  color: #c6d7da;
+  background: rgb(255 255 255 / 2.5%);
+}
+
+.facet-group button.active {
+  color: #e4f6f7;
+  border-color: rgb(88 212 232 / 18%);
+  background: rgb(88 212 232 / 8%);
+}
+
+.facet-group button.active b {
+  color: var(--ops-cyan);
+  background: rgb(88 212 232 / 10%);
+}
+
+.facet-note {
+  margin-top: auto;
+  padding: 16px 8px 2px;
+  color: #63777d;
+  border-top: 1px solid var(--ops-line);
+}
+
+.facet-note span {
+  color: #80949a;
+  font-size: 10px;
+  font-weight: 720;
+}
+
+.facet-note p {
+  margin: 6px 0 0;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.task-surface {
+  min-width: 0;
+  padding: 20px;
+  background: #0b171c;
+}
+
+.surface-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.surface-heading h2 {
+  margin: 5px 0 0;
+  color: var(--ops-text);
+  font-size: 21px;
+  font-weight: 650;
+}
+
+.surface-heading p {
+  margin: 6px 0 0;
+  color: #71868c;
+  font-size: 11px;
+}
+
+.reset-filter {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+.task-toolbar {
+  display: grid;
+  grid-template-columns: minmax(240px, 1.4fr) repeat(2, minmax(170px, 0.75fr));
+  align-items: end;
+  gap: 9px;
+  padding: 11px;
+  border: 1px solid var(--ops-line);
+  border-radius: 10px;
+  background: #091419;
+}
+
+.task-toolbar label {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.task-toolbar label > span {
+  color: #60757b;
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.08em;
+}
+
+.task-toolbar input,
+.task-toolbar select,
+.jobs-pagination select {
+  width: 100%;
+  height: 37px;
+  min-width: 0;
+  padding: 0 11px;
+  color: #d8e5e7;
+  border: 1px solid var(--ops-line);
+  border-radius: 7px;
+  outline: none;
+  background: #0e1c22;
+  font-size: 11px;
+}
+
+.task-toolbar input:focus,
+.task-toolbar select:focus {
+  border-color: rgb(88 212 232 / 45%);
+  box-shadow: 0 0 0 3px rgb(88 212 232 / 7%);
+}
+
+.result-summary {
+  min-height: 44px;
+  color: #657a80;
+  font-size: 10px;
+}
+
+.result-summary strong {
+  color: #c3d5d8;
+}
+
+.task-surface :deep(.task-list-panel) {
+  border-color: var(--ops-line);
+  border-radius: 10px;
+  background: #0a151a;
+  box-shadow: none;
+}
+
+.task-surface :deep(.task-table th) {
+  color: #6f8389;
+  border-color: var(--ops-line);
+  background: #081217;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+}
+
+.task-surface :deep(.task-table td),
+.task-surface :deep(.task-row td:last-child) {
+  color: #c9d7da;
+  border-color: var(--ops-line);
+  background: #0c191e;
+}
+
+.task-surface :deep(.task-row:hover td),
+.task-surface :deep(.task-row:focus td),
+.task-surface :deep(.task-row:hover td:last-child),
+.task-surface :deep(.task-row:focus td:last-child) {
+  background: #112229;
+}
+
+.task-surface :deep(.task-name),
+.task-surface :deep(.duration-primary) {
+  color: #dff5f7;
+}
+
+.task-surface :deep(.detail-button) {
+  color: var(--ops-cyan);
+  border-color: rgb(88 212 232 / 20%);
+  background: rgb(88 212 232 / 6%);
+}
+
+.jobs-pagination {
+  min-height: 52px;
+  justify-content: flex-end;
+  padding-top: 13px;
+  color: #657a80;
+  font-size: 10px;
+}
+
+.jobs-pagination button {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+.jobs-pagination select {
+  width: 68px;
+  height: 34px;
+}
+
+@media (max-width: 1260px) {
+  .task-overview {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .task-overview .overview-primary {
+    grid-column: span 2;
+  }
+
+  .task-overview .latency-metric {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 980px) {
+  .ops-command-header {
+    grid-template-columns: 1fr;
+  }
+
+  .ops-header-tools {
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    justify-items: stretch;
+  }
+
+  .task-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .task-facets {
+    display: grid;
+    grid-template-columns: 150px minmax(0, 1fr);
+    gap: 10px;
+    border-right: 0;
+    border-bottom: 1px solid var(--ops-line);
+  }
+
+  .facet-heading,
+  .facet-note {
+    display: none;
+  }
+
+  .facet-group {
+    display: flex;
+    align-items: center;
+    overflow-x: auto;
+    padding: 0;
+  }
+
+  .facet-group > small {
+    flex: none;
+  }
+
+  .facet-group button {
+    flex: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .ops-command-header h1 {
+    font-size: 34px;
+  }
+
+  .ops-view-switch {
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .ops-view-switch a {
+    flex: none;
+  }
+
+  .ops-header-tools {
+    grid-template-columns: 1fr;
+    justify-items: stretch;
+  }
+
+  .sync-state {
+    min-width: 0;
+  }
+
+  .ops-alert {
+    grid-template-columns: 30px minmax(0, 1fr);
+  }
+
+  .ops-alert button {
+    grid-column: 1 / -1;
+  }
+
+  .task-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .task-overview .overview-primary,
+  .task-overview .latency-metric {
+    grid-column: 1 / -1;
+  }
+
+  .task-facets {
+    grid-template-columns: 1fr;
+  }
+
+  .task-surface {
+    padding: 13px;
+  }
+
+  .task-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .surface-heading {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 </style>

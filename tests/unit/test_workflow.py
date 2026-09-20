@@ -146,3 +146,37 @@ def test_node_compatibility_reports_missing_classes_and_labels() -> None:
         "label pipeline must equal expected",
         "missing ComfyUI classes: SaveImage",
     ]
+
+
+def test_node_workflow_allowlist_is_an_authoritative_compatibility_gate() -> None:
+    common = {
+        "min_vram_mb": 0,
+        "required_labels": {},
+        "allowed_class_types": {"SaveImage"},
+        "total_vram_mb": 32768,
+        "reported_labels": {
+            "workflow_allowlist": ["modelview-inpaint"],
+            "comfy_class_types": ["SaveImage"],
+        },
+    }
+
+    assert node_compatibility_reasons(
+        **common, workflow_key="modelview-inpaint"
+    ) == []
+    assert node_compatibility_reasons(
+        **common, workflow_key="modelview-roughness"
+    ) == ["workflow modelview-roughness is not allowed by node policy"]
+
+
+def test_malformed_node_workflow_allowlist_fails_closed() -> None:
+    assert node_compatibility_reasons(
+        min_vram_mb=0,
+        required_labels={},
+        allowed_class_types={"SaveImage"},
+        total_vram_mb=32768,
+        reported_labels={
+            "workflow_allowlist": "modelview-inpaint",
+            "comfy_class_types": ["SaveImage"],
+        },
+        workflow_key="modelview-inpaint",
+    ) == ["workflow modelview-inpaint is not allowed by node policy"]

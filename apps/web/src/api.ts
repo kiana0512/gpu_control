@@ -5,11 +5,33 @@ import type {
   JobInfo,
   NodeInfo,
   AssetProcessingOverview,
+  CloudServerOverview,
+  CloudOperationInfo,
+  CloudScheduleResult,
+  CloudSshCredentials,
+  CloudStateResult,
 } from "./types";
 
 const TOKEN_KEY = "gpu-control-session";
 const REFRESH_TOKEN_KEY = "gpu-control-refresh";
 const TOKEN_EXPIRES_KEY = "gpu-control-session-expires";
+const ROLE_KEY = "gpu-control-session-role";
+const REQUEST_TIMEOUT_MS = 20_000;
+
+function roleFromAccessToken(token: string | null) {
+  if (!token) return null;
+  try {
+    const encoded = token.split(".")[1];
+    if (!encoded) return null;
+    const normalized = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const payload = JSON.parse(atob(padded)) as { role?: unknown };
+    return typeof payload.role === "string" ? payload.role : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface AdminSession {
   access_token: string;
   refresh_token: string;
@@ -19,6 +41,9 @@ export interface AdminSession {
 export const session = {
   get: () => sessionStorage.getItem(TOKEN_KEY),
   refresh: () => sessionStorage.getItem(REFRESH_TOKEN_KEY),
+  role: () =>
+    sessionStorage.getItem(ROLE_KEY) ??
+    roleFromAccessToken(sessionStorage.getItem(TOKEN_KEY)),
   needsRefresh: () =>
     Number(sessionStorage.getItem(TOKEN_EXPIRES_KEY) ?? 0) <=
     Date.now() + 60_000,
@@ -29,11 +54,13 @@ export const session = {
       TOKEN_EXPIRES_KEY,
       String(Date.now() + value.expires_in * 1000),
     );
+    sessionStorage.setItem(ROLE_KEY, value.role);
   },
   clear: () => {
     sessionStorage.removeItem(TOKEN_KEY);
     sessionStorage.removeItem(REFRESH_TOKEN_KEY);
     sessionStorage.removeItem(TOKEN_EXPIRES_KEY);
+    sessionStorage.removeItem(ROLE_KEY);
   },
 };
 
@@ -77,7 +104,18 @@ async function request<T>(
   if (token) headers.set("Authorization", `Bearer ${token}`);
   if (options.body && !(options.body instanceof FormData))
     headers.set("Content-Type", "application/json");
-  const response = await fetch(path, { ...options, headers });
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      ...options,
+      headers,
+      signal: options.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === "TimeoutError")
+      throw new Error("请求超时，请稍后重试");
+    throw cause;
+  }
   if (response.status === 401 && token && retryAfterRefresh) {
     if (await refreshSession()) return request<T>(path, options, false);
     session.clear();
@@ -118,9 +156,12 @@ export const api = {
     status?: string,
     clientKind: "production" | "test" | "all" = "production",
     limit = 500,
+    includePerformance = false,
   ) => {
     const query = new URLSearchParams({ client_kind: clientKind });
     query.set("limit", String(limit));
+    query.set("detail", "summary");
+    if (includePerformance) query.set("include_performance", "true");
     if (status) query.set("status", status);
     return request<JobInfo[]>(`/admin/jobs?${query.toString()}`);
   },
@@ -131,6 +172,70 @@ export const api = {
       `/admin/batches/${encodeURIComponent(id)}/items?offset=${offset}&limit=${limit}`,
     ),
   nodes: () => request<NodeInfo[]>("/admin/nodes"),
+  cloudServers: (force = false) =>
+    request<CloudServerOverview>(
+      `/admin/providers/autodl?force=${force ? "true" : "false"}`,
+    ),
+  cloudOperation: (id: string) =>
+    request<Omit<CloudOperationInfo, "id">>(
+      `/admin/providers/autodl/operations/${encodeURIComponent(id)}`,
+    ).then((operation) => ({ ...operation, id: operation.operation_id })),
+  updateCloudSchedule: (
+    product: "app" | "pro",
+    id: string,
+    scheduledStartAt: string | null,
+    scheduledStopAt: string | null,
+  ) =>
+    request<CloudScheduleResult>(
+      `/admin/providers/autodl/instances/${product}/${encodeURIComponent(id)}/schedule`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          scheduled_start_at: scheduledStartAt,
+          scheduled_stop_at: scheduledStopAt,
+          reason:
+            scheduledStartAt || scheduledStopAt
+              ? "管理员从云服务器控制台更新定时启停计划"
+              : "管理员从云服务器控制台清除定时启停计划",
+          confirm: true,
+        }),
+      },
+    ),
+  startCloudInstance: (product: "app" | "pro", id: string) =>
+    request<CloudStateResult>(
+      `/admin/providers/autodl/instances/${product}/${encodeURIComponent(id)}/start`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({
+          reason: "管理员从云服务器控制台启动实例",
+          confirm: true,
+        }),
+      },
+    ),
+  stopCloudInstance: (product: "app" | "pro", id: string) =>
+    request<CloudStateResult>(
+      `/admin/providers/autodl/instances/${product}/${encodeURIComponent(id)}/stop`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({
+          reason: "管理员从云服务器控制台关闭实例",
+          confirm: true,
+        }),
+      },
+    ),
+  cloudSshCredentials: (product: "app" | "pro", id: string) =>
+    request<CloudSshCredentials>(
+      `/admin/providers/autodl/instances/${product}/${encodeURIComponent(id)}/ssh-credentials`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          reason: "管理员从云服务器控制台请求临时 SSH 凭据",
+          confirm: true,
+        }),
+      },
+    ),
   assetProcessing: (limit = 500) =>
     request<AssetProcessingOverview>(
       `/admin/asset-processing?limit=${encodeURIComponent(limit)}`,

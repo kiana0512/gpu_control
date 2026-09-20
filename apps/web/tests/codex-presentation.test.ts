@@ -4,6 +4,7 @@ import {
   codexHealthMessage,
   codexRuntimeState,
   healthyCodexProbeAverage,
+  isCodexRuntimeNode,
 } from "../src/codexPresentation";
 import type { NodeInfo } from "../src/types";
 
@@ -38,6 +39,26 @@ function node(
 }
 
 describe("Codex runtime presentation", () => {
+  it("keeps inference-only AutoDL nodes out of the Codex runtime workspace", () => {
+    expect(isCodexRuntimeNode({ labels: { provider: "autodl" } })).toBe(false);
+    expect(isCodexRuntimeNode({ labels: { provider: "AutoDL" } })).toBe(false);
+    expect(
+      isCodexRuntimeNode({
+        labels: { provider: "autodl", codex_runtime_enabled: false },
+      }),
+    ).toBe(false);
+    expect(
+      isCodexRuntimeNode({
+        labels: { provider: "autodl", codex_runtime_enabled: true },
+      }),
+    ).toBe(true);
+    expect(isCodexRuntimeNode({ labels: { provider: "local" } })).toBe(true);
+    expect(
+      isCodexRuntimeNode({
+        labels: { provider: "local", codex_runtime_enabled: false },
+      }),
+    ).toBe(false);
+  });
   it("shows newly registered nodes without suggesting CLI installation proves authorization", () => {
     expect(codexRuntimeState({}, now).key).toBe("unregistered");
     const missing = node({

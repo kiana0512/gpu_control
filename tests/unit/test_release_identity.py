@@ -40,7 +40,7 @@ def test_control_plane_build_defaults_match_release_version() -> None:
     assert f"GPU_CONTROL_VERSION={expected_version}" in environment
 
     compose = (REPOSITORY / "deploy/control-plane/compose.yaml").read_text(encoding="utf-8")
-    assert compose.count(f"GPU_CONTROL_VERSION: ${{GPU_CONTROL_VERSION:-{expected_version}}}") == 3
+    assert compose.count(f"GPU_CONTROL_VERSION: ${{GPU_CONTROL_VERSION:-{expected_version}}}") == 4
     assert f"gpu-control-api:${{APP_IMAGE_TAG:-{expected_version}}}" in compose
     assert f"gpu-control-scheduler:${{SCHEDULER_IMAGE_TAG:-{expected_version}}}" in compose
     assert f"gpu-control-web:${{WEB_IMAGE_TAG:-{expected_version}}}" in compose
@@ -61,6 +61,7 @@ def test_worker_release_versions_and_evidence_contract_are_aligned() -> None:
     assert len(set(versions.values())) == 1
     assert REQUIRED_IMAGE_COMPONENTS == {
         "api",
+        "provider-controller",
         "scheduler",
         "asset-api",
         "web",

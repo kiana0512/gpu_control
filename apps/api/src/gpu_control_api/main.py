@@ -19,7 +19,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Annotated, Any, Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 import jwt
@@ -28,7 +28,9 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from redis.asyncio import Redis
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, text
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -81,6 +83,8 @@ from packages.gpu_control_core.models import (
     JobEvent,
     Node,
     NodeLease,
+    ProviderInstance,
+    ProviderOperation,
     RateLimitPolicy,
     SystemSetting,
     Workflow,
@@ -139,6 +143,14 @@ def sha256_file(path: Path) -> str:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def utc_aware(value: datetime) -> datetime:
+    """Normalize PostgreSQL-aware and SQLite-naive timestamps to UTC."""
+
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def is_postgres_lock_not_available(exc: DBAPIError) -> bool:
@@ -240,6 +252,28 @@ def runtime_version_metadata() -> dict[str, Any]:
     }
 
 
+def provider_operation_request(
+    product: Literal["app", "pro"],
+    instance_id: str,
+    desired_state: Literal["running", "stopped"],
+    operation_id: str,
+    *,
+    should_dispatch: bool,
+    bootstrap_profile: str | None,
+) -> tuple[Literal["GET", "POST"], str, dict[str, str] | None]:
+    """Build one fenced provider request without ever carrying a shell command."""
+
+    path = f"/internal/v1/providers/autodl/instances/{product}/{instance_id}/state"
+    if not should_dispatch:
+        return "GET", path, None
+    payload = {"desired_state": desired_state, "correlation_id": operation_id}
+    if desired_state == "running" and bootstrap_profile is not None:
+        if bootstrap_profile != "comfyui-6006-v1":
+            raise ValueError("AutoDL bootstrap profile is not allowlisted")
+        payload["bootstrap_profile"] = bootstrap_profile
+    return "POST", path, payload
+
+
 class Principal(BaseModel):
     id: str
     role: str
@@ -306,6 +340,22 @@ class RetryRequest(BaseModel):
     confirm: bool
 
 
+class ProviderScheduleRequest(BaseModel):
+    scheduled_start_at: datetime | None = None
+    scheduled_stop_at: datetime | None = None
+    reason: str = Field(min_length=3, max_length=500)
+    confirm: bool
+
+    @field_validator("scheduled_start_at", "scheduled_stop_at")
+    @classmethod
+    def require_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("定时启停时间必须包含时区")
+        return value.astimezone(UTC)
+
+
 class BatchCancelRequest(BaseModel):
     reason: str = Field(default="client_request", min_length=3, max_length=500)
 
@@ -337,7 +387,8 @@ class ClientCreateRequest(BaseModel):
     client_kind: Literal["production", "test"] = "production"
     max_queued: int = Field(20, ge=1, le=10_000)
     max_running: int = Field(1, ge=1, le=10)
-    daily_quota: int = Field(1000, ge=1, le=1_000_000)
+    # Compatibility field: daily admission quotas are disabled globally.
+    daily_quota: int = Field(0, ge=0, le=1_000_000)
     weight: int = Field(1, ge=1, le=100)
     allowed_ips: list[str] = Field(default_factory=list)
     callback_hosts: list[str] = []
@@ -362,7 +413,7 @@ class ClientUpdateRequest(BaseModel):
     enabled: bool = True
     max_queued: int = Field(20, ge=1, le=10_000)
     max_running: int = Field(1, ge=1, le=10)
-    daily_quota: int = Field(1000, ge=1, le=1_000_000)
+    daily_quota: int = Field(0, ge=0, le=1_000_000)
     weight: int = Field(1, ge=1, le=100)
     allowed_ips: list[str] = Field(default_factory=list)
     callback_hosts: list[str] = Field(default_factory=list)
@@ -488,6 +539,78 @@ async def _notify(app: FastAPI, channel: str, payload: dict[str, Any]) -> None:
         )
 
 
+def _register_job_waiter(app: FastAPI, job_id: str) -> asyncio.Event:
+    """Register one in-process waiter for a durable scheduler job.
+
+    More than one synchronous request can legitimately wait on the same job
+    through an idempotency key, so waiters are a set instead of a single event.
+    Redis is only a wake-up hint: callers always re-read PostgreSQL before
+    returning a result.
+    """
+    waiter = asyncio.Event()
+    waiters: dict[str, set[asyncio.Event]] = app.state.job_terminal_waiters
+    waiters.setdefault(job_id, set()).add(waiter)
+    return waiter
+
+
+def _discard_job_waiter(app: FastAPI, job_id: str, waiter: asyncio.Event) -> None:
+    waiters: dict[str, set[asyncio.Event]] = app.state.job_terminal_waiters
+    registered = waiters.get(job_id)
+    if registered is None:
+        return
+    registered.discard(waiter)
+    if not registered:
+        waiters.pop(job_id, None)
+
+
+def _wake_job_waiters(app: FastAPI, job_id: str) -> None:
+    waiters: dict[str, set[asyncio.Event]] = app.state.job_terminal_waiters
+    for waiter in tuple(waiters.get(job_id, ())):
+        waiter.set()
+
+
+async def job_event_listener_loop(app: FastAPI) -> None:
+    """Wake synchronous API calls from scheduler events instead of polling at 1 Hz.
+
+    The event channel is deliberately advisory.  Reconnects and missed
+    messages are handled by the caller's periodic database read, preserving
+    PostgreSQL as the sole source of truth while removing the usual 0--1 s
+    terminal polling tail.
+    """
+    while True:
+        redis: Redis | None = getattr(app.state, "redis", None)
+        if redis is None:
+            await asyncio.sleep(1)
+            continue
+        try:
+            async with redis.pubsub() as pubsub:
+                await pubsub.subscribe("gpu-control:events")
+                while True:
+                    message = await pubsub.get_message(
+                        ignore_subscribe_messages=True,
+                        timeout=1,
+                    )
+                    if not message:
+                        await asyncio.sleep(0)
+                        continue
+                    try:
+                        payload = json.loads(str(message.get("data") or "{}"))
+                    except (TypeError, ValueError):
+                        continue
+                    job_id = payload.get("job_id") if isinstance(payload, dict) else None
+                    if isinstance(job_id, str) and job_id:
+                        _wake_job_waiters(app, job_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger().warning(
+                "redis.job_event_listener_failed",
+                error_code="REDIS_UNAVAILABLE",
+                error_type=type(exc).__name__,
+            )
+            await asyncio.sleep(0.25)
+
+
 def substance_gpu_interlock(node: Node, now: datetime) -> dict[str, Any]:
     """Describe durable native-Baker interlocks without mutating ownership."""
 
@@ -513,9 +636,7 @@ def take_operator_drain_ownership(node: Node) -> bool:
     return owned
 
 
-def clear_idle_substance_specialization_on_manual_active(
-    node: Node, now: datetime
-) -> bool:
+def clear_idle_substance_specialization_on_manual_active(node: Node, now: datetime) -> bool:
     """Let an explicit operator ACTIVE action end only the soft Baker hold.
 
     Pending reservations, active Baker fences, recovery-required state and an
@@ -544,6 +665,63 @@ def clear_idle_substance_specialization_on_manual_active(
     return True
 
 
+async def _ensure_provider_instance(
+    db: AsyncSession,
+    *,
+    provider: str,
+    product: str,
+    instance_id: str,
+    with_for_update: bool = False,
+) -> ProviderInstance:
+    """Atomically create a provider row, then return the durable winner."""
+    values = {
+        "provider": provider,
+        "product": product,
+        "instance_id": instance_id,
+    }
+    dialect_name = db.bind.dialect.name if db.bind is not None else ""
+    conflict_columns = ("provider", "product", "instance_id")
+    if dialect_name == "postgresql":
+        await db.execute(
+            postgresql_insert(ProviderInstance)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=conflict_columns)
+        )
+    elif dialect_name == "sqlite":
+        await db.execute(
+            sqlite_insert(ProviderInstance)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=conflict_columns)
+        )
+    else:
+        instance = await db.scalar(
+            select(ProviderInstance).where(
+                ProviderInstance.provider == provider,
+                ProviderInstance.product == product,
+                ProviderInstance.instance_id == instance_id,
+            )
+        )
+        if instance is None:
+            try:
+                async with db.begin_nested():
+                    db.add(ProviderInstance(**values))
+                    await db.flush()
+            except IntegrityError:
+                pass
+
+    query = select(ProviderInstance).where(
+        ProviderInstance.provider == provider,
+        ProviderInstance.product == product,
+        ProviderInstance.instance_id == instance_id,
+    )
+    if with_for_update:
+        query = query.with_for_update()
+    instance = await db.scalar(query)
+    if instance is None:
+        raise RuntimeError("Provider instance upsert did not produce a durable row")
+    return instance
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     cfg = settings or get_settings()
 
@@ -554,19 +732,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.db = Database(cfg)
         app.state.storage = LocalJobStorage(cfg.job_root)
         app.state.redis = Redis.from_url(cfg.redis_url, decode_responses=True)
+        app.state.provider_http = httpx.AsyncClient(
+            base_url=cfg.provider_controller_url,
+            timeout=httpx.Timeout((cfg.autodl_read_retries + 2) * cfg.autodl_timeout_seconds + 10),
+            follow_redirects=False,
+        )
         app.state.tenant_locks = {}
         app.state.node_heartbeat_nonces = {}
+        app.state.job_terminal_waiters = {}
+        app.state.provider_reconcile_event = asyncio.Event()
+        app.state.provider_inventory_sync_at = 0.0
         try:
             await app.state.redis.ping()
         except Exception:
             await app.state.redis.aclose()
             app.state.redis = None
+        app.state.job_event_listener_task = (
+            asyncio.create_task(job_event_listener_loop(app))
+            if app.state.redis is not None
+            else None
+        )
         app.state.alert_delivery_task = asyncio.create_task(alert_delivery_loop(app))
+        app.state.provider_reconcile_task = (
+            asyncio.create_task(provider_reconcile_loop(app)) if cfg.autodl_enabled else None
+        )
+        app.state.provider_inventory_sync_task = (
+            asyncio.create_task(provider_inventory_sync_loop(app)) if cfg.autodl_enabled else None
+        )
         yield
         app.state.alert_delivery_task.cancel()
-        await asyncio.gather(app.state.alert_delivery_task, return_exceptions=True)
+        tasks = [app.state.alert_delivery_task]
+        if app.state.job_event_listener_task is not None:
+            app.state.job_event_listener_task.cancel()
+            tasks.append(app.state.job_event_listener_task)
+        if app.state.provider_reconcile_task is not None:
+            app.state.provider_reconcile_task.cancel()
+            tasks.append(app.state.provider_reconcile_task)
+        if app.state.provider_inventory_sync_task is not None:
+            app.state.provider_inventory_sync_task.cancel()
+            tasks.append(app.state.provider_inventory_sync_task)
+        await asyncio.gather(*tasks, return_exceptions=True)
         if app.state.redis is not None:
             await app.state.redis.aclose()
+        await app.state.provider_http.aclose()
         await app.state.db.close()
 
     version_info = runtime_version_metadata()
@@ -703,7 +911,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         client_kind="production",
                         max_queued=cfg.default_tenant_max_queued,
                         max_running=cfg.default_tenant_max_running,
-                        daily_quota=1000,
+                        daily_quota=0,
                         weight=1,
                         allowed_ips=[source_ip],
                         last_seen_ip=source_ip,
@@ -816,6 +1024,88 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 result=result,
             )
         )
+
+    async def provider_controller_request(
+        app_instance: FastAPI,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        query: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        body = (
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
+                "utf-8"
+            )
+            if payload is not None
+            else b""
+        )
+        timestamp = str(int(time.time()))
+        nonce = secrets.token_urlsafe(24)
+        signing_path = path
+        ordered_query = sorted(query.items()) if query else None
+        if ordered_query:
+            signing_path += "?" + urlencode(ordered_query)
+        signature = sign_agent_request(
+            method,
+            signing_path,
+            body,
+            timestamp,
+            nonce,
+            cfg.provider_controller_hmac_secret.get_secret_value(),
+        )
+        try:
+            response = await app_instance.state.provider_http.request(
+                method,
+                path,
+                params=ordered_query,
+                content=body if payload is not None else None,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-GPU-Timestamp": timestamp,
+                    "X-GPU-Nonce": nonce,
+                    "X-GPU-Signature": signature,
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                503,
+                detail={
+                    "code": "PROVIDER_CONTROLLER_UNAVAILABLE",
+                    "message": "云服务器控制服务暂时不可用",
+                },
+            ) from exc
+        try:
+            decoded = response.json() if response.content else {}
+        except ValueError as exc:
+            raise HTTPException(
+                502,
+                detail={
+                    "code": "PROVIDER_INVALID_RESPONSE",
+                    "message": "云服务返回格式无效",
+                },
+            ) from exc
+        if not response.is_success:
+            detail = decoded.get("detail") if isinstance(decoded, dict) else None
+            if not isinstance(detail, dict):
+                detail = {
+                    "code": "AUTODL_PROVIDER_ERROR",
+                    "message": "AutoDL 操作失败",
+                }
+            status_code = response.status_code
+            if status_code in {401, 403}:
+                status_code = 502
+                detail = {
+                    "code": "PROVIDER_CONTROLLER_AUTH_FAILED",
+                    "message": "云服务器控制服务内部鉴权失败",
+                }
+            raise HTTPException(status_code, detail=detail)
+        if not isinstance(decoded, dict):
+            raise HTTPException(
+                502,
+                detail={"code": "PROVIDER_INVALID_RESPONSE", "message": "云服务返回格式无效"},
+            )
+        return decoded
 
     async def append_admin_asset_event(
         db: AsyncSession,
@@ -1019,9 +1309,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 }
             )
             dcgm_enabled = labels.get("dcgm_exporter_enabled")
-            if dcgm_enabled is True or (
-                dcgm_enabled is None and not labels.get("wsl_runtime")
-            ):
+            if dcgm_enabled is True or (dcgm_enabled is None and not labels.get("wsl_runtime")):
                 groups.append(
                     {
                         "targets": [f"{host}:9400"],
@@ -1277,6 +1565,16 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 422,
                 detail={"code": "INPUT_INVALID", "message": "蒙版尺寸必须与输入图片一致"},
             )
+        if (
+            workflow_key in MODELVIEW_WORKFLOW_KEYS
+            and "normal_image" in image_dimensions
+            and image_dimensions.get("image") != image_dimensions["normal_image"]
+        ):
+            storage.remove_tree(root)
+            raise HTTPException(
+                422,
+                detail={"code": "INPUT_INVALID", "message": "法线图尺寸必须与输入图片一致"},
+            )
         manifest = WorkflowManifest(
             workflow_key=workflow.workflow_key,
             version=workflow.version,
@@ -1361,18 +1659,9 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 Job.tenant_id == principal.id, Job.status == JobStatus.QUEUED.value
             )
         )
-        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        daily = await db.scalar(
-            select(func.count(Job.id)).where(Job.tenant_id == principal.id, Job.created_at >= today)
-        )
-        if client and int(daily or 0) >= client.daily_quota:
-            storage.remove_tree(root)
-            raise HTTPException(
-                429, detail={"code": "RATE_LIMITED", "message": "今日任务配额已用完"}
-            )
-        system_queue_limit = (
-            cfg.test_system_max_queued if is_load_test else cfg.system_max_queued
-        )
+        # Daily task counts (including batch children) do not gate admission.
+        # Queue, concurrency and request-rate limits remain independent.
+        system_queue_limit = cfg.test_system_max_queued if is_load_test else cfg.system_max_queued
         if int(queued or 0) >= system_queue_limit or int(tenant_queued or 0) >= (
             client.max_queued if client else cfg.default_tenant_max_queued
         ):
@@ -1426,9 +1715,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             # response lane. This does not pin the job: both compatible 24 GiB
             # 3090 nodes may still claim ModelView work in parallel.
             modelview_guard_node = await db.scalar(
-                select(Node)
-                .where(Node.id == MODELVIEW_INPAINT_NODE_ID)
-                .with_for_update()
+                select(Node).where(Node.id == MODELVIEW_INPAINT_NODE_ID).with_for_update()
             )
             if modelview_guard_node is not None:
                 refresh_gpu_specialization(
@@ -1623,6 +1910,16 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             for field_name, upload in additional_images
             if f"{field_name}_filename" in workflow.bindings
         )
+        if any(name == "normal_image" for name, _ in additional_images) and (
+            "normal_image_filename" not in workflow.bindings
+        ):
+            raise HTTPException(
+                503,
+                detail={
+                    "code": "WORKFLOW_CONTRACT_MISMATCH",
+                    "message": "当前启用的工作流版本尚未声明法线图输入",
+                },
+            )
         tenant_lock = request.app.state.tenant_locks.setdefault(principal.id, asyncio.Lock())
         # ModelView generation is an interactive operation. It must take the first
         # compatible GPU slot released by an already-running job instead of
@@ -1649,52 +1946,77 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             )
         job_id = str(json.loads(bytes(queued.body))["job_id"])
         deadline = asyncio.get_running_loop().time() + workflow.timeout_seconds + 60
-        while asyncio.get_running_loop().time() < deadline:
-            await asyncio.sleep(1)
-            async with request.app.state.db.session() as poll_db:
-                job = await poll_db.get(Job, job_id)
-                if job is None:
-                    raise HTTPException(
-                        500,
-                        detail={"code": "JOB_NOT_FOUND", "message": "任务记录意外丢失"},
-                    )
-                if job.status == JobStatus.SUCCEEDED.value:
-                    artifact = await poll_db.scalar(
-                        select(JobArtifact)
-                        .where(JobArtifact.job_id == job_id, JobArtifact.kind == "output")
-                        .order_by(JobArtifact.created_at.desc())
-                    )
-                    if artifact is None:
+        waiter = _register_job_waiter(request.app, job_id)
+        try:
+            while asyncio.get_running_loop().time() < deadline:
+                # Clear before the durable read so a scheduler event racing
+                # with the query remains visible to the following wait.
+                waiter.clear()
+                async with request.app.state.db.session() as poll_db:
+                    job = await poll_db.get(Job, job_id)
+                    if job is None:
                         raise HTTPException(
                             500,
-                            detail={"code": "OUTPUT_MISSING", "message": "任务成功但没有图片产物"},
+                            detail={"code": "JOB_NOT_FOUND", "message": "任务记录意外丢失"},
                         )
-                    path = Path(job.job_dir) / artifact.relative_path
-                    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-                    return FileResponse(
-                        path,
-                        media_type=media_type,
-                        filename=path.name,
-                        headers={
-                            "X-Job-ID": job_id,
-                            "X-Client-ID": principal.id,
-                            "X-Artifact-SHA256": artifact.sha256,
-                            "Cache-Control": "no-store",
-                        },
-                    )
-                if job.status in {status.value for status in TERMINAL_JOB_STATUSES}:
-                    raise HTTPException(
-                        500,
-                        detail={
-                            "code": job.error_code or "GENERATION_FAILED",
-                            "message": job.error_message or "图片生成失败",
-                            "job_id": job_id,
-                        },
-                    )
-        raise HTTPException(
-            504,
-            detail={"code": "SERVICE_TIMEOUT", "message": "图片生成等待超时", "job_id": job_id},
-        )
+                    if job.status == JobStatus.SUCCEEDED.value:
+                        artifact = await poll_db.scalar(
+                            select(JobArtifact)
+                            .where(JobArtifact.job_id == job_id, JobArtifact.kind == "output")
+                            .order_by(JobArtifact.created_at.desc())
+                        )
+                        if artifact is None:
+                            raise HTTPException(
+                                500,
+                                detail={
+                                    "code": "OUTPUT_MISSING",
+                                    "message": "任务成功但没有图片产物",
+                                },
+                            )
+                        path = Path(job.job_dir) / artifact.relative_path
+                        media_type = (
+                            mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+                        )
+                        return FileResponse(
+                            path,
+                            media_type=media_type,
+                            filename=path.name,
+                            headers={
+                                "X-Job-ID": job_id,
+                                "X-Client-ID": principal.id,
+                                "X-Artifact-SHA256": artifact.sha256,
+                                "Cache-Control": "no-store",
+                            },
+                        )
+                    if job.status in {status.value for status in TERMINAL_JOB_STATUSES}:
+                        raise HTTPException(
+                            500,
+                            detail={
+                                "code": job.error_code or "GENERATION_FAILED",
+                                "message": job.error_message or "图片生成失败",
+                                "job_id": job_id,
+                            },
+                        )
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    break
+                try:
+                    # Redis normally wakes this immediately at terminal commit.
+                    # A bounded timeout keeps correctness if the event channel
+                    # is unavailable or a message was published before signup.
+                    await asyncio.wait_for(waiter.wait(), timeout=min(1.0, remaining))
+                except TimeoutError:
+                    pass
+            raise HTTPException(
+                504,
+                detail={
+                    "code": "SERVICE_TIMEOUT",
+                    "message": "图片生成等待超时",
+                    "job_id": job_id,
+                },
+            )
+        finally:
+            _discard_job_waiter(request.app, job_id, waiter)
 
     @app.post("/api/v1/services/imageclip-rgba", response_class=FileResponse)
     async def imageclip_rgba_service(
@@ -1725,6 +2047,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         image: Annotated[UploadFile, File()],
         material_image: Annotated[UploadFile, File()],
         mask: Annotated[UploadFile, File()],
+        normal_image: Annotated[UploadFile, File()],
         viewport_reference: Annotated[UploadFile | None, File(deprecated=True)] = None,
         parameters: Annotated[str, Form()] = "{}",
         prompt: Annotated[str | None, Form(max_length=4096)] = None,
@@ -1744,6 +2067,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             idempotency_key,
             mask=mask,
             viewport_reference=viewport_reference,
+            normal_image=normal_image,
         )
 
     @app.post("/api/v1/services/modelview-single-view", response_class=FileResponse)
@@ -1753,6 +2077,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         db: Annotated[AsyncSession, Depends(session)],
         image: Annotated[UploadFile, File()],
         material_image: Annotated[UploadFile, File()],
+        normal_image: Annotated[UploadFile, File()],
         parameters: Annotated[str, Form()] = "{}",
         prompt: Annotated[str | None, Form(max_length=4096)] = None,
         idempotency_key: Annotated[
@@ -1769,6 +2094,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             parameters,
             prompt,
             idempotency_key,
+            normal_image=normal_image,
         )
 
     @app.post(
@@ -1782,6 +2108,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         image: Annotated[UploadFile, File()],
         material_image: Annotated[UploadFile, File()],
         mask: Annotated[UploadFile, File()],
+        normal_image: Annotated[UploadFile, File()],
         parameters: Annotated[str, Form()] = "{}",
         prompt: Annotated[str | None, Form(max_length=4096)] = None,
         idempotency_key: Annotated[
@@ -1799,6 +2126,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             prompt,
             idempotency_key,
             mask=mask,
+            normal_image=normal_image,
         )
 
     async def run_modelview_service_request(
@@ -1814,6 +2142,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         *,
         mask: UploadFile | None = None,
         viewport_reference: UploadFile | None = None,
+        normal_image: UploadFile | None = None,
     ) -> FileResponse:
         try:
             parameters = _merge_service_parameter(parameters, "prompt", prompt)
@@ -1833,6 +2162,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             mask=mask,
             additional_images=(
                 ("material_image", material_image),
+                *((("normal_image", normal_image),) if normal_image is not None else ()),
                 *((("viewport_reference", viewport_reference),) if viewport_reference else ()),
             ),
         )
@@ -2344,13 +2674,9 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         )
         client_kind = client.client_kind if client is not None else "production"
         system_queue_limit = (
-            cfg.test_system_max_queued
-            if client_kind == "test"
-            else cfg.system_max_queued
+            cfg.test_system_max_queued if client_kind == "test" else cfg.system_max_queued
         )
-        production_preempting = (
-            client_kind == "test" and await active_production_work_exists(db)
-        )
+        production_preempting = client_kind == "test" and await active_production_work_exists(db)
         accepting_batches = (
             not production_preempting
             and queued_jobs < system_queue_limit
@@ -2676,9 +3002,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             if is_load_test:
                 queued = int(
                     await db.scalar(
-                        select(func.count(Job.id)).where(
-                            Job.status == JobStatus.QUEUED.value
-                        )
+                        select(func.count(Job.id)).where(Job.status == JobStatus.QUEUED.value)
                     )
                     or 0
                 )
@@ -2844,6 +3168,11 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         db: Annotated[AsyncSession, Depends(session)],
     ) -> StreamingResponse:
         await owned_batch(batch_id, principal, db)
+        # FastAPI keeps yield-dependency resources alive until a streaming
+        # response finishes. End the authorization read transaction before
+        # opening the long-lived SSE stream so it cannot pin PostgreSQL's
+        # vacuum horizon for hours or days.
+        await db.rollback()
 
         async def stream() -> AsyncIterator[str]:
             sequence = 0
@@ -3133,6 +3462,9 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         db: Annotated[AsyncSession, Depends(session)],
     ) -> StreamingResponse:
         await owned_job(job_id, principal, db)
+        # Do not keep the request-scoped authorization transaction open for
+        # the lifetime of this SSE connection.
+        await db.rollback()
 
         async def stream() -> AsyncIterator[str]:
             sequence = 0
@@ -3450,6 +3782,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         limit: int = 100,
         client_kind: Literal["production", "test", "all"] = "production",
         active_only: bool = False,
+        detail: Literal["summary", "full"] = "full",
+        include_performance: bool = False,
     ) -> list[dict[str, Any]]:
         if active_only and status:
             raise HTTPException(
@@ -3506,6 +3840,161 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         elif status:
             batch_query = batch_query.where(JobBatch.status == status)
         batch_rows = list((await db.scalars(batch_query)).all())
+        batch_ids = [row.id for row in batch_rows]
+        batch_distributions: dict[str, dict[str, int]] = {}
+        batch_attempts: dict[str, int] = {}
+        batch_artifacts: dict[str, list[BatchArtifact]] = {}
+        batch_performance: dict[str, dict[str, Any]] = {}
+        if detail == "summary" and batch_ids:
+            distribution_rows = (
+                await db.execute(
+                    select(
+                        JobBatchItem.batch_id,
+                        JobBatchItem.node_id,
+                        func.count(JobBatchItem.id),
+                        func.coalesce(func.sum(JobBatchItem.attempts), 0),
+                    )
+                    .where(JobBatchItem.batch_id.in_(batch_ids))
+                    .group_by(JobBatchItem.batch_id, JobBatchItem.node_id)
+                )
+            ).all()
+            for batch_id, node_id, count, attempts in distribution_rows:
+                batch_attempts[str(batch_id)] = batch_attempts.get(str(batch_id), 0) + int(attempts)
+                if node_id:
+                    batch_distributions.setdefault(str(batch_id), {})[str(node_id)] = int(count)
+            artifact_rows = list(
+                (
+                    await db.scalars(
+                        select(BatchArtifact)
+                        .where(BatchArtifact.batch_id.in_(batch_ids))
+                        .order_by(BatchArtifact.batch_id, BatchArtifact.created_at)
+                    )
+                ).all()
+            )
+            for artifact in artifact_rows:
+                batch_artifacts.setdefault(artifact.batch_id, []).append(artifact)
+            if include_performance:
+                # Performance analysis needs authoritative GPU attempt timing,
+                # but not the per-frame diagnostics returned by batch_payload.
+                # Load the compact scalar projection in two bulk queries so the
+                # analysis screen does not reintroduce the former N+1 path.
+                performance_items = (
+                    await db.execute(
+                        select(
+                            JobBatchItem.batch_id,
+                            JobBatchItem.job_id,
+                            JobBatchItem.status,
+                            JobBatchItem.node_id,
+                            JobBatchItem.width,
+                            JobBatchItem.height,
+                        ).where(JobBatchItem.batch_id.in_(batch_ids))
+                    )
+                ).all()
+                performance_attempts = (
+                    await db.execute(
+                        select(
+                            JobBatchItem.batch_id,
+                            JobAttempt.job_id,
+                            JobAttempt.attempt,
+                            JobAttempt.node_id,
+                            JobAttempt.gpu_started_at,
+                            JobAttempt.gpu_finished_at,
+                        )
+                        .join(JobAttempt, JobAttempt.job_id == JobBatchItem.job_id)
+                        .where(JobBatchItem.batch_id.in_(batch_ids))
+                        .order_by(
+                            JobBatchItem.batch_id,
+                            JobAttempt.job_id,
+                            JobAttempt.attempt,
+                        )
+                    )
+                ).all()
+                items_by_batch: dict[str, list[Any]] = {}
+                attempts_by_batch: dict[str, list[Any]] = {}
+                for item in performance_items:
+                    items_by_batch.setdefault(str(item[0]), []).append(item)
+                for attempt in performance_attempts:
+                    attempts_by_batch.setdefault(str(attempt[0]), []).append(attempt)
+
+                def summary_duration_ms(
+                    started_at: datetime | None, finished_at: datetime | None
+                ) -> int | None:
+                    if started_at is None or finished_at is None:
+                        return None
+                    elapsed = int(
+                        (utc_aware(finished_at) - utc_aware(started_at)).total_seconds() * 1000
+                    )
+                    return elapsed if elapsed >= 0 else None
+
+                for batch in batch_rows:
+                    item_rows = items_by_batch.get(batch.id, [])
+                    attempt_rows = attempts_by_batch.get(batch.id, [])
+                    gpu_attempts = [row for row in attempt_rows if row[4] or row[5]]
+                    durations = [
+                        duration
+                        for row in gpu_attempts
+                        if (duration := summary_duration_ms(row[4], row[5])) is not None
+                    ]
+                    completed_assignments = {
+                        (str(row[1]), str(row[3]))
+                        for row in gpu_attempts
+                        if row[1] and row[3] and summary_duration_ms(row[4], row[5]) is not None
+                    }
+                    successful_items_complete = all(
+                        row[1] and row[3] and (str(row[1]), str(row[3])) in completed_assignments
+                        for row in item_rows
+                        if row[2] == BatchItemStatus.SUCCEEDED.value
+                    )
+                    measurements_complete = (
+                        bool(gpu_attempts)
+                        and len(durations) == len(gpu_attempts)
+                        and successful_items_complete
+                    )
+                    service_ms = sum(durations) if durations else None
+                    can_compute_throughput = (
+                        batch.status == BatchStatus.SUCCEEDED.value
+                        and measurements_complete
+                        and bool(service_ms)
+                    )
+                    input_pixels = sum(int(row[4] or 0) * int(row[5] or 0) for row in item_rows)
+                    attempts_by_job: dict[str, list[Any]] = {}
+                    for row in attempt_rows:
+                        attempts_by_job.setdefault(str(row[1]), []).append(row)
+                    reassignments = sum(
+                        previous[3] != current[3]
+                        for job_attempts in attempts_by_job.values()
+                        for previous, current in zip(job_attempts, job_attempts[1:], strict=False)
+                    )
+                    batch_performance[batch.id] = {
+                        "schema_version": "1.0-summary",
+                        "input_pixels_total": input_pixels,
+                        "gpu_service_ms_total": service_ms,
+                        "gpu_service_measurements_complete": measurements_complete,
+                        "queue_ms": summary_duration_ms(batch.queued_at, batch.started_at),
+                        "execution_ms": summary_duration_ms(
+                            batch.started_at, batch.execution_finished_at
+                        ),
+                        "assembly_ms": summary_duration_ms(
+                            batch.assembling_at, batch.artifact_ready_at
+                        ),
+                        "artifact_publish_ms": summary_duration_ms(
+                            batch.artifact_ready_at, batch.finished_at
+                        ),
+                        "frames_per_gpu_minute": (
+                            round(batch.succeeded_items * 60_000 / service_ms, 6)
+                            if can_compute_throughput and service_ms is not None
+                            else None
+                        ),
+                        "megapixels_per_gpu_second": (
+                            round(input_pixels / 1_000_000 / (service_ms / 1000), 6)
+                            if can_compute_throughput and service_ms is not None
+                            else None
+                        ),
+                        "scheduler_restarts": None,
+                        "reassignments": reassignments,
+                        "straggler_ratio": None,
+                        "nodes": [],
+                    }
         tenant_ids = {row.tenant_id for row in job_rows} | {row.tenant_id for row in batch_rows}
         clients = (
             list((await db.scalars(select(ApiClient).where(ApiClient.id.in_(tenant_ids)))).all())
@@ -3532,7 +4021,88 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             )
             rows.append(payload)
         for batch in batch_rows:
-            payload = await batch_payload(batch, db, admin=True)
+            if detail == "full":
+                payload = await batch_payload(batch, db, admin=True)
+                attempt_count = int(
+                    await db.scalar(
+                        select(func.coalesce(func.sum(JobBatchItem.attempts), 0)).where(
+                            JobBatchItem.batch_id == batch.id
+                        )
+                    )
+                    or 0
+                )
+            else:
+                identity = {
+                    "workflow_key": batch.workflow_key,
+                    "workflow_version": batch.workflow_version,
+                    "pipeline_commit": batch.pipeline_commit,
+                    "pipeline_sha256": batch.pipeline_sha256,
+                    "output_node": batch.output_node,
+                }
+                artifacts = [
+                    {
+                        "id": artifact.id,
+                        "kind": artifact.kind,
+                        "filename": artifact.filename,
+                        "content_type": artifact.content_type,
+                        "size_bytes": artifact.size_bytes,
+                        "sha256": artifact.sha256,
+                        **identity,
+                        "download_url": (f"/admin/batches/{batch.id}/artifacts/{artifact.id}"),
+                    }
+                    for artifact in batch_artifacts.get(batch.id, [])
+                ]
+                payload = {
+                    "batch_id": batch.id,
+                    "external_batch_id": batch.external_batch_id,
+                    "status": batch.status,
+                    **identity,
+                    "progress": batch.progress,
+                    "counts": {
+                        "total": batch.total_items,
+                        "pending": batch.pending_items,
+                        "queued": batch.queued_items,
+                        "running": batch.running_items,
+                        "succeeded": batch.succeeded_items,
+                        "failed": batch.failed_items,
+                        "cancelled": batch.cancelled_items,
+                    },
+                    "node_distribution": batch_distributions.get(batch.id, {}),
+                    "created_at": batch.created_at.isoformat(),
+                    "validated_at": (
+                        batch.validated_at.isoformat() if batch.validated_at else None
+                    ),
+                    "queued_at": batch.queued_at.isoformat() if batch.queued_at else None,
+                    "started_at": batch.started_at.isoformat() if batch.started_at else None,
+                    "last_progress_at": (
+                        batch.last_progress_at.isoformat() if batch.last_progress_at else None
+                    ),
+                    "execution_finished_at": (
+                        batch.execution_finished_at.isoformat()
+                        if batch.execution_finished_at
+                        else None
+                    ),
+                    "assembling_at": (
+                        batch.assembling_at.isoformat() if batch.assembling_at else None
+                    ),
+                    "artifact_ready_at": (
+                        batch.artifact_ready_at.isoformat() if batch.artifact_ready_at else None
+                    ),
+                    "finished_at": batch.finished_at.isoformat() if batch.finished_at else None,
+                    "updated_at": batch.updated_at.isoformat(),
+                    "error": (
+                        {"code": batch.error_code, "message": batch.error_message}
+                        if batch.error_code
+                        else None
+                    ),
+                    "artifact": artifacts[0] if artifacts else None,
+                    "artifacts": artifacts,
+                    # Heavy per-frame diagnostics are loaded only from the
+                    # dedicated batch detail endpoint when an operator opens a row.
+                    "failed_items": [],
+                    "performance": batch_performance.get(batch.id),
+                }
+                attempt_count = batch_attempts.get(batch.id, 0)
             owner = client_by_id.get(batch.tenant_id)
             payload.update(
                 {
@@ -3543,14 +4113,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     "priority": Priority.BATCH.value,
                     "node_id": None,
                     "prompt_id": None,
-                    "attempt": int(
-                        await db.scalar(
-                            select(func.coalesce(func.sum(JobBatchItem.attempts), 0)).where(
-                                JobBatchItem.batch_id == batch.id
-                            )
-                        )
-                        or 0
-                    ),
+                    "attempt": attempt_count,
                 }
             )
             rows.append(payload)
@@ -3572,9 +4135,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         counts = {
             "gpu_jobs": int(
                 await db.scalar(
-                    select(func.count(Job.id)).where(
-                        Job.request_id.like(f"{roughness_prefix}%")
-                    )
+                    select(func.count(Job.id)).where(Job.request_id.like(f"{roughness_prefix}%"))
                 )
                 or 0
             ),
@@ -3812,13 +4373,9 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             if substance_physical_available
             else []
         )
-        cpu_total_slots = sum(
-            worker.max_concurrency for worker in schedulable_cpu_workers
-        )
+        cpu_total_slots = sum(worker.max_concurrency for worker in schedulable_cpu_workers)
         cpu_used_slots = sum(worker.current_jobs for worker in schedulable_cpu_workers)
-        substance_physical_slots = max(
-            0, SUBSTANCE_MAX_PARALLEL - len(fenced_substance_job_ids)
-        )
+        substance_physical_slots = max(0, SUBSTANCE_MAX_PARALLEL - len(fenced_substance_job_ids))
         substance_total_slots = min(
             sum(worker.max_concurrency for worker in schedulable_substance_workers),
             SUBSTANCE_MAX_PARALLEL,
@@ -3841,9 +4398,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "counts": counts,
                 "online_workers": len(online_workers),
                 "schedulable_workers": len(schedulable_workers),
-                "reported_total_slots": sum(
-                    worker.max_concurrency for worker in online_workers
-                ),
+                "reported_total_slots": sum(worker.max_concurrency for worker in online_workers),
                 "total_slots": cpu_total_slots + substance_total_slots,
                 "used_slots": cpu_used_slots + substance_used_slots,
                 "available_slots": max(0, cpu_total_slots - cpu_used_slots)
@@ -4134,7 +4689,8 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         )
         node_heartbeat = (
             node.last_heartbeat_at.replace(tzinfo=UTC)
-            if node is not None and node.last_heartbeat_at is not None
+            if node is not None
+            and node.last_heartbeat_at is not None
             and node.last_heartbeat_at.tzinfo is None
             else (node.last_heartbeat_at if node is not None else None)
         )
@@ -4178,8 +4734,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 and worker.current_jobs == 0
                 and worker.agent_instance_id
                 and heartbeat is not None
-                and (now - heartbeat).total_seconds()
-                <= cfg.asset_worker_heartbeat_timeout_seconds
+                and (now - heartbeat).total_seconds() <= cfg.asset_worker_heartbeat_timeout_seconds
                 and worker.substance_process_probe_status == "HEALTHY"
                 and worker.substance_active_processes == 0
                 and probe_checked is not None
@@ -4510,6 +5065,439 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         await _notify(request.app, "gpu-control:wakeup", {"event": "job.pin", "job_id": job_id})
         return job_payload(job)
 
+    @app.get("/admin/providers/autodl")
+    async def admin_autodl_inventory(
+        request: Request,
+        _: Annotated[Principal, Depends(admin_principal)],
+        db: Annotated[AsyncSession, Depends(session)],
+        force: bool = False,
+    ) -> dict[str, Any]:
+        result = await provider_controller_request(
+            request.app,
+            "GET",
+            "/internal/v1/providers/autodl/inventory",
+            query={"force": "true" if force else "false"},
+        )
+        now = datetime.now(UTC)
+        rows = result.get("instances") if isinstance(result.get("instances"), list) else []
+        persisted: dict[tuple[str, str], ProviderInstance] = {}
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            product = str(item.get("product") or "")
+            instance_id = str(item.get("instance_id") or "")
+            if (
+                product not in {"app", "pro"}
+                or re.fullmatch(r"pro-[A-Za-z0-9]+", instance_id) is None
+            ):
+                continue
+            instance = await _ensure_provider_instance(
+                db,
+                provider="autodl",
+                product=product,
+                instance_id=instance_id,
+                with_for_update=True,
+            )
+            instance.display_name = str(item.get("name") or "")[:256]
+            instance.observed_state = str(item.get("state") or "unknown")[:24]
+            instance.provider_status = str(item.get("provider_status") or "unknown")[:64]
+            instance.last_seen_at = now
+            instance.revision = int(instance.revision or 0) + 1
+            persisted[(product, instance_id)] = instance
+        await db.flush()
+        active_operations = list(
+            (
+                await db.scalars(
+                    select(ProviderOperation)
+                    .where(
+                        ProviderOperation.provider == "autodl",
+                        ProviderOperation.status.in_(
+                            {"PENDING", "IN_FLIGHT", "WAITING", "UNCERTAIN"}
+                        ),
+                    )
+                    .order_by(ProviderOperation.created_at.desc())
+                )
+            ).all()
+        )
+        operation_by_ref: dict[tuple[str, str], ProviderOperation] = {}
+        for operation in active_operations:
+            operation_by_ref.setdefault((operation.product, operation.instance_id), operation)
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            key = (str(item.get("product") or ""), str(item.get("instance_id") or ""))
+            instance = persisted.get(key)
+            operation = operation_by_ref.get(key)
+            item["scheduled_start_at"] = instance.scheduled_start_at if instance else None
+            item["scheduled_stop_at"] = instance.scheduled_stop_at if instance else None
+            item["management"] = {
+                "managed": bool(instance and instance.managed),
+                "scheduling_enabled": bool(instance and instance.scheduling_enabled),
+                "bootstrap_profile": instance.bootstrap_profile if instance else None,
+                "desired_state": instance.desired_state if instance else None,
+                "node_id": instance.node_id if instance else None,
+                "scheduled_start_at": instance.scheduled_start_at if instance else None,
+                "scheduled_stop_at": instance.scheduled_stop_at if instance else None,
+                "schedule_updated_by": instance.schedule_updated_by if instance else None,
+                "schedule_reason": instance.schedule_reason if instance else None,
+                "operation": (
+                    {
+                        "id": operation.id,
+                        "status": operation.status,
+                        "desired_state": operation.desired_state,
+                    }
+                    if operation
+                    else None
+                ),
+            }
+        await db.commit()
+        return result
+
+    async def change_autodl_instance_state(
+        product: Literal["app", "pro"],
+        instance_id: str,
+        desired_state: Literal["running", "stopped"],
+        body: RetryRequest,
+        request: Request,
+        principal: Principal,
+        db: AsyncSession,
+        idempotency_key: str | None,
+    ) -> dict[str, Any]:
+        if not body.confirm:
+            raise HTTPException(409, detail={"code": "CONFIRMATION_REQUIRED"})
+        if re.fullmatch(r"pro-[A-Za-z0-9]+", instance_id) is None:
+            raise HTTPException(422, detail={"code": "AUTODL_REF_INVALID"})
+        effective_key = idempotency_key or str(request.state.request_id)
+        if (
+            not 8 <= len(effective_key) <= 192
+            or re.fullmatch(r"[A-Za-z0-9._:-]+", effective_key) is None
+        ):
+            raise HTTPException(422, detail={"code": "IDEMPOTENCY_KEY_INVALID"})
+        request_hash = hashlib.sha256(
+            f"{product}:{instance_id}:{desired_state}".encode()
+        ).hexdigest()
+        # Stop admission and Scheduler claims share this lock.  The lock order
+        # is always global admission -> provider instance -> node so a due
+        # shutdown cannot race a fresh lease onto the same cloud GPU.
+        if desired_state == "stopped":
+            await request.app.state.db.acquire_global_admission_transaction_lock(db)
+        if db.bind is not None and db.bind.dialect.name == "postgresql":
+            await db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:provider_ref))"),
+                {"provider_ref": f"autodl:{product}:{instance_id}"},
+            )
+        existing = await db.scalar(
+            select(ProviderOperation).where(
+                ProviderOperation.provider == "autodl",
+                ProviderOperation.idempotency_key == effective_key,
+            )
+        )
+        if existing is not None:
+            if existing.request_hash != request_hash:
+                raise HTTPException(409, detail={"code": "IDEMPOTENCY_CONFLICT"})
+            return {
+                "operation_id": existing.id,
+                "status": existing.status,
+                "desired_state": existing.desired_state,
+                "accepted": existing.status not in {"FAILED"},
+                "correlation_id": existing.request_id,
+            }
+        active = await db.scalar(
+            select(ProviderOperation)
+            .where(
+                ProviderOperation.provider == "autodl",
+                ProviderOperation.product == product,
+                ProviderOperation.instance_id == instance_id,
+                ProviderOperation.status.in_({"PENDING", "IN_FLIGHT", "WAITING", "UNCERTAIN"}),
+            )
+            .order_by(ProviderOperation.created_at.desc())
+            .with_for_update()
+        )
+        if active is not None:
+            if active.desired_state != desired_state:
+                raise HTTPException(
+                    409,
+                    detail={
+                        "code": "PROVIDER_OPERATION_IN_PROGRESS",
+                        "message": "该实例已有相反的电源操作正在收敛",
+                    },
+                )
+            return {
+                "operation_id": active.id,
+                "status": active.status,
+                "desired_state": active.desired_state,
+                "accepted": True,
+                "correlation_id": active.request_id,
+            }
+        instance = await _ensure_provider_instance(
+            db,
+            provider="autodl",
+            product=product,
+            instance_id=instance_id,
+            with_for_update=True,
+        )
+        instance.managed = True
+        instance.desired_state = desired_state
+        instance.revision = int(instance.revision or 0) + 1
+        if desired_state == "stopped" and instance.node_id:
+            node = await db.get(Node, instance.node_id, with_for_update=True)
+            active_leases = await db.scalar(
+                select(func.count(NodeLease.id)).where(
+                    NodeLease.node_id == instance.node_id, NodeLease.active.is_(True)
+                )
+            )
+            if node is not None and (
+                node.current_jobs > 0
+                or node.external_busy
+                or node.foreign_queue_detected
+                or bool(active_leases)
+            ):
+                raise HTTPException(
+                    409,
+                    detail={
+                        "code": "CLOUD_INSTANCE_BUSY",
+                        "message": "实例仍有任务、租约或外部队列，已拒绝关机",
+                    },
+                )
+            if node is not None:
+                node.mode = NodeMode.DRAINING.value
+        operation = ProviderOperation(
+            id=str(uuid.uuid4()),
+            provider="autodl",
+            product=product,
+            instance_id=instance_id,
+            desired_state=desired_state,
+            status="PENDING",
+            idempotency_key=effective_key,
+            request_hash=request_hash,
+            request_id=str(request.state.request_id),
+            requested_by=principal.id,
+            source_ip=request.client.host if request.client else "",
+            reason=body.reason,
+            next_attempt_at=datetime.now(UTC),
+        )
+        db.add(operation)
+        await audit(
+            db,
+            request,
+            principal,
+            f"cloud.instance.{('start' if desired_state == 'running' else 'stop')}",
+            "cloud_instance",
+            f"{product}:{instance_id}",
+            {"desired_state": instance.observed_state},
+            {
+                "operation_id": operation.id,
+                "desired_state": desired_state,
+                "status": operation.status,
+                "reason": body.reason,
+            },
+        )
+        await db.commit()
+        request.app.state.provider_reconcile_event.set()
+        return {
+            "operation_id": operation.id,
+            "status": operation.status,
+            "desired_state": operation.desired_state,
+            "accepted": True,
+            "correlation_id": operation.request_id,
+        }
+
+    @app.get("/admin/providers/autodl/operations/{operation_id}")
+    async def admin_autodl_operation(
+        operation_id: str,
+        _: Annotated[Principal, Depends(require_operator)],
+        db: Annotated[AsyncSession, Depends(session)],
+    ) -> dict[str, Any]:
+        operation = await db.get(ProviderOperation, operation_id)
+        if operation is None or operation.provider != "autodl":
+            raise HTTPException(
+                404,
+                detail={"code": "PROVIDER_OPERATION_NOT_FOUND", "message": "云操作不存在"},
+            )
+        return {
+            "operation_id": operation.id,
+            "product": operation.product,
+            "instance_id": operation.instance_id,
+            "desired_state": operation.desired_state,
+            "status": operation.status,
+            "attempt_count": operation.attempt_count,
+            "provider_status": operation.provider_status,
+            "error_code": operation.error_code,
+            "error_message": operation.error_message,
+            "created_at": operation.created_at,
+            "started_at": operation.started_at,
+            "dispatch_attempted_at": operation.dispatch_attempted_at,
+            "dispatch_ack_at": operation.dispatch_ack_at,
+            "confirmation_deadline_at": operation.confirmation_deadline_at,
+            "completed_at": operation.completed_at,
+            "updated_at": operation.updated_at,
+        }
+
+    @app.post("/admin/providers/autodl/instances/{product}/{instance_id}/start")
+    async def admin_start_autodl_instance(
+        product: Literal["app", "pro"],
+        instance_id: str,
+        body: RetryRequest,
+        request: Request,
+        principal: Annotated[Principal, Depends(require_operator)],
+        db: Annotated[AsyncSession, Depends(session)],
+        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    ) -> dict[str, Any]:
+        return await change_autodl_instance_state(
+            product, instance_id, "running", body, request, principal, db, idempotency_key
+        )
+
+    @app.post("/admin/providers/autodl/instances/{product}/{instance_id}/stop")
+    async def admin_stop_autodl_instance(
+        product: Literal["app", "pro"],
+        instance_id: str,
+        body: RetryRequest,
+        request: Request,
+        principal: Annotated[Principal, Depends(require_operator)],
+        db: Annotated[AsyncSession, Depends(session)],
+        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    ) -> dict[str, Any]:
+        return await change_autodl_instance_state(
+            product, instance_id, "stopped", body, request, principal, db, idempotency_key
+        )
+
+    @app.put("/admin/providers/autodl/instances/{product}/{instance_id}/schedule")
+    async def admin_schedule_autodl_instance(
+        product: Literal["app", "pro"],
+        instance_id: str,
+        body: ProviderScheduleRequest,
+        request: Request,
+        principal: Annotated[Principal, Depends(require_operator)],
+        db: Annotated[AsyncSession, Depends(session)],
+    ) -> dict[str, Any]:
+        if not body.confirm:
+            raise HTTPException(409, detail={"code": "CONFIRMATION_REQUIRED"})
+        if re.fullmatch(r"pro-[A-Za-z0-9]+", instance_id) is None:
+            raise HTTPException(422, detail={"code": "AUTODL_REF_INVALID"})
+        now = datetime.now(UTC)
+        latest = now + timedelta(days=365)
+        for field_name, value in (
+            ("scheduled_start_at", body.scheduled_start_at),
+            ("scheduled_stop_at", body.scheduled_stop_at),
+        ):
+            if value is not None and (value < now + timedelta(minutes=1) or value > latest):
+                raise HTTPException(
+                    422,
+                    detail={
+                        "code": "AUTODL_SCHEDULE_TIME_INVALID",
+                        "message": f"{field_name} 必须在 1 分钟后到 365 天内",
+                    },
+                )
+        if (
+            body.scheduled_start_at is not None
+            and body.scheduled_stop_at is not None
+            and body.scheduled_stop_at <= body.scheduled_start_at
+        ):
+            raise HTTPException(
+                422,
+                detail={
+                    "code": "AUTODL_SCHEDULE_ORDER_INVALID",
+                    "message": "定时关机必须晚于定时开机",
+                },
+            )
+        if db.bind is not None and db.bind.dialect.name == "postgresql":
+            await db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:provider_ref))"),
+                {"provider_ref": f"autodl:{product}:{instance_id}"},
+            )
+        instance = await _ensure_provider_instance(
+            db,
+            provider="autodl",
+            product=product,
+            instance_id=instance_id,
+            with_for_update=True,
+        )
+        before = {
+            "scheduled_start_at": (
+                instance.scheduled_start_at.isoformat()
+                if instance.scheduled_start_at is not None
+                else None
+            ),
+            "scheduled_stop_at": (
+                instance.scheduled_stop_at.isoformat()
+                if instance.scheduled_stop_at is not None
+                else None
+            ),
+        }
+        instance.managed = True
+        instance.scheduled_start_at = body.scheduled_start_at
+        instance.scheduled_stop_at = body.scheduled_stop_at
+        instance.schedule_updated_by = principal.id
+        instance.schedule_reason = body.reason
+        instance.revision = int(instance.revision or 0) + 1
+        after = {
+            "scheduled_start_at": (
+                instance.scheduled_start_at.isoformat()
+                if instance.scheduled_start_at is not None
+                else None
+            ),
+            "scheduled_stop_at": (
+                instance.scheduled_stop_at.isoformat()
+                if instance.scheduled_stop_at is not None
+                else None
+            ),
+            "reason": body.reason,
+        }
+        await audit(
+            db,
+            request,
+            principal,
+            "cloud.instance.schedule.update",
+            "cloud_instance",
+            f"{product}:{instance_id}",
+            before,
+            after,
+        )
+        await db.commit()
+        request.app.state.provider_reconcile_event.set()
+        return {
+            "product": product,
+            "instance_id": instance_id,
+            "scheduled_start_at": instance.scheduled_start_at,
+            "scheduled_stop_at": instance.scheduled_stop_at,
+            "reason": body.reason,
+            "updated_by": principal.id,
+        }
+
+    @app.post("/admin/providers/autodl/instances/{product}/{instance_id}/ssh-credentials")
+    async def admin_autodl_ssh_credentials(
+        product: Literal["app", "pro"],
+        instance_id: str,
+        body: RetryRequest,
+        request: Request,
+        principal: Annotated[Principal, Depends(require_operator)],
+        db: Annotated[AsyncSession, Depends(session)],
+    ) -> JSONResponse:
+        if not body.confirm:
+            raise HTTPException(409, detail={"code": "CONFIRMATION_REQUIRED"})
+        result = await provider_controller_request(
+            request.app,
+            "POST",
+            f"/internal/v1/providers/autodl/instances/{product}/{instance_id}/ssh-credentials",
+        )
+        await audit(
+            db,
+            request,
+            principal,
+            "cloud.instance.ssh_credentials",
+            "cloud_instance",
+            f"{product}:{instance_id}",
+            {},
+            {
+                "host": result.get("host"),
+                "port": result.get("port"),
+                "username": result.get("username"),
+                "reason": body.reason,
+            },
+        )
+        await db.commit()
+        return JSONResponse(result, headers={"Cache-Control": "no-store, max-age=0"})
+
     @app.get("/admin/nodes")
     async def admin_nodes(
         _: Annotated[Principal, Depends(admin_principal)],
@@ -4527,17 +5515,33 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
         rows = (await db.scalars(select(Node).order_by(Node.pool, Node.id))).all()
+        codex_worker_ids = [f"asset-{row.id}" for row in rows]
         workers = list(
-            (await db.scalars(select(AssetWorker).order_by(AssetWorker.updated_at.desc()))).all()
+            (
+                await db.scalars(select(AssetWorker).where(AssetWorker.id.in_(codex_worker_ids)))
+            ).all()
         )
-        codex_jobs = list(
+        active_codex_jobs = list(
             (
                 await db.scalars(
                     select(AssetJob)
                     .where(
-                        AssetJob.job_type.in_(
-                            {"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"}
-                        )
+                        AssetJob.worker_id.in_(codex_worker_ids),
+                        AssetJob.job_type.in_({"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"}),
+                        AssetJob.status.in_({"CLAIMED", "RUNNING"}),
+                    )
+                    .order_by(AssetJob.created_at.desc())
+                )
+            ).all()
+        )
+        recent_inactive_codex_jobs = list(
+            (
+                await db.scalars(
+                    select(AssetJob)
+                    .where(
+                        AssetJob.worker_id.in_(codex_worker_ids),
+                        AssetJob.job_type.in_({"RETOPOLOGY_PROCESS_V1", "RETOPOLOGY_PROCESS_V2"}),
+                        AssetJob.status.not_in({"CLAIMED", "RUNNING"}),
                     )
                     .order_by(AssetJob.created_at.desc())
                     .limit(500)
@@ -4550,14 +5554,13 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         # shares the node_id but intentionally reports no Codex runtime.
         worker_by_id = {asset_worker.id: asset_worker for asset_worker in workers}
         codex_task_by_worker: dict[str, AssetJob] = {}
-        for job in codex_jobs:
+        for job in active_codex_jobs:
             if not job.worker_id:
                 continue
-            current = codex_task_by_worker.get(job.worker_id)
-            active = job.status in {"CLAIMED", "RUNNING"}
-            current_active = bool(current and current.status in {"CLAIMED", "RUNNING"})
-            if current is None or (active and not current_active):
-                codex_task_by_worker[job.worker_id] = job
+            codex_task_by_worker.setdefault(job.worker_id, job)
+        for job in recent_inactive_codex_jobs:
+            if job.worker_id:
+                codex_task_by_worker.setdefault(job.worker_id, job)
         payload: list[dict[str, Any]] = []
         for row in rows:
             item = {column.name: getattr(row, column.name) for column in Node.__table__.columns}
@@ -4803,9 +5806,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         before = {
             "mode": node.mode,
             "manual_reserved": node.manual_reserved,
-            "gpu_specialization": dict(node.labels or {}).get(
-                GPU_SPECIALIZATION_LABEL
-            ),
+            "gpu_specialization": dict(node.labels or {}).get(GPU_SPECIALIZATION_LABEL),
         }
         substance_owner_transferred = take_operator_drain_ownership(node)
         node.mode = body.mode.value
@@ -4813,9 +5814,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         substance_specialization_released = False
         if body.mode == NodeMode.ACTIVE:
             substance_specialization_released = (
-                clear_idle_substance_specialization_on_manual_active(
-                    node, datetime.now(UTC)
-                )
+                clear_idle_substance_specialization_on_manual_active(node, datetime.now(UTC))
             )
         await audit(
             db,
@@ -4828,9 +5827,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             {
                 "mode": node.mode,
                 "substance_owner_transferred": substance_owner_transferred,
-                "substance_specialization_released": (
-                    substance_specialization_released
-                ),
+                "substance_specialization_released": (substance_specialization_released),
                 "reason": body.reason,
             },
         )
@@ -5309,7 +6306,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 "enabled": row.enabled,
                 "max_queued": row.max_queued,
                 "max_running": row.max_running,
-                "daily_quota": row.daily_quota,
+                "daily_quota": 0,
                 "weight": row.weight,
                 "allowed_ips": row.allowed_ips,
                 "last_seen_ip": row.last_seen_ip,
@@ -5355,7 +6352,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             client_kind=body.client_kind,
             max_queued=body.max_queued,
             max_running=body.max_running,
-            daily_quota=body.daily_quota,
+            daily_quota=0,
             weight=body.weight,
             allowed_ips=body.allowed_ips,
             callback_hosts=body.callback_hosts,
@@ -5428,11 +6425,12 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
         client.enabled = body.enabled
         client.max_queued = body.max_queued
         client.max_running = body.max_running
-        client.daily_quota = body.daily_quota
+        client.daily_quota = 0
         client.weight = body.weight
         client.allowed_ips = body.allowed_ips
         client.callback_hosts = body.callback_hosts
         after = body.model_dump(exclude={"reason", "confirm"})
+        after["daily_quota"] = 0
         await audit(
             db,
             request,
@@ -5791,6 +6789,408 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                         raise
                     await asyncio.sleep(2**attempt)
         return {"configured": True, "sent": False}
+
+    async def sync_autodl_inventory(app_instance: FastAPI) -> None:
+        """Refresh provider truth independently of anyone opening the Web UI."""
+
+        result = await provider_controller_request(
+            app_instance,
+            "GET",
+            "/internal/v1/providers/autodl/inventory",
+            query={"force": "true"},
+        )
+        rows = result.get("instances") if isinstance(result.get("instances"), list) else []
+        now = datetime.now(UTC)
+        async with app_instance.state.db.session() as inventory_db:
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                product = str(item.get("product") or "")
+                instance_id = str(item.get("instance_id") or "")
+                if (
+                    product not in {"app", "pro"}
+                    or re.fullmatch(r"pro-[A-Za-z0-9]+", instance_id) is None
+                ):
+                    continue
+                instance = await _ensure_provider_instance(
+                    inventory_db,
+                    provider="autodl",
+                    product=product,
+                    instance_id=instance_id,
+                    with_for_update=True,
+                )
+                display_name = str(item.get("name") or "")[:256]
+                observed_state = str(item.get("state") or "unknown")[:24]
+                provider_status = str(item.get("provider_status") or "unknown")[:64]
+                changed = (
+                    instance.display_name != display_name
+                    or instance.observed_state != observed_state
+                    or instance.provider_status != provider_status
+                )
+                last_seen_at = instance.last_seen_at
+                if last_seen_at is not None and last_seen_at.tzinfo is None:
+                    last_seen_at = last_seen_at.replace(tzinfo=UTC)
+                freshness_due = last_seen_at is None or now - last_seen_at >= timedelta(seconds=60)
+                if changed:
+                    instance.display_name = display_name
+                    instance.observed_state = observed_state
+                    instance.provider_status = provider_status
+                    instance.revision = int(instance.revision or 0) + 1
+                if changed or freshness_due:
+                    instance.last_seen_at = now
+            await inventory_db.commit()
+
+    async def provider_inventory_sync_loop(app_instance: FastAPI) -> None:
+        while True:
+            try:
+                await sync_autodl_inventory(app_instance)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger().warning(
+                    "provider.inventory_sync_failed",
+                    error_type=type(exc).__name__,
+                )
+            # Provider state changes are also reconciled immediately by the
+            # operation event path. A 30-second background safety poll avoids
+            # rewriting every instance row eight times per minute while still
+            # recovering external state changes promptly.
+            await asyncio.sleep(30)
+
+    async def enqueue_due_provider_schedule(app_instance: FastAPI) -> bool:
+        """Turn the latest due one-shot schedule into one durable operation.
+
+        A control-plane restart may span both a start and a later stop time. In
+        that case only the latest due intent is applied, avoiding a wasteful
+        start immediately followed by a stop. A due stop drains the node under
+        the global admission lock and waits for all work/fences to clear.
+        """
+
+        now = datetime.now(UTC)
+        async with app_instance.state.db.session() as schedule_db:
+            candidate_id = await schedule_db.scalar(
+                select(ProviderInstance.id)
+                .where(
+                    ProviderInstance.provider == "autodl",
+                    ProviderInstance.managed.is_(True),
+                    or_(
+                        ProviderInstance.scheduled_start_at <= now,
+                        ProviderInstance.scheduled_stop_at <= now,
+                    ),
+                )
+                .order_by(ProviderInstance.updated_at, ProviderInstance.id)
+                .limit(1)
+            )
+            if candidate_id is None:
+                return False
+            await app_instance.state.db.acquire_global_admission_transaction_lock(schedule_db)
+            instance = await schedule_db.get(ProviderInstance, candidate_id, with_for_update=True)
+            if instance is None:
+                return False
+            due_events: list[tuple[datetime, Literal["running", "stopped"]]] = []
+            if (
+                instance.scheduled_start_at is not None
+                and utc_aware(instance.scheduled_start_at) <= now
+            ):
+                due_events.append((utc_aware(instance.scheduled_start_at), "running"))
+            if (
+                instance.scheduled_stop_at is not None
+                and utc_aware(instance.scheduled_stop_at) <= now
+            ):
+                due_events.append((utc_aware(instance.scheduled_stop_at), "stopped"))
+            if not due_events:
+                return False
+            event_at, desired_state = max(due_events, key=lambda item: item[0])
+            active = await schedule_db.scalar(
+                select(ProviderOperation.id).where(
+                    ProviderOperation.provider == "autodl",
+                    ProviderOperation.product == instance.product,
+                    ProviderOperation.instance_id == instance.instance_id,
+                    ProviderOperation.status.in_({"PENDING", "IN_FLIGHT", "WAITING", "UNCERTAIN"}),
+                )
+            )
+            if active is not None:
+                return False
+            if desired_state == "stopped" and instance.node_id:
+                node = await schedule_db.get(Node, instance.node_id, with_for_update=True)
+                active_leases = await schedule_db.scalar(
+                    select(func.count(NodeLease.id)).where(
+                        NodeLease.node_id == instance.node_id,
+                        NodeLease.active.is_(True),
+                    )
+                )
+                if node is not None:
+                    node.mode = NodeMode.DRAINING.value
+                    if (
+                        node.current_jobs > 0
+                        or node.external_busy
+                        or node.foreign_queue_detected
+                        or bool(active_leases)
+                    ):
+                        await schedule_db.commit()
+                        return False
+            operation_id = str(uuid.uuid4())
+            operation_key = (
+                f"schedule:{instance.product}:{instance.instance_id}:"
+                f"{int(event_at.timestamp())}:{desired_state}"
+            )
+            request_hash = hashlib.sha256(
+                f"{instance.product}:{instance.instance_id}:{desired_state}".encode()
+            ).hexdigest()
+            instance.desired_state = desired_state
+            if (
+                instance.scheduled_start_at is not None
+                and utc_aware(instance.scheduled_start_at) <= now
+            ):
+                instance.scheduled_start_at = None
+            if (
+                instance.scheduled_stop_at is not None
+                and utc_aware(instance.scheduled_stop_at) <= now
+            ):
+                instance.scheduled_stop_at = None
+            instance.revision = int(instance.revision or 0) + 1
+            schedule_db.add(
+                ProviderOperation(
+                    id=operation_id,
+                    provider="autodl",
+                    product=instance.product,
+                    instance_id=instance.instance_id,
+                    desired_state=desired_state,
+                    status="PENDING",
+                    idempotency_key=operation_key,
+                    request_hash=request_hash,
+                    request_id=str(uuid.uuid4()),
+                    requested_by=instance.schedule_updated_by or "system:schedule",
+                    source_ip="",
+                    reason=instance.schedule_reason or "scheduled lifecycle policy",
+                    next_attempt_at=now,
+                )
+            )
+            schedule_db.add(
+                AuditLog(
+                    actor_id=instance.schedule_updated_by or "system:schedule",
+                    action=f"cloud.instance.schedule.{('start' if desired_state == 'running' else 'stop')}",
+                    target_type="cloud_instance",
+                    target_id=f"{instance.product}:{instance.instance_id}",
+                    before={"scheduled_for": event_at.isoformat()},
+                    after={"operation_id": operation_id, "desired_state": desired_state},
+                    source_ip="",
+                    request_id=str(uuid.uuid4()),
+                    result="SUCCESS",
+                )
+            )
+            await schedule_db.commit()
+            return True
+
+    async def reconcile_one_provider_operation(app_instance: FastAPI) -> bool:
+        now = datetime.now(UTC)
+        stale_cutoff = now - timedelta(seconds=90)
+        async with app_instance.state.db.session() as operation_db:
+            operation = await operation_db.scalar(
+                select(ProviderOperation)
+                .where(
+                    ProviderOperation.next_attempt_at <= now,
+                    or_(
+                        ProviderOperation.status.in_({"PENDING", "WAITING", "UNCERTAIN"}),
+                        (
+                            (ProviderOperation.status == "IN_FLIGHT")
+                            & (ProviderOperation.updated_at <= stale_cutoff)
+                        ),
+                    ),
+                )
+                .order_by(ProviderOperation.next_attempt_at, ProviderOperation.created_at)
+                .with_for_update(skip_locked=True)
+                .limit(1)
+            )
+            if operation is None:
+                return False
+            should_dispatch = operation.dispatch_attempted_at is None
+            operation.status = "IN_FLIGHT"
+            operation.started_at = operation.started_at or now
+            operation.attempt_count += 1
+            if should_dispatch:
+                # Persist the fence before crossing the network. AutoDL does
+                # not accept an idempotency token for power writes, so after
+                # this point every retry is a read-only state observation.
+                operation.dispatch_attempted_at = now
+                operation.confirmation_deadline_at = now + timedelta(minutes=10)
+            operation_id = operation.id
+            product = operation.product
+            instance_id = operation.instance_id
+            desired_state = operation.desired_state
+            request_id = operation.request_id
+            bootstrap_profile = None
+            if should_dispatch and desired_state == "running":
+                bootstrap_profile = await operation_db.scalar(
+                    select(ProviderInstance.bootstrap_profile).where(
+                        ProviderInstance.provider == "autodl",
+                        ProviderInstance.product == product,
+                        ProviderInstance.instance_id == instance_id,
+                    )
+                )
+            await operation_db.commit()
+
+        result: dict[str, Any] | None = None
+        failure: HTTPException | None = None
+        try:
+            method, path, payload = provider_operation_request(
+                product,
+                instance_id,
+                desired_state,
+                operation_id,
+                should_dispatch=should_dispatch,
+                bootstrap_profile=bootstrap_profile,
+            )
+            result = await provider_controller_request(
+                app_instance,
+                method,
+                path,
+                payload,
+            )
+        except ValueError:
+            failure = HTTPException(
+                422,
+                detail={
+                    "code": "AUTODL_BOOTSTRAP_PROFILE_INVALID",
+                    "message": "云实例启动配置不在允许列表",
+                },
+            )
+        except HTTPException as exc:
+            failure = exc
+
+        async with app_instance.state.db.session() as operation_db:
+            current = await operation_db.get(ProviderOperation, operation_id, with_for_update=True)
+            if current is None or current.status != "IN_FLIGHT":
+                return True
+            observed_state = str((result or {}).get("state") or "unknown")[:24]
+            provider_status = str((result or {}).get("provider_status") or "")[:64]
+            current.provider_status = provider_status
+            observed_request_id = str((result or {}).get("request_id") or "")[:128]
+            if observed_request_id:
+                current.provider_request_id = observed_request_id
+            if should_dispatch and result is not None:
+                current.dispatch_ack_at = datetime.now(UTC)
+            instance = await operation_db.scalar(
+                select(ProviderInstance)
+                .where(
+                    ProviderInstance.provider == "autodl",
+                    ProviderInstance.product == product,
+                    ProviderInstance.instance_id == instance_id,
+                )
+                .with_for_update()
+            )
+            if instance is not None and result is not None:
+                instance.observed_state = observed_state
+                instance.provider_status = provider_status
+                instance.last_seen_at = datetime.now(UTC)
+                instance.revision = int(instance.revision or 0) + 1
+            if failure is None and result is not None:
+                current.error_code = None
+                current.error_message = None
+                if observed_state == desired_state:
+                    current.status = "CONFIRMED"
+                    current.completed_at = datetime.now(UTC)
+                    if instance is not None:
+                        instance.desired_state = desired_state
+                        if instance.node_id:
+                            node = await operation_db.get(
+                                Node, instance.node_id, with_for_update=True
+                            )
+                            if node is not None:
+                                if desired_state == "stopped":
+                                    node.mode = NodeMode.DISABLED.value
+                                elif instance.scheduling_enabled:
+                                    node.mode = NodeMode.ACTIVE.value
+                else:
+                    current.status = "WAITING"
+                    current.next_attempt_at = datetime.now(UTC) + timedelta(seconds=2)
+            else:
+                detail = failure.detail if failure is not None else {}
+                if not isinstance(detail, dict):
+                    detail = {}
+                code = str(detail.get("code") or "PROVIDER_CONTROLLER_UNAVAILABLE")[:64]
+                message = str(detail.get("message") or "云服务器状态暂时无法确认")[:1000]
+                current.error_code = code
+                current.error_message = message
+                permanent = failure is not None and failure.status_code in {401, 403, 404, 422}
+                if permanent:
+                    current.status = "FAILED"
+                    current.completed_at = datetime.now(UTC)
+                else:
+                    current.status = "UNCERTAIN" if should_dispatch else "WAITING"
+                    delay = min(60, 2 ** min(current.attempt_count, 5))
+                    current.next_attempt_at = datetime.now(UTC) + timedelta(seconds=delay)
+            deadline = current.confirmation_deadline_at
+            if (
+                current.status in {"WAITING", "UNCERTAIN"}
+                and deadline is not None
+                and datetime.now(UTC) >= utc_aware(deadline)
+            ):
+                current.status = "FAILED"
+                current.error_code = "PROVIDER_CONFIRMATION_TIMEOUT"
+                current.error_message = "电源命令已停止重发，但实例状态未在期限内收敛"
+                current.completed_at = datetime.now(UTC)
+            if (
+                current.status == "FAILED"
+                and desired_state == "stopped"
+                and instance is not None
+                and instance.node_id
+                and instance.observed_state == "running"
+                and instance.scheduling_enabled
+            ):
+                node = await operation_db.get(Node, instance.node_id, with_for_update=True)
+                if node is not None:
+                    node.mode = NodeMode.ACTIVE.value
+            if current.status in {"CONFIRMED", "FAILED"}:
+                operation_db.add(
+                    AuditLog(
+                        actor_id=current.requested_by,
+                        action="cloud.instance.operation.completed",
+                        target_type="cloud_instance",
+                        target_id=f"{product}:{instance_id}",
+                        before={"operation_id": current.id},
+                        after={
+                            "status": current.status,
+                            "desired_state": current.desired_state,
+                            "provider_status": current.provider_status,
+                            "provider_request_id": current.provider_request_id,
+                            "error_code": current.error_code,
+                        },
+                        source_ip=current.source_ip,
+                        request_id=request_id,
+                        result="SUCCESS" if current.status == "CONFIRMED" else "FAILED",
+                    )
+                )
+            await operation_db.commit()
+        return True
+
+    async def provider_reconcile_loop(app_instance: FastAPI) -> None:
+        while True:
+            try:
+                # Clear before checking PostgreSQL so an operation committed
+                # during the query leaves the event set and cannot miss the
+                # fast wake-up. The timeout remains a cross-process fallback.
+                app_instance.state.provider_reconcile_event.clear()
+                scheduled = await enqueue_due_provider_schedule(app_instance)
+                if scheduled:
+                    continue
+                reconciled = await reconcile_one_provider_operation(app_instance)
+                if not reconciled:
+                    try:
+                        await asyncio.wait_for(
+                            app_instance.state.provider_reconcile_event.wait(),
+                            timeout=1,
+                        )
+                    except TimeoutError:
+                        pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger().warning(
+                    "provider.reconcile_failed",
+                    error_type=type(exc).__name__,
+                )
+                await asyncio.sleep(2)
 
     async def deliver_one_alert(app_instance: FastAPI) -> bool:
         now = datetime.now(UTC)

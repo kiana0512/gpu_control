@@ -15,15 +15,20 @@ import pytest
 from fastapi import FastAPI
 from gpu_control_api.main import (
     MODELVIEW_NOISE_SEED_EXCLUSIVE_MAX,
+    _discard_job_waiter,
+    _ensure_provider_instance,
     _merge_service_parameter,
+    _register_job_waiter,
+    _wake_job_waiters,
     create_app,
     inject_server_owned_workflow_parameters,
+    provider_operation_request,
     service_queue_policy,
 )
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from packages.gpu_control_core.enums import BatchStatus, Priority
+from packages.gpu_control_core.enums import BatchStatus, NodeMode, Priority
 from packages.gpu_control_core.models import (
     Alert,
     ApiClient,
@@ -44,6 +49,8 @@ from packages.gpu_control_core.models import (
     JobBatchItem,
     JobEvent,
     Node,
+    ProviderInstance,
+    ProviderOperation,
     Workflow,
     WorkflowNodeCompatibility,
     WorkflowVersion,
@@ -67,6 +74,24 @@ def test_modelview_prompt_form_field_merges_without_ambiguity() -> None:
         raise AssertionError("conflicting prompt sources must fail closed")
 
 
+def test_scheduler_event_wakes_all_waiters_and_cleanup_is_isolated() -> None:
+    app = FastAPI()
+    app.state.job_terminal_waiters = {}
+    first = _register_job_waiter(app, "job-a")
+    second = _register_job_waiter(app, "job-a")
+    unrelated = _register_job_waiter(app, "job-b")
+
+    _wake_job_waiters(app, "job-a")
+
+    assert first.is_set()
+    assert second.is_set()
+    assert not unrelated.is_set()
+    _discard_job_waiter(app, "job-a", first)
+    assert app.state.job_terminal_waiters["job-a"] == {second}
+    _discard_job_waiter(app, "job-a", second)
+    assert "job-a" not in app.state.job_terminal_waiters
+
+
 def test_modelview_inpaint_uses_non_preemptive_interactive_queue_policy() -> None:
     assert service_queue_policy("modelview-inpaint") == (Priority.CRITICAL, True)
     assert service_queue_policy("modelview-single-view") == (Priority.CRITICAL, True)
@@ -75,6 +100,63 @@ def test_modelview_inpaint_uses_non_preemptive_interactive_queue_policy() -> Non
         True,
     )
     assert service_queue_policy("imageclip-rgba") == (Priority.NORMAL, False)
+
+
+def test_provider_reconcile_sends_profile_only_on_first_running_dispatch() -> None:
+    first = provider_operation_request(
+        "app",
+        "pro-a1",
+        "running",
+        "operation-1",
+        should_dispatch=True,
+        bootstrap_profile="comfyui-6006-v1",
+    )
+    retry = provider_operation_request(
+        "app",
+        "pro-a1",
+        "running",
+        "operation-1",
+        should_dispatch=False,
+        bootstrap_profile="comfyui-6006-v1",
+    )
+    stop = provider_operation_request(
+        "app",
+        "pro-a1",
+        "stopped",
+        "operation-2",
+        should_dispatch=True,
+        bootstrap_profile="comfyui-6006-v1",
+    )
+
+    assert first == (
+        "POST",
+        "/internal/v1/providers/autodl/instances/app/pro-a1/state",
+        {
+            "desired_state": "running",
+            "correlation_id": "operation-1",
+            "bootstrap_profile": "comfyui-6006-v1",
+        },
+    )
+    assert retry == (
+        "GET",
+        "/internal/v1/providers/autodl/instances/app/pro-a1/state",
+        None,
+    )
+    assert stop == (
+        "POST",
+        "/internal/v1/providers/autodl/instances/app/pro-a1/state",
+        {"desired_state": "stopped", "correlation_id": "operation-2"},
+    )
+
+    with pytest.raises(ValueError, match="not allowlisted"):
+        provider_operation_request(
+            "app",
+            "pro-a1",
+            "running",
+            "operation-3",
+            should_dispatch=True,
+            bootstrap_profile="arbitrary-shell",
+        )
     assert service_queue_policy("modelview-roughness") == (Priority.NORMAL, False)
 
 
@@ -99,9 +181,7 @@ def test_modelview_noise_seed_is_server_owned_and_rolling_deploy_safe(
     assert second == {"noise_seed": 202}
 
     single_view: dict[str, Any] = {}
-    inject_server_owned_workflow_parameters(
-        "modelview-single-view", bindings, single_view
-    )
+    inject_server_owned_workflow_parameters("modelview-single-view", bindings, single_view)
     assert single_view == {"noise_seed": 303}
 
     single_view_inpaint: dict[str, Any] = {}
@@ -118,6 +198,352 @@ def test_modelview_noise_seed_is_server_owned_and_rolling_deploy_safe(
 
     with pytest.raises(ValueError, match="客户端不能传入"):
         inject_server_owned_workflow_parameters("modelview-inpaint", bindings, {"noise_seed": 303})
+
+
+async def test_autodl_power_intent_is_persisted_and_idempotent(tmp_path: Path) -> None:
+    async for app, client in prepared_app(tmp_path):
+        async with app.state.db.session() as db:
+            db.add(
+                ProviderInstance(
+                    provider="autodl",
+                    product="app",
+                    instance_id="pro-a1",
+                    managed=True,
+                    bootstrap_profile="comfyui-6006-v1",
+                )
+            )
+            await db.commit()
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        headers = {
+            "Authorization": f"Bearer {login.json()['access_token']}",
+            "Idempotency-Key": "autodl-start-canary-1",
+        }
+        body = {"reason": "persist provider operation before execution", "confirm": True}
+        path = "/admin/providers/autodl/instances/app/pro-a1/start"
+        first = await client.post(path, headers=headers, json=body)
+        replay = await client.post(path, headers=headers, json=body)
+        assert first.status_code == 200
+        assert replay.status_code == 200
+        assert first.json()["operation_id"] == replay.json()["operation_id"]
+        assert first.json()["status"] == "PENDING"
+        assert app.state.provider_reconcile_event.is_set() is True
+
+        operation_status = await client.get(
+            f"/admin/providers/autodl/operations/{first.json()['operation_id']}",
+            headers={"Authorization": headers["Authorization"]},
+        )
+        assert operation_status.status_code == 200
+        assert "bootstrap_profile" not in operation_status.json()
+        assert "start_command" not in operation_status.text
+        assert operation_status.json() == {
+            "operation_id": first.json()["operation_id"],
+            "product": "app",
+            "instance_id": "pro-a1",
+            "desired_state": "running",
+            "status": "PENDING",
+            "attempt_count": 0,
+            "provider_status": "",
+            "error_code": None,
+            "error_message": None,
+            "created_at": operation_status.json()["created_at"],
+            "started_at": None,
+            "dispatch_attempted_at": None,
+            "dispatch_ack_at": None,
+            "confirmation_deadline_at": None,
+            "completed_at": None,
+            "updated_at": operation_status.json()["updated_at"],
+        }
+
+        conflict_headers = {**headers, "Idempotency-Key": "autodl-stop-canary-1"}
+        conflict = await client.post(
+            "/admin/providers/autodl/instances/app/pro-a1/stop",
+            headers=conflict_headers,
+            json={"reason": "opposite operation must wait", "confirm": True},
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["code"] == "PROVIDER_OPERATION_IN_PROGRESS"
+
+        async with app.state.db.session() as db:
+            operations = list((await db.scalars(select(ProviderOperation))).all())
+            instances = list((await db.scalars(select(ProviderInstance))).all())
+            audits = list(
+                (
+                    await db.scalars(
+                        select(AuditLog).where(AuditLog.action == "cloud.instance.start")
+                    )
+                ).all()
+            )
+        assert len(operations) == 1
+        assert len(instances) == 1
+        assert instances[0].desired_state == "running"
+        assert instances[0].managed is True
+        assert instances[0].bootstrap_profile == "comfyui-6006-v1"
+        assert len(audits) == 1
+        assert "password" not in json.dumps(audits[0].after)
+        assert "start-comfyui.sh" not in json.dumps(audits[0].after)
+
+
+async def test_provider_instance_first_discovery_is_concurrency_safe(tmp_path: Path) -> None:
+    async for app, _ in prepared_app(tmp_path):
+        start = asyncio.Event()
+
+        async def discover(
+            app_instance: FastAPI = app,
+            start_event: asyncio.Event = start,
+        ) -> int:
+            await start_event.wait()
+            async with app_instance.state.db.session() as db:
+                instance = await _ensure_provider_instance(
+                    db,
+                    provider="autodl",
+                    product="app",
+                    instance_id="pro-concurrent1",
+                    with_for_update=True,
+                )
+                instance.display_name = "Concurrent 5090"
+                instance_id = instance.id
+                await db.commit()
+                return instance_id
+
+        tasks = [asyncio.create_task(discover()) for _ in range(4)]
+        start.set()
+        discovered_ids = await asyncio.gather(*tasks)
+
+        async with app.state.db.session() as db:
+            instances = list(
+                (
+                    await db.scalars(
+                        select(ProviderInstance).where(
+                            ProviderInstance.provider == "autodl",
+                            ProviderInstance.product == "app",
+                            ProviderInstance.instance_id == "pro-concurrent1",
+                        )
+                    )
+                ).all()
+            )
+        assert len(set(discovered_ids)) == 1
+        assert len(instances) == 1
+
+
+async def test_autodl_reconciler_sends_bootstrap_profile_once_then_reads_only(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path, autodl_enabled=True):
+        state_requests: list[httpx.Request] = []
+
+        def provider_handler(
+            request: httpx.Request,
+            captured_requests: list[httpx.Request] = state_requests,
+        ) -> httpx.Response:
+            if request.url.path.endswith("/inventory"):
+                return httpx.Response(
+                    200,
+                    json={
+                        "configured": True,
+                        "provider": "AutoDL",
+                        "instances": [
+                            {
+                                "product": "app",
+                                "instance_id": "pro-bootstraponce",
+                                "name": "5090",
+                                "state": "running",
+                                "provider_status": "running",
+                            }
+                        ],
+                    },
+                    request=request,
+                )
+            if request.url.path.endswith("/state"):
+                captured_requests.append(request)
+                if request.method == "POST":
+                    return httpx.Response(
+                        200,
+                        json={
+                            "accepted": True,
+                            "state": "starting",
+                            "provider_status": "booting",
+                        },
+                        request=request,
+                    )
+                return httpx.Response(
+                    200,
+                    json={
+                        "accepted": False,
+                        "state": "running",
+                        "provider_status": "running",
+                    },
+                    request=request,
+                )
+            raise AssertionError(request.url)
+
+        previous_http = app.state.provider_http
+        app.state.provider_http = httpx.AsyncClient(
+            base_url="http://provider-controller:8020",
+            transport=httpx.MockTransport(provider_handler),
+        )
+        await previous_http.aclose()
+        async with app.state.db.session() as db:
+            db.add(
+                ProviderInstance(
+                    provider="autodl",
+                    product="app",
+                    instance_id="pro-bootstraponce",
+                    managed=True,
+                    bootstrap_profile="comfyui-6006-v1",
+                )
+            )
+            await db.commit()
+
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        response = await client.post(
+            "/admin/providers/autodl/instances/app/pro-bootstraponce/start",
+            headers={
+                "Authorization": f"Bearer {login.json()['access_token']}",
+                "Idempotency-Key": "bootstrap-profile-once",
+            },
+            json={"reason": "verify fenced bootstrap dispatch", "confirm": True},
+        )
+        assert response.status_code == 200
+        operation_id = response.json()["operation_id"]
+
+        deadline = asyncio.get_running_loop().time() + 6
+        while asyncio.get_running_loop().time() < deadline:
+            async with app.state.db.session() as db:
+                operation = await db.get(ProviderOperation, operation_id)
+                if operation is not None and operation.status == "CONFIRMED":
+                    break
+            await asyncio.sleep(0.1)
+        else:
+            raise AssertionError("provider operation did not converge")
+
+        assert [request.method for request in state_requests] == ["POST", "GET"]
+        first_body = json.loads(state_requests[0].content)
+        assert first_body == {
+            "bootstrap_profile": "comfyui-6006-v1",
+            "correlation_id": operation_id,
+            "desired_state": "running",
+        }
+        assert state_requests[1].content == b""
+        assert "start_command" not in state_requests[0].content.decode()
+        assert "start-comfyui.sh" not in state_requests[0].content.decode()
+        inventory = await client.get(
+            "/admin/providers/autodl?force=true",
+            headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+        )
+        assert inventory.status_code == 200
+        assert inventory.json()["instances"][0]["management"]["bootstrap_profile"] == (
+            "comfyui-6006-v1"
+        )
+        assert "start_command" not in inventory.text
+        assert "start-comfyui.sh" not in inventory.text
+
+
+async def test_autodl_stop_is_blocked_while_a_mapped_node_is_busy(tmp_path: Path) -> None:
+    async for app, client in prepared_app(tmp_path):
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-a", with_for_update=True)
+            assert node is not None
+            node.current_jobs = 1
+            db.add(
+                ProviderInstance(
+                    provider="autodl",
+                    product="app",
+                    instance_id="pro-cloudbusy1",
+                    node_id=node.id,
+                    managed=True,
+                    scheduling_enabled=True,
+                    desired_state="running",
+                    observed_state="running",
+                    provider_status="running",
+                )
+            )
+            await db.commit()
+
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        response = await client.post(
+            "/admin/providers/autodl/instances/app/pro-cloudbusy1/stop",
+            headers={
+                "Authorization": f"Bearer {login.json()['access_token']}",
+                "Idempotency-Key": "autodl-stop-busy-canary-1",
+            },
+            json={"reason": "must not stop an occupied cloud node", "confirm": True},
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "CLOUD_INSTANCE_BUSY"
+
+        async with app.state.db.session() as db:
+            operations = list((await db.scalars(select(ProviderOperation))).all())
+            node = await db.get(Node, "worker-3090-a")
+        assert operations == []
+        assert node is not None
+        assert node.mode == NodeMode.ACTIVE.value
+
+
+async def test_autodl_schedule_is_persisted_and_can_be_cleared(tmp_path: Path) -> None:
+    async for app, client in prepared_app(tmp_path):
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        start_at = datetime.now(UTC) + timedelta(minutes=10)
+        stop_at = datetime.now(UTC) + timedelta(minutes=40)
+        path = "/admin/providers/autodl/instances/app/pro-schedule1/schedule"
+        response = await client.put(
+            path,
+            headers=headers,
+            json={
+                "scheduled_start_at": start_at.isoformat(),
+                "scheduled_stop_at": stop_at.isoformat(),
+                "reason": "one-shot cost control policy",
+                "confirm": True,
+            },
+        )
+        assert response.status_code == 200
+        assert (
+            datetime.fromisoformat(response.json()["scheduled_start_at"].replace("Z", "+00:00"))
+            == start_at
+        )
+        assert (
+            datetime.fromisoformat(response.json()["scheduled_stop_at"].replace("Z", "+00:00"))
+            == stop_at
+        )
+
+        async with app.state.db.session() as db:
+            instance = await db.scalar(
+                select(ProviderInstance).where(
+                    ProviderInstance.provider == "autodl",
+                    ProviderInstance.product == "app",
+                    ProviderInstance.instance_id == "pro-schedule1",
+                )
+            )
+            assert instance is not None
+            assert instance.managed is True
+            assert instance.schedule_updated_by == "admin"
+            assert instance.schedule_reason == "one-shot cost control policy"
+
+        cleared = await client.put(
+            path,
+            headers=headers,
+            json={
+                "scheduled_start_at": None,
+                "scheduled_stop_at": None,
+                "reason": "clear the one-shot policy",
+                "confirm": True,
+            },
+        )
+        assert cleared.status_code == 200
+        assert cleared.json()["scheduled_start_at"] is None
+        assert cleared.json()["scheduled_stop_at"] is None
 
 
 async def test_api_version_exposes_immutable_build_provenance(
@@ -138,7 +564,9 @@ async def test_api_version_exposes_immutable_build_provenance(
         assert payload["version_aligned"] is True
 
 
-async def prepared_app(tmp_path: Path) -> AsyncIterator[tuple[FastAPI, httpx.AsyncClient]]:
+async def prepared_app(
+    tmp_path: Path, *, autodl_enabled: bool = False
+) -> AsyncIterator[tuple[FastAPI, httpx.AsyncClient]]:
     settings = Settings(
         environment="test",
         database_url=f"sqlite+aiosqlite:///{(tmp_path / 'api.db').as_posix()}",
@@ -151,6 +579,8 @@ async def prepared_app(tmp_path: Path) -> AsyncIterator[tuple[FastAPI, httpx.Asy
         system_max_queued=200,
         default_tenant_max_queued=200,
         allowed_callback_hosts="callback.example.com",
+        autodl_enabled=autodl_enabled,
+        provider_controller_hmac_secret="test-provider-secret-at-least-32-bytes",
     )
     app = create_app(settings)
     async with app.router.lifespan_context(app):
@@ -584,6 +1014,48 @@ async def test_api_key_rbac_validation_and_idempotency(tmp_path: Path) -> None:
         ).status_code == 422
 
 
+@pytest.mark.parametrize("legacy_quota", [0, 1])
+async def test_daily_quota_disabled_preserves_queue_limits_and_idempotency(
+    tmp_path: Path,
+    legacy_quota: int,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        async with app.state.db.session() as db:
+            tenant = await db.get(ApiClient, "tenant")
+            tenant.daily_quota = legacy_quota
+            tenant.max_queued = 2
+            await db.commit()
+        files = {
+            "workflow_key": (None, "fake"),
+            "workflow_version": (None, "1"),
+            "parameters": (None, '{"steps":20}'),
+        }
+        headers = {"X-API-Key": "gpc_abcd1234_secret"}
+        first = await client.post(
+            "/api/v1/jobs",
+            files=files,
+            headers={**headers, "Idempotency-Key": "daily-first"},
+        )
+        assert first.status_code == 202, first.text
+        # A positive legacy quota must not reject the second task either.
+        second = await client.post(
+            "/api/v1/jobs",
+            files=files,
+            headers={**headers, "Idempotency-Key": "daily-second"},
+        )
+        assert second.status_code == 202, second.text
+        replay = await client.post(
+            "/api/v1/jobs",
+            files=files,
+            headers={**headers, "Idempotency-Key": "daily-second"},
+        )
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["job_id"] == second.json()["job_id"]
+        third = await client.post("/api/v1/jobs", files=files, headers=headers)
+        assert third.status_code == 429, third.text
+        assert third.json()["detail"]["message"] == "队列已达到限制"
+
+
 async def test_job_create_acquires_global_admission_before_tenant_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -822,9 +1294,7 @@ async def test_test_jobs_and_batches_stop_before_production_queue_reserve(
         )
         assert production.status_code == 202, production.text
         async with app.state.db.session() as db:
-            queued = await db.scalar(
-                select(func.count(Job.id)).where(Job.status == "QUEUED")
-            )
+            queued = await db.scalar(select(func.count(Job.id)).where(Job.status == "QUEUED"))
         assert queued == 3
 
 
@@ -1473,6 +1943,28 @@ async def test_batch_performance_serializes_authoritative_node_attempts(
         assert performance["reassignments"] == 1
         assert performance["scheduler_restarts"] is None
         assert performance["straggler_ratio"] == 0.015625
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        summary_response = await client.get(
+            "/admin/jobs?detail=summary&include_performance=true",
+            headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+        )
+        assert summary_response.status_code == 200, summary_response.text
+        summary_batch = next(
+            row for row in summary_response.json() if row.get("batch_id") == batch_id
+        )
+        assert summary_batch["failed_items"] == []
+        assert summary_batch["performance"] == {
+            **summary_batch["performance"],
+            "schema_version": "1.0-summary",
+            "gpu_service_ms_total": 60_000,
+            "gpu_service_measurements_complete": True,
+            "frames_per_gpu_minute": 2.0,
+            "reassignments": 1,
+            "nodes": [],
+        }
         nodes = {node["node_id"]: node for node in performance["nodes"]}
         assert nodes["worker-3090-a"] == {
             **nodes["worker-3090-a"],
@@ -2089,9 +2581,7 @@ async def test_operator_mode_change_takes_drain_ownership_without_dropping_gpu_f
             assert node.mode == "DRAINING"
             assert "substance_bake_drain_owner" not in node.labels
             assert node.labels["substance_bake_fence_job_ids"] == ["active-bake"]
-            assert node.labels["substance_bake_pending_reservation"]["job_ids"] == [
-                "pending-bake"
-            ]
+            assert node.labels["substance_bake_pending_reservation"]["job_ids"] == ["pending-bake"]
             assert node.labels["substance_bake_recovery_required"]
 
 
@@ -2112,9 +2602,7 @@ async def test_operator_active_releases_only_idle_substance_specialization(
                     "key": "substance-bake",
                     "owner": "asset-api",
                     "started_at": datetime.now(UTC).isoformat(),
-                    "expires_at": (
-                        datetime.now(UTC) + timedelta(minutes=5)
-                    ).isoformat(),
+                    "expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
                 },
             }
             await db.commit()
@@ -2148,9 +2636,7 @@ async def test_operator_active_releases_only_idle_substance_specialization(
                     "key": "substance-bake",
                     "owner": "asset-api",
                     "started_at": datetime.now(UTC).isoformat(),
-                    "expires_at": (
-                        datetime.now(UTC) + timedelta(minutes=5)
-                    ).isoformat(),
+                    "expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
                 },
             }
             await db.commit()
@@ -2285,8 +2771,96 @@ async def test_admin_nodes_selects_linux_codex_worker_not_newer_windows_baker(
         assert runtime["probe_fresh"] is True
         assert runtime["scheduler_eligible"] is True
         assert runtime["eligibility_reason"] == "ELIGIBLE"
-        assert runtime["heartbeat_timeout_seconds"] == app.state.settings.asset_worker_heartbeat_timeout_seconds
-        assert runtime["probe_max_age_seconds"] == app.state.settings.asset_codex_probe_max_age_seconds
+        assert (
+            runtime["heartbeat_timeout_seconds"]
+            == app.state.settings.asset_worker_heartbeat_timeout_seconds
+        )
+        assert (
+            runtime["probe_max_age_seconds"] == app.state.settings.asset_codex_probe_max_age_seconds
+        )
+
+
+async def test_admin_nodes_never_hides_active_codex_task_behind_history_limit(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        now = datetime.now(UTC)
+        worker_id = "asset-worker-3090-a"
+        active_job_id = str(uuid.uuid4())
+        async with app.state.db.session() as db:
+            db.add(
+                AssetWorker(
+                    id=worker_id,
+                    display_name="3090-A Codex Worker",
+                    node_id="worker-3090-a",
+                    hostname="worker-3090-a-wsl",
+                    status="ONLINE",
+                    blender_version="5.1.2",
+                    skill_version="asset-skills-test",
+                    max_concurrency=1,
+                    current_jobs=1,
+                    cpu_count=32,
+                    last_heartbeat_at=now,
+                    updated_at=now,
+                )
+            )
+            db.add(
+                AssetJob(
+                    id=active_job_id,
+                    client_id="tenant",
+                    external_asset_id="active-codex-beyond-history-window",
+                    job_type="RETOPOLOGY_PROCESS_V2",
+                    status="RUNNING",
+                    source_filename="active.fbx",
+                    input_path="/tmp/active.fbx",
+                    input_sha256="a" * 64,
+                    input_size_bytes=1,
+                    options={"user_request": "keep active task visible"},
+                    request_hash="b" * 64,
+                    request_id="active-codex-beyond-history-window",
+                    worker_id=worker_id,
+                    stage="CODEX_RUNNING",
+                    created_at=now - timedelta(days=1),
+                )
+            )
+            db.add_all(
+                [
+                    AssetJob(
+                        id=str(uuid.uuid4()),
+                        client_id="tenant",
+                        external_asset_id=f"completed-codex-{index}",
+                        job_type="RETOPOLOGY_PROCESS_V2",
+                        status="SUCCEEDED",
+                        source_filename=f"completed-{index}.fbx",
+                        input_path=f"/tmp/completed-{index}.fbx",
+                        input_sha256="c" * 64,
+                        input_size_bytes=1,
+                        options={},
+                        request_hash="d" * 64,
+                        request_id=f"completed-codex-{index}",
+                        worker_id=worker_id,
+                        stage="SUCCEEDED",
+                        created_at=now + timedelta(seconds=index),
+                    )
+                    for index in range(501)
+                ]
+            )
+            await db.commit()
+
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        response = await client.get(
+            "/admin/nodes",
+            headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+        )
+
+        assert response.status_code == 200, response.text
+        node = next(item for item in response.json() if item["id"] == "worker-3090-a")
+        assert node["codex_cli"]["task"]["job_id"] == active_job_id
+        assert node["codex_cli"]["task"]["status"] == "RUNNING"
+        assert node["codex_cli"]["task"]["is_active"] is True
 
 
 async def test_admin_nodes_exposes_optional_gpu_temperature_and_power(tmp_path: Path) -> None:
@@ -2766,9 +3340,7 @@ async def test_admin_load_session_collision_lookup_is_exact_and_uncapped(
                 JobBatch(
                     id=str(uuid.uuid4()),
                     tenant_id="tenant",
-                    external_batch_id=(
-                        f"loadtest:{session_id}:imageclip_batch:00000002"
-                    ),
+                    external_batch_id=(f"loadtest:{session_id}:imageclip_batch:00000002"),
                     workflow_key="imageclip-rgba",
                     workflow_version="1",
                     status="SUCCEEDED",
@@ -3003,9 +3575,7 @@ async def test_admin_substance_retry_requires_and_preserves_recovery_evidence(
             assert job.error_code is None and job.error_message is None
             assert job.started_at is None and job.finished_at is None
             assert job.options["admin_retry_count"] == 1
-            assert job.options["admin_retry_last_reason"] == (
-                "v7 agent and host recovery verified"
-            )
+            assert job.options["admin_retry_last_reason"] == ("v7 agent and host recovery verified")
 
         second_retry = await client.post(
             f"/admin/asset-jobs/{job_id}/retry",
@@ -3055,6 +3625,12 @@ async def test_direct_image_service_reports_missing_workflow(tmp_path: Path) -> 
                 "/api/v1/services/modelview-single-view-inpaint",
             }:
                 files["mask"] = ("mask.png", b"not-an-image", "image/png")
+            if endpoint in {
+                "/api/v1/services/modelview-inpaint",
+                "/api/v1/services/modelview-single-view",
+                "/api/v1/services/modelview-single-view-inpaint",
+            }:
+                files["normal_image"] = ("normal.png", b"not-an-image", "image/png")
             response = await client.post(endpoint, files=files)
             assert response.status_code == 404
             assert response.json()["detail"]["code"] == "WORKFLOW_NOT_FOUND"
@@ -3072,6 +3648,7 @@ async def test_modelview_services_require_their_declared_images(
         assert {item["loc"][-1] for item in inpaint.json()["detail"]} == {
             "material_image",
             "mask",
+            "normal_image",
         }
 
         single_view = await client.post(
@@ -3080,7 +3657,8 @@ async def test_modelview_services_require_their_declared_images(
         )
         assert single_view.status_code == 422
         assert {item["loc"][-1] for item in single_view.json()["detail"]} == {
-            "material_image"
+            "material_image",
+            "normal_image",
         }
 
         single_view_inpaint = await client.post(
@@ -3091,10 +3669,11 @@ async def test_modelview_services_require_their_declared_images(
         assert {item["loc"][-1] for item in single_view_inpaint.json()["detail"]} == {
             "material_image",
             "mask",
+            "normal_image",
         }
 
 
-async def test_modelview_single_view_two_image_service_persists_seed(
+async def test_modelview_single_view_three_image_service_persists_seed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3130,6 +3709,7 @@ async def test_modelview_single_view_two_image_service_persists_seed(
                     workflow_key=workflow_key,
                     version="two-image-rseed-test",
                     template={
+                        "42": {"class_type": "LoadImage", "inputs": {"image": "normal.png"}},
                         "4": {"class_type": "LoadImage", "inputs": {"image": "white.png"}},
                         "5": {
                             "class_type": "LoadImage",
@@ -3143,6 +3723,7 @@ async def test_modelview_single_view_two_image_service_persists_seed(
                         "properties": {
                             "image_filename": {"type": "string"},
                             "material_image_filename": {"type": "string"},
+                            "normal_image_filename": {"type": "string"},
                             "noise_seed": {
                                 "type": "integer",
                                 "minimum": 0,
@@ -3152,6 +3733,7 @@ async def test_modelview_single_view_two_image_service_persists_seed(
                         "required": [
                             "image_filename",
                             "material_image_filename",
+                            "normal_image_filename",
                             "noise_seed",
                         ],
                         "additionalProperties": False,
@@ -3159,6 +3741,7 @@ async def test_modelview_single_view_two_image_service_persists_seed(
                     bindings={
                         "image_filename": "4.inputs.image",
                         "material_image_filename": "5.inputs.image",
+                        "normal_image_filename": "42.inputs.image",
                         "noise_seed": "14.inputs.noise_seed",
                     },
                     allowed_class_types=["LoadImage", "RandomNoise", "SaveImage"],
@@ -3212,6 +3795,7 @@ async def test_modelview_single_view_two_image_service_persists_seed(
             return {
                 "image": ("white.png", white_bytes, "image/png"),
                 "material_image": ("reference.png", material_bytes, "image/png"),
+                "normal_image": ("normal.png", white_bytes, "image/png"),
             }
 
         first_request = asyncio.create_task(
@@ -3227,13 +3811,12 @@ async def test_modelview_single_view_two_image_service_persists_seed(
         assert first_response.headers["x-job-id"] == first_job.id
         assert first_job.parameters["noise_seed"] == 111
         first_rendered = json.loads(
-            (Path(first_job.job_dir) / "workflow" / "rendered.api.json").read_text(
-                encoding="utf-8"
-            )
+            (Path(first_job.job_dir) / "workflow" / "rendered.api.json").read_text(encoding="utf-8")
         )
         assert first_rendered["14"]["inputs"]["noise_seed"] == 111
         assert first_rendered["4"]["inputs"]["image"].startswith(f"{first_job.id}/")
         assert first_rendered["5"]["inputs"]["image"].startswith(f"{first_job.id}/")
+        assert first_rendered["42"]["inputs"]["image"] == f"{first_job.id}/normal_image-normal.png"
 
         replay = await client.post(
             endpoint,
@@ -3281,9 +3864,7 @@ async def test_modelview_mask_services_bind_current_reference_mask_prompt_and_se
 
     monkeypatch.setattr(
         "gpu_control_api.main.secrets.randbelow",
-        lambda upper_bound: 444
-        if upper_bound == MODELVIEW_NOISE_SEED_EXCLUSIVE_MAX
-        else -1,
+        lambda upper_bound: 444 if upper_bound == MODELVIEW_NOISE_SEED_EXCLUSIVE_MAX else -1,
     )
 
     def png_bytes(size: tuple[int, int], color: object) -> bytes:
@@ -3292,6 +3873,8 @@ async def test_modelview_mask_services_bind_current_reference_mask_prompt_and_se
         return buffer.getvalue()
 
     current_bytes = png_bytes((4, 3), "navy")
+    needs_normal = True
+    normal_bytes = png_bytes((4, 3), (128, 128, 255))
     reference_bytes = png_bytes((4, 3), "orange")
     empty_mask_bytes = png_bytes((4, 3), "black")
     mask_image = Image.new("RGB", (4, 3), "black")
@@ -3319,6 +3902,11 @@ async def test_modelview_mask_services_bind_current_reference_mask_prompt_and_se
                     workflow_key=workflow_key,
                     version="mask-four-input-rseed-test",
                     template={
+                        **(
+                            {"79": {"class_type": "LoadImage", "inputs": {"image": "normal.png"}}}
+                            if needs_normal
+                            else {}
+                        ),
                         "4": {"class_type": "LoadImage", "inputs": {"image": "current.png"}},
                         "5": {
                             "class_type": "LoadImage",
@@ -3338,6 +3926,11 @@ async def test_modelview_mask_services_bind_current_reference_mask_prompt_and_se
                             "image_filename": {"type": "string"},
                             "material_image_filename": {"type": "string"},
                             "mask_filename": {"type": "string"},
+                            **(
+                                {"normal_image_filename": {"type": "string"}}
+                                if needs_normal
+                                else {}
+                            ),
                             "noise_seed": {
                                 "type": "integer",
                                 "minimum": 0,
@@ -3349,6 +3942,7 @@ async def test_modelview_mask_services_bind_current_reference_mask_prompt_and_se
                             "image_filename",
                             "material_image_filename",
                             "mask_filename",
+                            *(["normal_image_filename"] if needs_normal else []),
                             "noise_seed",
                         ],
                         "additionalProperties": False,
@@ -3357,6 +3951,7 @@ async def test_modelview_mask_services_bind_current_reference_mask_prompt_and_se
                         "image_filename": "4.inputs.image",
                         "material_image_filename": "5.inputs.image",
                         "mask_filename": "44.inputs.image",
+                        **({"normal_image_filename": "79.inputs.image"} if needs_normal else {}),
                         "noise_seed": "14.inputs.noise_seed",
                         "prompt": f"{prompt_node}.inputs.text",
                     },
@@ -3385,7 +3980,21 @@ async def test_modelview_mask_services_bind_current_reference_mask_prompt_and_se
                     b"ignored",
                     "application/octet-stream",
                 )
+            if needs_normal:
+                payload["normal_image"] = ("normal.png", normal_bytes, "image/png")
             return payload
+
+        if needs_normal:
+            missing_normal = files()
+            missing_normal.pop("normal_image")
+            missing = await client.post(endpoint, files=missing_normal)
+            assert missing.status_code == 422
+            assert missing.json()["detail"][0]["loc"][-1] == "normal_image"
+            wrong_size = files()
+            wrong_size["normal_image"] = ("normal.png", png_bytes((2, 2), "blue"), "image/png")
+            invalid = await client.post(endpoint, files=wrong_size)
+            assert invalid.status_code == 422
+            assert invalid.json()["detail"]["message"] == "法线图尺寸必须与输入图片一致"
 
         empty = await client.post(
             endpoint,
@@ -3412,9 +4021,7 @@ async def test_modelview_mask_services_bind_current_reference_mask_prompt_and_se
         job: Job | None = None
         for _ in range(200):
             async with app.state.db.session() as db:
-                job = await db.scalar(
-                    select(Job).where(Job.workflow_key == workflow_key)
-                )
+                job = await db.scalar(select(Job).where(Job.workflow_key == workflow_key))
                 if job is not None:
                     output = Path(job.job_dir) / "output" / "result.png"
                     output.parent.mkdir(parents=True, exist_ok=True)
@@ -3442,16 +4049,17 @@ async def test_modelview_mask_services_bind_current_reference_mask_prompt_and_se
         assert job.parameters["noise_seed"] == 444
         assert job.parameters["prompt"] == "repair only the selected painted panel"
         rendered = json.loads(
-            (Path(job.job_dir) / "workflow" / "rendered.api.json").read_text(
-                encoding="utf-8"
-            )
+            (Path(job.job_dir) / "workflow" / "rendered.api.json").read_text(encoding="utf-8")
         )
         assert rendered["4"]["inputs"]["image"].startswith(f"{job.id}/")
         assert rendered["5"]["inputs"]["image"].startswith(f"{job.id}/")
         assert rendered["44"]["inputs"]["image"].startswith(f"{job.id}/")
-        assert rendered[prompt_node]["inputs"]["text"] == (
-            "repair only the selected painted panel"
-        )
+        if needs_normal:
+            assert rendered["79"]["inputs"]["image"] == f"{job.id}/normal_image-normal.png"
+            assert (
+                Path(job.job_dir) / "input" / "normal_image-normal.png"
+            ).read_bytes() == normal_bytes
+        assert rendered[prompt_node]["inputs"]["text"] == ("repair only the selected painted panel")
         assert rendered["14"]["inputs"]["noise_seed"] == 444
         assert not any(Path(job.job_dir, "input").glob("viewport_reference-*"))
 
@@ -3472,6 +4080,18 @@ async def test_modelview_mask_services_bind_current_reference_mask_prompt_and_se
         )
         assert conflict.status_code == 409
         assert conflict.json()["detail"]["code"] == "IDEMPOTENCY_CONFLICT"
+
+        if needs_normal:
+            changed_normal = files()
+            changed_normal["normal_image"] = ("normal.png", png_bytes((4, 3), "blue"), "image/png")
+            conflict = await client.post(
+                endpoint,
+                files=changed_normal,
+                headers={"Idempotency-Key": "masked-edit-one"},
+                data={"prompt": "repair only the selected painted panel"},
+            )
+            assert conflict.status_code == 409
+            assert conflict.json()["detail"]["code"] == "IDEMPOTENCY_CONFLICT"
 
 
 async def test_callback_url_allowlist_and_one_time_secret(tmp_path: Path) -> None:
@@ -3736,7 +4356,7 @@ async def test_admin_can_update_discovered_client_limits_and_access(tmp_path: Pa
             assert stored.name == "局部重绘客户端"
             assert stored.client_kind == "test"
             assert stored.max_queued == 12
-            assert stored.daily_quota == 240
+            assert stored.daily_quota == 0
             assert stored.enabled is False
 
         conflict = await client.put(
@@ -3907,9 +4527,7 @@ async def test_signed_node_heartbeat_updates_address_and_dynamic_monitoring(
             await db.commit()
         wsl_targets = await client.get("/internal/prometheus/workers")
         assert wsl_targets.status_code == 200
-        assert not any(
-            group["targets"] == ["10.0.0.99:9400"] for group in wsl_targets.json()
-        )
+        assert not any(group["targets"] == ["10.0.0.99:9400"] for group in wsl_targets.json())
         assert any(group["targets"] == ["10.0.0.99:9100"] for group in wsl_targets.json())
 
         async with app.state.db.session() as db:
@@ -3918,7 +4536,4 @@ async def test_signed_node_heartbeat_updates_address_and_dynamic_monitoring(
             node.labels = {**dict(node.labels or {}), "dcgm_exporter_enabled": True}
             await db.commit()
         explicit_dcgm_targets = await client.get("/internal/prometheus/workers")
-        assert any(
-            group["targets"] == ["10.0.0.99:9400"]
-            for group in explicit_dcgm_targets.json()
-        )
+        assert any(group["targets"] == ["10.0.0.99:9400"] for group in explicit_dcgm_targets.json())

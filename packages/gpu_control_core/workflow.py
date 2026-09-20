@@ -8,9 +8,32 @@ from typing import Any
 import jsonschema
 import yaml
 
+WORKFLOW_ALLOWLIST_LABEL = "workflow_allowlist"
+
 
 class WorkflowError(ValueError):
     """Workflow manifest, template or binding validation failed."""
+
+
+def node_workflow_allowlist(reported_labels: object) -> frozenset[str] | None:
+    """Return an operator-owned node workflow allowlist.
+
+    An absent label keeps the historical unrestricted behavior. Once the
+    label exists, malformed/empty values fail closed so a partially written
+    cloud policy can never broaden scheduling by accident.
+    """
+
+    if not isinstance(reported_labels, dict) or WORKFLOW_ALLOWLIST_LABEL not in reported_labels:
+        return None
+    raw = reported_labels.get(WORKFLOW_ALLOWLIST_LABEL)
+    if not isinstance(raw, list):
+        return frozenset()
+    return frozenset(value for item in raw if (value := str(item).strip()))
+
+
+def node_allows_workflow(reported_labels: object, workflow_key: str | None) -> bool:
+    allowlist = node_workflow_allowlist(reported_labels)
+    return allowlist is None or (workflow_key is not None and workflow_key in allowlist)
 
 
 @dataclass(frozen=True)
@@ -169,6 +192,8 @@ def node_compatibility_reasons(
 ) -> list[str]:
     """Return fail-closed workflow compatibility reasons for one node."""
     reasons: list[str] = []
+    if not node_allows_workflow(reported_labels, workflow_key):
+        reasons.append(f"workflow {workflow_key or '<unknown>'} is not allowed by node policy")
     effective_minimum = validated_node_vram_requirement(
         declared_min_vram_mb=min_vram_mb,
         reported_labels=reported_labels,

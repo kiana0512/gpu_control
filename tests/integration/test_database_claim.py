@@ -1,9 +1,11 @@
 import asyncio
+import hashlib
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
+import pytest
 from sqlalchemy import func, select
 
 from apps.scheduler.src.gpu_control_scheduler import main as scheduler_main
@@ -31,6 +33,7 @@ from packages.gpu_control_core.models import (
     JobEvent,
     Node,
     NodeLease,
+    ProviderInstance,
     Workflow,
     WorkflowNodeCompatibility,
     WorkflowVersion,
@@ -801,6 +804,106 @@ async def test_incompatible_workflow_is_not_claimed(tmp_path: Path) -> None:
     await database.close()
 
 
+async def test_test_only_cloud_lane_never_claims_production_work(tmp_path: Path) -> None:
+    database = await make_database(tmp_path / "test-only-cloud-lane.db")
+    await seed(database)
+    async with database.session() as session:
+        node = await session.get(Node, "3090-a")
+        test_client = await session.get(ApiClient, "tenant-b")
+        assert node is not None and test_client is not None
+        node.labels = {"provider": "autodl", "test_only": True}
+        test_client.client_kind = "test"
+        session.add(
+            ProviderInstance(
+                provider="autodl",
+                product="app",
+                instance_id="pro-test-only",
+                node_id=node.id,
+                managed=True,
+                scheduling_enabled=True,
+                desired_state="running",
+                observed_state="running",
+                provider_status="running",
+            )
+        )
+        await session.commit()
+
+    async with database.session() as session:
+        async with session.begin():
+            claimed = await claim_next_job(session, "3090-a", 300)
+        assert claimed is not None
+        assert claimed[0].id == "job-1"
+        assert claimed[0].tenant_id == "tenant-b"
+    await database.close()
+
+
+async def test_node_workflow_allowlist_blocks_stale_compatible_jobs(tmp_path: Path) -> None:
+    database = await make_database(tmp_path / "workflow-allowlist-claim-gate.db")
+    await seed(database)
+    async with database.session() as session:
+        node = await session.get(Node, "3090-a")
+        assert node is not None
+        node.labels = {"workflow_allowlist": [MODELVIEW_INPAINT_WORKFLOW_KEY]}
+        await session.commit()
+
+    # The seeded generic workflow still has a compatible=True row. The
+    # claim-time policy must remain authoritative until compatibility refresh
+    # catches up.
+    async with database.session() as session:
+        async with session.begin():
+            assert await claim_next_job(session, "3090-a", 300) is None
+    await database.close()
+
+
+@pytest.mark.parametrize(
+    ("managed", "scheduling_enabled", "desired_state", "observed_state", "claimable"),
+    [
+        (False, True, "running", "running", False),
+        (True, False, "running", "running", False),
+        (True, True, "stopped", "running", False),
+        (True, True, "running", "starting", False),
+        (True, True, "running", "running", True),
+    ],
+)
+async def test_autodl_lifecycle_is_an_authoritative_claim_gate(
+    tmp_path: Path,
+    managed: bool,
+    scheduling_enabled: bool,
+    desired_state: str,
+    observed_state: str,
+    claimable: bool,
+) -> None:
+    database = await make_database(
+        tmp_path
+        / (
+            "autodl-lifecycle-"
+            f"{int(managed)}-{int(scheduling_enabled)}-{desired_state}-{observed_state}.db"
+        )
+    )
+    await seed(database)
+    async with database.session() as session:
+        session.add(
+            ProviderInstance(
+                provider="autodl",
+                product="app",
+                instance_id="pro-lifecycle",
+                node_id="3090-a",
+                managed=managed,
+                scheduling_enabled=scheduling_enabled,
+                desired_state=desired_state,
+                observed_state=observed_state,
+                provider_status=observed_state,
+            )
+        )
+        await session.commit()
+
+    async with database.session() as session:
+        async with session.begin():
+            claimed = await claim_next_job(session, "3090-a", 300)
+        assert (claimed is not None) is claimable
+    await database.close()
+
+
 async def test_4090_specialization_does_not_idle_when_no_inpaint_is_queued(
     tmp_path: Path,
 ) -> None:
@@ -1003,6 +1106,179 @@ async def test_scheduler_skips_incompatible_node_and_claims_on_compatible_fallba
             assert claimed[0].node_id == "3090-b"
             first_node = await session.get(Node, "3090-a")
             assert first_node is not None and first_node.current_jobs == 0
+    finally:
+        await scheduler.redis.aclose()
+        await scheduler.db.close()
+        await database.close()
+
+
+async def seed_modelview_cloud_lanes(
+    database: Database,
+    tmp_path: Path,
+    cloud_nodes: list[tuple[str, int, int, bool]],
+) -> None:
+    """Replace the generic queue with one ModelView job and reviewed cloud lanes."""
+
+    async with database.session() as session:
+        for queued in (await session.scalars(select(Job))).all():
+            await session.delete(queued)
+        session.add(
+            Workflow(
+                key=MODELVIEW_INPAINT_WORKFLOW_KEY,
+                display_name="ModelView Inpaint",
+                description="cloud scheduling test",
+            )
+        )
+        version = WorkflowVersion(
+            workflow_key=MODELVIEW_INPAINT_WORKFLOW_KEY,
+            version="cloud-test-1",
+            template={"29": {"class_type": "SaveImage", "inputs": {}}},
+            parameter_schema={"type": "object"},
+            bindings={},
+            allowed_class_types=["SaveImage"],
+            required_models=[],
+            required_custom_nodes=[],
+            min_vram_mb=0,
+            timeout_seconds=60,
+            node_labels={},
+            output_nodes=["29"],
+            enabled=True,
+            template_sha256="modelview-cloud-test",
+        )
+        session.add(version)
+        await session.flush()
+        session.add(
+            WorkflowNodeCompatibility(
+                workflow_version_id=version.id,
+                node_id="3090-a",
+                compatible=True,
+                reasons=[],
+            )
+        )
+        now = datetime.now(UTC)
+        for index, (node_id, total_vram_mb, free_vram_mb, compatible) in enumerate(cloud_nodes):
+            session.add(
+                Node(
+                    id=node_id,
+                    display_name=node_id,
+                    base_url=f"http://{node_id}",
+                    pool="PRIMARY",
+                    mode="ACTIVE",
+                    health="ONLINE",
+                    labels={
+                        "workflow_allowlist": [MODELVIEW_INPAINT_WORKFLOW_KEY]
+                    },
+                    max_concurrency=1,
+                    current_jobs=0,
+                    free_vram_mb=free_vram_mb,
+                    total_vram_mb=total_vram_mb,
+                    last_heartbeat_at=now,
+                )
+            )
+            await session.flush()
+            session.add_all(
+                [
+                    ProviderInstance(
+                        provider="autodl",
+                        product="app",
+                        instance_id=f"pro-cloud-{index}",
+                        node_id=node_id,
+                        managed=True,
+                        scheduling_enabled=True,
+                        desired_state="running",
+                        observed_state="running",
+                        provider_status="running",
+                    ),
+                    WorkflowNodeCompatibility(
+                        workflow_version_id=version.id,
+                        node_id=node_id,
+                        compatible=compatible,
+                        reasons=[] if compatible else ["test incompatibility"],
+                    ),
+                ]
+            )
+        session.add(
+            Job(
+                id="modelview-cloud-job",
+                tenant_id="tenant-a",
+                workflow_key=MODELVIEW_INPAINT_WORKFLOW_KEY,
+                workflow_version=version.version,
+                status=JobStatus.QUEUED.value,
+                priority="critical",
+                pinned=True,
+                parameters={},
+                request_hash="modelview-cloud-job",
+                request_id="modelview-cloud-job",
+                trace_id="modelview-cloud-job",
+                job_dir=str(tmp_path / "modelview-cloud-job"),
+            )
+        )
+        await session.commit()
+
+
+async def run_scheduler_without_execution(path: Path, tmp_path: Path) -> Scheduler:
+    scheduler = Scheduler(
+        Settings(
+            database_url=f"sqlite+aiosqlite:///{path.as_posix()}",
+            job_root=tmp_path / "jobs",
+        )
+    )
+
+    async def no_execute(_: str, recovering: bool = False) -> None:
+        del recovering
+
+    scheduler.execute = no_execute  # type: ignore[method-assign]
+    await scheduler.schedule_available()
+    if scheduler.executions:
+        await asyncio.gather(*scheduler.executions.values())
+    return scheduler
+
+
+async def test_modelview_prefers_strongest_running_autodl_lane(tmp_path: Path) -> None:
+    path = tmp_path / "modelview-strongest-cloud.db"
+    database = await make_database(path)
+    await seed(database)
+    await seed_modelview_cloud_lanes(
+        database,
+        tmp_path,
+        [
+            ("worker-autodl-4090", 24_576, 23_000, True),
+            ("worker-autodl-5090", 32_768, 31_000, True),
+        ],
+    )
+    scheduler = await run_scheduler_without_execution(path, tmp_path)
+    try:
+        async with scheduler.db.session() as session:
+            claimed = await session.get(Job, "modelview-cloud-job")
+            assert claimed is not None
+            assert claimed.status == JobStatus.CLAIMED.value
+            assert claimed.node_id == "worker-autodl-5090"
+    finally:
+        await scheduler.redis.aclose()
+        await scheduler.db.close()
+        await database.close()
+
+
+async def test_modelview_falls_back_to_original_local_rank_when_cloud_is_incompatible(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "modelview-cloud-fallback.db"
+    database = await make_database(path)
+    await seed(database)
+    await seed_modelview_cloud_lanes(
+        database,
+        tmp_path,
+        [("worker-autodl-5090", 32_768, 31_000, False)],
+    )
+    scheduler = await run_scheduler_without_execution(path, tmp_path)
+    try:
+        async with scheduler.db.session() as session:
+            claimed = await session.get(Job, "modelview-cloud-job")
+            cloud = await session.get(Node, "worker-autodl-5090")
+            assert claimed is not None and cloud is not None
+            assert claimed.status == JobStatus.CLAIMED.value
+            assert claimed.node_id == "3090-a"
+            assert cloud.current_jobs == 0
     finally:
         await scheduler.redis.aclose()
         await scheduler.db.close()
@@ -1695,6 +1971,17 @@ async def test_cancel_committed_after_upload_prevents_prompt_submission(
                 await cancellation_session.commit()
             return {"attempt": 1, "overwrite": True, "verified": True}
 
+        async def upload_many(
+            self,
+            inputs: list[tuple[Path, bool]],
+            *,
+            subfolder: str,
+        ) -> list[dict[str, object]]:
+            return [
+                await self.upload(path, mask=mask, subfolder=subfolder)
+                for path, mask in inputs
+            ]
+
         async def submit(self, _: dict[str, object], __: str) -> str:
             nonlocal submit_calls
             submit_calls += 1
@@ -2162,6 +2449,121 @@ async def test_timeout_watchdog_preserves_authenticated_cancellation(
         await database.close()
 
 
+async def test_autodl_disconnect_keeps_lease_until_workflow_timeout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "autodl-disconnect-timeout.db"
+    database = await make_database(path)
+    await seed(database)
+    prompt_id = "autodl-persisted-prompt"
+    async with database.session() as session:
+        async with session.begin():
+            claimed = await claim_next_job(session, "3090-a", 300)
+        assert claimed is not None
+        job_id = claimed[0].id
+        job = await session.get(Job, job_id, with_for_update=True)
+        workflow = await session.scalar(select(WorkflowVersion))
+        assert job is not None and workflow is not None
+        await prepare_prompt_submission(session, job)
+        await persist_prompt_id(session, job, prompt_id)
+        job.status = JobStatus.SUBMITTED.value
+        workflow.timeout_seconds = 1
+        session.add(
+            ProviderInstance(
+                provider="autodl",
+                product="app",
+                instance_id="pro-disconnected",
+                node_id="3090-a",
+                managed=True,
+                scheduling_enabled=True,
+                desired_state="running",
+                observed_state="running",
+                provider_status="running",
+            )
+        )
+        await session.commit()
+
+    events_started = asyncio.Event()
+    interrupts = 0
+
+    class DisconnectedCloudClient:
+        def __init__(self, _: str) -> None:
+            pass
+
+        async def events(
+            self,
+            candidate_prompt_id: str,
+            _: str,
+            *,
+            reconnect_deadline: float,
+        ) -> AsyncIterator[dict[str, object]]:
+            assert candidate_prompt_id == prompt_id
+            assert reconnect_deadline > asyncio.get_running_loop().time()
+            events_started.set()
+            await asyncio.Future()
+            if False:  # pragma: no cover - makes this an async generator
+                yield {}
+
+        async def submit(self, *_: object, **__: object) -> str:
+            raise AssertionError("a persisted prompt must never be submitted again")
+
+        async def interrupt(self) -> dict[str, bool]:
+            nonlocal interrupts
+            interrupts += 1
+            return {"interrupted": True}
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(scheduler_main, "ComfyClient", DisconnectedCloudClient)
+    scheduler = Scheduler(
+        Settings(
+            database_url=f"sqlite+aiosqlite:///{path.as_posix()}",
+            job_root=tmp_path / "jobs",
+        )
+    )
+    published: list[dict[str, object]] = []
+
+    async def record_publish(payload: dict[str, object]) -> None:
+        published.append(payload)
+
+    scheduler.publish = record_publish  # type: ignore[method-assign]
+    execution = asyncio.create_task(scheduler.execute(job_id))
+    try:
+        await asyncio.wait_for(events_started.wait(), timeout=1)
+        async with scheduler.db.session() as session:
+            active_job = await session.get(Job, job_id)
+            active_node = await session.get(Node, "3090-a")
+            active_lease = await session.scalar(
+                select(NodeLease).where(NodeLease.job_id == job_id)
+            )
+            assert active_job is not None and active_node is not None and active_lease is not None
+            assert active_job.status == JobStatus.SUBMITTED.value
+            assert active_node.current_jobs == 1
+            assert active_lease.active is True
+
+        await asyncio.wait_for(execution, timeout=3)
+        async with scheduler.db.session() as session:
+            timed_out = await session.get(Job, job_id)
+            node = await session.get(Node, "3090-a")
+            lease = await session.scalar(select(NodeLease).where(NodeLease.job_id == job_id))
+            assert timed_out is not None and node is not None and lease is not None
+            assert timed_out.status == JobStatus.TIMED_OUT.value
+            assert timed_out.error_code == "JOB_TIMEOUT"
+            assert node.current_jobs == 0
+            assert lease.active is False
+        assert interrupts == 1
+        assert published == [{"event": "job.timed_out", "job_id": job_id}]
+    finally:
+        if not execution.done():
+            execution.cancel()
+            await asyncio.gather(execution, return_exceptions=True)
+        await scheduler.redis.aclose()
+        await scheduler.db.close()
+        await database.close()
+
+
 async def test_executor_error_racing_with_cancel_does_not_retry_or_fail(
     tmp_path: Path,
 ) -> None:
@@ -2312,6 +2714,130 @@ async def test_execution_interrupted_finishes_gpu_timing_and_durable_cancel(
             assert node.current_jobs == 0
         assert published == [{"event": "job.cancelled", "job_id": job_id}]
     finally:
+        await scheduler.redis.aclose()
+        await scheduler.db.close()
+        await database.close()
+
+
+async def test_terminal_history_fetch_overlaps_gpu_finished_commit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "terminal-history-prefetch.db"
+    database = await make_database(path)
+    await seed(database)
+    prompt_id = "terminal-prefetch-prompt"
+    job_root = tmp_path / "terminal-prefetch-job"
+    for directory in ("comfy", "output"):
+        (job_root / directory).mkdir(parents=True, exist_ok=True)
+    async with database.session() as session:
+        async with session.begin():
+            claimed = await claim_next_job(session, "3090-a", 300)
+        assert claimed is not None
+        job_id = claimed[0].id
+        job = await session.get(Job, job_id, with_for_update=True)
+        assert job is not None
+        await prepare_prompt_submission(session, job)
+        await persist_prompt_id(session, job, prompt_id)
+        job.status = JobStatus.RUNNING.value
+        job.job_dir = str(job_root)
+        await session.commit()
+
+    history_started = asyncio.Event()
+    release_history = asyncio.Event()
+    history_calls = 0
+
+    class TerminalClient:
+        def __init__(self, _: str) -> None:
+            pass
+
+        async def events(
+            self, candidate_prompt_id: str, _: str
+        ) -> AsyncIterator[dict[str, object]]:
+            assert candidate_prompt_id == prompt_id
+            yield {
+                "type": "execution_success",
+                "data": {"prompt_id": candidate_prompt_id},
+            }
+
+        async def history(self, candidate_prompt_id: str) -> dict[str, object]:
+            nonlocal history_calls
+            assert candidate_prompt_id == prompt_id
+            history_calls += 1
+            history_started.set()
+            if history_calls == 1:
+                await release_history.wait()
+                # Simulate an eager request that raced Comfy's history
+                # publication boundary. The scheduler must retain its old
+                # post-commit history read as a safe fallback.
+                return {}
+            return {
+                prompt_id: {
+                    "status": {"status_str": "success"},
+                    "outputs": {},
+                }
+            }
+
+        @staticmethod
+        def outputs(
+            _: dict[str, object],
+            __: str,
+            ___: set[str],
+        ) -> list[ComfyOutput]:
+            return [ComfyOutput("result.png", "", "output")]
+
+        @staticmethod
+        async def download(_: ComfyOutput, destination: Path) -> tuple[int, str]:
+            payload = b"terminal-prefetch-output"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(payload)
+            return len(payload), hashlib.sha256(payload).hexdigest()
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(scheduler_main, "ComfyClient", TerminalClient)
+    scheduler = Scheduler(
+        Settings(
+            database_url=f"sqlite+aiosqlite:///{path.as_posix()}",
+            job_root=tmp_path / "jobs",
+        )
+    )
+
+    async def no_publish(_: dict[str, object]) -> None:
+        return None
+
+    scheduler.publish = no_publish  # type: ignore[method-assign]
+    execution = asyncio.create_task(scheduler.execute(job_id))
+    try:
+        await asyncio.wait_for(history_started.wait(), timeout=1)
+
+        async def wait_for_gpu_finished_commit() -> None:
+            while True:
+                async with scheduler.db.session() as session:
+                    attempt = await session.scalar(
+                        select(JobAttempt).where(JobAttempt.job_id == job_id)
+                    )
+                    if attempt is not None and attempt.gpu_finished_at is not None:
+                        return
+                await asyncio.sleep(0.01)
+
+        # The history response is deliberately blocked. Seeing the durable GPU
+        # finish timestamp proves the scheduler overlaps that round trip with
+        # its terminal database transition instead of serializing both tails.
+        await asyncio.wait_for(wait_for_gpu_finished_commit(), timeout=1)
+        assert not execution.done()
+        release_history.set()
+        await asyncio.wait_for(execution, timeout=2)
+
+        async with scheduler.db.session() as session:
+            completed = await session.get(Job, job_id)
+            assert completed is not None
+            assert completed.status == JobStatus.SUCCEEDED.value
+        assert history_calls == 2
+    finally:
+        release_history.set()
+        await asyncio.gather(execution, return_exceptions=True)
         await scheduler.redis.aclose()
         await scheduler.db.close()
         await database.close()

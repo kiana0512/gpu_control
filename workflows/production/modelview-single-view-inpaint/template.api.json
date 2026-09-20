@@ -47,11 +47,11 @@
     "class_type": "BasicGuider",
     "inputs": {
       "conditioning": [
-        "11",
+        "67",
         0
       ],
       "model": [
-        "21",
+        "65",
         0
       ]
     }
@@ -73,7 +73,7 @@
     "inputs": {
       "denoise": 1,
       "model": [
-        "21",
+        "65",
         0
       ],
       "scheduler": "simple",
@@ -150,7 +150,7 @@
     },
     "class_type": "LoraLoaderModelOnly",
     "inputs": {
-      "lora_name": "flux-kelin/baimo_shangcaizhi_klein_v1_000005500.safetensors",
+      "lora_name": "flux-kelin/li3d_000004500.safetensors",
       "model": [
         "1",
         0
@@ -245,7 +245,7 @@
   },
   "29": {
     "_meta": {
-      "title": "ModelView Single-view Inpaint API Final"
+      "title": "ImageClip API Final RGBA"
     },
     "class_type": "SaveImage",
     "inputs": {
@@ -367,6 +367,97 @@
       ]
     }
   },
+  "61": {
+    "_meta": {
+      "title": "ttN text"
+    },
+    "class_type": "ttN text",
+    "inputs": {
+      "text": ""
+    }
+  },
+  "62": {
+    "_meta": {
+      "title": "ttN text"
+    },
+    "class_type": "ttN text",
+    "inputs": {
+      "text": "Using image 1 as the current view of the object, in which every pure white area marks the region to be generated, and image 2 as the multi-view design reference sheet of the same object, render the white region with the object's true appearance from exactly the viewpoint of image 1, whether it is a top-down, bottom-up, oblique, or eye-level view, so that the object's silhouette, proportions, and surfaces follow image 1 precisely. Reconstruct the geometry, materials, textures, colors, and fine details by matching image 2, using it only for identity, material, and structure cues and never copying its layout, background, or multiple views. Where image 1 already shows rendered surfaces, continue them seamlessly into the white region; where the entire object is white, produce the complete object. Keep every non-white pixel, the camera view, the soft even unlit shading, and the pure black background unchanged, and output a single clean rendered image of the object."
+    }
+  },
+  "63": {
+    "_meta": {
+      "title": "Text Concatenate"
+    },
+    "class_type": "Text Concatenate",
+    "inputs": {
+      "clean_whitespace": "true",
+      "delimiter": ", ",
+      "text_a": [
+        "61",
+        0
+      ],
+      "text_b": [
+        "62",
+        0
+      ]
+    }
+  },
+  "64": {
+    "_meta": {
+      "title": "LoadImage"
+    },
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "img_v3_0215l_641d5181-7885-4999-bdd3-2a6fdf5b139g (1).png"
+    }
+  },
+  "65": {
+    "_meta": {
+      "title": "法线 RefControl LoRA｜0.8"
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "flux-kelin/flux2_klein_9b_refcontrol_normal.safetensors",
+      "model": [
+        "21",
+        0
+      ],
+      "strength_model": 0.8
+    }
+  },
+  "66": {
+    "_meta": {
+      "title": "编码法线图"
+    },
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "64",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "67": {
+    "_meta": {
+      "title": "参考条件2｜材质六视图"
+    },
+    "class_type": "ReferenceLatent",
+    "inputs": {
+      "conditioning": [
+        "11",
+        0
+      ],
+      "latent": [
+        "66",
+        0
+      ]
+    }
+  },
   "7": {
     "_meta": {
       "title": "编码图1"
@@ -411,42 +502,6 @@
       ],
       "text": [
         "63",
-        0
-      ]
-    }
-  },
-  "61": {
-    "_meta": {
-      "title": "用户提示词"
-    },
-    "class_type": "ttN text",
-    "inputs": {
-      "text": ""
-    }
-  },
-  "62": {
-    "_meta": {
-      "title": "固定视角与结构保护提示词"
-    },
-    "class_type": "ttN text",
-    "inputs": {
-      "text": "Perform seamless masked surface restoration, not object generation and not patch insertion.\n\nIMAGE 1 — STRUCTURE SOURCE:\nUse Image 1 as the only source of canvas, background, object identity, silhouette, geometry, camera, perspective, pose, scale, position, framing, visible surfaces, and occlusion.\n\nIMAGE 2 — MATERIAL SOURCE ONLY:\nUse Image 2 only to infer the base color, material character, texture scale, pattern direction, surface variation, and fine albedo details of the corresponding visible surface. Do not copy its composition, viewpoint, geometry, lighting, shadows, reflections, extra objects, or multi-view layout.\n\nIMAGE 3 — EDIT MASK ONLY:\nImage 3 is only an editing instruction. Its white shape, contour, boundary, proportions, and internal content are not object features and must never appear in the result. The mask boundary is not a seam, stripe, panel, ridge, groove, plate, border, anatomical structure, color zone, or material boundary.\n\nCompletely erase and disregard everything originally visible inside the masked region, including white placeholder pixels, existing outlines, highlights, shadows, ridges, patterns, and apparent structures.\n\nReconstruct one continuous uninterrupted surface across the entire masked region. Extend the material naturally from the nearest correct unmasked surface on all sides while using Image 2 for matching material appearance. Low-frequency color and brightness, medium-scale mottling and patterns, and fine-scale grain or surface texture must all continue smoothly across the former mask boundary.\n\nThe repaired region must have the same local color distribution, texture density, texture direction, contrast, roughness appearance, and surface variation as the surrounding corresponding surface. Break up any pattern that follows, outlines, centers on, or reveals the mask shape.\n\nThere must be no visible transition at the former mask edge: no outline, rim, halo, brightness step, color step, dark line, pale line, repeated texture, mirrored texture, hard patch edge, central strip, or mask-shaped feature.\n\nPreserve the geometry and silhouette of Image 1. Do not add, remove, move, resize, rotate, reshape, merge, reconstruct, emboss, engrave, open, or close any component. Do not create details, attachments, holes, controls, text, or logos absent from Image 1.\n\nOutput the same view, crop, canvas, and background as Image 1. Change only the authorized surface region and its transition band. Produce clean continuous base-color/albedo without baked lighting, cast shadows, strong highlights, mirror reflections, or remaining white residue."
-    }
-  },
-  "63": {
-    "_meta": {
-      "title": "用户提示词与固定保护提示词合并"
-    },
-    "class_type": "Text Concatenate",
-    "inputs": {
-      "clean_whitespace": "true",
-      "delimiter": ", ",
-      "text_a": [
-        "61",
-        0
-      ],
-      "text_b": [
-        "62",
         0
       ]
     }

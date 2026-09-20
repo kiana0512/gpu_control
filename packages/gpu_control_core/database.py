@@ -52,7 +52,16 @@ class Database:
     def __init__(self, settings: Settings) -> None:
         kwargs: dict[str, object] = {"pool_pre_ping": True}
         if settings.database_url.startswith("postgresql"):
-            kwargs.update(pool_size=10, max_overflow=20, pool_recycle=1800)
+            kwargs.update(
+                pool_size=10,
+                max_overflow=20,
+                pool_recycle=1800,
+                # A disconnected SSE client or interrupted request must never
+                # hold PostgreSQL's vacuum horizon indefinitely.  The database
+                # also carries the same ALTER DATABASE default in production;
+                # the connection setting keeps fresh environments protected.
+                connect_args={"server_settings": {"idle_in_transaction_session_timeout": "300000"}},
+            )
         self.engine: AsyncEngine = create_async_engine(settings.database_url, **kwargs)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
 
@@ -139,13 +148,9 @@ class Database:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            raise SchedulerLockLost(
-                "scheduler advisory lock liveness query failed"
-            ) from exc
+            raise SchedulerLockLost("scheduler advisory lock liveness query failed") from exc
         if not owned:
-            raise SchedulerLockLost(
-                "scheduler PostgreSQL backend no longer owns the advisory lock"
-            )
+            raise SchedulerLockLost("scheduler PostgreSQL backend no longer owns the advisory lock")
 
     async def advance_scheduler_epoch(
         self,
@@ -162,9 +167,7 @@ class Database:
         """
 
         setting = await session.scalar(
-            select(SystemSetting)
-            .where(SystemSetting.key == SCHEDULER_EPOCH_KEY)
-            .with_for_update()
+            select(SystemSetting).where(SystemSetting.key == SCHEDULER_EPOCH_KEY).with_for_update()
         )
         if setting is None:
             setting = SystemSetting(
@@ -268,9 +271,7 @@ class Database:
                     )
                 try:
                     backend_pid = int(
-                        (
-                            await connection.execute(text("SELECT pg_backend_pid()"))
-                        ).scalar_one()
+                        (await connection.execute(text("SELECT pg_backend_pid()"))).scalar_one()
                     )
                     handle = SchedulerLockHandle(
                         connection=connection,

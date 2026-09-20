@@ -1,67 +1,60 @@
-# ModelViewCreator Flux2 Klein TrueV3 GGUF 蒙版局部重绘 API
+# ModelView 局部重绘：法线参考版
 
-## 固定来源
+## 来源与范围
 
-- 业务仓库：`rd_center/ai_art/modelviewcreator`
-- 原始 UI 工作流：`Flux2 Klein TrueV3-双图材质编辑-局部重绘.json`
-- 用户批准的 2026-08-29 两步 UI 工作流 SHA-256：
-  `cba4414a694b9fe427477f3a4782f3111248f06193efb0c1cbc6c85d3c71349a`
-- GPU Control 不可变版本：
-  `2026.08.29-cba4414-truev3-gguf-mask-4input-rseed-steps2-r1`
+用户于 2026-09-18 提供并授权替换：
+`Flux2 Klein TrueV3-双图材质编辑-局部重绘 (1).json`。
+原始 UI SHA-256：`20c0e6a15cdf5529eb547f6f14ead3ddc0a2bb45c91692ce23e5c356425cbdab`。
+用户随后明确要求只将 #15 的 steps 从 4 改为 2，其他执行值与连接保持。
+当前 UI SHA-256：`81c7f6b2f427799ee0f185dbf817a29e5d6df5f618de8c31fe6ccf5aabbe0bdf`。
+版本：`2026.09.18-refcontrol-normal-2step-r1`。
+数据库规范化 API SHA-256：`65b0c6d0a3445d8318c411fd421b1721e33991494bd5b63d770bbcf29b67da7f`。
 
-`template.api.json` 由上述 UI 工作流逐节点转换。对外共有四个业务输入：当前效果图、
-参考图、蒙版和提示词；输出仍只有一张图。API 模板只把 UI 的最终 `PreviewImage #29`
-等价改为 `SaveImage #29`，输入保持 `CherryAlignReference #33` 的第二路输出，因此不会
-发布采样中间图。
+仅更新 `modelview-inpaint`，不修改单视图生成、单视图局部重绘、ImageClip 等工作流。
+API 模板用 `scripts/build_imageclip_api_workflow.py` 逐节点转换；仅将最终
+`PreviewImage #29` 等价适配为 `SaveImage #29`，保留输入 `33:1`，不返回中间预览 #62。
+32 个祖先节点保留原执行参数及连线。节点标题不代表实际参数。
 
-按用户 2026-08-29 的明确要求，`BasicScheduler #15` 的实际参数从 `steps=4` 调整为
-`steps=2`；`LoraLoaderModelOnly #21` 的实际强度仍为 `0.9`。节点标题中的“12步”和“0.8”
-不是执行值。UI 文件中保存的 `RandomNoise #14` 只作来源占位，生产执行时一定由任务中心
-覆盖。
+## 输入输出
 
-## 对外 API 契约
+`POST /api/v1/services/modelview-inpaint`，multipart/form-data：
 
-- 路径仍为 `POST /api/v1/services/modelview-inpaint`。
-- multipart `prompt` 可选，绑定到 `ttN text #60.inputs.text`，并直接交给
-  `CLIPTextEncode #9`；此版本没有隐藏的固定保护提示词。
-- multipart `image` 必填，绑定到 `LoadImage #4`，语义为当前效果图。
-- multipart `material_image` 必填，绑定到 `LoadImage #5`，语义为参考图。
-- multipart `mask` 必填，绑定到 `LoadImage #44`。工作流通过 `ImageResize+ #52`、
-  `ImageToMask #45` 的红色通道和 `SetLatentNoiseMask #43` 约束局部重绘；白色区域重绘，
-  黑色区域保留。蒙版必须与当前效果图尺寸相同，且不能是全黑空蒙版。
-- `noise_seed` 不是公共表单字段。每个真正新建的任务由 API 生成一个 50 位随机整数，
-  保存到任务参数和渲染快照，再绑定到 `RandomNoise #14.inputs.noise_seed`。
-- 同一个 `Idempotency-Key` 的重复请求返回原任务并保留原 seed；“重新生成”必须使用新
-  key。Scheduler 对同一任务的网络或节点重试也复用任务快照中的 seed。
-- 响应仍同步返回最终 PNG，并保留现有鉴权、幂等、优先级和响应头契约。
-- 唯一业务输出为 `SaveImage #29`。
-- 旧字段 `viewport_reference` 继续接受但忽略；新前端不得上传。
+| 字段 | 必填 | 语义与绑定 |
+| --- | --- | --- |
+| image | 是 | 待生成区域填白的效果图，`73.inputs.image` |
+| material_image | 是 | 多视图材质参考，`5.inputs.image` |
+| mask | 是 | 外扩蒙版，`44.inputs.image` |
+| normal_image | 是 | 当前视角法线渲染图，`79.inputs.image` |
+| prompt | 否 | 显式发送会覆盖 `60.inputs.text`；推荐省略以保留内置提示词 |
 
-## 三张图的语义边界
+新增法线必须上传，不从旧输入目录取默认图，也不使用效果图代替法线。API 校验法线、
+蒙版与效果图宽高相同；蒙版读取红通道且不能全黑。法线 RGB 不做额外转换，沿原图直接
+进入 VAEEncode #77，再由 ReferenceLatent #74 接入第三路参考条件。工作流没有给法线
+增加缩放节点，不能在服务端擅自补上。
 
-- `image` 是本次被编辑的当前效果图，同时决定画布、尺寸和最终对齐基准。
-- `material_image` 提供目标效果、材质、颜色分区或纹理参考。
-- `mask` 决定允许加噪和重绘的区域；工作流读取红色通道，不读取 Alpha 作为蒙版值。
-- `prompt` 描述本次局部编辑意图，可为空。
-- 生成图恢复当前效果图原始尺寸后，与 `image` 一起进入 `CherryAlignReference #33`。
+四张输入均进入独立任务目录，哈希参与幂等指纹，Scheduler 上传全部输入。
+每次新生成由服务端生成随机 seed；同一 key、相同输入重试复用原任务和 seed。
+四图之外其他契约不变：同步返回最终单张 PNG，X-Job-ID / X-Client-ID /
+X-Artifact-SHA256，Cache-Control: no-store，超时 2400 秒加接口等待余量 60 秒。
+不承诺保护区逐像素不变；原工作流没有额外硬合成步骤。
 
-三张图都会以任务 UUID 为子目录上传到 ComfyUI，上传后校验字节数与 SHA-256，
-不依赖服务器 input 根目录中的历史同名文件。
+## 模型与参数
 
-## 模型与插件
+- GGUF：`Flux2-Klein-9B-True-V3-Q5_K.gguf`，CLIP / VAE / 自定义插件不变。
+- #21：`flux-kelin/li3d_000004500.safetensors`，强度 **1.0**。
+- #78：`flux-kelin/flux2_klein_9b_refcontrol_normal.safetensors`，强度 **0.8**，串接 #21。
+- #15：simple，**2 步**，denoise=1；#16：euler。
+- #60：保留用户这次 JSON 内置的 973 字符英文提示词。
+- 新法线 LoRA：165704512 字节，SHA-256
+  `baa97f297d048330850f0cb8063392678927a34282de961760693f6897983fd2`。
 
-- 主模型改为 `Flux2-Klein-9B-True-V3-Q5_K.gguf`，大小 `6813702528` 字节，
-  SHA-256 为
-  `8167105716c715be31018f682916b5b9988f9afec4e20d7ad7cd9b42aa9774ce`。
-- 内部 LoRA 仍为 `baimo_shangcaizhi_klein_v1_000005500.safetensors`，大小
-  `165704408` 字节，SHA-256 为
-  `5352ada24a83b36e7bf8b3004eae5f6b1676479f93e0d002c9f521d133804fb9`。
-  工作流使用 `flux-kelin/` 子路径；各节点只建立指向规范文件的软链接，不重复占用模型
-  空间。
-- `ComfyUI-GGUF` 固定提交 `6ea2651e…`，提供 `UnetLoaderGGUF`。
-- `ComfyUI_tinyterraNodes` 固定 2.0.11 对应提交 `97096a39…`，只使用
-  `ttN text`。
-- 自研 `Cherry_KleinWorkflowTools` 与 `ComfyUI_essentials` 保持既有固定提交。
+默认显存门槛仍为 24000 MiB。5070 Ti 的旧版验收档案不能直接复用到新模板；必须重新
+实测并单独更新版本/哈希匹配的验收记录。12GB 4070 Ti 不放行。模型不上传 Git/LFS。
 
-最低调度显存为 `24000 MiB`，因此只部署并兼容 4090、3090-A 和 3090-B；
-12 GiB 4070 Ti 被兼容表硬排除。超时保持 `2400` 秒。
+前端对齐文档：[四图输入与法线](../../../docs/202_2026-09-18_MODELVIEW_INPAINT_NORMAL_FRONTEND.md)。
+生产是否已启用，以部署报告和数据库当前启用版本为准，不以文件已复制为准。
+
+2026-09-18 补部署：5070 Ti 恢复后已同步当前 UI 和新增 LoRA，并通过同一组四图真实
+生成（2048×2048 单张结果）。已登记该节点与本版模板绑定的 16GB 验收档案并恢复调度；
+当前 4090、3090-A、3090-B、5070 Ti 均可运行本版。详见
+[5070 Ti 补部署记录](../../../docs/205_2026-09-18_5070TI_NORMAL_2STEP.md)。

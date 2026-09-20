@@ -1,0 +1,2438 @@
+/*
+ * GPU Control WebUI — editorial site skin.
+ *
+ * This layer converts the control plane from a conventional dark admin shell
+ * into a spacious, horizontal, brand-led product site. Operational semantics
+ * stay in the Vue views; this file owns navigation, hierarchy and presentation.
+ */
+:root {
+  color-scheme: light;
+  --canvas: #f7faff;
+  --canvas-soft: #eef6ff;
+  --panel: rgba(255, 255, 255, 0.94);
+  --panel-raised: #ffffff;
+  --panel-soft: #f3f8fe;
+  --line: rgba(53, 112, 170, 0.14);
+  --line-strong: rgba(53, 112, 170, 0.24);
+  --ink: #1f2b3a;
+  --muted: #728196;
+  --accent: #2f80ed;
+  --accent-strong: #126ee8;
+  --accent-soft: rgba(47, 128, 237, 0.09);
+  --blue: #2f80ed;
+  --navy: #1e3049;
+  --green: #20b982;
+  --amber: #e99b35;
+  --red: #ed5f70;
+  --purple: #6d78e8;
+  --pink: #58a6ed;
+  --shadow-panel: 0 20px 54px rgba(61, 106, 151, 0.09);
+}
+
+html,
+body,
+#app {
+  background: #f7faff;
+}
+
+body {
+  color: var(--ink);
+  background: #f7faff !important;
+}
+
+* {
+  scrollbar-color: rgba(47, 128, 237, 0.35) rgba(47, 128, 237, 0.04);
+}
+
+*::-webkit-scrollbar-track {
+  background: rgba(47, 128, 237, 0.035);
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(47, 128, 237, 0.28);
+  background-clip: padding-box;
+}
+
+/* Horizontal site navigation ------------------------------------------------ */
+.control-shell,
+.control-shell.nav-compact {
+  --nav-width: 100%;
+  --site-nav-height: 82px;
+  --command-bar-height: 54px;
+  position: relative;
+  display: block;
+  isolation: isolate;
+  color: var(--ink);
+  background: #f7faff;
+}
+
+.control-nav {
+  position: fixed;
+  z-index: 100;
+  top: 0;
+  right: 0;
+  left: 0;
+  width: 100%;
+  height: var(--site-nav-height);
+  min-height: var(--site-nav-height);
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  overflow: visible;
+  color: #26374d;
+  border-right: 0;
+  border-bottom: 1px solid rgba(49, 103, 158, 0.12);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 28px rgba(44, 90, 135, 0.055);
+  backdrop-filter: blur(18px);
+}
+
+.control-brand,
+.nav-compact .control-brand {
+  min-width: 278px;
+  height: 82px;
+  justify-content: flex-start;
+  gap: 14px;
+  padding: 0 30px 0 clamp(26px, 4.5vw, 78px);
+  border: 0;
+}
+
+.control-brand-mark {
+  width: 42px;
+  height: 42px;
+  color: #1672cf;
+  border: 2px solid #4ca6ef;
+  border-radius: 16px 7px 16px 7px;
+  background: linear-gradient(145deg, #effaff, #d9f1ff);
+  box-shadow: 0 9px 24px rgba(42, 140, 219, 0.16);
+}
+
+.control-brand-copy,
+.nav-compact .control-brand-copy {
+  display: grid;
+}
+
+.control-brand-copy strong {
+  color: #24364b;
+  font-size: 16px;
+  font-weight: 820;
+}
+
+.control-brand-copy small {
+  color: #82a4c3;
+}
+
+.nav-collapse {
+  display: none;
+}
+
+.control-nav > nav {
+  order: 2;
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  justify-content: center;
+  align-items: stretch;
+  gap: clamp(2px, 0.8vw, 15px);
+  overflow: visible;
+  padding: 0;
+}
+
+.control-nav-group,
+.control-nav-group + .control-nav-group {
+  position: relative;
+  min-width: 118px;
+  margin: 0;
+}
+
+.control-nav-group > header,
+.nav-compact .control-nav-group > header {
+  height: 82px;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 14px;
+  color: #5f6e82;
+  font-size: 14px;
+  font-weight: 620;
+  letter-spacing: 0;
+  cursor: default;
+}
+
+.control-nav-group > header span {
+  display: none;
+}
+
+.control-nav-group:has(> a.router-link-active) > header {
+  color: #2f80ed;
+}
+
+.control-nav-group:has(> a.router-link-active) > header::after {
+  position: absolute;
+  right: 30px;
+  bottom: 0;
+  left: 30px;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: #2f80ed;
+  content: "";
+}
+
+.control-nav-group > a,
+.nav-compact .control-nav-group > a {
+  width: 224px;
+  height: 48px;
+  display: none;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 0 17px;
+  color: #5e6f83;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+}
+
+.control-nav-group.nav-group-open {
+  padding-bottom: 13px;
+  border-radius: 0 0 12px 12px;
+  background: #fff;
+  box-shadow: 0 25px 54px rgba(46, 92, 138, 0.16);
+}
+
+.control-nav-group.nav-group-open > a {
+  display: flex;
+}
+
+.control-nav-group > a:hover {
+  color: #176fca;
+  background: #edf7ff;
+}
+
+.control-nav-group > a.router-link-active {
+  color: #176fca;
+  background: linear-gradient(90deg, #e9f6ff, #f4faff);
+}
+
+.control-nav-group > a.router-link-active::before {
+  top: 12px;
+  bottom: 12px;
+  left: 0;
+  background: #3c94e5;
+  box-shadow: none;
+}
+
+.control-nav-group > a .el-icon,
+.control-nav-group > a.router-link-active .el-icon {
+  color: #4a98dc;
+}
+
+.control-nav-group > a > span,
+.nav-compact .control-nav-group > a > span {
+  display: inline;
+  color: inherit;
+  font-size: 13px;
+}
+
+.control-nav-group > a > i {
+  display: none;
+}
+
+.nav-command,
+.nav-compact .nav-command {
+  order: 3;
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  justify-content: center;
+  margin: 20px clamp(24px, 3vw, 48px) 20px 16px;
+  padding: 0;
+  color: #3f86c5;
+  border: 1px solid rgba(47, 128, 237, 0.16);
+  border-radius: 50%;
+  background: #f3f9ff;
+}
+
+.nav-command:hover {
+  color: #fff;
+  border-color: #2f80ed;
+  background: #2f80ed;
+}
+
+.nav-command-copy,
+.nav-command kbd,
+.nav-compact .nav-command-copy,
+.nav-compact .nav-command kbd {
+  display: none;
+}
+
+.nav-command-icon {
+  color: inherit;
+}
+
+.control-nav-footer {
+  display: none;
+}
+
+.control-stage {
+  width: 100%;
+  height: 100dvh;
+  padding-top: var(--site-nav-height);
+  color: var(--ink);
+  background: #f8fbff;
+}
+
+.control-command-bar {
+  min-height: var(--command-bar-height);
+  flex: 0 0 var(--command-bar-height);
+  grid-template-columns: minmax(220px, 1fr) minmax(240px, 380px) minmax(
+      250px,
+      1fr
+    );
+  gap: 24px;
+  padding: 0 clamp(28px, 5vw, 84px);
+  color: #51647b;
+  border-bottom: 1px solid rgba(49, 103, 158, 0.1);
+  background: rgba(248, 251, 255, 0.91);
+  box-shadow: none;
+}
+
+.route-context span {
+  color: #2f80ed;
+}
+
+.route-context strong {
+  color: #8090a3;
+}
+
+.global-command-trigger {
+  color: #7c8b9e;
+  border-color: rgba(47, 128, 237, 0.14);
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.global-command-trigger:hover {
+  color: #2f80ed;
+  border-color: rgba(47, 128, 237, 0.35);
+}
+
+.live-status {
+  color: #607185;
+}
+
+.operator-menu {
+  color: #65768a;
+}
+
+.operator-avatar {
+  color: #fff;
+  background: linear-gradient(145deg, #54bff1, #2f80ed);
+}
+
+.operator-copy b {
+  color: #34465b;
+}
+
+.operator-copy small {
+  color: #92a0b0;
+}
+
+.control-stage > #main-content {
+  position: relative;
+  padding: 54px clamp(34px, 7.2vw, 138px) 100px;
+  color: var(--ink);
+  background:
+    linear-gradient(rgba(47, 128, 237, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(47, 128, 237, 0.035) 1px, transparent 1px),
+    radial-gradient(
+      circle at 50% -20%,
+      rgba(111, 198, 246, 0.13),
+      transparent 35rem
+    ),
+    #f8fbff;
+  background-size:
+    24px 24px,
+    24px 24px,
+    auto,
+    auto;
+}
+
+.control-stage > #main-content::before {
+  position: absolute;
+  top: 70px;
+  bottom: 70px;
+  left: clamp(18px, 3.2vw, 62px);
+  width: 5px;
+  border-radius: 5px;
+  background: linear-gradient(
+    #2f80ed 0 26%,
+    transparent 26% 34%,
+    #74bdf0 34% 100%
+  );
+  opacity: 0.9;
+  content: "";
+}
+
+/* Shared editorial language ------------------------------------------------- */
+.page {
+  max-width: 1580px;
+  color: #26364a;
+}
+
+.page-heading,
+.ops-command-header,
+.ops-hero {
+  color: #26364a !important;
+}
+
+.page-heading h1,
+.ops-command-header h1,
+.ops-hero h1,
+.workspace-heading h1 {
+  color: #202d3e !important;
+}
+
+.page-heading p,
+.ops-command-header p,
+.ops-hero p,
+.workspace-heading p {
+  color: #738297 !important;
+}
+
+.eyebrow,
+.ops-kicker,
+.workspace-kicker,
+.context-kicker,
+.section-bar > span,
+.ops-section-heading > div > span {
+  color: #2f80ed !important;
+}
+
+.primary,
+.el-button--primary {
+  color: #fff !important;
+  border-color: #2f80ed !important;
+  background: linear-gradient(135deg, #4ca8ee, #2f80ed) !important;
+  box-shadow: 0 9px 22px rgba(47, 128, 237, 0.18);
+}
+
+.secondary,
+.sync-button,
+.icon-button,
+.table-action,
+.detail-toggle {
+  color: #416382 !important;
+  border-color: rgba(47, 128, 237, 0.2) !important;
+  background: rgba(255, 255, 255, 0.88) !important;
+}
+
+.secondary:hover,
+.sync-button:hover,
+.table-action:hover {
+  color: #176fca !important;
+  border-color: rgba(47, 128, 237, 0.42) !important;
+  background: #eef8ff !important;
+}
+
+.refresh-state,
+.sync-state {
+  color: #617286 !important;
+}
+
+.refresh-state small,
+.sync-state small {
+  color: #98a5b4 !important;
+}
+
+input,
+select,
+textarea,
+.search-field,
+.command-search {
+  color: #31445a !important;
+  border-color: rgba(47, 128, 237, 0.16) !important;
+  background: rgba(255, 255, 255, 0.88) !important;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #9aa8b7 !important;
+}
+
+.scope-tabs,
+.scope-switch,
+.ops-view-switch,
+.view-switcher {
+  border-color: rgba(47, 128, 237, 0.16) !important;
+  background: rgba(255, 255, 255, 0.78) !important;
+}
+
+.scope-tabs button,
+.scope-switch button,
+.ops-view-switch a,
+.view-switcher button {
+  color: #718196 !important;
+}
+
+.scope-tabs button.active,
+.scope-switch button.active,
+.ops-view-switch a.router-link-active,
+.view-switcher button.active {
+  color: #176fca !important;
+  background: #eaf6ff !important;
+}
+
+.error-banner,
+.ops-alert,
+.ops-error,
+.persistent-error {
+  color: #b84b59 !important;
+  border-color: rgba(237, 95, 112, 0.24) !important;
+  background: #fff2f4 !important;
+}
+
+.panel-backdrop,
+.modal-backdrop,
+.command-backdrop {
+  background: rgba(30, 55, 82, 0.34) !important;
+  backdrop-filter: blur(10px);
+}
+
+.command-palette,
+.form-modal,
+.maintenance-drawer,
+.task-drawer,
+.ssh-modal,
+.schedule-modal {
+  color: #2b3b4e !important;
+  border-color: rgba(47, 128, 237, 0.18) !important;
+  background: #fff !important;
+  box-shadow: 0 35px 100px rgba(44, 83, 122, 0.2) !important;
+}
+
+.command-palette input {
+  background: transparent !important;
+}
+
+.command-results button {
+  color: #6e7f92;
+}
+
+.command-results button.active {
+  color: #1d6ebd;
+  border-color: rgba(47, 128, 237, 0.17);
+  background: #edf7ff;
+}
+
+/* Dashboard ---------------------------------------------------------------- */
+.dashboard-control-page .ops-hero {
+  min-height: 210px;
+  padding: 18px 4% 42px;
+  border-color: rgba(47, 128, 237, 0.15);
+}
+
+.dashboard-control-page .ops-hero h1 {
+  width: fit-content;
+  color: transparent !important;
+  background: linear-gradient(90deg, #2493e7, #5a9bea 48%, #ae78d6);
+  background-clip: text;
+  -webkit-background-clip: text;
+  font-size: clamp(42px, 5vw, 74px);
+  font-weight: 420;
+  letter-spacing: 0.01em;
+}
+
+.dashboard-control-page .ops-hero p {
+  max-width: 760px;
+  font-size: 14px;
+}
+
+.dashboard-control-page .ops-scope,
+.dashboard-control-page .ops-refresh {
+  color: #53677e;
+  border-color: rgba(47, 128, 237, 0.16);
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.dashboard-control-page .ops-scope button {
+  color: #718196;
+}
+
+.dashboard-control-page .ops-scope button.active {
+  color: #176fca;
+  background: #e8f5ff;
+}
+
+.dashboard-control-page .ops-refresh b {
+  color: #466079;
+}
+
+.dashboard-control-page .situation-board,
+.dashboard-control-page .compute-fabric,
+.dashboard-control-page .telemetry-panel,
+.dashboard-control-page .attention-panel,
+.dashboard-control-page .activity-ledger {
+  color: #2d3e52;
+  border-color: rgba(47, 128, 237, 0.14);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: var(--shadow-panel);
+}
+
+.dashboard-control-page .situation-board {
+  border-left-color: #2f80ed;
+}
+
+.dashboard-control-page .situation-primary,
+.dashboard-control-page .signal-rail article,
+.dashboard-control-page .ops-section-heading {
+  border-color: rgba(47, 128, 237, 0.12);
+}
+
+.dashboard-control-page .capacity-orbit {
+  background: conic-gradient(
+    #329ae5 var(--capacity),
+    rgba(47, 128, 237, 0.09) 0
+  );
+}
+
+.dashboard-control-page .capacity-orbit::before {
+  background: #fff;
+}
+
+.dashboard-control-page .capacity-orbit strong,
+.dashboard-control-page .situation-message h2,
+.dashboard-control-page .signal-rail strong,
+.dashboard-control-page .ops-section-heading h2 {
+  color: #24364a;
+}
+
+.dashboard-control-page .situation-message p,
+.dashboard-control-page .signal-rail span,
+.dashboard-control-page .signal-rail small,
+.dashboard-control-page .ops-section-heading p {
+  color: #7b8a9d;
+}
+
+.dashboard-control-page .operation-routes {
+  border-color: rgba(47, 128, 237, 0.14);
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.dashboard-control-page .operation-routes > a {
+  border-color: rgba(47, 128, 237, 0.12);
+}
+
+.dashboard-control-page .operation-routes > a:hover {
+  background: rgba(233, 246, 255, 0.92);
+}
+
+.dashboard-control-page .operation-routes strong {
+  color: #31465e;
+}
+
+.dashboard-control-page .operation-routes small {
+  color: #8190a3;
+}
+
+.dashboard-control-page .attention-clear strong {
+  color: #496175;
+}
+
+.dashboard-control-page .ruled-section,
+.dashboard-control-page .node-row,
+.dashboard-control-page .node-head,
+.dashboard-control-page .task-list-panel,
+.dashboard-control-page table,
+.dashboard-control-page th,
+.dashboard-control-page td {
+  color: #536579 !important;
+  border-color: rgba(47, 128, 237, 0.11) !important;
+  background: rgba(255, 255, 255, 0.76) !important;
+}
+
+.dashboard-control-page .section-title h2,
+.dashboard-control-page .node-row strong {
+  color: #2f4359 !important;
+}
+
+/* Operations pages --------------------------------------------------------- */
+.jobs-operations-page,
+.analysis-page,
+.cloud-page,
+.codex-workspace,
+.esr-workspace {
+  color: #2b3c50 !important;
+}
+
+.jobs-operations-page::before,
+.analysis-page::before {
+  opacity: 0.35 !important;
+}
+
+.jobs-operations-page .ops-command-header,
+.analysis-page .ops-command-header {
+  border-color: rgba(47, 128, 237, 0.14) !important;
+}
+
+.jobs-operations-page .ops-command-header h1,
+.analysis-page .ops-command-header h1 {
+  color: transparent !important;
+  background: linear-gradient(90deg, #2d8fdf, #6e8fe6, #b177d4);
+  background-clip: text;
+  -webkit-background-clip: text;
+  font-weight: 440 !important;
+}
+
+.task-overview,
+.task-workspace,
+.task-facets,
+.task-surface,
+.analysis-toolbar,
+.insight-workspace,
+.insight-panel,
+.cloud-summary,
+.cloud-context,
+.cloud-toolbar,
+.instance-card,
+.control-strip,
+.runtime-console,
+.attention-band,
+.execution-ledger,
+.service-strip,
+.worker-console,
+.task-ledger,
+.api-drawer {
+  color: #2e4054 !important;
+  border-color: rgba(47, 128, 237, 0.14) !important;
+  background: rgba(255, 255, 255, 0.91) !important;
+  box-shadow: var(--shadow-panel);
+}
+
+.task-overview article,
+.task-facets,
+.task-toolbar,
+.surface-heading,
+.analysis-toolbar,
+.panel-heading,
+.diagnostic-card,
+.phase-card,
+.path-card,
+.cloud-summary > div,
+.cloud-summary > button,
+.instance-head,
+.instance-body,
+.instance-card > footer,
+.control-strip > div,
+.runtime-index,
+.runtime-inspector,
+.runtime-row,
+.worker-index,
+.worker-inspector,
+.worker-row,
+.service-strip > dl,
+.task-tools,
+.section-bar {
+  border-color: rgba(47, 128, 237, 0.11) !important;
+}
+
+.task-overview article,
+.diagnostic-card,
+.phase-card,
+.path-card,
+.instance-card,
+.selected-task,
+.worker-evidence,
+.evidence-grid,
+.contract-list {
+  background: rgba(247, 251, 255, 0.9) !important;
+}
+
+.task-overview strong,
+.surface-heading h2,
+.facet-heading h2,
+.panel-heading h2,
+.diagnostic-card strong,
+.phase-card strong,
+.path-card strong,
+.resource-group-heading h2,
+.instance-identity h2,
+.runtime-index h2,
+.runtime-inspector h2,
+.worker-index h2,
+.worker-inspector h2,
+.task-ledger h2,
+.execution-ledger h2 {
+  color: #293e55 !important;
+}
+
+.task-overview span,
+.task-overview small,
+.facet-note,
+.surface-heading p,
+.panel-heading p,
+.diagnostic-card p,
+.resource-group-heading p,
+.instance-identity p,
+.runtime-identity small,
+.task-cell small,
+.worker-name small,
+.runtime-inspector p,
+.worker-inspector p {
+  color: #7b8b9d !important;
+}
+
+.task-toolbar input,
+.task-toolbar select,
+.analysis-toolbar input,
+.analysis-toolbar select,
+.cloud-toolbar input,
+.cloud-toolbar select {
+  color: #334b63 !important;
+  border-color: rgba(47, 128, 237, 0.17) !important;
+  background: #fff !important;
+}
+
+.task-surface .task-list-panel,
+.task-surface .task-table th,
+.task-surface .task-table td,
+.path-table,
+.path-table th,
+.path-table td,
+.task-table-wrap,
+.task-table-wrap th,
+.task-table-wrap td,
+.execution-table,
+.execution-table th,
+.execution-table td {
+  color: #536579 !important;
+  border-color: rgba(47, 128, 237, 0.1) !important;
+  background: rgba(255, 255, 255, 0.72) !important;
+}
+
+.task-surface .task-row:hover td,
+.task-surface .task-row:focus td,
+.runtime-row:hover,
+.runtime-row.selected,
+.worker-row:hover,
+.worker-row.selected {
+  background: #edf7ff !important;
+}
+
+.runtime-columns,
+.worker-columns {
+  color: #8291a2 !important;
+  background: #f5f9fd !important;
+}
+
+.runtime-row,
+.worker-row {
+  color: #526579 !important;
+  background: rgba(255, 255, 255, 0.78) !important;
+}
+
+.runtime-identity b,
+.task-cell b,
+.worker-name b {
+  color: #324a62 !important;
+}
+
+.runtime-inspector,
+.worker-inspector {
+  background: #fbfdff !important;
+}
+
+.attention-band {
+  border-color: rgba(233, 155, 53, 0.28) !important;
+  background: #fffaf0 !important;
+  box-shadow: none;
+}
+
+.instance-card.state-running {
+  border-left-color: #20b982 !important;
+}
+
+.instance-card.selected {
+  border-color: rgba(47, 128, 237, 0.42) !important;
+  box-shadow: 0 18px 45px rgba(47, 128, 237, 0.12) !important;
+}
+
+/* Remaining administration pages ------------------------------------------ */
+.nodes-page .gpu-specialization-guide,
+.nodes-page .node-card,
+.assets-page .asset-notice,
+.assets-page .asset-summary,
+.assets-page .asset-card,
+.resource-page .resource-card,
+.resource-page .onboarding-strip,
+.scheduling-page .dispatch-explainer,
+.scheduling-page .capacity-overview,
+.scheduling-page .rule-ledger-section,
+.scheduling-page .schedule-risk-panel,
+.logs-page .log-surface,
+.system-info-page .system-section,
+.system-info-page .system-status-strip {
+  color: #32465c !important;
+  border-color: rgba(47, 128, 237, 0.14) !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  box-shadow: var(--shadow-panel);
+}
+
+.nodes-page .node-main-row,
+.nodes-page .node-policy-strip,
+.assets-page .asset-worker-row,
+.assets-page .asset-job-row,
+.resource-page th,
+.resource-page td,
+.logs-page th,
+.logs-page td,
+.system-info-page .endpoint-list > * {
+  color: #52667c !important;
+  border-color: rgba(47, 128, 237, 0.11) !important;
+  background: transparent !important;
+}
+
+.nodes-page h2,
+.nodes-page strong,
+.assets-page h2,
+.assets-page strong,
+.resource-page h2,
+.resource-page .table-primary,
+.scheduling-page h2,
+.logs-page h2,
+.system-info-page h2 {
+  color: #2b4158 !important;
+}
+
+.nodes-page p,
+.nodes-page small,
+.assets-page p,
+.assets-page small,
+.resource-page p,
+.resource-page small,
+.scheduling-page p,
+.logs-page p,
+.system-info-page p {
+  color: #7a8a9e !important;
+}
+
+.task-plane-switch {
+  border-color: rgba(47, 128, 237, 0.15) !important;
+  background: rgba(255, 255, 255, 0.82) !important;
+}
+
+.task-plane-switch a {
+  color: #718399 !important;
+}
+
+.task-plane-switch a.active,
+.task-plane-switch a.router-link-active {
+  color: #176fca !important;
+  background: #eaf6ff !important;
+}
+
+pre,
+code,
+.log-content,
+.code-block,
+.realesrgan-page pre {
+  color: #37546e !important;
+  border-color: rgba(47, 128, 237, 0.12) !important;
+  background: #f2f7fc !important;
+}
+
+/* Login and Element Plus --------------------------------------------------- */
+.login {
+  color: #2b3d52;
+  background:
+    linear-gradient(rgba(47, 128, 237, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(47, 128, 237, 0.045) 1px, transparent 1px),
+    radial-gradient(
+      circle at 25% 10%,
+      rgba(82, 186, 238, 0.2),
+      transparent 30rem
+    ),
+    #f7fbff !important;
+  background-size:
+    24px 24px,
+    24px 24px,
+    auto,
+    auto !important;
+}
+
+.login form {
+  color: #2b3d52;
+  border-color: rgba(47, 128, 237, 0.16) !important;
+  background: rgba(255, 255, 255, 0.92) !important;
+  box-shadow: 0 35px 100px rgba(52, 105, 156, 0.16) !important;
+}
+
+.login h1 {
+  color: #26394f;
+}
+
+.login input {
+  color: #344a62 !important;
+  background: #f8fbff !important;
+}
+
+.el-message-box,
+.el-dialog,
+.el-drawer,
+.el-popover.el-popper,
+.el-select__popper.el-popper,
+.el-picker__popper.el-popper {
+  color: #32465c !important;
+  border-color: rgba(47, 128, 237, 0.16) !important;
+  background: #fff !important;
+}
+
+.el-message-box__title,
+.el-dialog__title,
+.el-drawer__title {
+  color: #263b52 !important;
+}
+
+.el-message-box__content,
+.el-dialog__body,
+.el-form-item__label {
+  color: #6f8094 !important;
+}
+
+.el-button--default {
+  color: #42617e !important;
+  border-color: rgba(47, 128, 237, 0.2) !important;
+  background: #fff !important;
+}
+
+/*
+ * Route chunks load their scoped styles after this shared sheet. Keep the
+ * product-site palette authoritative through variables and explicit surface
+ * overrides so a late-loaded route cannot resurrect the retired dark shell.
+ */
+.jobs-operations-page {
+  --task-panel: #ffffff !important;
+  --task-panel-raised: #f3f8fe !important;
+  --task-line: rgba(53, 112, 170, 0.14) !important;
+  --task-muted: #6f8094 !important;
+  --task-pink: #2f80ed !important;
+  --task-purple: #6d78e8 !important;
+  --ops-bg: #f8fbff !important;
+  --ops-surface: #ffffff !important;
+  --ops-line: rgba(53, 112, 170, 0.14) !important;
+  --ops-line-strong: rgba(53, 112, 170, 0.24) !important;
+  --ops-text: #24364a !important;
+  --ops-muted: #6f8094 !important;
+  --ops-cyan: #2f80ed !important;
+}
+
+.analysis-page {
+  --analysis-panel: #ffffff !important;
+  --analysis-raised: #f3f8fe !important;
+  --analysis-line: rgba(53, 112, 170, 0.14) !important;
+  --analysis-muted: #6f8094 !important;
+  --ops-surface: #ffffff !important;
+  --ops-line: rgba(53, 112, 170, 0.14) !important;
+  --ops-line-strong: rgba(53, 112, 170, 0.24) !important;
+  --ops-text: #24364a !important;
+  --ops-muted: #6f8094 !important;
+  --ops-cyan: #2f80ed !important;
+}
+
+.codex-workspace,
+.esr-workspace {
+  --p: #ffffff !important;
+  --r: #f3f8fe !important;
+  --l: rgba(53, 112, 170, 0.14) !important;
+  --m: #6d8095 !important;
+  --t: #263b52 !important;
+  --a: #2f80ed !important;
+  --g: #20b982 !important;
+  --w: #d98c2d !important;
+  --b: #df5365 !important;
+}
+
+.dashboard-control-page .situation-board,
+.dashboard-control-page .compute-fabric,
+.dashboard-control-page .telemetry-panel,
+.dashboard-control-page .attention-panel,
+.dashboard-control-page .activity-ledger,
+.dashboard-control-page .task-list-panel {
+  color: #31465e !important;
+  border-color: rgba(53, 112, 170, 0.14) !important;
+  background: rgba(255, 255, 255, 0.94) !important;
+}
+
+.dashboard-control-page .situation-primary,
+.dashboard-control-page .signal-rail,
+.dashboard-control-page .ops-section-heading,
+.dashboard-control-page .node-row,
+.dashboard-control-page .node-head {
+  background: transparent !important;
+}
+
+.dashboard-control-page .capacity-orbit::before {
+  background: #ffffff !important;
+}
+
+.dashboard-control-page .capacity-orbit strong,
+.dashboard-control-page .situation-message h2,
+.dashboard-control-page .signal-rail strong,
+.dashboard-control-page .operation-routes strong,
+.dashboard-control-page .ops-section-heading h2 {
+  color: #263b52 !important;
+}
+
+.dashboard-control-page .capacity-orbit small,
+.dashboard-control-page .situation-label,
+.dashboard-control-page .situation-message p,
+.dashboard-control-page .situation-message p b,
+.dashboard-control-page .signal-rail span,
+.dashboard-control-page .signal-rail small,
+.dashboard-control-page .operation-routes small,
+.dashboard-control-page .ops-section-heading p {
+  color: #6f8094 !important;
+}
+
+.jobs-operations-page .sync-state,
+.jobs-operations-page .task-toolbar,
+.analysis-page .sync-state,
+.analysis-page .analysis-toolbar {
+  color: #53677e !important;
+  border-color: rgba(53, 112, 170, 0.14) !important;
+  background: rgba(255, 255, 255, 0.94) !important;
+}
+
+.jobs-operations-page .task-row,
+.jobs-operations-page .task-row strong,
+.jobs-operations-page .task-cell,
+.analysis-page .path-row {
+  color: #405772 !important;
+}
+
+.cloud-page .cloud-summary,
+.cloud-page .cloud-context,
+.cloud-page .cloud-toolbar,
+.cloud-page .instance-card,
+.cloud-page .instance-details,
+.cloud-page .instance-head,
+.cloud-page .instance-body,
+.cloud-page .instance-card > footer {
+  color: #31465e !important;
+  border-color: rgba(53, 112, 170, 0.14) !important;
+  background: rgba(255, 255, 255, 0.95) !important;
+}
+
+.cloud-page .cloud-summary > button,
+.cloud-page .cloud-summary > div {
+  color: #31465e !important;
+  border-color: rgba(53, 112, 170, 0.14) !important;
+  background: transparent !important;
+}
+
+.cloud-page .cloud-summary span,
+.cloud-page .cloud-summary small,
+.cloud-page .cloud-context p,
+.cloud-page .instance-identity p,
+.cloud-page .instance-identity code,
+.cloud-page .primary-spec span,
+.cloud-page .primary-spec small,
+.cloud-page .application span,
+.cloud-page .application small,
+.cloud-page .instance-body dt,
+.cloud-page .control-evidence span,
+.cloud-page .control-evidence small,
+.cloud-page .provider-state {
+  color: #6f8094 !important;
+}
+
+.cloud-page .cloud-summary strong,
+.cloud-page .cloud-context strong,
+.cloud-page .instance-identity h3,
+.cloud-page .instance-quickfacts strong,
+.cloud-page .primary-spec strong,
+.cloud-page .application strong,
+.cloud-page .instance-body dd,
+.cloud-page .control-evidence strong {
+  color: #263b52 !important;
+}
+
+.cloud-page .cloud-search,
+.cloud-page .cloud-toolbar select,
+.cloud-page .select-visible,
+.cloud-page .instance-quickfacts div,
+.cloud-page .control-evidence {
+  color: #405772 !important;
+  border-color: rgba(53, 112, 170, 0.16) !important;
+  background: #f3f8fe !important;
+}
+
+.cloud-page .cloud-search input {
+  color: #31465e !important;
+  background: transparent !important;
+}
+
+.cloud-page .state-pill {
+  color: #53677e !important;
+  border-color: rgba(53, 112, 170, 0.18) !important;
+  background: #f3f8fe !important;
+}
+
+.codex-workspace .control-strip,
+.codex-workspace .runtime-console,
+.codex-workspace .runtime-columns,
+.codex-workspace .runtime-row,
+.codex-workspace .runtime-inspector,
+.codex-workspace .execution-ledger,
+.esr-workspace .service-strip,
+.esr-workspace .worker-console,
+.esr-workspace .worker-columns,
+.esr-workspace .worker-row,
+.esr-workspace .worker-inspector,
+.esr-workspace .task-ledger {
+  color: #405772 !important;
+  border-color: rgba(53, 112, 170, 0.14) !important;
+  background: rgba(255, 255, 255, 0.95) !important;
+}
+
+.codex-workspace .runtime-columns,
+.esr-workspace .worker-columns {
+  background: #f2f7fd !important;
+}
+
+.codex-workspace .runtime-row:hover,
+.codex-workspace .runtime-row.selected,
+.esr-workspace .worker-row:hover,
+.esr-workspace .worker-row.selected {
+  background: #eaf5ff !important;
+}
+
+.codex-workspace .inline-metrics dd,
+.codex-workspace .cluster-verdict strong,
+.esr-workspace .service-strip dd,
+.esr-workspace .service-verdict strong {
+  color: #263b52 !important;
+}
+
+.jobs-operations-page .task-row a,
+.jobs-operations-page .task-row code,
+.jobs-operations-page .task-row .task-id {
+  color: #276fae !important;
+}
+
+/* Readability scale ---------------------------------------------------------
+ * The control center is normally viewed on 2K/4K operations displays. Keep
+ * dense evidence visible, but do not make operators zoom the browser just to
+ * read navigation, status text or table rows.
+ */
+html {
+  font-size: 17px;
+}
+
+body {
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+.control-brand-copy strong {
+  font-size: 18px;
+}
+
+.control-brand-copy small,
+.operator-copy small,
+.route-context,
+.live-status {
+  font-size: 13px !important;
+}
+
+.control-nav-group > header,
+.nav-compact .control-nav-group > header,
+.control-nav-group > a > span,
+.nav-compact .control-nav-group > a > span {
+  font-size: 15px;
+}
+
+.page-heading h1,
+.workspace-heading h1,
+.ops-heading h1,
+.cloud-page .page-heading h1 {
+  font-size: clamp(36px, 3.2vw, 52px) !important;
+  line-height: 1.14 !important;
+}
+
+.page-heading p,
+.workspace-heading p,
+.ops-heading p,
+.surface-heading p,
+.panel-heading p,
+.cloud-context p {
+  font-size: 16px !important;
+  line-height: 1.65 !important;
+}
+
+button,
+input,
+select,
+textarea,
+.el-button,
+.el-input__inner,
+.el-select__wrapper {
+  font-size: 15px !important;
+}
+
+input,
+select,
+.el-input__wrapper,
+.el-select__wrapper {
+  min-height: 42px;
+}
+
+table th,
+.task-table th,
+.path-table th,
+.execution-table th,
+.runtime-columns,
+.worker-columns {
+  font-size: 14px !important;
+}
+
+table td,
+.task-table td,
+.path-table td,
+.execution-table td,
+.runtime-row,
+.worker-row,
+.node-main-row,
+.asset-worker-row,
+.asset-job-row {
+  font-size: 15px !important;
+  line-height: 1.55 !important;
+}
+
+small,
+.eyebrow,
+.workspace-kicker,
+.context-kicker,
+.section-bar > span,
+.ops-section-heading > div > span,
+.state-pill,
+.status-pill,
+.permission-chip,
+.task-cell small,
+.worker-name small,
+.instance-body dt,
+.control-evidence span,
+.control-evidence small {
+  font-size: 13px !important;
+  line-height: 1.5 !important;
+}
+
+.instance-identity h3,
+.runtime-identity b,
+.worker-name b,
+.task-cell b,
+.control-evidence strong,
+.instance-quickfacts strong {
+  font-size: 16px !important;
+  line-height: 1.45 !important;
+}
+
+.login form {
+  width: min(520px, calc(100vw - 36px));
+  padding: 48px;
+}
+
+.login h1 {
+  font-size: 30px !important;
+}
+
+.login label {
+  font-size: 15px !important;
+}
+
+.login input {
+  min-height: 46px;
+  font-size: 16px !important;
+}
+
+/* Comfortable operations density for the 2K/4K control-room displays used
+ * by this deployment. The layout grows as a system—not just isolated text—so
+ * navigation, controls, rows and cards keep the same visual rhythm. */
+@media (min-width: 1800px) {
+  .control-shell,
+  .control-shell.nav-compact {
+    --site-nav-height: 94px;
+    --command-bar-height: 66px;
+  }
+
+  html {
+    font-size: 19px;
+  }
+
+  body {
+    font-size: 18px;
+  }
+
+  .control-nav,
+  .control-brand,
+  .nav-compact .control-brand,
+  .control-nav-group > header,
+  .nav-compact .control-nav-group > header {
+    height: 94px;
+    min-height: 94px;
+  }
+
+  .control-brand-copy strong {
+    font-size: 20px;
+  }
+
+  .control-nav-group > header,
+  .nav-compact .control-nav-group > header,
+  .control-nav-group > a > span,
+  .nav-compact .control-nav-group > a > span {
+    font-size: 17px;
+  }
+
+  .control-nav-group > a,
+  .nav-compact .control-nav-group > a {
+    width: 252px;
+    height: 54px;
+  }
+
+  .nav-command,
+  .nav-compact .nav-command {
+    width: 48px;
+    min-width: 48px;
+    height: 48px;
+    margin-top: 23px;
+    margin-bottom: 23px;
+  }
+
+  .control-stage > #main-content {
+    padding-top: 64px;
+    padding-bottom: 120px;
+  }
+
+  button,
+  input,
+  select,
+  textarea,
+  .el-button,
+  .el-input__inner,
+  .el-select__wrapper {
+    font-size: 17px !important;
+  }
+
+  input,
+  select,
+  .el-input__wrapper,
+  .el-select__wrapper {
+    min-height: 48px;
+  }
+
+  table th,
+  .task-table th,
+  .path-table th,
+  .execution-table th,
+  .runtime-columns,
+  .worker-columns {
+    font-size: 16px !important;
+  }
+
+  table td,
+  .task-table td,
+  .path-table td,
+  .execution-table td,
+  .runtime-row,
+  .worker-row,
+  .node-main-row,
+  .asset-worker-row,
+  .asset-job-row {
+    font-size: 17px !important;
+  }
+
+  small,
+  .eyebrow,
+  .workspace-kicker,
+  .context-kicker,
+  .section-bar > span,
+  .ops-section-heading > div > span,
+  .state-pill,
+  .status-pill,
+  .permission-chip,
+  .task-cell small,
+  .worker-name small,
+  .instance-body dt,
+  .control-evidence span,
+  .control-evidence small {
+    font-size: 15px !important;
+  }
+
+  .page-heading p,
+  .workspace-heading p,
+  .ops-heading p,
+  .surface-heading p,
+  .panel-heading p,
+  .cloud-context p {
+    font-size: 18px !important;
+  }
+
+  .login form {
+    width: 580px;
+    padding: 58px;
+  }
+
+  .login h1 {
+    font-size: 36px !important;
+  }
+
+  .login label,
+  .login input {
+    font-size: 18px !important;
+  }
+
+  .login input {
+    min-height: 54px;
+  }
+}
+
+@media (max-width: 1180px) {
+  .control-brand,
+  .nav-compact .control-brand {
+    min-width: 220px;
+    padding-left: 26px;
+  }
+
+  .control-nav-group {
+    min-width: 100px;
+  }
+
+  .control-nav-group > header {
+    padding: 0 8px;
+    font-size: 13px;
+  }
+
+  .control-command-bar {
+    padding-right: 30px;
+    padding-left: 30px;
+  }
+
+  .control-stage > #main-content {
+    padding-right: 54px;
+    padding-left: 54px;
+  }
+}
+
+@media (max-width: 900px) {
+  .control-shell,
+  .control-shell.nav-compact {
+    display: block;
+  }
+
+  .control-nav {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    width: min(84vw, 320px);
+    height: 100dvh;
+    min-height: 0;
+    flex-direction: column;
+    align-items: stretch;
+    overflow: hidden;
+    transform: translateX(-103%);
+    transition: transform 180ms ease;
+  }
+
+  .mobile-nav-open .control-nav {
+    transform: translateX(0);
+  }
+
+  .control-brand,
+  .nav-compact .control-brand {
+    width: 100%;
+    min-width: 0;
+    height: 74px;
+    padding: 0 22px;
+  }
+
+  .control-nav > nav {
+    display: block;
+    overflow-y: auto;
+    padding: 12px;
+  }
+
+  .control-nav-group,
+  .control-nav-group + .control-nav-group {
+    margin: 0 0 10px;
+  }
+
+  .control-nav-group.nav-group-open {
+    padding-bottom: 0;
+    box-shadow: none;
+  }
+
+  .control-nav-group > header,
+  .nav-compact .control-nav-group > header {
+    height: 32px;
+    justify-content: flex-start;
+    padding: 0 11px;
+    color: #91a0b0;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+  }
+
+  .control-nav-group > a,
+  .control-nav-group.nav-group-open > a,
+  .nav-compact .control-nav-group > a {
+    width: 100%;
+    display: flex;
+  }
+
+  .nav-command,
+  .nav-compact .nav-command {
+    width: auto;
+    height: 42px;
+    order: 1;
+    justify-content: flex-start;
+    margin: 12px 18px;
+    padding: 0 13px;
+    border-radius: 8px;
+  }
+
+  .nav-command-copy,
+  .nav-compact .nav-command-copy {
+    display: inline;
+  }
+
+  .control-stage {
+    height: 100dvh;
+    padding-top: 0;
+  }
+
+  .control-command-bar {
+    min-height: 64px;
+    background: rgba(255, 255, 255, 0.94);
+  }
+
+  .mobile-nav-trigger {
+    color: #3d668b;
+    border-color: rgba(47, 128, 237, 0.18);
+    background: #f2f8fe;
+  }
+
+  .control-stage > #main-content {
+    padding: 34px 24px 70px;
+  }
+
+  .control-stage > #main-content::before {
+    display: none;
+  }
+
+  .dashboard-control-page .ops-hero {
+    padding-right: 0;
+    padding-left: 0;
+  }
+}
+
+/* Operations UI refinement -------------------------------------------------
+ * Route views were built at different times and several still carry compact
+ * 9–11px local rules. This final layer gives every route one product language:
+ * white evidence surfaces, one blue accent and a readable control-room scale.
+ */
+:root {
+  --canvas: #f6f9fd;
+  --canvas-soft: #f1f6fb;
+  --panel: #ffffff;
+  --panel-raised: #ffffff;
+  --panel-soft: #f6f9fd;
+  --line: rgba(61, 101, 145, 0.14);
+  --line-strong: rgba(61, 101, 145, 0.24);
+  --ink: #213247;
+  --muted: #697b90;
+  --accent: #2589e8;
+  --accent-strong: #0874da;
+  --accent-soft: rgba(37, 137, 232, 0.09);
+  --shadow-panel: 0 14px 42px rgba(45, 84, 122, 0.08);
+}
+
+html,
+body,
+#app,
+.control-shell,
+.control-stage {
+  background: var(--canvas) !important;
+}
+
+.control-stage > #main-content {
+  background:
+    linear-gradient(rgba(48, 124, 195, 0.026) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(48, 124, 195, 0.026) 1px, transparent 1px),
+    radial-gradient(circle at 50% -12%, rgba(82, 172, 235, 0.1), transparent 34rem),
+    var(--canvas) !important;
+  background-size: 28px 28px, 28px 28px, auto, auto !important;
+}
+
+.dashboard-control-page .ops-hero h1,
+.jobs-operations-page .ops-command-header h1,
+.analysis-page .ops-command-header h1 {
+  color: #1d76c9 !important;
+  background: none !important;
+  -webkit-text-fill-color: currentColor;
+}
+
+.dashboard-control-page .situation-board,
+.dashboard-control-page .compute-fabric,
+.dashboard-control-page .telemetry-panel,
+.dashboard-control-page .attention-panel,
+.dashboard-control-page .activity-ledger,
+.task-overview,
+.task-facets,
+.task-surface,
+.analysis-toolbar,
+.insight-panel,
+.cloud-summary,
+.cloud-context,
+.cloud-toolbar,
+.instance-card,
+.control-strip,
+.runtime-console,
+.execution-ledger,
+.service-strip,
+.worker-console,
+.task-ledger,
+.api-drawer,
+.nodes-page .gpu-specialization-guide,
+.nodes-page .node-card,
+.resource-page .resource-card,
+.resource-page .onboarding-strip,
+.assets-page .asset-notice,
+.assets-page .asset-summary,
+.assets-page .asset-card,
+.scheduling-page .dispatch-explainer,
+.scheduling-page .capacity-overview,
+.scheduling-page .rule-ledger-section,
+.scheduling-page .schedule-risk-panel,
+.logs-page .log-surface,
+.system-info-page .system-section,
+.system-info-page .system-status-strip {
+  border-color: var(--line) !important;
+  background: #ffffff !important;
+  box-shadow: var(--shadow-panel) !important;
+}
+
+.task-overview article,
+.task-toolbar,
+.analysis-toolbar,
+.diagnostic-card,
+.phase-card,
+.path-card,
+.instance-quickfacts div,
+.cloud-page .control-evidence,
+.selected-task,
+.worker-evidence,
+.evidence-grid,
+.contract-list,
+.runtime-columns,
+.worker-columns {
+  background: #f7fafd !important;
+}
+
+.dashboard-control-page .operation-routes,
+.dashboard-control-page .operation-routes > a,
+.cloud-page .cloud-summary > button,
+.cloud-page .cloud-summary > div,
+.instance-head,
+.instance-body,
+.instance-card > footer,
+.surface-heading,
+.panel-heading,
+.section-bar {
+  background: #ffffff !important;
+}
+
+.dashboard-control-page .operation-routes > a:hover,
+.task-surface .task-row:hover td,
+.task-surface .task-row:focus td,
+.runtime-row:hover,
+.runtime-row.selected,
+.worker-row:hover,
+.worker-row.selected {
+  background: #eef7ff !important;
+}
+
+@media (min-width: 1200px) {
+  .page {
+    max-width: 1680px;
+  }
+
+  .page-heading {
+    min-height: 112px;
+    margin-bottom: 28px;
+  }
+
+  .page-heading h1,
+  .workspace-heading h1,
+  .ops-heading h1,
+  .cloud-page .page-heading h1 {
+    margin-bottom: 12px !important;
+    font-size: clamp(42px, 3.2vw, 58px) !important;
+    font-weight: 560 !important;
+    letter-spacing: -0.035em !important;
+  }
+
+  .page-heading p,
+  .workspace-heading p,
+  .ops-heading p {
+    max-width: 920px;
+    font-size: 17px !important;
+  }
+
+  .eyebrow,
+  .workspace-kicker,
+  .ops-kicker,
+  .context-kicker {
+    font-size: 13px !important;
+    letter-spacing: 0.15em !important;
+  }
+
+  .heading-actions,
+  .ops-header-tools,
+  .ops-hero-controls {
+    gap: 16px !important;
+  }
+
+  .refresh-state,
+  .sync-state,
+  .refresh-state small,
+  .sync-state small {
+    font-size: 14px !important;
+    line-height: 1.45 !important;
+  }
+
+  .dashboard-control-page {
+    gap: 26px !important;
+  }
+
+  .dashboard-control-page .ops-hero {
+    min-height: 230px !important;
+    padding: 24px 3% 44px !important;
+  }
+
+  .dashboard-control-page .ops-hero p {
+    max-width: 900px;
+    font-size: 17px !important;
+  }
+
+  .dashboard-control-page .ops-scope button,
+  .dashboard-control-page .ops-refresh b {
+    font-size: 14px !important;
+  }
+
+  .dashboard-control-page .ops-refresh small {
+    font-size: 12px !important;
+  }
+
+  .dashboard-control-page .situation-board {
+    grid-template-columns: minmax(600px, 1.38fr) minmax(590px, 1fr) !important;
+  }
+
+  .dashboard-control-page .situation-primary {
+    min-height: 270px !important;
+    grid-template-columns: 170px minmax(0, 1fr) !important;
+    padding: 54px 42px 34px !important;
+  }
+
+  .dashboard-control-page .situation-label,
+  .dashboard-control-page .situation-message > span {
+    font-size: 14px !important;
+  }
+
+  .dashboard-control-page .capacity-orbit {
+    width: 152px !important;
+    height: 152px !important;
+  }
+
+  .dashboard-control-page .capacity-orbit strong {
+    font-size: 42px !important;
+  }
+
+  .dashboard-control-page .capacity-orbit span,
+  .dashboard-control-page .capacity-orbit small {
+    font-size: 13px !important;
+  }
+
+  .dashboard-control-page .situation-message h2 {
+    font-size: 34px !important;
+  }
+
+  .dashboard-control-page .situation-message p {
+    font-size: 15px !important;
+    line-height: 1.7 !important;
+  }
+
+  .dashboard-control-page .signal-rail article {
+    min-height: 132px !important;
+    padding: 28px 20px !important;
+  }
+
+  .dashboard-control-page .signal-rail span,
+  .dashboard-control-page .signal-rail small {
+    font-size: 13px !important;
+  }
+
+  .dashboard-control-page .signal-rail strong {
+    font-size: 30px !important;
+  }
+
+  .dashboard-control-page .operation-routes > a {
+    min-height: 112px !important;
+    grid-template-columns: 38px minmax(0, 1fr) !important;
+    padding: 22px 28px !important;
+  }
+
+  .dashboard-control-page .operation-routes > a > span,
+  .dashboard-control-page .operation-routes b {
+    font-size: 13px !important;
+  }
+
+  .dashboard-control-page .operation-routes strong {
+    font-size: 17px !important;
+  }
+
+  .dashboard-control-page .operation-routes small {
+    font-size: 14px !important;
+  }
+
+  .dashboard-control-page .ops-section-heading {
+    min-height: 104px !important;
+    padding: 24px 28px !important;
+  }
+
+  .dashboard-control-page .ops-section-heading h2 {
+    font-size: 23px !important;
+  }
+
+  .dashboard-control-page .ops-section-heading p,
+  .dashboard-control-page .ops-section-heading a,
+  .dashboard-control-page .ops-section-heading > b {
+    font-size: 14px !important;
+  }
+
+  .dashboard-control-page .attention-clear strong,
+  .dashboard-control-page .attention-list strong {
+    font-size: 16px !important;
+  }
+
+  .dashboard-control-page .attention-clear span,
+  .dashboard-control-page .attention-list p,
+  .dashboard-control-page .attention-list li > span {
+    font-size: 13px !important;
+  }
+
+  .jobs-operations-page .ops-command-header,
+  .analysis-page .ops-command-header {
+    min-height: 160px;
+    margin-bottom: 28px !important;
+    padding-bottom: 30px !important;
+  }
+
+  .jobs-operations-page .ops-view-switch a,
+  .analysis-page .ops-view-switch a,
+  .jobs-operations-page .scope-tabs button,
+  .analysis-page .scope-tabs button {
+    min-height: 42px !important;
+    font-size: 14px !important;
+  }
+
+  .jobs-operations-page .ops-view-switch a span,
+  .analysis-page .ops-view-switch a span {
+    font-size: 12px !important;
+  }
+
+  .task-overview,
+  .performance-overview {
+    grid-template-columns: minmax(340px, 1.35fr) repeat(4, minmax(170px, 0.75fr)) !important;
+  }
+
+  .task-overview article,
+  .performance-overview article {
+    min-height: 142px !important;
+    padding: 24px 26px !important;
+  }
+
+  .task-overview article > span,
+  .task-overview article small,
+  .performance-overview article > span,
+  .performance-overview article small,
+  .performance-overview .focus-copy > span,
+  .performance-overview .focus-p90 > span,
+  .performance-overview .focus-copy > small,
+  .performance-overview .focus-p90 > small {
+    font-size: 14px !important;
+  }
+
+  .task-overview article > strong,
+  .performance-overview article > strong {
+    font-size: 29px !important;
+  }
+
+  .task-overview .overview-primary > div:first-child strong,
+  .performance-overview .focus-copy > strong {
+    font-size: 42px !important;
+  }
+
+  .task-workspace {
+    grid-template-columns: 260px minmax(0, 1fr) !important;
+  }
+
+  .task-facets {
+    padding: 24px 16px !important;
+  }
+
+  .jobs-operations-page .facet-heading span,
+  .jobs-operations-page .facet-group > small,
+  .jobs-operations-page .surface-heading > div > span,
+  .analysis-page .toolbar-heading span,
+  .analysis-page .panel-heading span {
+    font-size: 13px !important;
+  }
+
+  .jobs-operations-page .facet-heading strong,
+  .analysis-page .toolbar-heading strong {
+    font-size: 17px !important;
+  }
+
+  .jobs-operations-page .facet-group button {
+    min-height: 42px !important;
+    font-size: 14px !important;
+  }
+
+  .jobs-operations-page .facet-group button b,
+  .jobs-operations-page .facet-note span,
+  .jobs-operations-page .facet-note p {
+    font-size: 12px !important;
+  }
+
+  .task-surface {
+    padding: 26px !important;
+  }
+
+  .surface-heading h2,
+  .panel-heading h2 {
+    font-size: 24px !important;
+  }
+
+  .surface-heading p,
+  .panel-heading p {
+    font-size: 15px !important;
+  }
+
+  .task-toolbar,
+  .analysis-toolbar {
+    padding: 16px !important;
+  }
+
+  .task-toolbar label > span,
+  .analysis-toolbar label > span {
+    font-size: 13px !important;
+  }
+
+  .task-toolbar input,
+  .task-toolbar select,
+  .analysis-toolbar input,
+  .analysis-toolbar select,
+  .jobs-pagination select {
+    min-height: 46px !important;
+    font-size: 15px !important;
+  }
+
+  .jobs-operations-page .result-summary,
+  .jobs-operations-page .jobs-pagination,
+  .analysis-page .method-note {
+    font-size: 13px !important;
+  }
+
+  .analysis-page .panel-heading {
+    min-height: 104px !important;
+    padding: 24px 26px !important;
+  }
+
+  .analysis-page .phase-list article {
+    min-height: 98px !important;
+    padding: 18px 24px !important;
+  }
+
+  .analysis-page .phase-name strong,
+  .analysis-page .phase-measure strong,
+  .analysis-page .diagnostic-list strong {
+    font-size: 15px !important;
+  }
+
+  .analysis-page .phase-name code,
+  .analysis-page .phase-measure small,
+  .analysis-page .phase-list article > b,
+  .analysis-page .phase-list article > span,
+  .analysis-page .diagnostic-list p,
+  .analysis-page .path-table td > strong,
+  .analysis-page .path-table td > code,
+  .analysis-page .path-table td > span {
+    font-size: 13px !important;
+  }
+
+  .cloud-page .cloud-summary span,
+  .cloud-page .cloud-summary small,
+  .cloud-page .instance-identity p,
+  .cloud-page .provider-state,
+  .cloud-page .actionability,
+  .cloud-page .operation-state {
+    font-size: 14px !important;
+  }
+
+  .cloud-page .cloud-summary strong {
+    font-size: 34px !important;
+  }
+
+  .cloud-page .cloud-context {
+    padding: 22px 26px !important;
+  }
+
+  .cloud-page .cloud-context strong,
+  .cloud-page .resource-group-heading h2 {
+    font-size: 18px !important;
+  }
+
+  .cloud-page .cloud-toolbar {
+    min-height: 66px !important;
+    padding: 12px 16px !important;
+  }
+
+  .cloud-page .instance-head {
+    min-height: 112px !important;
+    padding: 24px 28px !important;
+  }
+
+  .cloud-page .instance-identity h3 {
+    font-size: 21px !important;
+  }
+
+  .cloud-page .instance-quickfacts span,
+  .cloud-page .instance-quickfacts strong {
+    font-size: 13px !important;
+  }
+
+  .cloud-page .detail-heading {
+    padding: 18px 28px 0 64px !important;
+  }
+
+  .cloud-page .detail-heading span {
+    font-size: 15px !important;
+  }
+
+  .cloud-page .detail-heading small {
+    font-size: 13px !important;
+  }
+
+  .cloud-page .instance-body {
+    padding: 16px 28px 24px 64px !important;
+  }
+
+  .cloud-page .primary-spec span,
+  .cloud-page .application span,
+  .cloud-page .instance-body dt,
+  .cloud-page .control-evidence span,
+  .cloud-page .control-evidence small {
+    font-size: 13px !important;
+  }
+
+  .cloud-page .primary-spec strong,
+  .cloud-page .application strong,
+  .cloud-page .instance-body dd,
+  .cloud-page .control-evidence strong {
+    font-size: 16px !important;
+  }
+
+  .cloud-page .control-evidence section {
+    min-height: 84px !important;
+    padding: 16px !important;
+  }
+
+  .cloud-page .instance-card > footer {
+    min-height: 76px !important;
+    padding: 14px 28px 14px 64px !important;
+  }
+
+  .codex-workspace .control-strip,
+  .esr-workspace .service-strip {
+    min-height: 130px !important;
+  }
+
+  .codex-workspace .section-bar,
+  .esr-workspace .section-bar,
+  .esr-workspace .api-drawer > summary {
+    min-height: 88px !important;
+    padding: 0 24px !important;
+  }
+
+  .codex-workspace .section-bar h2,
+  .esr-workspace .section-bar h2,
+  .codex-workspace .runtime-inspector h2,
+  .esr-workspace .worker-inspector h2 {
+    font-size: 20px !important;
+  }
+
+  .codex-workspace .runtime-row,
+  .esr-workspace .worker-row {
+    min-height: 80px !important;
+    padding-right: 24px !important;
+    padding-left: 24px !important;
+  }
+
+  .codex-workspace .runtime-inspector,
+  .esr-workspace .worker-inspector {
+    padding: 26px !important;
+  }
+
+  .esr-workspace .service-verdict small,
+  .esr-workspace .service-verdict span,
+  .esr-workspace .model-lock small,
+  .esr-workspace .model-lock span,
+  .esr-workspace .service-strip dt,
+  .esr-workspace .service-strip dl small,
+  .esr-workspace .worker-state,
+  .esr-workspace .worker-evidence dt,
+  .esr-workspace .worker-evidence dd,
+  .esr-workspace .contract-list dt,
+  .esr-workspace .contract-list dd,
+  .codex-workspace .evidence-grid dt,
+  .codex-workspace .evidence-grid dd {
+    font-size: 13px !important;
+  }
+
+  .esr-workspace .service-verdict strong,
+  .esr-workspace .model-lock strong {
+    font-size: 18px !important;
+  }
+
+  .esr-workspace .service-strip dd {
+    font-size: 25px !important;
+  }
+
+  .nodes-page .gpu-specialization-guide,
+  .nodes-page .node-card,
+  .resource-page .resource-card,
+  .resource-page .onboarding-strip {
+    border-radius: 14px !important;
+  }
+
+  .nodes-page .node-main-row {
+    min-height: 154px !important;
+    padding: 26px !important;
+  }
+
+  .nodes-page .node-identity h2 {
+    font-size: 21px !important;
+  }
+
+  .nodes-page .node-identity p,
+  .nodes-page .node-metric span,
+  .nodes-page .node-policy-strip,
+  .nodes-page .offline-node-note {
+    font-size: 14px !important;
+  }
+
+  .nodes-page .node-metric strong {
+    font-size: 19px !important;
+  }
+
+  .nodes-page .node-primary-actions button {
+    min-height: 46px !important;
+    padding-right: 22px !important;
+    padding-left: 22px !important;
+  }
+
+  .resource-page .resource-toolbar {
+    min-height: 72px !important;
+    padding: 14px 18px !important;
+  }
+
+  .resource-page .record-count,
+  .resource-page .table-secondary,
+  .resource-page .empty-state,
+  .resource-page .action-empty {
+    font-size: 14px !important;
+  }
+}
+
+/* Analysis used a self-contained dark observatory palette. Keep semantic
+ * status accents, but retire the last dark islands so it belongs to the same
+ * white/blue product system as every other route. */
+.analysis-page .performance-overview,
+.analysis-page .performance-overview article,
+.analysis-page .latency-focus,
+.analysis-page .throughput-card,
+.analysis-page .phase-list,
+.analysis-page .phase-list article,
+.analysis-page .diagnostic-list,
+.analysis-page .diagnostic-list article,
+.analysis-page .path-table,
+.analysis-page .path-table th,
+.analysis-page .path-table td,
+.analysis-page .method-note {
+  color: #405772 !important;
+  border-color: var(--line) !important;
+  background: #ffffff !important;
+}
+
+.analysis-page .performance-overview article + article,
+.analysis-page .phase-list article + article,
+.analysis-page .diagnostic-list article + article {
+  border-color: var(--line) !important;
+}
+
+.analysis-page .performance-overview article:nth-child(even),
+.analysis-page .phase-list article:nth-child(even),
+.analysis-page .diagnostic-list article:nth-child(even) {
+  background: #f7fafd !important;
+}
+
+.analysis-page .performance-overview span,
+.analysis-page .performance-overview small,
+.analysis-page .phase-name code,
+.analysis-page .phase-measure small,
+.analysis-page .phase-list article > span,
+.analysis-page .diagnostic-list p,
+.analysis-page .method-note {
+  color: #718399 !important;
+}
+
+.analysis-page .performance-overview strong,
+.analysis-page .phase-name strong,
+.analysis-page .phase-measure strong,
+.analysis-page .phase-list article > b,
+.analysis-page .diagnostic-list strong {
+  color: #263b52 !important;
+}
+
+.analysis-page .latency-focus .focus-copy > strong,
+.analysis-page .highlight-duration {
+  color: #197bd4 !important;
+}
+
+.analysis-page .phase-bar {
+  background: #e8f0f7 !important;
+}
+
+.analysis-page .phase-bar i {
+  background: linear-gradient(90deg, #49b7ea, #2f80ed) !important;
+}
+
+/* Navigation r7: routes never open over operational content. The business
+ * domains stay in the primary bar and the active domain's pages live in a
+ * persistent secondary rail. */
+.control-nav-group > header,
+.nav-compact .control-nav-group > header {
+  padding: 0;
+}
+
+.control-nav-group > header > a {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 14px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.control-nav-group.nav-group-current > header {
+  color: var(--accent);
+}
+
+.control-nav-group.nav-group-current > header::after {
+  position: absolute;
+  right: 30px;
+  bottom: 0;
+  left: 30px;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--accent);
+  content: "";
+}
+
+.control-command-bar {
+  grid-template-columns: minmax(220px, 1fr) minmax(420px, auto) minmax(
+      250px,
+      1fr
+    );
+}
+
+.route-shortcuts {
+  min-width: 0;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.route-shortcuts > a {
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 13px;
+  color: #6b7d91;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.route-shortcuts > a:hover {
+  color: #176fca;
+  background: #edf7ff;
+}
+
+.route-shortcuts > a.router-link-exact-active {
+  color: #176fca;
+  background: #e7f4ff;
+  box-shadow: inset 0 0 0 1px rgba(47, 128, 237, 0.12);
+}
+
+@media (min-width: 901px) {
+  .control-nav-group > a,
+  .control-nav-group.nav-group-open > a,
+  .nav-compact .control-nav-group > a {
+    display: none !important;
+  }
+}
+
+@media (max-width: 1180px) {
+  .control-command-bar {
+    grid-template-columns: minmax(190px, 0.8fr) minmax(340px, auto) minmax(
+        220px,
+        0.8fr
+      );
+    gap: 14px;
+  }
+
+  .route-shortcuts > a {
+    padding: 0 8px;
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 900px) {
+  .control-nav-group > header > a {
+    justify-content: flex-start;
+    padding: 0 11px;
+  }
+
+  .control-nav-group.nav-group-current > header::after,
+  .route-shortcuts {
+    display: none;
+  }
+}

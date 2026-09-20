@@ -22,6 +22,7 @@ from .models import (
     JobEvent,
     Node,
     NodeLease,
+    ProviderInstance,
     WorkflowNodeCompatibility,
     WorkflowVersion,
 )
@@ -42,6 +43,7 @@ from .scheduling import (
     substance_owned_drain_is_expired,
 )
 from .state_machine import require_transition
+from .workflow import node_workflow_allowlist
 
 ACTIVE_STATUSES = (
     JobStatus.CLAIMED.value,
@@ -213,8 +215,33 @@ async def claim_next_job(
             text("SELECT pg_advisory_xact_lock(:lock_id)"),
             {"lock_id": ADMISSION_LOCK_ID},
         )
+    # Provider lifecycle state is authoritative for mapped cloud capacity.  A
+    # Node heartbeat proves the runtime is reachable, but cannot authorize
+    # spend or scheduling after an operator disables/stops the provider
+    # instance.  ProviderInstance -> Node matches the mutation endpoint's lock
+    # order and prevents a lifecycle change from racing the durable claim.
+    autodl_instances = list(
+        (
+            await session.scalars(
+                select(ProviderInstance)
+                .where(
+                    ProviderInstance.provider == "autodl",
+                    ProviderInstance.node_id == node_id,
+                )
+                .with_for_update()
+            )
+        ).all()
+    )
     node = await session.scalar(select(Node).where(Node.id == node_id).with_for_update())
     if node is None:
+        return None
+    if autodl_instances and any(
+        not instance.managed
+        or not instance.scheduling_enabled
+        or instance.desired_state != "running"
+        or instance.observed_state != "running"
+        for instance in autodl_instances
+    ):
         return None
     # A pending Asset API reservation is bounded. Once it expires without an
     # active Baker fence, remove its durable labels while holding the same node
@@ -295,6 +322,29 @@ async def claim_next_job(
             )
         ).all()
     )
+    if not jobs:
+        return None
+    # Canary cloud lanes must never consume production work while transport,
+    # lifecycle and cost controls are still being qualified.  The label is a
+    # durable scheduling fence rather than a best-effort ranking hint.
+    if bool((node.labels or {}).get("test_only")):
+        test_tenant_ids = set(
+            (
+                await session.scalars(
+                    select(ApiClient.id).where(ApiClient.client_kind == "test")
+                )
+            ).all()
+        )
+        jobs = [job for job in jobs if job.tenant_id in test_tenant_ids]
+    if not jobs:
+        return None
+    # Workflow compatibility is periodically refreshed from runtime
+    # inventory, but a cost-controlled cloud lane needs a claim-time fence as
+    # well. This operator-owned label survives control-plane restarts and
+    # prevents a stale compatible row from broadening the node's scope.
+    workflow_allowlist = node_workflow_allowlist(node.labels)
+    if workflow_allowlist is not None:
+        jobs = [job for job in jobs if job.workflow_key in workflow_allowlist]
     if not jobs:
         return None
     # The control 4090 is the preferred low-latency ModelView lane while its

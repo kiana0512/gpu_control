@@ -19,15 +19,32 @@ export const useSystemStore = defineStore("system", {
       this.loading = true;
       this.error = "";
       try {
-        const [dashboard, jobs, nodes] = await Promise.all([
+        const results = await Promise.allSettled([
           api.dashboard(scope),
-          api.jobs(undefined, scope),
+          // The overview renders only recent rows; do not pull the full
+          // 500-row operations history on every ten-second dashboard tick.
+          api.jobs(undefined, scope, 60),
           api.nodes(),
         ]);
-        this.dashboard = dashboard;
-        this.jobs = jobs;
-        this.nodes = nodes;
-        this.connected = true;
+        const [dashboard, jobs, nodes] = results;
+        if (dashboard.status === "fulfilled") this.dashboard = dashboard.value;
+        if (jobs.status === "fulfilled") this.jobs = jobs.value;
+        if (nodes.status === "fulfilled") this.nodes = nodes.value;
+        this.connected =
+          dashboard.status === "fulfilled" || nodes.status === "fulfilled";
+        const names = ["总览", "任务", "节点"] as const;
+        const failures: string[] = [];
+        results.forEach((result, index) => {
+          if (result.status !== "rejected") return;
+          failures.push(
+            `${names[index] ?? "数据"}：${
+              result.reason instanceof Error
+                ? result.reason.message
+                : "加载失败"
+            }`,
+          );
+        });
+        this.error = failures.join("；");
       } catch (error) {
         this.error = error instanceof Error ? error.message : "加载失败";
         this.connected = false;

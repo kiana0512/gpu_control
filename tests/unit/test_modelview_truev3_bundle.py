@@ -16,23 +16,24 @@ def test_truev3_api_template_matches_the_approved_production_contract() -> None:
     template = json.loads((BUNDLE / "template.api.json").read_text(encoding="utf-8"))
 
     assert manifest.version == (
-        "2026.08.29-cba4414-truev3-gguf-mask-4input-rseed-steps2-r1"
+        "2026.09.18-refcontrol-normal-2step-r1"
     )
     assert manifest.bindings == {
-        "image_filename": "4.inputs.image",
+        "image_filename": "73.inputs.image",
         "material_image_filename": "5.inputs.image",
         "mask_filename": "44.inputs.image",
+        "normal_image_filename": "79.inputs.image",
         "noise_seed": "14.inputs.noise_seed",
         "prompt": "60.inputs.text",
     }
     assert manifest.min_vram_mb == 24000
     assert manifest.output_nodes == ("29",)
-    assert len(template) == 28
+    assert len(template) == 32
     assert set(template) == {
         "1",
         "2",
         "3",
-        "4",
+        "73", "74", "77", "78", "79",
         "5",
         "7",
         "8",
@@ -62,7 +63,7 @@ def test_truev3_api_template_matches_the_approved_production_contract() -> None:
     assert not any(node["class_type"] == "PreviewImage" for node in template.values())
     assert template["29"]["class_type"] == "SaveImage"
     assert template["29"]["inputs"]["images"] == ["33", 1]
-    assert template["14"]["inputs"]["noise_seed"] == 468546072632498
+    assert template["14"]["inputs"]["noise_seed"] == 238589373036856
     assert template["1"]["class_type"] == "UnetLoaderGGUF"
     assert template["1"]["inputs"] == {
         "unet_name": "Flux2-Klein-9B-True-V3-Q5_K.gguf",
@@ -74,9 +75,20 @@ def test_truev3_api_template_matches_the_approved_production_contract() -> None:
     }
     assert template["3"]["inputs"] == {"vae_name": "flux2-vae.safetensors"}
     assert template["21"]["inputs"]["lora_name"] == (
-        "flux-kelin/baimo_shangcaizhi_klein_v1_000005500.safetensors"
+        "flux-kelin/li3d_000004500.safetensors"
     )
-    assert template["21"]["inputs"]["strength_model"] == 0.9
+    assert template["21"]["inputs"]["strength_model"] == 1.0
+    assert template["78"]["inputs"] == {
+        "model": ["21", 0],
+        "lora_name": "flux-kelin/flux2_klein_9b_refcontrol_normal.safetensors",
+        "strength_model": 0.8,
+    }
+    assert template["12"]["inputs"] == {"model": ["78", 0], "conditioning": ["74", 0]}
+    assert template["15"]["inputs"]["model"] == ["78", 0]
+    assert template["77"]["inputs"] == {"pixels": ["79", 0], "vae": ["3", 0]}
+    assert template["74"]["inputs"] == {"conditioning": ["11", 0], "latent": ["77", 0]}
+    assert "normal_image_filename" in manifest.parameter_schema["required"]
+    assert "lora/flux-kelin/flux2_klein_9b_refcontrol_normal.safetensors" in manifest.required_models
     assert template["15"]["inputs"] | {"model": None} == {
         "denoise": 1,
         "model": None,
@@ -90,11 +102,11 @@ def test_truev3_api_template_matches_the_approved_production_contract() -> None:
         "long_size": 1528,
         "square_size": 1024,
     }
-    assert template["4"]["inputs"]["image"] == (
-        "509caff28e32103999d6a06a5a06b1a1907751ee58706edd1731a95eabdff15d.png"
+    assert template["73"]["inputs"]["image"] == (
+        "img_v3_0215l_641d5181-7885-4999-bdd3-2a6fdf5b139g.png"
     )
     assert template["5"]["inputs"]["image"] == (
-        "b4c6465b6bd7dd0d455adc09419b385672b34d42fa212898015849730fab4628.png"
+        "img_v3_0215l_c85586c5-2748-4e32-8b6e-e822e1ab641g.png"
     )
     assert template["33"]["inputs"] | {"图像A": None, "图像B": None} == {
         "图像A": None,
@@ -106,7 +118,7 @@ def test_truev3_api_template_matches_the_approved_production_contract() -> None:
         "检测阈值": 18,
         "使用Alpha": True,
     }
-    assert template["33"]["inputs"]["图像A"] == ["4", 0]
+    assert template["33"]["inputs"]["图像A"] == ["73", 0]
     assert template["33"]["inputs"]["图像B"] == ["25", 0]
     assert template["43"]["inputs"] == {
         "mask": ["45", 0],
@@ -118,17 +130,14 @@ def test_truev3_api_template_matches_the_approved_production_contract() -> None:
         "image": ["52", 0],
     }
     assert template["52"]["inputs"]["image"] == ["44", 0]
-    assert template["60"] == {
-        "_meta": {"title": "提示词"},
-        "class_type": "ttN text",
-        "inputs": {"text": ""},
-    }
+    assert template["60"]["class_type"] == "ttN text"
+    assert template["60"]["inputs"]["text"].startswith("Using image 1 as the current view")
     assert template["9"]["inputs"]["text"] == ["60", 0]
     assert template["17"]["inputs"]["latent_image"] == ["43", 0]
     assert {node["class_type"] for node in template.values()} == manifest.allowed_class_types
 
 
-def test_truev3_binds_three_public_images_server_seed_and_one_final_output() -> None:
+def test_truev3_binds_four_public_images_server_seed_and_one_final_output() -> None:
     manifest = WorkflowManifest.load(BUNDLE / "manifest.yaml")
     template = json.loads((BUNDLE / "template.api.json").read_text(encoding="utf-8"))
     automatic = render_workflow(
@@ -138,6 +147,7 @@ def test_truev3_binds_three_public_images_server_seed_and_one_final_output() -> 
             "image_filename": "job-a/white-model.png",
             "material_image_filename": "job-a/six-view.png",
             "mask_filename": "job-a/mask.png",
+            "normal_image_filename": "job-a/normal.png",
             "noise_seed": 101,
         },
     )
@@ -148,28 +158,31 @@ def test_truev3_binds_three_public_images_server_seed_and_one_final_output() -> 
             "image_filename": "job-b/white-model.png",
             "material_image_filename": "job-b/six-view.png",
             "mask_filename": "job-b/mask.png",
+            "normal_image_filename": "job-b/normal.png",
             "noise_seed": 202,
             "prompt": "preserve geometry and repair only the selected material",
         },
     )
 
-    assert automatic["4"]["inputs"]["image"] == "job-a/white-model.png"
+    assert automatic["73"]["inputs"]["image"] == "job-a/white-model.png"
+    assert automatic["79"]["inputs"]["image"] == "job-a/normal.png"
     assert automatic["5"]["inputs"]["image"] == "job-a/six-view.png"
     assert automatic["44"]["inputs"]["image"] == "job-a/mask.png"
     assert automatic["14"]["inputs"]["noise_seed"] == 101
-    assert automatic["60"]["inputs"]["text"] == ""
-    assert overridden["4"]["inputs"]["image"] == "job-b/white-model.png"
+    assert automatic["60"]["inputs"]["text"] == template["60"]["inputs"]["text"]
+    assert overridden["73"]["inputs"]["image"] == "job-b/white-model.png"
+    assert overridden["79"]["inputs"]["image"] == "job-b/normal.png"
     assert overridden["5"]["inputs"]["image"] == "job-b/six-view.png"
     assert overridden["44"]["inputs"]["image"] == "job-b/mask.png"
     assert overridden["14"]["inputs"]["noise_seed"] == 202
     assert overridden["60"]["inputs"]["text"] == (
         "preserve geometry and repair only the selected material"
     )
-    assert template["4"]["inputs"]["image"] == (
-        "509caff28e32103999d6a06a5a06b1a1907751ee58706edd1731a95eabdff15d.png"
+    assert template["73"]["inputs"]["image"] == (
+        "img_v3_0215l_641d5181-7885-4999-bdd3-2a6fdf5b139g.png"
     )
-    assert template["14"]["inputs"]["noise_seed"] == 468546072632498
-    assert template["60"]["inputs"]["text"] == ""
+    assert template["14"]["inputs"]["noise_seed"] == 238589373036856
+    assert len(template["60"]["inputs"]["text"]) == 973
 
 
 def test_bundled_cherry_sources_are_byte_exact_to_upstream_commit() -> None:

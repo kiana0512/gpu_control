@@ -53,6 +53,9 @@
 
 ## GPU 图像业务与客户端交接
 
+- 2026-09-20 控制中心稳定性与 WebUI：[AutoDL PRO 6000 动态识别、重启自愈、输入缓存修复、局部重绘测速、SSE/数据库恢复、官网式多路由 WebUI、镜像和授权边界](210_2026-09-20_CONTROL_CENTER_STABILITY_AND_SITE_UI.md)。
+- 2026-09-18 AutoDL 云池：[云服务器控制、持久生命周期、5090 云优先路由、重启自愈与性能复验](206_2026-09-18_AUTODL_CLOUD_SERVER_CONTROL.md)。
+- 2026-09-18 当前法线输入版：[单视图生成（三图）](207_2026-09-18_SINGLE_VIEW_NORMAL_FRONTEND.md)、[单视图局部重绘（四图）](208_2026-09-18_SINGLE_VIEW_INPAINT_NORMAL_FRONTEND.md)、[四节点发布验收](209_2026-09-18_SINGLE_FLOWS_NORMAL_ROLLOUT.md)。
 - `docs/32_*`、`docs/37_*`—`docs/42_*`、`docs/45_*`、`docs/47_*`、`docs/49_*`、`docs/56_*`—`docs/59_2026-07-29_MODELVIEW_*`、`docs/64_*`—`docs/69_*`：图像 API、动画管家、ModelView 和客户端交接演进。
 - `docs/84_2026-08-05_PARTIAL_SUCCESS_*`、`docs/103_*`、`docs/118_*`—`docs/123_*`、`docs/126_*`—`docs/129_*`、`docs/135_*`—`docs/141_*`：部分成功、交互优先、四 GPU、ImageClip 与 ModelView 当前记录。
 

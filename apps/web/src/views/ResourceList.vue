@@ -42,7 +42,7 @@ const clientForm = reactive({
   client_kind: "production" as "production" | "test",
   max_queued: 20,
   max_running: 1,
-  daily_quota: 100,
+  daily_quota: 0,
   weight: 1,
   allowed_ips: "",
   callback_hosts: "",
@@ -206,7 +206,7 @@ function resetClientForm() {
     client_kind: "production",
     max_queued: 20,
     max_running: 1,
-    daily_quota: 100,
+    daily_quota: 0,
     weight: 1,
     allowed_ips: "",
     callback_hosts: "",
@@ -274,7 +274,7 @@ function editClient(row: Row) {
       row.client_kind === "test" ? ("test" as const) : ("production" as const),
     max_queued: Number(row.max_queued ?? 20),
     max_running: Number(row.max_running ?? 1),
-    daily_quota: Number(row.daily_quota ?? 1000),
+    daily_quota: 0,
     weight: Number(row.weight ?? 1),
     allowed_ips: Array.isArray(row.allowed_ips)
       ? row.allowed_ips.join(", ")
@@ -377,7 +377,7 @@ function formatCell(value: unknown) {
 </script>
 
 <template>
-  <div class="page resource-page">
+  <div class="page resource-page" :class="`resource-${kind}`">
     <div class="page-heading resource-heading">
       <div>
         <h1>{{ title }}</h1>
@@ -385,7 +385,7 @@ function formatCell(value: unknown) {
           管理真实 ComfyUI API 工作流、版本与运行要求
         </p>
         <p v-else-if="kind === 'clients'">
-          按来源 IP 自动发现调用方，并管理配额与访问策略
+          按来源 IP 自动发现调用方，并管理排队、并发与访问策略
         </p>
         <p v-else>配置与操作均通过管理 API 保存并写入审计日志</p>
       </div>
@@ -456,7 +456,7 @@ function formatCell(value: unknown) {
         <b>3</b
         ><span
           ><strong>管理员按需限制</strong
-          ><small>可选预配置 IP 和客户配额</small></span
+          ><small>每日任务不限，可配置 IP、排队和并发</small></span
         >
       </div>
     </section>
@@ -468,7 +468,7 @@ function formatCell(value: unknown) {
 
     <section class="resource-card">
       <div
-        v-if="kind === 'workflows' || kind === 'clients'"
+        v-if="['workflows', 'clients', 'alerts', 'audit'].includes(kind)"
         class="resource-toolbar"
       >
         <div class="search-field">
@@ -476,7 +476,13 @@ function formatCell(value: unknown) {
           ><input
             v-model="search"
             :placeholder="
-              kind === 'clients' ? '搜索客户、IP 或 ID' : '搜索工作流或版本'
+              kind === 'clients'
+                ? '搜索客户、IP 或 ID'
+                : kind === 'workflows'
+                  ? '搜索工作流或版本'
+                  : kind === 'alerts'
+                    ? '搜索告警、级别或摘要'
+                    : '搜索操作人、动作或对象'
             "
           />
         </div>
@@ -592,7 +598,7 @@ function formatCell(value: unknown) {
                 </td>
                 <td>{{ row.max_queued }}</td>
                 <td>{{ row.max_running }}</td>
-                <td>{{ row.daily_quota }}</td>
+                <td>不限</td>
                 <td>{{ formatCell(row.last_seen_at) }}</td>
                 <td>
                   <div class="client-row-actions">
@@ -691,7 +697,7 @@ function formatCell(value: unknown) {
         <div class="capacity-note">
           <strong>当前集群：3 台可用 GPU</strong
           ><span
-            >真实客户按业务 SLA 配额；测试客户建议单客户并发
+            >每日任务数量不限；测试客户建议单客户并发
             1，通过多个测试客户验证公平调度。</span
           >
         </div>
@@ -737,13 +743,9 @@ function formatCell(value: unknown) {
               >按客户公平性设置；总吞吐由在线 GPU 推理槽动态决定。</small
             ></label
           ><label
-            ><span>每日配额</span
-            ><input
-              v-model.number="clientForm.daily_quota"
-              type="number"
-              min="1"
-              max="1000000"
-            /><small>测试建议 100，正式按业务量调整。</small></label
+            ><span>每日配额</span><input value="不限" disabled /><small
+              >每日任务数量不限，仍遵守排队、并发和请求频率限制。</small
+            ></label
           ><label
             ><span>调度权重</span
             ><input

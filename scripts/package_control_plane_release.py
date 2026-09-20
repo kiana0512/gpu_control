@@ -95,6 +95,14 @@ COMPONENTS = (
         base_arguments=("PYTHON_BASE_IMAGE",),
     ),
     Component(
+        key="provider-controller",
+        image_repository="gpu-control-provider-controller",
+        title="GPU Control Provider Controller",
+        context=".",
+        dockerfile="apps/provider_controller/Dockerfile",
+        base_arguments=("PYTHON_BASE_IMAGE",),
+    ),
+    Component(
         key="scheduler",
         image_repository="gpu-control-scheduler",
         title="GPU Control Scheduler",

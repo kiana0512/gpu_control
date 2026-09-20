@@ -281,7 +281,7 @@ td {
 }
 
 .task-row:focus td:first-child {
-  box-shadow: inset 3px 0 #dc4db4;
+  box-shadow: inset 2px 0 #50cfee;
 }
 
 .task-name {
@@ -313,10 +313,10 @@ td {
   align-items: center;
   min-height: 23px;
   padding: 0 8px;
-  color: #ed91d5;
-  border: 1px solid rgb(222 77 180 / 25%);
+  color: #7cdef2;
+  border: 1px solid rgb(80 207 238 / 25%);
   border-radius: 999px;
-  background: rgb(222 77 180 / 9%);
+  background: rgb(80 207 238 / 9%);
   font-size: 12px;
   font-weight: 650;
 }
@@ -352,7 +352,7 @@ td {
 }
 
 .api-path {
-  color: #d486ff !important;
+  color: #71daf1 !important;
   font-size: 12px !important;
 }
 
@@ -380,7 +380,7 @@ td {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #9b50f4, #e84eb1);
+  background: linear-gradient(90deg, #289fbe, #50cfee);
 }
 
 .progress-copy {
@@ -424,7 +424,7 @@ td {
 }
 
 .duration-primary {
-  color: #f06abe !important;
+  color: #6cdbf2 !important;
   font-size: 15px !important;
   font-weight: 750;
 }
@@ -582,5 +582,125 @@ td > small {
     border: 1px solid #2b3040;
     border-radius: 12px;
   }
+}
+
+/* This table is the primary operations surface. Keep its contrast and type
+ * owned by the component so asynchronously loaded route CSS cannot restore
+ * the former dim dark-theme values after the global design layer is parsed. */
+.task-list-panel {
+  border-color: #d3deea !important;
+  background: #fff !important;
+  box-shadow: 0 8px 28px rgb(22 55 88 / 6%) !important;
+}
+
+.task-table {
+  font-size: 16px !important;
+}
+
+th {
+  color: #344b64 !important;
+  border-color: #d7e0ea !important;
+  background: #edf2f7 !important;
+  font-size: 15px !important;
+  font-weight: 740 !important;
+}
+
+td,
+.task-row td:last-child {
+  color: #263e57 !important;
+  border-color: #e0e7ef !important;
+  background: #fff !important;
+  font-size: 16px !important;
+  opacity: 1 !important;
+}
+
+.task-row:nth-child(even) td,
+.task-row:nth-child(even) td:last-child {
+  background: #f8fafc !important;
+}
+
+.task-row:hover td,
+.task-row:focus td,
+.task-row:hover td:last-child,
+.task-row:focus td:last-child {
+  background: #eaf4ff !important;
+}
+
+.task-row,
+.task-row * {
+  filter: none !important;
+  opacity: 1 !important;
+}
+
+.task-name {
+  color: #0f1e31 !important;
+  font-size: 17px !important;
+  font-weight: 780 !important;
+}
+
+.service-name {
+  color: #13263d !important;
+  font-size: 16px !important;
+  font-weight: 730 !important;
+}
+
+.task-table td > code,
+.api-path,
+.workflow-version,
+.progress-copy,
+.inline-facts dt,
+td > small {
+  color: #405871 !important;
+  font-size: 14px !important;
+}
+
+.task-table td > code,
+.api-path {
+  background: #eaf2f9 !important;
+}
+
+.api-path,
+.duration-primary {
+  color: #075da9 !important;
+}
+
+.inline-facts dd,
+.node-summary {
+  color: #1e3853 !important;
+  font-size: 15px !important;
+}
+
+.task-progress {
+  background: #dce5ee !important;
+}
+
+.task-progress i {
+  background: #1478e6 !important;
+}
+
+.kind-badge,
+.test-badge {
+  font-size: 13px !important;
+}
+
+.kind-badge.neutral {
+  color: #334b63 !important;
+  border-color: #c6d2df !important;
+  background: #f0f3f7 !important;
+}
+
+.detail-button {
+  min-width: 76px !important;
+  min-height: 42px !important;
+  color: #075da9 !important;
+  border-color: #9cc4ea !important;
+  background: #f0f7fe !important;
+  font-size: 15px !important;
+}
+
+.detail-button:hover {
+  color: #fff !important;
+  border-color: #1478e6 !important;
+  background: #1478e6 !important;
 }
 </style>

@@ -13,7 +13,7 @@ services:
   nginx:
     image: nginx:1.28.0-alpine
     restart: unless-stopped
-    ports: ["80:80", "443:443"]
+    ports: ["80:80", "443:443", "10.3.34.11:16006:16006"]
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/certs:/etc/nginx/certs:ro
@@ -24,7 +24,7 @@ services:
       web: {condition: service_healthy}
     healthcheck: {test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health/live"], interval: 15s, timeout: 3s, retries: 5}
     logging: *default-logging
-    networks: [frontend, backend]
+    networks: [frontend, backend, autodl-5090]
 
   api:
     <<: *app
@@ -36,7 +36,9 @@ services:
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
       sbom: true
       provenance: mode=max
-    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-api:${APP_IMAGE_TAG:-1.5.23}
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-api:${API_IMAGE_TAG:-${APP_IMAGE_TAG:-1.5.23}}
+    # Let synchronous requests finish when rolling the control-plane API.
+    stop_grace_period: 35m
     # Starlette spools large multipart uploads before the endpoint streams the
     # archive into its batch layout. Keep that temporary file on the mounted
     # job filesystem instead of the container overlay.
@@ -51,6 +53,94 @@ services:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
     healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live',timeout=2)"], interval: 15s, timeout: 3s, retries: 5}
+
+  provider-controller:
+    build:
+      context: ../..
+      dockerfile: apps/provider_controller/Dockerfile
+      args:
+        GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.23}
+        GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
+      sbom: true
+      provenance: mode=max
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-provider-controller:${PROVIDER_CONTROLLER_IMAGE_TAG:-1.5.23}
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+      SETTINGS_COMPONENT: provider-controller
+      REDIS_URL: ${REDIS_URL:?Set REDIS_URL in .env}
+      PROVIDER_CONTROLLER_HMAC_SECRET: ${PROVIDER_CONTROLLER_HMAC_SECRET:?Set a dedicated provider HMAC secret}
+      AUTODL_ENABLED: ${AUTODL_ENABLED:-false}
+      AUTODL_MUTATIONS_ENABLED: ${AUTODL_MUTATIONS_ENABLED:-false}
+      AUTODL_TOKEN_FILE: /run/secrets/providers/autodl.token
+      AUTODL_TIMEOUT_SECONDS: ${AUTODL_TIMEOUT_SECONDS:-20}
+      AUTODL_READ_RETRIES: ${AUTODL_READ_RETRIES:-2}
+    volumes:
+      - ${AUTODL_TOKEN_FILE_HOST:-/srv/gpu-control/secrets/providers/autodl.token}:/run/secrets/providers/autodl.token:ro
+    group_add:
+      - ${PROVIDER_SECRET_GID:-1000}
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      redis: {condition: service_healthy}
+    healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8020/health/ready',timeout=2)"], interval: 15s, timeout: 3s, retries: 5}
+    logging: *default-logging
+    networks: [backend, provider-control]
+
+  autodl-5090-tunnel:
+    profiles: ["autodl"]
+    build:
+      context: ../..
+      dockerfile: apps/autodl_tunnel/Dockerfile
+      args:
+        GPU_CONTROL_VERSION: ${GPU_CONTROL_VERSION:-1.5.23}
+        GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
+      sbom: true
+      provenance: mode=max
+    image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-autodl-tunnel:${AUTODL_TUNNEL_IMAGE_TAG:-1.5.23}
+    restart: unless-stopped
+    init: true
+    command:
+      - --instance-id
+      - ${AUTODL_5090_INSTANCE_ID:-pro-7894be501780}
+      - --bind-host
+      - 0.0.0.0
+      - --bind-port
+      - "16006"
+      - --remote-port
+      - "6006"
+      - --health-host
+      - 0.0.0.0
+      - --health-port
+      - "18080"
+      - --reconnect-max-seconds
+      - ${AUTODL_TUNNEL_RECONNECT_MAX_SECONDS:-60}
+      - --remote-ready-timeout-seconds
+      - ${AUTODL_TUNNEL_REMOTE_READY_TIMEOUT_SECONDS:-180}
+      - --recovery-profile
+      - comfyui-6006-v1
+      - --provider-controller-url
+      - http://provider-controller:8020
+    volumes:
+      - ${PROVIDER_CONTROLLER_HMAC_SECRET_FILE_HOST:-/srv/gpu-control/secrets/providers/provider-controller-hmac}:/run/secrets/providers/provider-controller-hmac:ro
+      - ${AUTODL_KNOWN_HOSTS_FILE_HOST:-/srv/gpu-control/secrets/providers/autodl-known-hosts}:/run/secrets/providers/autodl-known-hosts:ro
+    group_add:
+      - ${PROVIDER_SECRET_GID:-1000}
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    expose: ["16006", "18080"]
+    # Recovery commands are bounded to 70 seconds; allow SIGTERM handling to
+    # finish without Docker escalating to SIGKILL mid-command.
+    stop_grace_period: 90s
+    # Container health is process liveness. Remote readiness remains observable
+    # at /health/ready and Scheduler independently verifies /system_stats.
+    healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18080/health/live',timeout=3)"], interval: 15s, timeout: 5s, start_period: 10s, retries: 4}
+    logging: *default-logging
+    networks: [autodl-5090, provider-control]
 
   asset-api:
     <<: *app
@@ -68,8 +158,11 @@ services:
       ASSET_ROOT: ${ASSET_ROOT:-/srv/gpu-control/assets}
       UV_QA_ENFORCEMENT: ${UV_QA_ENFORCEMENT:-strict}
       RETOPOLOGY_QA_ENFORCEMENT: ${RETOPOLOGY_QA_ENFORCEMENT:-advisory}
+      ASSET_CORS_ALLOWED_ORIGINS: ${ASSET_CORS_ALLOWED_ORIGINS:-}
+      ASSET_WORKER_HMAC_SECRET_DIR: /run/secrets/asset-workers
     volumes:
       - ${ASSET_ROOT:-/srv/gpu-control/assets}:/srv/gpu-control/assets
+      - ../../secrets/asset-workers:/run/secrets/asset-workers:ro
     depends_on:
       postgres: {condition: service_healthy}
     healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health/live',timeout=2)"], interval: 15s, timeout: 3s, retries: 5}
@@ -124,9 +217,9 @@ services:
       dockerfile: apps/blender_worker/Dockerfile
       args:
         BLENDER_BASE_IMAGE: ${BLENDER_BASE_IMAGE:-li3d/blender-runtime:5.1.2}
-        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.55-uv-multimesh-mof-v1}
+        ASSET_WORKER_VERSION: ${ASSET_WORKER_VERSION:-1.4.72-mof-feedback-spatial-v1}
         GPU_CONTROL_REVISION: ${GPU_CONTROL_REVISION:-unknown}
-    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.55-uv-multimesh-mof-v1}
+    image: li3d/blender-worker:${ASSET_WORKER_IMAGE_TAG:-1.4.72-mof-feedback-spatial-v1}
     restart: unless-stopped
     # Codex workspace-write uses bubblewrap inside the already isolated Worker
     # container. SYS_ADMIN plus unconfined seccomp/AppArmor are required for
@@ -157,7 +250,10 @@ services:
       CODEX_RUNTIME_HOME: /home/assetworker/.codex
       CODEX_JOB_TIMEOUT_SECONDS: ${CODEX_JOB_TIMEOUT_SECONDS:-7200}
     volumes:
-      - ${CODEX_SKILL_ROOT:-/opt/gpu-control/runtime/asset-skills}:/opt/codex/skills:ro
+      # Keep production probes isolated from an actively edited Skill worktree.
+      # A missing immutable snapshot must fail Compose expansion instead of
+      # silently falling back to mutable repository content.
+      - ${CODEX_SKILL_ROOT:?Set CODEX_SKILL_ROOT to an immutable approved Skill snapshot}:/opt/codex/skills:ro
       - ${CODEX_BINARY_PATH:-/opt/gpu-control/runtime/codex/codex}:/usr/local/bin/codex:ro
       - ${CODEX_ASSET_AUTH_PATH:-/home/lilithgames/.codex/auth.json}:/run/secrets/codex-auth.json:ro
       - ${CODEX_RUNTIME_ROOT:-/opt/gpu-control/runtime/codex}/${CODEX_RUNTIME_HOME_DIR:-control-4090-retopology-v6-home}:/home/assetworker/.codex
@@ -185,6 +281,7 @@ services:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
     healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9108/metrics',timeout=2)"], interval: 15s, timeout: 3s, retries: 5}
+    networks: [backend, autodl-5090]
 
   web:
     image: ${GPU_CONTROL_IMAGE_REGISTRY:-}gpu-control-web:${WEB_IMAGE_TAG:-1.5.23}
@@ -330,6 +427,12 @@ networks:
   # Scheduler/API need egress to LAN ComfyUI nodes, callbacks and Feishu.
   # PostgreSQL/Redis remain private because they publish no host ports.
   backend: {}
+  # Only the Scheduler can reach the AutoDL tunnel; the tunnel retains egress
+  # to the provider API and SSH proxy but publishes no host-facing port.
+  autodl-5090: {}
+  # Provider credentials stay in Provider Controller; the tunnel can only ask
+  # for a short-lived readback over this authenticated control network.
+  provider-control: {}
 
 volumes:
   postgres-data: {}

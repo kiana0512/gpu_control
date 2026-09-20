@@ -4,7 +4,10 @@ import httpx
 import pytest
 
 from apps.scheduler.src.gpu_control_scheduler import main as scheduler_main
-from apps.scheduler.src.gpu_control_scheduler.main import reconcile_prompt_submission
+from apps.scheduler.src.gpu_control_scheduler.main import (
+    prompt_submission_was_rejected,
+    reconcile_prompt_submission,
+)
 from packages.comfy_client import ComfyClient, ComfyError
 from tests.fake_comfyui.app import Behavior, State, create_app
 
@@ -24,6 +27,18 @@ def test_runtime_provenance_requires_package_and_build_version_alignment(
     aligned = scheduler_main.runtime_version_metadata()
     assert aligned["version_aligned"] is True
     assert aligned["provenance_complete"] is True
+
+
+def test_only_deterministic_prompt_rejections_skip_reconciliation() -> None:
+    assert prompt_submission_was_rejected(
+        ComfyError("COMFY_HTTP_ERROR", "rejected", {"status": 400})
+    )
+    assert not prompt_submission_was_rejected(
+        ComfyError("COMFY_HTTP_ERROR", "server failure", {"status": 503})
+    )
+    assert not prompt_submission_was_rejected(
+        ComfyError("COMFY_TIMEOUT", "ambiguous timeout")
+    )
 
 
 async def test_prompt_response_before_db_commit_is_adopted_without_second_submit() -> None:

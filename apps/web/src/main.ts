@@ -8,6 +8,10 @@ import "./styles.css";
 import "./resource.css";
 import "./liclick-theme.css";
 import "./admin-refresh.css";
+import "./control-center.css";
+import "./webui-site.css";
+import "./product-ui.css";
+import "./studio-ui.css";
 
 createApp(App)
   .use(createPinia())

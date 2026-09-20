@@ -91,6 +91,7 @@ def control(args: argparse.Namespace) -> None:
     agent_4070ti = random_secret()
     agent_control = random_secret()
     asset_worker_secret = random_secret()
+    provider_controller_secret = random_secret()
     updates = {
         "ENVIRONMENT": "production",
         "CONTROL_HOST": args.control_ip,
@@ -112,6 +113,9 @@ def control(args: argparse.Namespace) -> None:
         "NODE_AGENT_HMAC_SECRET_CONTROL_4090": agent_control,
         "ALERTMANAGER_WEBHOOK_TOKEN": random_secret(),
         "ASSET_WORKER_HMAC_SECRET": asset_worker_secret,
+        # This authenticates only the internal provider-controller <-> tunnel
+        # path.  It must never reuse a browser/JWT/node-worker secret.
+        "PROVIDER_CONTROLLER_HMAC_SECRET": provider_controller_secret,
         "GRAFANA_ADMIN_PASSWORD": random_secret(18),
         "PUBLIC_BASE_URL": f"https://{args.control_ip}",
         "GRAFANA_BASE_URL": f"https://{args.control_ip}/grafana",

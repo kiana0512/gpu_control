@@ -4,6 +4,14 @@ type CodexNode = Pick<NodeInfo, "codex_cli"> &
   Partial<Pick<NodeInfo, "mode" | "manual_reserved">>;
 type Tone = "healthy" | "checking" | "degraded" | "stale" | "unavailable";
 
+export function isCodexRuntimeNode(
+  node: Pick<NodeInfo, "labels">,
+): boolean {
+  const configured = node.labels?.codex_runtime_enabled;
+  if (typeof configured === "boolean") return configured;
+  return String(node.labels?.provider ?? "").toLowerCase() !== "autodl";
+}
+
 function freshTimestamp(
   value: string | null,
   seconds: number | undefined,

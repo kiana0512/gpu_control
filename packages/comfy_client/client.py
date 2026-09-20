@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -11,6 +12,10 @@ from urllib.parse import urlencode
 
 import httpx
 import websockets
+
+TRANSFER_CHUNK_BYTES = 1024 * 1024
+CACHE_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+CACHE_CONTROL_TIMEOUT_SECONDS = 3.0
 
 # ComfyUI reports an operator/API interrupt as ``execution_interrupted``.
 # It is a terminal websocket event just like success and execution_error; if
@@ -35,6 +40,17 @@ class ComfyOutput:
     kind: str
 
 
+def _file_identity(path: Path) -> tuple[int, str]:
+    size = path.stat().st_size
+    if size < 1:
+        raise ComfyError("INPUT_INVALID", f"input file is empty: {path.name}")
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(TRANSFER_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return size, digest.hexdigest()
+
+
 class ComfyClient:
     def __init__(
         self,
@@ -51,6 +67,7 @@ class ComfyClient:
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
             transport=transport,
         )
+        self.integrity_http: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> "ComfyClient":
         return self
@@ -59,7 +76,31 @@ class ComfyClient:
         await self.close()
 
     async def close(self) -> None:
+        if self.integrity_http is not None:
+            await self.integrity_http.aclose()
         await self.http.aclose()
+
+    def enable_remote_input_integrity(
+        self,
+        base_url: str,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        """Use a node-side digest service instead of downloading inputs again.
+
+        The service is private to the Scheduler/Tunnel network and computes the
+        digest on the GPU host.  A service failure falls back to the existing
+        byte-for-byte readback, so this optimization cannot weaken the upload
+        integrity fence.
+        """
+        if self.integrity_http is not None:
+            raise RuntimeError("remote input integrity service is already configured")
+        self.integrity_http = httpx.AsyncClient(
+            base_url=base_url.rstrip("/"),
+            timeout=httpx.Timeout(10, connect=2),
+            limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
+            transport=transport,
+        )
 
     async def _json(
         self,
@@ -192,14 +233,7 @@ class ComfyClient:
         """
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
-        expected_size = path.stat().st_size
-        if expected_size < 1:
-            raise ComfyError("INPUT_INVALID", f"input file is empty: {path.name}")
-        digest = hashlib.sha256()
-        with path.open("rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-        expected_sha256 = digest.hexdigest()
+        expected_size, expected_sha256 = _file_identity(path)
         endpoint = "/upload/mask" if mask else "/upload/image"
         last_error: ComfyError | None = None
         for attempt in range(1, max_attempts + 1):
@@ -213,11 +247,29 @@ class ComfyClient:
                     )
                 remote_name = str(uploaded.get("name") or path.name)
                 remote_subfolder = str(uploaded.get("subfolder") or subfolder)
+                verification_method = "disabled"
                 if verify:
-                    remote_size, remote_sha256 = await self.remote_digest(
-                        ComfyOutput(remote_name, remote_subfolder, "input"),
-                        max_bytes=expected_size,
-                    )
+                    verification_method = "readback"
+                    if self.integrity_http is not None:
+                        try:
+                            remote_size, remote_sha256 = await self.remote_input_digest(
+                                remote_name,
+                                remote_subfolder,
+                            )
+                            verification_method = "remote_digest"
+                        except ComfyError as exc:
+                            if exc.code != "COMFY_REMOTE_DIGEST_UNAVAILABLE":
+                                raise
+                            remote_size, remote_sha256 = await self.remote_digest(
+                                ComfyOutput(remote_name, remote_subfolder, "input"),
+                                max_bytes=expected_size,
+                            )
+                            verification_method = "readback_fallback"
+                    else:
+                        remote_size, remote_sha256 = await self.remote_digest(
+                            ComfyOutput(remote_name, remote_subfolder, "input"),
+                            max_bytes=expected_size,
+                        )
                     if remote_size != expected_size or remote_sha256 != expected_sha256:
                         raise ComfyError(
                             "COMFY_UPLOAD_INTEGRITY_FAILED",
@@ -238,6 +290,7 @@ class ComfyClient:
                     "size_bytes": expected_size,
                     "sha256": expected_sha256,
                     "attempt": attempt,
+                    "verification_method": verification_method,
                 }
             except ComfyError as exc:
                 last_error = exc
@@ -246,6 +299,254 @@ class ComfyClient:
                 await asyncio.sleep(min(0.25 * (2 ** (attempt - 1)), 1.0))
         assert last_error is not None
         raise last_error
+
+    async def upload_many(
+        self,
+        inputs: list[tuple[Path, bool]],
+        *,
+        subfolder: str = "",
+        verify: bool = True,
+        max_attempts: int = 3,
+        max_concurrency: int = 4,
+        cache_namespace: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Upload independent job inputs concurrently and preserve input order.
+
+        Every item still goes through :meth:`upload`, including overwrite-safe
+        retries and a complete SHA-256 readback.  Waiting for every item before
+        propagating the first input-ordered failure prevents background HTTP
+        work from escaping the scheduler's pre-submit fence.
+        """
+        if max_concurrency < 1:
+            raise ValueError("max_concurrency must be at least 1")
+        if cache_namespace is not None and not CACHE_ID_PATTERN.fullmatch(cache_namespace):
+            raise ValueError("cache_namespace must be a lowercase SHA-256 digest")
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        async def upload_one(path: Path, mask: bool) -> dict[str, Any]:
+            async with semaphore:
+                if cache_namespace is not None and verify:
+                    return await self.upload_cached(
+                        path,
+                        mask=mask,
+                        subfolder=subfolder,
+                        cache_namespace=cache_namespace,
+                        max_attempts=max_attempts,
+                    )
+                return await self.upload(
+                    path,
+                    mask=mask,
+                    subfolder=subfolder,
+                    verify=verify,
+                    max_attempts=max_attempts,
+                )
+
+        results = await asyncio.gather(
+            *(upload_one(path, mask) for path, mask in inputs),
+            return_exceptions=True,
+        )
+        uploaded: list[dict[str, Any]] = []
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+            uploaded.append(result)
+        return uploaded
+
+    async def upload_cached(
+        self,
+        path: Path,
+        *,
+        cache_namespace: str,
+        mask: bool = False,
+        subfolder: str = "",
+        max_attempts: int = 3,
+    ) -> dict[str, Any]:
+        """Reuse one tenant-scoped remote input without changing its job path.
+
+        A cache hit is accepted only after the materialized job file itself is
+        checked against the local size and SHA-256. Any cache/control failure
+        falls back to the ordinary overwrite upload and integrity fence.
+        Promotion is best-effort and can never turn a verified upload into a
+        failed inference request.
+        """
+        if not CACHE_ID_PATTERN.fullmatch(cache_namespace):
+            raise ValueError("cache_namespace must be a lowercase SHA-256 digest")
+        expected_size, expected_sha256 = _file_identity(path)
+        materialized = await self._input_cache_request(
+            "materialize",
+            namespace=cache_namespace,
+            digest=expected_sha256,
+            size=expected_size,
+            filename=path.name,
+            subfolder=subfolder,
+        )
+        if materialized:
+            verification_method: str | None = None
+            if (
+                materialized.get("verified") is True
+                and type(materialized.get("size_bytes")) is int
+                and materialized.get("size_bytes") == expected_size
+                and isinstance(materialized.get("sha256"), str)
+                and materialized.get("sha256") == expected_sha256
+                and materialized.get("verification_method") == "atomic_target_sha256"
+                and materialized.get("receipt_version") == 2
+            ):
+                # The tunnel hashes the same-directory temporary target and
+                # atomically renames those verified bytes into the job path.
+                # Its receipt therefore proves the final materialized input
+                # without a second SSH command and a second full-file read.
+                verification_method = "atomic_materialize_sha256"
+            else:
+                # Remain compatible with an older tunnel during a rolling
+                # update. A legacy hit is not trusted without an independent
+                # digest of the materialized job path.
+                verification_method = await self._verified_remote_input(
+                    path.name,
+                    subfolder,
+                    expected_size=expected_size,
+                    expected_sha256=expected_sha256,
+                )
+            if verification_method is not None:
+                return {
+                    "name": path.name,
+                    "subfolder": subfolder,
+                    "type": "input",
+                    "verified": True,
+                    "size_bytes": expected_size,
+                    "sha256": expected_sha256,
+                    "attempt": 0,
+                    "verification_method": verification_method,
+                    "cache_hit": True,
+                    "cache_promoted": False,
+                }
+
+        # On a miss, let the atomic promotion be the first integrity fence.
+        # The tunnel hashes the copied candidate before publishing it, so a
+        # separate remote digest here would read every unique input twice and
+        # open an extra SSH command channel per file.
+        uploaded = await self.upload(
+            path,
+            mask=mask,
+            subfolder=subfolder,
+            verify=False,
+            max_attempts=max_attempts,
+        )
+        promoted = await self._input_cache_request(
+            "promote",
+            namespace=cache_namespace,
+            digest=expected_sha256,
+            size=expected_size,
+            filename=str(uploaded.get("name") or path.name),
+            subfolder=str(uploaded.get("subfolder") or subfolder),
+        )
+        if (
+            promoted is not None
+            and promoted.get("verified") is True
+            and promoted.get("size_bytes") == expected_size
+            and promoted.get("sha256") == expected_sha256
+            and promoted.get("verification_method") == "atomic_cache_sha256"
+            and promoted.get("receipt_version") == 2
+        ):
+            return {
+                **uploaded,
+                "verified": True,
+                "verification_method": "atomic_promotion_sha256",
+                "cache_hit": False,
+                "cache_promoted": True,
+            }
+
+        # Rolling-update compatibility and cache-control failures retain the
+        # original independent digest/readback fence. A mismatch never reaches
+        # prompt submission: it is replaced by the ordinary verified upload.
+        verification_method = await self._verified_remote_input(
+            str(uploaded.get("name") or path.name),
+            str(uploaded.get("subfolder") or subfolder),
+            expected_size=expected_size,
+            expected_sha256=expected_sha256,
+        )
+        if verification_method is None:
+            uploaded = await self.upload(
+                path,
+                mask=mask,
+                subfolder=subfolder,
+                verify=True,
+                max_attempts=max_attempts,
+            )
+        else:
+            uploaded = {
+                **uploaded,
+                "verified": True,
+                "verification_method": verification_method,
+            }
+        return {
+            **uploaded,
+            "cache_hit": False,
+            "cache_promoted": promoted is not None,
+        }
+
+    async def _verified_remote_input(
+        self,
+        filename: str,
+        subfolder: str,
+        *,
+        expected_size: int,
+        expected_sha256: str,
+    ) -> str | None:
+        try:
+            actual_size, actual_sha256 = await self.remote_input_digest(
+                filename,
+                subfolder,
+            )
+            method = "remote_digest_cache_hit"
+        except ComfyError as exc:
+            if exc.code != "COMFY_REMOTE_DIGEST_UNAVAILABLE":
+                return None
+            try:
+                actual_size, actual_sha256 = await self.remote_digest(
+                    ComfyOutput(filename, subfolder, "input"),
+                    max_bytes=expected_size,
+                )
+            except ComfyError:
+                return None
+            method = "readback_cache_hit"
+        if actual_size != expected_size or actual_sha256 != expected_sha256:
+            return None
+        return method
+
+    async def _input_cache_request(
+        self,
+        action: str,
+        *,
+        namespace: str,
+        digest: str,
+        size: int,
+        filename: str,
+        subfolder: str,
+    ) -> dict[str, Any] | None:
+        if self.integrity_http is None or action not in {"materialize", "promote"}:
+            return None
+        try:
+            response = await self.integrity_http.post(
+                f"/internal/v1/comfy-input-cache/{action}",
+                json={
+                    "namespace": namespace,
+                    "sha256": digest,
+                    "size_bytes": size,
+                    "filename": filename,
+                    "subfolder": subfolder,
+                },
+                timeout=CACHE_CONTROL_TIMEOUT_SECONDS,
+            )
+            if action == "materialize" and response.status_code == 404:
+                return None
+            response.raise_for_status()
+            payload = response.json()
+            expected_status = "hit" if action == "materialize" else "promoted"
+            if isinstance(payload, dict) and payload.get("status") == expected_status:
+                return payload
+            return None
+        except (httpx.HTTPError, ValueError, TypeError):
+            return None
 
     async def remote_digest(
         self, output: ComfyOutput, *, max_bytes: int = 2_147_483_648
@@ -258,7 +559,7 @@ class ComfyClient:
         try:
             async with self.http.stream("GET", f"/view?{query}") as response:
                 response.raise_for_status()
-                async for chunk in response.aiter_bytes():
+                async for chunk in response.aiter_bytes(chunk_size=TRANSFER_CHUNK_BYTES):
                     total += len(chunk)
                     if total > max_bytes:
                         raise ComfyError(
@@ -280,6 +581,39 @@ class ComfyClient:
                 f"ComfyUI input verification returned {exc.response.status_code}",
             ) from exc
         return total, digest.hexdigest()
+
+    async def remote_input_digest(self, filename: str, subfolder: str) -> tuple[int, str]:
+        if self.integrity_http is None:
+            raise ComfyError(
+                "COMFY_REMOTE_DIGEST_UNAVAILABLE",
+                "remote input integrity service is not configured",
+            )
+        try:
+            response = await self.integrity_http.get(
+                "/internal/v1/comfy-input-digest",
+                params={"filename": filename, "subfolder": subfolder},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("invalid digest response")
+            size = payload.get("size_bytes")
+            digest = payload.get("sha256")
+            if (
+                not isinstance(size, int)
+                or size < 0
+                or not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ValueError("invalid digest response")
+            return size, digest
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            raise ComfyError(
+                "COMFY_REMOTE_DIGEST_UNAVAILABLE",
+                "remote input integrity service is unavailable",
+                {"error_type": type(exc).__name__},
+            ) from exc
 
     async def submit(self, prompt: dict[str, Any], client_id: str) -> str:
         payload = await self._json(
@@ -311,12 +645,106 @@ class ComfyClient:
         )
 
     async def events(
-        self, prompt_id: str, client_id: str, *, max_reconnects: int = 3
+        self,
+        prompt_id: str,
+        client_id: str,
+        *,
+        max_reconnects: int = 3,
+        reconnect_deadline: float | None = None,
+        history_poll_interval: float = 5,
     ) -> AsyncIterator[dict[str, Any]]:
         ws_url = (
             self.base_url.replace("http://", "ws://").replace("https://", "wss://")
             + f"/ws?clientId={client_id}"
         )
+        if reconnect_deadline is not None:
+            if history_poll_interval <= 0:
+                raise ValueError("history_poll_interval must be positive")
+            attempt = 0
+            last_error: BaseException | None = None
+            while True:
+                remaining = reconnect_deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise ComfyError(
+                        "COMFY_WS_DISCONNECTED",
+                        "ComfyUI execution state remained unreachable until the recovery deadline",
+                        {
+                            "attempts": attempt,
+                            "last_error_type": (
+                                type(last_error).__name__ if last_error is not None else None
+                            ),
+                        },
+                    )
+                try:
+                    async with websockets.connect(
+                        ws_url,
+                        open_timeout=max(0.1, min(5, remaining)),
+                        ping_interval=20,
+                    ) as socket:
+                        while True:
+                            remaining = reconnect_deadline - asyncio.get_running_loop().time()
+                            if remaining <= 0:
+                                break
+                            try:
+                                message = await asyncio.wait_for(
+                                    socket.recv(),
+                                    timeout=min(history_poll_interval, remaining),
+                                )
+                            except TimeoutError:
+                                try:
+                                    history = await self.history(prompt_id)
+                                except ComfyError as exc:
+                                    last_error = exc
+                                    continue
+                                if prompt_id in history:
+                                    yield {
+                                        "type": "history_recovered",
+                                        "data": {
+                                            "prompt_id": prompt_id,
+                                            "history": history,
+                                        },
+                                    }
+                                    return
+                                continue
+                            if isinstance(message, bytes):
+                                continue
+                            payload = json.loads(message)
+                            data = payload.get("data", {})
+                            if data.get("prompt_id") not in {None, prompt_id}:
+                                continue
+                            yield payload
+                            if payload.get("type") in TERMINAL_EXECUTION_EVENTS:
+                                return
+                except (TimeoutError, OSError, websockets.WebSocketException) as exc:
+                    last_error = exc
+
+                # A disconnected WebSocket is ambiguous: the accepted prompt
+                # may still be running or may have completed while the tunnel
+                # was down. Query only this persisted prompt id; never submit a
+                # replacement prompt from the event recovery path.
+                try:
+                    history = await self.history(prompt_id)
+                except ComfyError as exc:
+                    last_error = exc
+                else:
+                    if prompt_id in history:
+                        yield {
+                            "type": "history_recovered",
+                            "data": {
+                                "prompt_id": prompt_id,
+                                "history": history,
+                            },
+                        }
+                        return
+
+                remaining = reconnect_deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    continue
+                delay = min(2 ** min(attempt, max(0, max_reconnects)), 8, remaining)
+                attempt += 1
+                await asyncio.sleep(delay)
+            return
+
         for attempt in range(max_reconnects + 1):
             try:
                 async with websockets.connect(ws_url, open_timeout=5, ping_interval=20) as socket:
@@ -333,7 +761,10 @@ class ComfyClient:
             except (TimeoutError, OSError, websockets.WebSocketException) as exc:
                 history = await self.history(prompt_id)
                 if prompt_id in history:
-                    yield {"type": "history_recovered", "data": {"prompt_id": prompt_id}}
+                    yield {
+                        "type": "history_recovered",
+                        "data": {"prompt_id": prompt_id, "history": history},
+                    }
                     return
                 if attempt >= max_reconnects:
                     raise ComfyError(
@@ -377,7 +808,7 @@ class ComfyClient:
             async with self.http.stream("GET", f"/view?{query}") as response:
                 response.raise_for_status()
                 with os.fdopen(descriptor, "wb") as target:
-                    async for chunk in response.aiter_bytes():
+                    async for chunk in response.aiter_bytes(chunk_size=TRANSFER_CHUNK_BYTES):
                         total += len(chunk)
                         if total > max_bytes:
                             raise ComfyError("OUTPUT_DOWNLOAD_FAILED", "output exceeds limit")

@@ -149,6 +149,140 @@ export interface AuditLog {
   created_at: string;
 }
 
+export type CloudInstanceState =
+  | "running"
+  | "stopped"
+  | "starting"
+  | "stopping"
+  | "creating"
+  | "error"
+  | "unknown";
+
+export type CloudOperationStatus =
+  | "PENDING"
+  | "IN_FLIGHT"
+  | "WAITING"
+  | "UNCERTAIN"
+  | "CONFIRMED"
+  | "FAILED";
+
+export interface CloudOperationSummary {
+  id: string;
+  status: CloudOperationStatus;
+  desired_state: "running" | "stopped";
+}
+
+export interface CloudOperationInfo extends CloudOperationSummary {
+  operation_id: string;
+  product?: "app" | "pro";
+  instance_id?: string;
+  provider_status?: string | null;
+  attempt_count?: number;
+  error_code?: string | null;
+  error_message?: string | null;
+  created_at?: string | null;
+  started_at?: string | null;
+  dispatch_attempted_at?: string | null;
+  dispatch_ack_at?: string | null;
+  confirmation_deadline_at?: string | null;
+  updated_at?: string | null;
+  completed_at?: string | null;
+}
+
+export type CloudOperationView = CloudOperationSummary &
+  Partial<Omit<CloudOperationInfo, keyof CloudOperationSummary>>;
+
+export interface CloudInstance {
+  ref: string;
+  product: "app" | "pro";
+  instance_id: string;
+  name: string;
+  state: CloudInstanceState;
+  provider_status: string;
+  region: string;
+  gpu_spec: string;
+  gpu_count: number;
+  charge_type: string;
+  price_yuan_per_hour: number | null;
+  disk_total_gib: number | null;
+  disk_used_gib: number | null;
+  disk_used_percent: number | null;
+  cpu_percent: number | null;
+  memory_percent: number | null;
+  application: { name: string; version: string };
+  access: {
+    jupyter: string | null;
+    service_6006: string | null;
+    service_6008: string | null;
+    ssh: { host: string; port: number; username: string } | null;
+  };
+  created_at: string;
+  started_at: string | number | null;
+  timed_shutdown_at: string | number | null;
+  scheduled_start_at: string | null;
+  scheduled_stop_at: string | null;
+  snapshot_error: string | null;
+  management?: {
+    managed: boolean;
+    scheduling_enabled: boolean;
+    bootstrap_profile?: "comfyui-6006-v1" | null;
+    desired_state: "running" | "stopped" | null;
+    node_id: string | null;
+    scheduled_start_at?: string | null;
+    scheduled_stop_at?: string | null;
+    schedule_updated_by?: string | null;
+    schedule_reason?: string | null;
+    operation: CloudOperationSummary | null;
+  };
+}
+
+export interface CloudServerOverview {
+  configured: boolean;
+  provider: "AutoDL";
+  synced_at: string;
+  balance: {
+    available_yuan: number;
+    voucher_yuan: number;
+    accumulated_yuan: number;
+  };
+  summary: {
+    total: number;
+    running: number;
+    transitioning: number;
+    stopped: number;
+    error: number;
+  };
+  partial_errors?: Array<{ scope: string; code: string }>;
+  instances: CloudInstance[];
+}
+
+export interface CloudStateResult {
+  accepted: boolean;
+  operation_id: string;
+  status: CloudOperationStatus;
+  desired_state: "running" | "stopped";
+  correlation_id: string;
+}
+
+export interface CloudScheduleResult {
+  product: "app" | "pro";
+  instance_id: string;
+  scheduled_start_at: string | null;
+  scheduled_stop_at: string | null;
+  reason: string;
+  updated_by: string;
+}
+
+export interface CloudSshCredentials {
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  instance_id: string;
+  product: "app" | "pro";
+  fetched_at: string;
+}
+
 export interface AssetArtifactInfo {
   id: string;
   kind: string;

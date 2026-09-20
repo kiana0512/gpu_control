@@ -2,7 +2,7 @@
 import { computed, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "../api";
-import type { NodeInfo } from "../types";
+import type { CloudInstance, NodeInfo } from "../types";
 import StatusMark from "../components/StatusMark.vue";
 import { useAutoRefresh } from "../composables/useAutoRefresh";
 import {
@@ -10,9 +10,15 @@ import {
   validatedVramSummary,
   formatGpuPower,
   formatGpuTemperature,
+  isKnownAutoDlNode,
+  nextCloudComfyUiInventory,
+  resolveComfyUiAccessUrl,
 } from "../nodePresentation";
 
+const CLOUD_MAPPING_REFRESH_MS = 60_000;
 const nodes = ref<NodeInfo[]>([]);
+const cloudInstances = ref<CloudInstance[]>([]);
+const knownCloudNodeIds = ref(new Set<string>());
 const error = ref("");
 const orderedNodes = computed(() => [...nodes.value].sort(compareNodes));
 const maintenanceNode = ref<NodeInfo | null>(null);
@@ -133,10 +139,60 @@ function nodePolicyDetail(node: NodeInfo) {
   }
   return "按工作流兼容性与节点验收结果领取任务，并遵循缓存亲和与公平队列。";
 }
+
+let cloudMappingLastAttemptAt = 0;
+let cloudMappingRefresh: Promise<void> | null = null;
+
+function rememberCloudNodes(
+  nextNodes: readonly NodeInfo[] = [],
+  instances: readonly CloudInstance[] = [],
+) {
+  const next = new Set(knownCloudNodeIds.value);
+  for (const node of nextNodes) {
+    if (node.labels?.provider === "autodl") next.add(node.id);
+  }
+  for (const instance of instances) {
+    if (instance.management?.node_id) next.add(instance.management.node_id);
+  }
+  knownCloudNodeIds.value = next;
+}
+
+function refreshCloudMappings(force = false): Promise<void> {
+  if (cloudMappingRefresh) return cloudMappingRefresh;
+  if (
+    !force &&
+    Date.now() - cloudMappingLastAttemptAt < CLOUD_MAPPING_REFRESH_MS
+  )
+    return Promise.resolve();
+  cloudMappingLastAttemptAt = Date.now();
+  cloudMappingRefresh = api
+    .cloudServers()
+    .then((overview) => {
+      rememberCloudNodes([], overview.instances);
+      cloudInstances.value = nextCloudComfyUiInventory(
+        cloudInstances.value,
+        overview,
+      );
+    })
+    .catch(() => {
+      // Node management remains available and the last known-good browser
+      // mapping remains authoritative during a provider outage.
+    })
+    .finally(() => {
+      cloudMappingRefresh = null;
+    });
+  return cloudMappingRefresh;
+}
+
 async function load() {
   error.value = "";
   try {
-    nodes.value = await api.nodes();
+    const [nextNodes] = await Promise.all([
+      api.nodes(),
+      refreshCloudMappings(),
+    ]);
+    nodes.value = nextNodes;
+    rememberCloudNodes(nextNodes);
     if (maintenanceNode.value) {
       maintenanceNode.value =
         nodes.value.find((node) => node.id === maintenanceNode.value?.id) ??
@@ -146,6 +202,12 @@ async function load() {
     error.value = cause instanceof Error ? cause.message : "节点数据加载失败";
     throw cause;
   }
+}
+
+function comfyButtonLabel(node: NodeInfo) {
+  return isKnownAutoDlNode(node, knownCloudNodeIds.value)
+    ? "打开云端 ComfyUI"
+    : "打开 ComfyUI";
 }
 
 async function mode(node: NodeInfo, value: NodeInfo["mode"]) {
@@ -213,19 +275,30 @@ async function operation(
 }
 
 function openComfy(node: NodeInfo) {
-  if (!node.base_url) {
-    ElMessage.warning("该节点尚未上报 ComfyUI 地址");
+  const url = resolveComfyUiAccessUrl(
+    node,
+    cloudInstances.value,
+    window.location.hostname,
+    knownCloudNodeIds.value,
+  );
+  if (!url) {
+    if (isKnownAutoDlNode(node, knownCloudNodeIds.value)) {
+      void refreshCloudMappings(true);
+      ElMessage.warning("云端 ComfyUI 安全入口不可用，正在刷新，请稍后重试");
+    } else {
+      ElMessage.warning("该节点暂无安全可用的 ComfyUI 浏览器入口");
+    }
     return;
   }
-  const url = new URL(node.base_url);
-  if (node.id === "control-4090") {
-    url.hostname = window.location.hostname;
-    url.hash = "551d82b0-b1fb-483a-a5ea-564bdb813625";
-  }
-  window.open(url.toString(), "_blank", "noopener,noreferrer");
+  window.open(url, "_blank", "noopener,noreferrer");
 }
 
 const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
+
+async function manualRefresh() {
+  void refreshCloudMappings(true);
+  await run();
+}
 </script>
 
 <template>
@@ -246,7 +319,7 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             }}</small
           ></span
         >
-        <button class="secondary" @click="run">立即刷新</button>
+        <button class="secondary" @click="manualRefresh">立即刷新</button>
       </div>
     </div>
 
@@ -362,8 +435,11 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
             <button v-else class="pause-button" @click="mode(node, 'RESERVED')">
               暂停接单
             </button>
-            <button class="secondary" @click="openComfy(node)">
-              打开 ComfyUI
+            <button
+              class="secondary comfy-open-button"
+              @click="openComfy(node)"
+            >
+              {{ comfyButtonLabel(node) }}
             </button>
             <button class="secondary" @click="maintenanceNode = node">
               维护操作
@@ -514,6 +590,19 @@ const { run, refreshing, lastUpdatedAt } = useAutoRefresh(load);
 .node-primary-actions {
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+.node-primary-actions .comfy-open-button {
+  min-width: 156px;
+  color: #075da9 !important;
+  border-color: #91bde8 !important;
+  background: #eef7ff !important;
+  font-size: 15px !important;
+  font-weight: 720 !important;
+}
+.node-primary-actions .comfy-open-button:hover {
+  color: #fff !important;
+  border-color: #1478e6 !important;
+  background: #1478e6 !important;
 }
 .node-card .offline-node-note {
   white-space: normal;

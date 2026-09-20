@@ -621,7 +621,7 @@ class ApiClient(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     max_queued: Mapped[int] = mapped_column(Integer, default=20)
     max_running: Mapped[int] = mapped_column(Integer, default=1)
-    daily_quota: Mapped[int] = mapped_column(Integer, default=1000)
+    daily_quota: Mapped[int] = mapped_column(Integer, default=0)
     weight: Mapped[int] = mapped_column(Integer, default=1)
     allowed_ips: Mapped[list[Any]] = mapped_column(JSON, default=list)
     callback_hosts: Mapped[list[Any]] = mapped_column(JSON, default=list)
@@ -694,6 +694,98 @@ class AuditLog(Base):
     request_id: Mapped[str] = mapped_column(String(64), index=True)
     result: Mapped[str] = mapped_column(String(24))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ProviderInstance(Base):
+    """Last-known provider state and durable scheduling ownership metadata."""
+
+    __tablename__ = "provider_instances"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider", "product", "instance_id", name="uq_provider_instance_ref"
+        ),
+        Index("ix_provider_instances_provider_state", "provider", "observed_state"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    product: Mapped[str] = mapped_column(String(16))
+    instance_id: Mapped[str] = mapped_column(String(128))
+    display_name: Mapped[str] = mapped_column(String(256), default="")
+    node_id: Mapped[str | None] = mapped_column(
+        ForeignKey("nodes.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
+    managed: Mapped[bool] = mapped_column(Boolean, default=False)
+    scheduling_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    bootstrap_profile: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    desired_state: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    observed_state: Mapped[str] = mapped_column(String(24), default="unknown")
+    provider_status: Mapped[str] = mapped_column(String(64), default="unknown")
+    scheduled_start_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    scheduled_stop_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    schedule_updated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    schedule_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class ProviderOperation(Base):
+    """Durable intent for provider mutations, reconciled after process restarts."""
+
+    __tablename__ = "provider_operations"
+    __table_args__ = (
+        UniqueConstraint("provider", "idempotency_key", name="uq_provider_operation_key"),
+        Index("ix_provider_operations_reconcile", "status", "next_attempt_at"),
+        Index(
+            "ix_provider_operations_instance",
+            "provider",
+            "product",
+            "instance_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    product: Mapped[str] = mapped_column(String(16))
+    instance_id: Mapped[str] = mapped_column(String(128))
+    desired_state: Mapped[str] = mapped_column(String(24))
+    status: Mapped[str] = mapped_column(String(24), default="PENDING")
+    idempotency_key: Mapped[str] = mapped_column(String(192))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    request_id: Mapped[str] = mapped_column(String(64), index=True)
+    requested_by: Mapped[str] = mapped_column(String(64))
+    source_ip: Mapped[str] = mapped_column(String(64), default="")
+    reason: Mapped[str] = mapped_column(Text)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    provider_request_id: Mapped[str] = mapped_column(String(128), default="")
+    provider_status: Mapped[str] = mapped_column(String(64), default="")
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    dispatch_attempted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    dispatch_ack_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    confirmation_deadline_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 
 class Alert(Base):

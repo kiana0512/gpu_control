@@ -5,7 +5,7 @@ usage() {
   cat <<'TXT'
 用法: scripts/deploy_control.sh --build-only
 
-本脚本只构建控制面四镜像和 control-4090 Blender Worker 镜像，不激活服务。
+本脚本只构建控制面五镜像和 control-4090 Blender Worker 镜像，不激活服务。
 生产激活必须按滚动发布手册执行：先冻结新提交并将节点置为 DRAINING，确认
 GPU/批次/Asset/Worker/Windows Baker 全部为 0，再按四个 Windows v6 Agent ->
 Asset API -> 三台 Linux Worker -> API/Web/Scheduler 顺序逐项更新。
@@ -19,7 +19,7 @@ TXT
 
 compose=(docker compose --env-file .env -f deploy/control-plane/compose.yaml --profile asset-plane)
 "${compose[@]}" config --quiet
-"${compose[@]}" build api scheduler asset-api web asset-worker-control
+"${compose[@]}" build api provider-controller scheduler asset-api web asset-worker-control
 
 cat <<'TXT'
 BUILD_ONLY_COMPLETE：未启动、停止、重建或重启任何生产容器。

@@ -1,0 +1,1772 @@
+/* Studio UI v13 -----------------------------------------------------------
+ * Final visual contract for the control plane.  Older route styles remain
+ * for component geometry and behaviour; this layer owns the visible product
+ * language, readability and responsive density across every route.
+ */
+:root {
+  color-scheme: light;
+  --studio-canvas: #f3f6fa;
+  --studio-surface: #ffffff;
+  --studio-surface-muted: #f7f9fc;
+  --studio-surface-hover: #f0f6fd;
+  --studio-line: #d7e0ea;
+  --studio-line-strong: #bac9d8;
+  --studio-ink: #142238;
+  --studio-copy: #2f465f;
+  --studio-muted: #4f637a;
+  --studio-faint: #62738a;
+  --studio-blue: #1478e6;
+  --studio-blue-deep: #0f5fb9;
+  --studio-blue-soft: #eaf4ff;
+  --studio-cyan: #0b9fc5;
+  --studio-green: #078760;
+  --studio-green-soft: #e8f8f2;
+  --studio-amber: #a66508;
+  --studio-amber-soft: #fff5df;
+  --studio-red: #c33f54;
+  --studio-red-soft: #fff0f2;
+  --studio-radius: 14px;
+  --studio-shadow: 0 1px 2px rgba(16, 38, 64, 0.04),
+    0 10px 34px rgba(16, 52, 88, 0.06);
+}
+
+html {
+  font-size: 16px !important;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  color: var(--studio-ink) !important;
+  background: var(--studio-canvas) !important;
+  font-family:
+    Inter, "SF Pro Text", "SF Pro Display", "PingFang SC", "Microsoft YaHei",
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+  font-size: 16px !important;
+  line-height: 1.55;
+}
+
+::selection {
+  color: #fff;
+  background: rgba(20, 120, 230, 0.82);
+}
+
+:where(button, a, input, select, textarea):focus-visible {
+  outline: 3px solid rgba(20, 120, 230, 0.2) !important;
+  outline-offset: 2px;
+}
+
+/* Product shell ---------------------------------------------------------- */
+.control-shell,
+.control-shell.nav-compact {
+  --site-nav-height: 72px;
+  --command-bar-height: 62px;
+  color: var(--studio-ink) !important;
+  background: var(--studio-canvas) !important;
+}
+
+.control-nav {
+  z-index: 50;
+  height: var(--site-nav-height) !important;
+  min-height: var(--site-nav-height) !important;
+  color: var(--studio-ink) !important;
+  border-bottom: 1px solid var(--studio-line) !important;
+  background: rgba(255, 255, 255, 0.97) !important;
+  box-shadow: 0 4px 20px rgba(20, 48, 78, 0.045) !important;
+  backdrop-filter: saturate(160%) blur(18px);
+}
+
+.control-brand,
+.nav-compact .control-brand {
+  min-width: 270px !important;
+  height: var(--site-nav-height) !important;
+  padding-left: clamp(28px, 3vw, 54px) !important;
+}
+
+.control-brand-mark {
+  width: 40px !important;
+  height: 40px !important;
+  color: #fff !important;
+  border: 0 !important;
+  border-radius: 12px !important;
+  background: var(--studio-blue) !important;
+  box-shadow: 0 8px 20px rgba(20, 120, 230, 0.22) !important;
+  font-size: 12px !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.12em !important;
+}
+
+.control-brand-copy strong {
+  color: var(--studio-ink) !important;
+  font-size: 17px !important;
+  font-weight: 760 !important;
+  letter-spacing: 0.05em !important;
+}
+
+.control-brand-copy small {
+  color: var(--studio-muted) !important;
+  font-size: 11px !important;
+  font-weight: 650 !important;
+  letter-spacing: 0.16em !important;
+}
+
+.nav-collapse {
+  color: var(--studio-muted) !important;
+}
+
+.control-nav > nav {
+  height: var(--site-nav-height) !important;
+  gap: 8px !important;
+}
+
+.control-nav-group,
+.control-nav-group + .control-nav-group {
+  min-width: 122px !important;
+}
+
+.control-nav-group > header,
+.nav-compact .control-nav-group > header {
+  height: var(--site-nav-height) !important;
+  min-height: var(--site-nav-height) !important;
+  color: #52657c !important;
+  font-size: 15px !important;
+  font-weight: 650 !important;
+}
+
+.control-nav-group > header > a {
+  gap: 8px !important;
+  padding: 0 17px !important;
+  border-radius: 0 !important;
+}
+
+.control-nav-group > header > a span {
+  color: #8a99aa !important;
+  font-size: 10px !important;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+}
+
+.control-nav-group > header > a strong {
+  font-weight: 680 !important;
+}
+
+.control-nav-group > header:hover,
+.control-nav-group.nav-group-current > header {
+  color: var(--studio-blue) !important;
+}
+
+.control-nav-group.nav-group-current > header::after {
+  right: 17px !important;
+  bottom: 0 !important;
+  left: 17px !important;
+  height: 3px !important;
+  border-radius: 3px 3px 0 0 !important;
+  background: var(--studio-blue) !important;
+}
+
+.nav-command,
+.nav-compact .nav-command {
+  width: 42px !important;
+  min-width: 42px !important;
+  height: 42px !important;
+  margin: 15px clamp(22px, 2.5vw, 42px) 15px 14px !important;
+  color: var(--studio-blue) !important;
+  border: 1px solid #cfe0f1 !important;
+  border-radius: 50% !important;
+  background: #f6faff !important;
+  box-shadow: none !important;
+  transition: border-color 160ms ease, background 160ms ease,
+    transform 160ms ease !important;
+}
+
+.nav-command:hover {
+  border-color: #9fc7ee !important;
+  background: var(--studio-blue-soft) !important;
+  transform: translateY(-1px);
+}
+
+.nav-command-icon {
+  font-size: 19px !important;
+  font-weight: 700 !important;
+}
+
+.control-stage {
+  height: 100dvh !important;
+  padding-top: var(--site-nav-height) !important;
+  background: var(--studio-canvas) !important;
+}
+
+.control-command-bar {
+  z-index: 40;
+  min-height: var(--command-bar-height) !important;
+  flex: 0 0 var(--command-bar-height) !important;
+  grid-template-columns: minmax(270px, 1fr) minmax(420px, auto) minmax(
+      270px,
+      1fr
+    ) !important;
+  gap: 24px !important;
+  padding: 0 clamp(28px, 4vw, 72px) !important;
+  border-bottom: 1px solid var(--studio-line) !important;
+  background: rgba(249, 251, 253, 0.97) !important;
+  box-shadow: 0 3px 16px rgba(21, 50, 79, 0.025) !important;
+  backdrop-filter: blur(16px);
+}
+
+.route-context {
+  min-width: 0;
+  gap: 2px !important;
+}
+
+.route-context span {
+  color: var(--studio-blue) !important;
+  font-size: 11px !important;
+  font-weight: 760 !important;
+  letter-spacing: 0.11em !important;
+}
+
+.route-context strong {
+  overflow: hidden;
+  color: var(--studio-copy) !important;
+  font-size: 13px !important;
+  font-weight: 520 !important;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.route-shortcuts {
+  height: var(--command-bar-height) !important;
+  gap: 28px !important;
+  padding: 0 8px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+}
+
+.route-shortcuts > a {
+  position: relative;
+  height: var(--command-bar-height) !important;
+  padding: 0 4px !important;
+  color: #53677e !important;
+  border-radius: 0 !important;
+  font-size: 15px !important;
+  font-weight: 650 !important;
+  transition: color 150ms ease, background 150ms ease,
+    box-shadow 150ms ease !important;
+}
+
+.route-shortcuts > a:hover {
+  color: var(--studio-blue-deep) !important;
+  background: transparent !important;
+}
+
+.route-shortcuts > a.router-link-exact-active {
+  color: var(--studio-blue-deep) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.route-shortcuts > a.router-link-exact-active::after {
+  position: absolute;
+  right: 2px;
+  bottom: -1px;
+  left: 2px;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--studio-blue);
+  content: "";
+}
+
+.command-status {
+  gap: 16px !important;
+}
+
+.live-status {
+  color: var(--studio-copy) !important;
+  font-size: 13px !important;
+  font-weight: 620 !important;
+}
+
+.live-status i,
+.control-plane-pulse i {
+  background: #13a879 !important;
+  box-shadow: 0 0 0 4px rgba(19, 168, 121, 0.1) !important;
+}
+
+.operator-menu {
+  min-height: 44px !important;
+  gap: 10px !important;
+  padding: 4px 4px 4px 6px !important;
+  border-radius: 10px !important;
+}
+
+.operator-avatar {
+  width: 34px !important;
+  height: 34px !important;
+  color: #fff !important;
+  border-radius: 9px !important;
+  background: var(--studio-blue) !important;
+  font-size: 13px !important;
+  font-weight: 760 !important;
+}
+
+.operator-copy b {
+  color: var(--studio-ink) !important;
+  font-size: 13px !important;
+  font-weight: 680 !important;
+}
+
+.operator-copy small {
+  color: var(--studio-muted) !important;
+  font-size: 11px !important;
+}
+
+/* Main canvas and typography --------------------------------------------- */
+.control-stage > #main-content {
+  padding: 32px clamp(32px, 4vw, 76px) 72px !important;
+  color: var(--studio-ink) !important;
+  background: var(--studio-canvas) !important;
+  background-image: none !important;
+  scrollbar-gutter: stable;
+}
+
+.control-stage > #main-content::before,
+.control-stage > #main-content::after,
+.page::before,
+.page::after {
+  display: none !important;
+}
+
+.page {
+  width: 100% !important;
+  max-width: 1760px !important;
+  margin: 0 auto !important;
+  color: var(--studio-ink) !important;
+}
+
+.page-heading,
+.ops-command-header,
+.ops-hero,
+.workspace-heading {
+  min-height: 0 !important;
+  margin: 0 0 24px !important;
+  padding: 4px 0 22px !important;
+  border-bottom: 1px solid var(--studio-line) !important;
+  background: transparent !important;
+}
+
+.page-heading h1,
+.workspace-heading h1,
+.ops-heading h1,
+.ops-hero h1,
+.cloud-page .page-heading h1,
+.jobs-operations-page .ops-command-header h1,
+.analysis-page .ops-command-header h1 {
+  margin: 6px 0 8px !important;
+  color: var(--studio-ink) !important;
+  background: none !important;
+  font-size: clamp(34px, 2.35vw, 43px) !important;
+  font-weight: 730 !important;
+  letter-spacing: -0.035em !important;
+  line-height: 1.12 !important;
+  -webkit-text-fill-color: currentColor !important;
+}
+
+.page-heading p,
+.workspace-heading p,
+.ops-heading p,
+.ops-hero p {
+  max-width: 880px !important;
+  margin: 0 !important;
+  color: var(--studio-copy) !important;
+  font-size: 16px !important;
+  line-height: 1.65 !important;
+}
+
+.eyebrow,
+.workspace-kicker,
+.ops-kicker,
+.context-kicker,
+.section-eyebrow,
+.hero-eyebrow {
+  color: var(--studio-blue) !important;
+  font-size: 12px !important;
+  font-weight: 780 !important;
+  letter-spacing: 0.12em !important;
+}
+
+.heading-actions,
+.ops-header-tools,
+.ops-hero-controls {
+  gap: 14px !important;
+}
+
+/* Controls --------------------------------------------------------------- */
+:where(.primary, .secondary, .sync-button, .table-action, .detail-toggle,
+  .pause-button, .danger-button, .danger-outline, .text-action,
+  .reset-filter, .drawer-action, .detail-button) {
+  min-height: 42px !important;
+  border-radius: 9px !important;
+  font-size: 14px !important;
+  font-weight: 680 !important;
+  letter-spacing: 0 !important;
+  transition: border-color 150ms ease, background 150ms ease,
+    color 150ms ease, transform 150ms ease, box-shadow 150ms ease !important;
+}
+
+:where(.primary, .el-button--primary) {
+  color: #fff !important;
+  border-color: var(--studio-blue) !important;
+  background: var(--studio-blue) !important;
+  box-shadow: 0 7px 18px rgba(20, 120, 230, 0.18) !important;
+}
+
+:where(.primary, .el-button--primary):hover {
+  border-color: var(--studio-blue-deep) !important;
+  background: var(--studio-blue-deep) !important;
+  transform: translateY(-1px);
+}
+
+:where(.secondary, .sync-button, .table-action, .detail-toggle, .text-action) {
+  color: #35516e !important;
+  border-color: var(--studio-line-strong) !important;
+  background: #fff !important;
+}
+
+:where(.secondary, .sync-button, .table-action, .detail-toggle, .text-action):hover {
+  color: var(--studio-blue-deep) !important;
+  border-color: #8ebcea !important;
+  background: var(--studio-blue-soft) !important;
+}
+
+:where(input, select, textarea) {
+  color: var(--studio-ink) !important;
+  border-color: var(--studio-line-strong) !important;
+  background: #fff !important;
+  font-size: 15px !important;
+}
+
+:where(input, textarea)::placeholder {
+  color: #8492a3 !important;
+  opacity: 1 !important;
+}
+
+.refresh-state,
+.sync-state,
+.refresh-state small,
+.sync-state small {
+  color: var(--studio-copy) !important;
+  font-size: 13px !important;
+  opacity: 1 !important;
+}
+
+/* Shared surfaces -------------------------------------------------------- */
+:where(
+  .situation-board,
+  .compute-fabric,
+  .telemetry-panel,
+  .attention-panel,
+  .activity-ledger,
+  .task-overview,
+  .task-facets,
+  .task-surface,
+  .performance-overview,
+  .analysis-toolbar,
+  .insight-panel,
+  .cloud-summary,
+  .cloud-context,
+  .cloud-toolbar,
+  .instance-card,
+  .control-strip,
+  .runtime-console,
+  .execution-ledger,
+  .gpu-specialization-guide,
+  .node-card,
+  .resource-card,
+  .onboarding-strip
+) {
+  color: var(--studio-ink) !important;
+  border: 1px solid var(--studio-line) !important;
+  border-radius: var(--studio-radius) !important;
+  background: var(--studio-surface) !important;
+  box-shadow: var(--studio-shadow) !important;
+}
+
+.dashboard-control-page,
+.jobs-operations-page,
+.analysis-page,
+.nodes-page,
+.cloud-page,
+.codex-workspace,
+.resource-page {
+  gap: 20px !important;
+  color: var(--studio-ink) !important;
+}
+
+/* Dashboard -------------------------------------------------------------- */
+.dashboard-control-page .ops-hero {
+  min-height: 104px !important;
+  align-items: center !important;
+}
+
+.dashboard-control-page .ops-hero-copy {
+  max-width: 820px !important;
+}
+
+.dashboard-control-page .situation-board {
+  grid-template-columns: minmax(560px, 1.28fr) minmax(460px, 0.92fr) !important;
+  overflow: hidden !important;
+}
+
+.dashboard-control-page .situation-primary {
+  min-height: 196px !important;
+  grid-template-columns: 126px minmax(0, 1fr) !important;
+  padding: 30px 32px !important;
+}
+
+.dashboard-control-page .capacity-orbit {
+  width: 116px !important;
+  height: 116px !important;
+  border-color: #d8e5f1 !important;
+  background: #fff !important;
+}
+
+.dashboard-control-page .capacity-orbit strong {
+  color: var(--studio-ink) !important;
+  font-size: 35px !important;
+}
+
+.dashboard-control-page .situation-message h2 {
+  color: var(--studio-ink) !important;
+  font-size: 28px !important;
+}
+
+.dashboard-control-page .situation-message p {
+  color: var(--studio-copy) !important;
+  font-size: 15px !important;
+  line-height: 1.65 !important;
+}
+
+.dashboard-control-page .signal-rail article {
+  min-height: 98px !important;
+  padding: 18px 20px !important;
+  border-color: var(--studio-line) !important;
+  background: #fff !important;
+}
+
+.dashboard-control-page .signal-rail span,
+.dashboard-control-page .signal-rail small,
+.dashboard-control-page .operation-routes p {
+  color: var(--studio-muted) !important;
+  font-size: 13px !important;
+}
+
+.dashboard-control-page .signal-rail strong {
+  color: var(--studio-ink) !important;
+  font-size: 27px !important;
+}
+
+.dashboard-control-page .operation-routes > a {
+  min-height: 82px !important;
+  grid-template-columns: 34px minmax(0, 1fr) !important;
+  padding: 15px 20px !important;
+  border-color: var(--studio-line) !important;
+  background: #fff !important;
+}
+
+.dashboard-control-page .operation-routes > a:hover {
+  border-color: #9fc6ea !important;
+  background: var(--studio-surface-hover) !important;
+  transform: translateY(-2px);
+}
+
+.dashboard-control-page .ops-scope,
+.jobs-operations-page .scope-tabs,
+.analysis-page .scope-tabs {
+  gap: 4px !important;
+  padding: 4px !important;
+  border: 1px solid var(--studio-line) !important;
+  border-radius: 10px !important;
+  background: #edf2f7 !important;
+}
+
+.dashboard-control-page .ops-scope button,
+.jobs-operations-page .scope-tabs button,
+.analysis-page .scope-tabs button {
+  min-width: 84px !important;
+  height: 38px !important;
+  padding: 0 16px !important;
+  color: #4b6078 !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  font-size: 14px !important;
+  font-weight: 680 !important;
+}
+
+.dashboard-control-page .ops-scope button.active,
+.jobs-operations-page .scope-tabs button.active,
+.analysis-page .scope-tabs button.active {
+  color: var(--studio-blue-deep) !important;
+  background: #fff !important;
+  box-shadow: 0 1px 4px rgba(25, 58, 92, 0.12) !important;
+}
+
+.dashboard-control-page .ops-refresh {
+  min-height: 48px !important;
+  padding: 0 15px !important;
+  color: var(--studio-copy) !important;
+  border: 1px solid var(--studio-line) !important;
+  border-radius: 10px !important;
+  background: #fff !important;
+}
+
+.dashboard-control-page .ops-refresh b {
+  color: var(--studio-copy) !important;
+  font-size: 13px !important;
+}
+
+.dashboard-control-page .ops-refresh small {
+  color: var(--studio-muted) !important;
+  font-size: 12px !important;
+}
+
+.dashboard-control-page .operation-routes strong,
+.dashboard-control-page .ops-section-heading h2 {
+  color: var(--studio-ink) !important;
+}
+
+.dashboard-control-page .ops-section-heading {
+  min-height: 72px !important;
+  padding: 16px 20px !important;
+  border-color: var(--studio-line) !important;
+}
+
+/* Jobs and common data tables ------------------------------------------- */
+.jobs-operations-page .ops-command-header,
+.analysis-page .ops-command-header {
+  min-height: 118px !important;
+  align-items: center !important;
+}
+
+.jobs-operations-page .ops-view-switch a,
+.analysis-page .ops-view-switch a,
+.scope-tabs button {
+  min-height: 38px !important;
+  color: var(--studio-copy) !important;
+  font-size: 14px !important;
+}
+
+.jobs-operations-page .ops-view-switch a.router-link-active,
+.analysis-page .ops-view-switch a.router-link-active,
+.scope-tabs button.active {
+  color: var(--studio-blue-deep) !important;
+  border-color: #acd0f2 !important;
+  background: var(--studio-blue-soft) !important;
+}
+
+.task-overview {
+  grid-template-columns: minmax(270px, 1.25fr) repeat(4, minmax(140px, 0.75fr)) !important;
+}
+
+.task-overview article {
+  min-height: 104px !important;
+  padding: 17px 20px !important;
+  border-color: var(--studio-line) !important;
+  background: #fff !important;
+}
+
+.task-overview article > span,
+.task-overview article small {
+  color: var(--studio-muted) !important;
+  font-size: 13px !important;
+  opacity: 1 !important;
+}
+
+.task-overview article > strong {
+  color: var(--studio-ink) !important;
+  font-size: 28px !important;
+}
+
+.task-workspace {
+  grid-template-columns: 232px minmax(0, 1fr) !important;
+  gap: 18px !important;
+}
+
+.task-facets {
+  padding: 18px 14px !important;
+}
+
+.jobs-operations-page .facet-heading strong,
+.jobs-operations-page .surface-heading h2,
+.analysis-page .panel-heading h2 {
+  color: var(--studio-ink) !important;
+  font-size: 18px !important;
+}
+
+.jobs-operations-page .facet-heading span,
+.jobs-operations-page .facet-group > small,
+.jobs-operations-page .facet-note span,
+.jobs-operations-page .facet-note p,
+.jobs-operations-page .surface-heading p,
+.analysis-page .panel-heading p {
+  color: var(--studio-muted) !important;
+  font-size: 13px !important;
+  opacity: 1 !important;
+}
+
+.jobs-operations-page .facet-group button {
+  min-height: 40px !important;
+  color: #425a72 !important;
+  font-size: 14px !important;
+}
+
+.jobs-operations-page .facet-group button.active {
+  color: var(--studio-blue-deep) !important;
+  background: var(--studio-blue-soft) !important;
+}
+
+.task-surface {
+  padding: 18px !important;
+}
+
+.task-toolbar {
+  grid-template-columns: minmax(280px, 1.4fr) repeat(2, minmax(180px, 0.8fr)) !important;
+  gap: 12px !important;
+  padding: 14px !important;
+  border: 1px solid var(--studio-line) !important;
+  border-radius: 11px !important;
+  background: var(--studio-surface-muted) !important;
+}
+
+.task-toolbar label > span {
+  color: var(--studio-copy) !important;
+  font-size: 13px !important;
+  font-weight: 680 !important;
+  letter-spacing: 0 !important;
+}
+
+.task-toolbar input,
+.task-toolbar select,
+.jobs-pagination select {
+  min-height: 42px !important;
+  color: var(--studio-ink) !important;
+  border-color: var(--studio-line-strong) !important;
+  background: #fff !important;
+  font-size: 15px !important;
+}
+
+.jobs-operations-page .result-summary,
+.jobs-operations-page .jobs-pagination {
+  color: var(--studio-copy) !important;
+  font-size: 13px !important;
+  opacity: 1 !important;
+}
+
+.jobs-operations-page .task-surface .task-list-panel {
+  border: 1px solid var(--studio-line) !important;
+  border-radius: 12px !important;
+  background: #fff !important;
+  box-shadow: none !important;
+}
+
+.jobs-operations-page .task-surface .task-table {
+  font-size: 15px !important;
+}
+
+.jobs-operations-page .task-surface .task-table th {
+  height: 48px !important;
+  padding: 0 16px !important;
+  color: #4f637a !important;
+  border-color: var(--studio-line) !important;
+  background: #edf2f7 !important;
+  font-size: 13px !important;
+  font-weight: 740 !important;
+  letter-spacing: 0.01em !important;
+  opacity: 1 !important;
+}
+
+.jobs-operations-page .task-surface .task-table td,
+.jobs-operations-page .task-surface .task-row td:last-child {
+  min-height: 82px !important;
+  padding: 14px 16px !important;
+  color: var(--studio-copy) !important;
+  border-color: #e0e7ef !important;
+  background: #fff !important;
+  font-size: 14px !important;
+  opacity: 1 !important;
+}
+
+.jobs-operations-page .task-surface .task-row,
+.jobs-operations-page .task-surface .task-row *,
+.jobs-operations-page .task-surface .task-row td > * {
+  filter: none !important;
+  opacity: 1 !important;
+}
+
+.jobs-operations-page .task-surface .task-row:nth-child(even) td,
+.jobs-operations-page .task-surface .task-row:nth-child(even) td:last-child {
+  background: #f8fafc !important;
+}
+
+.jobs-operations-page .task-surface .task-row:hover td,
+.jobs-operations-page .task-surface .task-row:focus td,
+.jobs-operations-page .task-surface .task-row:hover td:last-child,
+.jobs-operations-page .task-surface .task-row:focus td:last-child {
+  background: #eaf4ff !important;
+}
+
+.jobs-operations-page .task-surface .task-name,
+.jobs-operations-page .task-surface .service-name {
+  color: var(--studio-ink) !important;
+  font-size: 15px !important;
+  font-weight: 720 !important;
+}
+
+.jobs-operations-page .task-surface .api-path,
+.jobs-operations-page .task-surface .duration-primary {
+  color: var(--studio-blue-deep) !important;
+  font-size: 14px !important;
+}
+
+.jobs-operations-page .task-surface .task-table td > code,
+.jobs-operations-page .task-surface .api-path {
+  width: fit-content !important;
+  max-width: 100% !important;
+  padding: 3px 6px !important;
+  color: #145c9a !important;
+  border-radius: 5px !important;
+  background: #eaf2f9 !important;
+  font-size: 13px !important;
+}
+
+.jobs-operations-page .task-surface .workflow-version,
+.jobs-operations-page .task-surface .progress-copy,
+.jobs-operations-page .task-surface .inline-facts dt,
+.jobs-operations-page .task-surface td > small {
+  color: var(--studio-muted) !important;
+  font-size: 13px !important;
+}
+
+.jobs-operations-page .task-surface .inline-facts dd,
+.jobs-operations-page .task-surface .node-summary {
+  color: #304960 !important;
+  font-size: 14px !important;
+}
+
+.jobs-operations-page .task-surface .kind-badge,
+.jobs-operations-page .task-surface .test-badge,
+.status-mark {
+  min-height: 27px !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+}
+
+.jobs-operations-page .task-surface .kind-badge.neutral {
+  color: #425870 !important;
+  border-color: #cbd6e1 !important;
+  background: #f1f4f7 !important;
+}
+
+.jobs-operations-page .task-surface .task-progress {
+  height: 7px !important;
+  background: #dce5ee !important;
+}
+
+.jobs-operations-page .task-surface .task-progress i {
+  background: var(--studio-blue) !important;
+}
+
+.jobs-operations-page .task-surface .detail-button {
+  min-height: 38px !important;
+  color: var(--studio-blue-deep) !important;
+  border-color: #a9cae9 !important;
+  background: #f3f8fd !important;
+  font-size: 14px !important;
+}
+
+.jobs-operations-page .task-surface .task-table th:last-child,
+.jobs-operations-page .task-surface .task-table td:last-child {
+  box-shadow: -8px 0 14px rgba(32, 64, 96, 0.055) !important;
+}
+
+/* Nodes ------------------------------------------------------------------ */
+.nodes-page .gpu-specialization-guide {
+  margin-bottom: 18px !important;
+  color: var(--studio-copy) !important;
+}
+
+.nodes-page .gpu-specialization-guide strong,
+.nodes-page .gpu-specialization-guide b {
+  color: var(--studio-ink) !important;
+}
+
+.nodes-page .node-list {
+  gap: 14px !important;
+}
+
+.nodes-page .node-main-row {
+  min-height: 122px !important;
+  grid-template-columns: minmax(230px, 0.9fr) auto minmax(480px, 1.65fr) !important;
+  padding: 20px 24px !important;
+}
+
+.nodes-page .node-identity h2 {
+  color: var(--studio-ink) !important;
+  font-size: 20px !important;
+}
+
+.nodes-page .node-identity p,
+.nodes-page .node-metric span,
+.nodes-page .node-policy-strip,
+.nodes-page .offline-node-note {
+  color: var(--studio-muted) !important;
+  font-size: 14px !important;
+  opacity: 1 !important;
+}
+
+.nodes-page .comfy-open-button {
+  min-width: 156px !important;
+  color: #075da9 !important;
+  border-color: #91bde8 !important;
+  background: #eef7ff !important;
+  font-size: 15px !important;
+  font-weight: 720 !important;
+}
+
+.nodes-page .comfy-open-button:hover {
+  color: #fff !important;
+  border-color: var(--studio-blue) !important;
+  background: var(--studio-blue) !important;
+}
+
+.nodes-page .node-metric strong {
+  color: #263f58 !important;
+  font-size: 18px !important;
+}
+
+.nodes-page .node-policy-strip {
+  min-height: 48px !important;
+  padding: 11px 24px !important;
+  border-top-color: var(--studio-line) !important;
+  background: var(--studio-surface-muted) !important;
+}
+
+.nodes-page .node-primary-actions button {
+  min-height: 42px !important;
+  padding: 0 16px !important;
+  font-size: 14px !important;
+}
+
+/* Cloud ------------------------------------------------------------------ */
+.cloud-summary,
+.cloud-page .cloud-summary > button,
+.cloud-page .cloud-summary > div {
+  min-height: 98px !important;
+}
+
+.cloud-page .cloud-summary > button,
+.cloud-page .cloud-summary > div {
+  padding: 17px 19px !important;
+  border-color: var(--studio-line) !important;
+  background: #fff !important;
+}
+
+.cloud-page .cloud-summary span,
+.cloud-page .cloud-summary small,
+.cloud-page .instance-identity p,
+.cloud-page .provider-state,
+.cloud-page .actionability,
+.cloud-page .operation-state {
+  color: var(--studio-muted) !important;
+  font-size: 13px !important;
+  opacity: 1 !important;
+}
+
+.cloud-page .cloud-summary strong {
+  color: var(--studio-ink) !important;
+  font-size: 29px !important;
+}
+
+.cloud-page .cloud-context {
+  min-height: 72px !important;
+  padding: 16px 20px !important;
+}
+
+.cloud-page .cloud-context strong,
+.cloud-page .resource-group-heading h2 {
+  color: var(--studio-ink) !important;
+  font-size: 18px !important;
+}
+
+.cloud-page .cloud-toolbar {
+  min-height: 62px !important;
+  padding: 10px 12px !important;
+}
+
+.cloud-page .cloud-toolbar input,
+.cloud-page .cloud-toolbar select {
+  min-height: 42px !important;
+  font-size: 15px !important;
+}
+
+.cloud-page .instance-list {
+  gap: 14px !important;
+}
+
+.cloud-page .instance-head {
+  min-height: 96px !important;
+  padding: 18px 24px !important;
+}
+
+.cloud-page .instance-identity h3 {
+  color: var(--studio-ink) !important;
+  font-size: 20px !important;
+}
+
+.cloud-page .instance-quickfacts div {
+  min-height: 54px !important;
+  padding: 11px 13px !important;
+  border-color: var(--studio-line) !important;
+  background: var(--studio-surface-muted) !important;
+}
+
+.cloud-page .instance-quickfacts dt,
+.cloud-page .instance-quickfacts span,
+.cloud-page .instance-body p,
+.cloud-page .control-evidence p {
+  color: var(--studio-muted) !important;
+  font-size: 13px !important;
+  opacity: 1 !important;
+}
+
+.cloud-page .instance-quickfacts dd,
+.cloud-page .instance-quickfacts strong,
+.cloud-page .control-evidence strong {
+  color: var(--studio-ink) !important;
+  font-size: 14px !important;
+}
+
+.cloud-page .detail-heading {
+  padding: 16px 24px 0 56px !important;
+}
+
+.cloud-page .instance-body {
+  padding: 14px 24px 20px 56px !important;
+}
+
+.cloud-page .control-evidence {
+  margin: 0 24px 18px 56px !important;
+}
+
+.cloud-page .instance-card > footer {
+  min-height: 64px !important;
+  padding: 11px 24px 11px 56px !important;
+  border-top-color: var(--studio-line) !important;
+  background: #fbfcfe !important;
+}
+
+/* Analysis, resources and runtime --------------------------------------- */
+.analysis-page .performance-overview article,
+.analysis-page .phase-list article,
+.analysis-page .diagnostic-list article {
+  color: var(--studio-copy) !important;
+  border-color: var(--studio-line) !important;
+  background: #fff !important;
+}
+
+.analysis-page .performance-overview span,
+.analysis-page .performance-overview small,
+.analysis-page .phase-name code,
+.analysis-page .phase-measure small,
+.analysis-page .phase-list article > span,
+.analysis-page .diagnostic-list p,
+.analysis-page .method-note {
+  color: var(--studio-muted) !important;
+  font-size: 13px !important;
+  opacity: 1 !important;
+}
+
+.analysis-page .performance-overview strong,
+.analysis-page .phase-name strong,
+.analysis-page .phase-measure strong,
+.analysis-page .diagnostic-list strong {
+  color: var(--studio-ink) !important;
+}
+
+.codex-workspace .control-strip {
+  min-height: 100px !important;
+}
+
+.codex-workspace .runtime-console {
+  grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.75fr) !important;
+}
+
+.codex-workspace .runtime-row {
+  min-height: 70px !important;
+  padding: 12px 18px !important;
+  color: var(--studio-copy) !important;
+  border-color: var(--studio-line) !important;
+  background: #fff !important;
+}
+
+.codex-workspace .runtime-row:hover,
+.codex-workspace .runtime-row.selected {
+  background: var(--studio-surface-hover) !important;
+}
+
+.codex-workspace .runtime-inspector {
+  padding: 22px !important;
+  color: var(--studio-copy) !important;
+}
+
+.codex-workspace .runtime-inspector h2,
+.codex-workspace .execution-ledger h2 {
+  color: var(--studio-ink) !important;
+  font-size: 20px !important;
+}
+
+.codex-workspace .evidence-grid,
+.codex-workspace .selected-task {
+  color: var(--studio-copy) !important;
+  border: 1px solid var(--studio-line) !important;
+  border-radius: 11px !important;
+  background: var(--studio-surface-muted) !important;
+}
+
+.resource-page .resource-toolbar {
+  min-height: 64px !important;
+  height: auto !important;
+  padding: 10px 14px !important;
+  border-bottom-color: var(--studio-line) !important;
+  background: var(--studio-surface-muted) !important;
+}
+
+.resource-page .search-field {
+  height: 42px !important;
+  border-color: var(--studio-line-strong) !important;
+  background: #fff !important;
+}
+
+.resource-page .resource-card th,
+.analysis-page .path-table th,
+.codex-workspace .execution-ledger th {
+  height: 48px !important;
+  color: #4f637a !important;
+  border-color: var(--studio-line) !important;
+  background: #edf2f7 !important;
+  font-size: 13px !important;
+  font-weight: 740 !important;
+  opacity: 1 !important;
+}
+
+.resource-page .resource-card td,
+.analysis-page .path-table td,
+.codex-workspace .execution-ledger td {
+  min-height: 64px !important;
+  padding: 12px 16px !important;
+  color: var(--studio-copy) !important;
+  border-color: #e0e7ef !important;
+  background: #fff !important;
+  font-size: 14px !important;
+  opacity: 1 !important;
+}
+
+.resource-page .resource-card tbody tr:nth-child(even) td,
+.analysis-page .path-table tbody tr:nth-child(even) td {
+  background: #f8fafc !important;
+}
+
+.resource-page .resource-card tbody tr:hover td,
+.analysis-page .path-table tbody tr:hover td {
+  background: var(--studio-surface-hover) !important;
+}
+
+.resource-page .table-primary {
+  color: var(--studio-ink) !important;
+  font-size: 15px !important;
+}
+
+.resource-page .table-secondary,
+.resource-page .record-count,
+.resource-page .empty-state,
+.resource-page .action-empty {
+  color: var(--studio-muted) !important;
+  font-size: 13px !important;
+  opacity: 1 !important;
+}
+
+.resource-alerts .resource-card {
+  border-top: 3px solid #ef9844 !important;
+}
+
+/* States, empty views, drawers and dialogs ------------------------------- */
+.state-pill,
+.status-pill,
+.health-pill,
+.provider-state,
+.status-mark {
+  font-weight: 700 !important;
+}
+
+.empty-state strong,
+.workspace-empty,
+.empty-task-list strong,
+.action-empty strong {
+  color: var(--studio-ink) !important;
+  font-size: 17px !important;
+  opacity: 1 !important;
+}
+
+.empty-state span,
+.empty-task-list span,
+.action-empty span {
+  color: var(--studio-muted) !important;
+  font-size: 14px !important;
+  opacity: 1 !important;
+}
+
+.empty-icon {
+  color: var(--studio-blue) !important;
+  border-color: #9fc5e8 !important;
+  background: var(--studio-blue-soft) !important;
+}
+
+.panel-backdrop,
+.modal-backdrop,
+.command-backdrop {
+  background: rgba(8, 19, 33, 0.5) !important;
+  backdrop-filter: blur(8px) !important;
+}
+
+.task-drawer,
+.maintenance-drawer,
+.form-modal,
+.key-panel,
+.command-palette {
+  color: var(--studio-ink) !important;
+  border-color: var(--studio-line) !important;
+  background: #fff !important;
+  box-shadow: 0 28px 90px rgba(5, 24, 45, 0.22) !important;
+}
+
+.command-palette {
+  overflow: hidden;
+  border-radius: 16px !important;
+}
+
+.command-palette header,
+.command-palette footer {
+  border-color: var(--studio-line) !important;
+  background: #f8fafc !important;
+}
+
+.command-palette input {
+  color: var(--studio-ink) !important;
+  background: transparent !important;
+  font-size: 16px !important;
+}
+
+.command-result-caption,
+.command-results button small,
+.command-palette footer {
+  color: var(--studio-muted) !important;
+  font-size: 13px !important;
+}
+
+.command-results button {
+  color: var(--studio-ink) !important;
+  background: #fff !important;
+}
+
+.command-results button.active {
+  color: var(--studio-blue-deep) !important;
+  background: var(--studio-blue-soft) !important;
+}
+
+/* Login ------------------------------------------------------------------ */
+.login {
+  background: #eef3f8 !important;
+  background-image: none !important;
+}
+
+.login::before,
+.login::after {
+  display: block !important;
+  position: fixed;
+  border-radius: 50%;
+  content: "";
+  pointer-events: none;
+}
+
+.login::before {
+  top: -18vw;
+  left: -12vw;
+  width: 46vw;
+  height: 46vw;
+  background: radial-gradient(circle, rgba(20, 120, 230, 0.12), transparent 68%);
+}
+
+.login::after {
+  right: -18vw;
+  bottom: -22vw;
+  width: 52vw;
+  height: 52vw;
+  background: radial-gradient(circle, rgba(11, 159, 197, 0.1), transparent 68%);
+}
+
+.login form {
+  width: min(460px, calc(100vw - 32px)) !important;
+  padding: 44px 42px !important;
+  color: var(--studio-ink) !important;
+  border: 1px solid rgba(183, 201, 220, 0.8) !important;
+  border-radius: 20px !important;
+  background: rgba(255, 255, 255, 0.96) !important;
+  box-shadow: 0 30px 80px rgba(25, 61, 98, 0.13) !important;
+  backdrop-filter: blur(18px);
+}
+
+.login .login-mark {
+  width: 50px !important;
+  height: 50px !important;
+  color: #fff !important;
+  border: 0 !important;
+  border-radius: 14px !important;
+  background: var(--studio-blue) !important;
+  box-shadow: 0 10px 24px rgba(20, 120, 230, 0.22) !important;
+  font-size: 22px !important;
+}
+
+.login h1 {
+  margin: 18px 0 6px !important;
+  color: var(--studio-ink) !important;
+  font-size: 30px !important;
+  font-weight: 730 !important;
+  letter-spacing: -0.03em !important;
+}
+
+.login p {
+  color: var(--studio-copy) !important;
+  font-size: 15px !important;
+}
+
+.login label {
+  gap: 8px !important;
+  color: var(--studio-copy) !important;
+  font-size: 14px !important;
+  font-weight: 650 !important;
+}
+
+.login input {
+  height: 48px !important;
+  padding: 0 14px !important;
+  border-radius: 10px !important;
+  font-size: 16px !important;
+}
+
+.login button {
+  min-height: 48px !important;
+  font-size: 15px !important;
+}
+
+/* Responsive ------------------------------------------------------------- */
+@media (min-width: 1800px) {
+  html,
+  body {
+    font-size: 18px !important;
+  }
+
+  .control-shell,
+  .control-shell.nav-compact {
+    --site-nav-height: 76px;
+    --command-bar-height: 66px;
+  }
+
+  .page {
+    max-width: 1920px !important;
+  }
+
+  .control-stage > #main-content {
+    padding: 38px clamp(56px, 4.8vw, 104px) 88px !important;
+  }
+
+  .page-heading h1,
+  .workspace-heading h1,
+  .ops-heading h1,
+  .ops-hero h1,
+  .cloud-page .page-heading h1 {
+    font-size: 46px !important;
+  }
+
+  .jobs-operations-page .task-surface .task-table td,
+  .resource-page .resource-card td {
+    font-size: 16px !important;
+  }
+}
+
+/* 4K operations readability contract ------------------------------------
+ * The production console is commonly viewed on a 3840/4080-pixel desktop.
+ * Explicit pixel sizes from route-local styles must not collapse to caption
+ * text after desktop scaling or screenshots are downsampled.
+ */
+@media (min-width: 1600px) {
+  .control-nav-group > header,
+  .nav-compact .control-nav-group > header,
+  .route-shortcuts > a {
+    font-size: 16px !important;
+  }
+
+  .route-context span,
+  .control-brand-copy small,
+  .operator-copy small {
+    font-size: 12px !important;
+  }
+
+  .route-context strong,
+  .live-status,
+  .operator-copy b,
+  .refresh-state,
+  .sync-state,
+  .refresh-state small,
+  .sync-state small {
+    font-size: 14px !important;
+  }
+
+  .page-heading p,
+  .workspace-heading p,
+  .ops-heading p,
+  .ops-hero p {
+    font-size: 17px !important;
+  }
+
+  .eyebrow,
+  .workspace-kicker,
+  .ops-kicker,
+  .context-kicker,
+  .section-eyebrow,
+  .hero-eyebrow {
+    font-size: 13px !important;
+  }
+
+  .task-overview article > span,
+  .task-overview article small,
+  .jobs-operations-page .facet-heading span,
+  .jobs-operations-page .facet-group > small,
+  .jobs-operations-page .facet-note span,
+  .jobs-operations-page .facet-note p,
+  .jobs-operations-page .surface-heading p,
+  .task-toolbar label > span,
+  .jobs-operations-page .result-summary,
+  .jobs-operations-page .jobs-pagination {
+    color: #41566f !important;
+    font-size: 14px !important;
+  }
+
+  .jobs-operations-page .task-surface .task-table th {
+    color: #344b64 !important;
+    font-size: 15px !important;
+  }
+
+  .jobs-operations-page .task-surface .task-table td,
+  .jobs-operations-page .task-surface .task-row td:last-child {
+    min-height: 92px !important;
+    color: #263e57 !important;
+    font-size: 16px !important;
+  }
+
+  .jobs-operations-page .task-surface .task-name {
+    color: #0f1e31 !important;
+    font-size: 17px !important;
+    font-weight: 780 !important;
+  }
+
+  .jobs-operations-page .task-surface .service-name {
+    color: #13263d !important;
+    font-size: 16px !important;
+    font-weight: 730 !important;
+  }
+
+  .jobs-operations-page .task-surface .task-table td > code,
+  .jobs-operations-page .task-surface .api-path,
+  .jobs-operations-page .task-surface .workflow-version,
+  .jobs-operations-page .task-surface .progress-copy,
+  .jobs-operations-page .task-surface .inline-facts dt,
+  .jobs-operations-page .task-surface td > small {
+    color: #405871 !important;
+    font-size: 14px !important;
+  }
+
+  .jobs-operations-page .task-surface .api-path,
+  .jobs-operations-page .task-surface .duration-primary {
+    color: #075da9 !important;
+  }
+
+  .jobs-operations-page .task-surface .inline-facts dd,
+  .jobs-operations-page .task-surface .node-summary {
+    color: #1e3853 !important;
+    font-size: 15px !important;
+  }
+
+  .jobs-operations-page .task-surface .kind-badge,
+  .jobs-operations-page .task-surface .test-badge,
+  .jobs-operations-page .task-surface .status-mark {
+    font-size: 13px !important;
+  }
+
+  .jobs-operations-page .task-surface .detail-button {
+    min-width: 76px !important;
+    min-height: 42px !important;
+    color: #075da9 !important;
+    font-size: 15px !important;
+  }
+
+  .nodes-page .node-identity p,
+  .nodes-page .node-metric span,
+  .nodes-page .node-policy-strip,
+  .nodes-page .offline-node-note,
+  .cloud-page .cloud-summary span,
+  .cloud-page .cloud-summary small,
+  .cloud-page .instance-identity p,
+  .cloud-page .provider-state,
+  .cloud-page .actionability,
+  .cloud-page .operation-state,
+  .resource-page .table-secondary,
+  .resource-page .record-count {
+    color: #40566f !important;
+    font-size: 14px !important;
+  }
+
+  .resource-page .resource-card th,
+  .analysis-page .path-table th,
+  .codex-workspace .execution-ledger th {
+    color: #344b64 !important;
+    font-size: 15px !important;
+  }
+
+  .resource-page .resource-card td,
+  .analysis-page .path-table td,
+  .codex-workspace .execution-ledger td {
+    color: #263e57 !important;
+    font-size: 16px !important;
+  }
+}
+
+@media (max-width: 1480px) {
+  .control-brand,
+  .nav-compact .control-brand {
+    min-width: 226px !important;
+    padding-left: 24px !important;
+  }
+
+  .control-brand-copy small,
+  .control-nav-group > header > a span {
+    display: none !important;
+  }
+
+  .control-nav-group,
+  .control-nav-group + .control-nav-group {
+    min-width: 104px !important;
+  }
+
+  .control-command-bar {
+    grid-template-columns: minmax(230px, 0.8fr) minmax(370px, auto) minmax(
+        230px,
+        0.8fr
+      ) !important;
+    padding: 0 32px !important;
+  }
+
+  .control-stage > #main-content {
+    padding-right: 36px !important;
+    padding-left: 36px !important;
+  }
+
+  .dashboard-control-page .situation-board {
+    grid-template-columns: minmax(500px, 1.18fr) minmax(390px, 0.82fr) !important;
+  }
+
+  .nodes-page .node-main-row {
+    grid-template-columns: minmax(200px, 0.8fr) auto minmax(420px, 1.5fr) !important;
+  }
+}
+
+@media (max-width: 1180px) {
+  .control-command-bar {
+    grid-template-columns: minmax(190px, 0.7fr) minmax(320px, auto) auto !important;
+    gap: 12px !important;
+    padding: 0 24px !important;
+  }
+
+  .route-shortcuts > a {
+    padding: 0 9px !important;
+    font-size: 13px !important;
+  }
+
+  .operator-copy,
+  .live-status {
+    display: none !important;
+  }
+
+  .dashboard-control-page .situation-board,
+  .codex-workspace .runtime-console {
+    grid-template-columns: 1fr !important;
+  }
+
+  .task-overview {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
+
+  .task-overview .overview-primary {
+    grid-column: 1 / -1 !important;
+  }
+
+  .task-workspace {
+    grid-template-columns: 1fr !important;
+  }
+
+  .task-facets {
+    display: grid !important;
+    grid-template-columns: minmax(150px, 0.6fr) repeat(2, minmax(0, 1fr)) !important;
+    gap: 16px !important;
+  }
+
+  .nodes-page .node-main-row {
+    grid-template-columns: minmax(200px, 1fr) auto !important;
+  }
+
+  .nodes-page .node-metrics {
+    grid-column: 1 / -1 !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .control-shell,
+  .control-shell.nav-compact {
+    --command-bar-height: 64px;
+  }
+
+  .control-nav {
+    height: 100dvh !important;
+    min-height: 100dvh !important;
+  }
+
+  .control-brand,
+  .nav-compact .control-brand {
+    height: 72px !important;
+  }
+
+  .control-stage {
+    padding-top: 0 !important;
+  }
+
+  .control-command-bar {
+    min-height: var(--command-bar-height) !important;
+    flex-basis: var(--command-bar-height) !important;
+    padding: 0 16px !important;
+  }
+
+  .route-context strong,
+  .route-shortcuts {
+    display: none !important;
+  }
+
+  .route-context span {
+    font-size: 12px !important;
+  }
+
+  .control-stage > #main-content {
+    padding: 24px 18px 56px !important;
+  }
+
+  .page-heading,
+  .ops-command-header,
+  .ops-hero {
+    align-items: flex-start !important;
+    flex-direction: column !important;
+    gap: 18px !important;
+  }
+
+  .heading-actions,
+  .ops-header-tools,
+  .ops-hero-controls {
+    width: 100% !important;
+    flex-wrap: wrap !important;
+    justify-content: space-between !important;
+  }
+
+  .dashboard-control-page .situation-primary {
+    grid-template-columns: 104px minmax(0, 1fr) !important;
+    padding: 24px !important;
+  }
+
+  .cloud-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 680px) {
+  body {
+    font-size: 15px !important;
+  }
+
+  .control-stage > #main-content {
+    padding-right: 14px !important;
+    padding-left: 14px !important;
+  }
+
+  .page-heading h1,
+  .workspace-heading h1,
+  .ops-heading h1,
+  .ops-hero h1,
+  .cloud-page .page-heading h1 {
+    font-size: 30px !important;
+  }
+
+  .task-overview,
+  .cloud-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .task-overview .overview-primary,
+  .cloud-summary .balance {
+    grid-column: 1 / -1 !important;
+  }
+
+  .task-facets,
+  .task-toolbar {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+  }
+
+  .nodes-page .node-main-row,
+  .cloud-page .cloud-toolbar,
+  .cloud-page .instance-head {
+    grid-template-columns: 1fr !important;
+  }
+
+  .cloud-page .detail-heading,
+  .cloud-page .instance-body,
+  .cloud-page .instance-card > footer {
+    padding-right: 16px !important;
+    padding-left: 16px !important;
+  }
+
+  .cloud-page .control-evidence {
+    margin-right: 16px !important;
+    margin-left: 16px !important;
+  }
+
+  .login form {
+    padding: 34px 26px !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

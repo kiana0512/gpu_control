@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -82,3 +83,20 @@ def test_explicit_map_can_migrate_a_legacy_node_without_reusing_default() -> Non
     cfg = Settings(_env_file=None, node_agent_hmac_secrets={"worker-3090-a": NEW_SECRET})
     assert cfg.node_agent_secret("worker-3090-a") == NEW_SECRET
     assert cfg.node_agent_secret("worker-3090-b") == cfg.node_agent_hmac_secret
+
+
+def test_asset_worker_secret_file_overrides_only_its_worker(tmp_path: Path) -> None:
+    worker_id = "asset-worker-5070ti-mof-01"
+    secret_dir = tmp_path / "asset-workers"
+    secret_dir.mkdir()
+    unique_secret = "5070ti-worker-secret-" + "x" * 48
+    (secret_dir / f"{worker_id}.secret").write_text(unique_secret + "\n", encoding="utf-8")
+    cfg = Settings(
+        _env_file=None,
+        asset_worker_hmac_secret="legacy-asset-secret-" + "y" * 48,
+        asset_worker_hmac_secret_dir=secret_dir,
+    )
+
+    assert cfg.asset_worker_secret(worker_id) == unique_secret
+    assert cfg.asset_worker_secret("asset-worker-4070ti-mof-01") == cfg.asset_worker_hmac_secret
+    assert cfg.asset_worker_secret("../invalid") == cfg.asset_worker_hmac_secret

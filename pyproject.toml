@@ -46,15 +46,16 @@ gpu-control-scheduler = "gpu_control_scheduler.main:run"
 gpu-node-agent = "gpu_node_agent.main:run"
 gpu-control-asset-api = "gpu_control_asset_api.main:run"
 gpu-control-blender-worker = "gpu_control_blender_worker.main:run"
+gpu-control-provider-controller = "gpu_control_provider_controller.main:run"
 gpu-workflow = "packages.gpu_control_core.workflow_cli:main"
 
 [tool.setuptools.packages.find]
-where = [".", "apps/api/src", "apps/scheduler/src", "apps/node_agent/src", "apps/asset_api/src", "apps/blender_worker/src"]
-include = ["packages*", "gpu_control_api*", "gpu_control_scheduler*", "gpu_node_agent*", "gpu_control_asset_api*", "gpu_control_blender_worker*"]
+where = [".", "apps/api/src", "apps/scheduler/src", "apps/node_agent/src", "apps/asset_api/src", "apps/blender_worker/src", "apps/provider_controller/src"]
+include = ["packages*", "gpu_control_api*", "gpu_control_scheduler*", "gpu_node_agent*", "gpu_control_asset_api*", "gpu_control_blender_worker*", "gpu_control_provider_controller*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-pythonpath = [".", "apps/api/src", "apps/scheduler/src", "apps/node_agent/src", "apps/asset_api/src", "apps/blender_worker/src", "apps/realesrgan/src"]
+pythonpath = [".", "apps/api/src", "apps/scheduler/src", "apps/node_agent/src", "apps/asset_api/src", "apps/blender_worker/src", "apps/provider_controller/src", "apps/realesrgan/src"]
 testpaths = ["tests", "apps/api/tests", "apps/scheduler/tests", "apps/node_agent/tests"]
 
 [tool.ruff]
@@ -72,6 +73,7 @@ ignore = ["E501", "E702", "S101"]
 "apps/api/src/gpu_control_api/main.py" = ["S104"]
 "apps/node_agent/src/gpu_node_agent/main.py" = ["S104", "S105"]
 "apps/asset_api/src/gpu_control_asset_api/main.py" = ["S104", "S105"]
+"apps/provider_controller/src/gpu_control_provider_controller/main.py" = ["S104"]
 # These are checksum-frozen Blender/runtime payloads. Their import layout and
 # fixed subprocess adapters are validated by package manifests and dedicated
 # contract tests; do not rewrite packaged bytes merely to satisfy host lint.
@@ -86,7 +88,7 @@ exclude = ["migrations/versions"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["yaml.*", "jsonschema.*"]
+module = ["yaml.*", "jsonschema.*", "paramiko.*", "requests.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

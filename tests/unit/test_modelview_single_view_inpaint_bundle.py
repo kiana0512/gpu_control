@@ -9,7 +9,7 @@ BUNDLE = ROOT / "workflows" / "production" / "modelview-single-view-inpaint"
 SOURCE = Path(
     "/opt/modelviewcreator/ModelViewCreator_flux_fill_inpaint -View generation.json"
 )
-FIXED_PROMPT_SHA256 = "1d6ba90e9b6fcc42ce39875d57c68b819c85881752425e73d05aef31fa715242"
+FIXED_PROMPT_SHA256 = "1d84ce980a5cdd6af366a9c19af9470ffba571b366ef020dd4451624fa2a6f62"
 
 
 def test_single_view_inpaint_bundle_matches_approved_four_input_contract() -> None:
@@ -18,18 +18,25 @@ def test_single_view_inpaint_bundle_matches_approved_four_input_contract() -> No
 
     assert manifest.workflow_key == "modelview-single-view-inpaint"
     assert manifest.version == (
-        "2026.09.05-d49d622-single-view-inpaint-prompt-r2"
+        "2026.09.18-refcontrol-normal-single-view-inpaint-2step-r1"
     )
     assert manifest.bindings == {
         "image_filename": "4.inputs.image",
         "material_image_filename": "5.inputs.image",
         "mask_filename": "44.inputs.image",
+        "normal_image_filename": "64.inputs.image",
         "noise_seed": "14.inputs.noise_seed",
         "prompt": "61.inputs.text",
     }
     assert manifest.min_vram_mb == 24000
     assert manifest.output_nodes == ("29",)
-    assert len(template) == 30
+    assert len(template) == 34
+    assert template["66"]["inputs"] == {"pixels": ["64", 0], "vae": ["3", 0]}
+    assert template["67"]["inputs"] == {"conditioning": ["11", 0], "latent": ["66", 0]}
+    assert template["65"]["inputs"] == {"model": ["21", 0], "lora_name": "flux-kelin/flux2_klein_9b_refcontrol_normal.safetensors", "strength_model": 0.8}
+    assert template["12"]["inputs"] == {"model": ["65", 0], "conditioning": ["67", 0]}
+    assert template["15"]["inputs"]["model"] == ["65", 0]
+    assert "normal_image_filename" in manifest.parameter_schema["required"]
     assert template["15"]["inputs"]["steps"] == 2
     assert template["21"]["inputs"]["strength_model"] == 0.9
     assert template["17"]["inputs"]["latent_image"] == ["43", 0]
@@ -62,6 +69,7 @@ def test_single_view_inpaint_binds_only_public_prompt_and_preserves_fixed_guard(
             "image_filename": "job/current.png",
             "material_image_filename": "job/reference.png",
             "mask_filename": "job/mask.png",
+            "normal_image_filename": "job/normal.png",
             "noise_seed": 20260831,
             "prompt": "只重绘蒙版内的磨损金属区域",
         },
@@ -70,6 +78,7 @@ def test_single_view_inpaint_binds_only_public_prompt_and_preserves_fixed_guard(
     assert rendered["4"]["inputs"]["image"] == "job/current.png"
     assert rendered["5"]["inputs"]["image"] == "job/reference.png"
     assert rendered["44"]["inputs"]["image"] == "job/mask.png"
+    assert rendered["64"]["inputs"]["image"] == "job/normal.png"
     assert rendered["14"]["inputs"]["noise_seed"] == 20260831
     assert rendered["61"]["inputs"]["text"] == "只重绘蒙版内的磨损金属区域"
     assert rendered["62"]["inputs"]["text"] == fixed_prompt
@@ -81,7 +90,7 @@ def test_single_view_inpaint_source_hash_is_the_user_approved_workflow() -> None
     if not SOURCE.exists():
         return
     assert hashlib.sha256(SOURCE.read_bytes()).hexdigest() == (
-        "d49d6228c4d7d24f2280a110dfe60a57de20c3aba2070a76b88e17acb4d66238"
+        "1b078109ac3342c00dd2ae013561084f680439fb92e56ba001e4c591d9fb5fa6"
     )
 
 

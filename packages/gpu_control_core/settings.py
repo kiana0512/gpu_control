@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     )
 
     environment: str = "development"
+    settings_component: str = "control-plane"
     database_url: str = "postgresql+asyncpg://gpu_control:gpu_control@localhost/gpu_control"
     redis_url: str = "redis://localhost:6379/0"
     jwt_secret: str = "development-only-change-me"
@@ -43,7 +44,18 @@ class Settings(BaseSettings):
     model_root: Path = Path("storage/models")
     public_base_url: str = "http://localhost:8000"
     grafana_base_url: str = "http://localhost:3000"
+    provider_controller_url: str = "http://provider-controller:8020"
+    provider_controller_hmac_secret: SecretStr = Field(
+        default=SecretStr("development-only-change-me"), repr=False, exclude=True
+    )
+    autodl_enabled: bool = False
+    autodl_mutations_enabled: bool = False
+    autodl_token_file: Path | None = None
+    autodl_timeout_seconds: int = Field(20, ge=3, le=120)
+    autodl_read_retries: int = Field(2, ge=0, le=5)
+    autodl_integrity_base_url: str = "http://autodl-5090-tunnel:18080"
     allowed_callback_hosts: str = ""
+    asset_cors_allowed_origins: str = ""
     feishu_webhook_url: str = ""
     feishu_signing_secret: str = ""
     scheduler_fallback_scan_ms: int = Field(500, ge=100, le=60_000)
@@ -74,6 +86,7 @@ class Settings(BaseSettings):
     asset_root: Path = Path("storage/assets")
     asset_max_upload_bytes: int = Field(2_147_483_648, ge=1024, le=10_995_116_277_760)
     asset_worker_hmac_secret: str = "development-only-change-me"
+    asset_worker_hmac_secret_dir: Path | None = None
     asset_worker_lease_seconds: int = Field(300, ge=30, le=3600)
     asset_worker_heartbeat_timeout_seconds: int = Field(30, ge=5, le=600)
     asset_codex_probe_max_age_seconds: int = Field(3600, ge=300, le=86400)
@@ -134,17 +147,29 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def reject_development_secrets_in_production(self) -> "Settings":
         if self.environment.lower() == "production":
-            protected = (
-                self.jwt_secret,
-                self.api_key_pepper,
-                self.node_agent_hmac_secret,
-                self.alertmanager_webhook_token,
-            )
-            if any(
-                value == "development-only-change-me" or value.startswith("CHANGE_ME")
-                for value in protected
-            ):
-                raise ValueError("production secrets must be replaced before startup")
+            if self.settings_component != "provider-controller":
+                protected = (
+                    self.jwt_secret,
+                    self.api_key_pepper,
+                    self.node_agent_hmac_secret,
+                    self.alertmanager_webhook_token,
+                )
+                if any(
+                    value == "development-only-change-me" or value.startswith("CHANGE_ME")
+                    for value in protected
+                ):
+                    raise ValueError("production secrets must be replaced before startup")
+            if self.autodl_enabled:
+                provider_secret = self.provider_controller_hmac_secret.get_secret_value()
+                if (
+                    not 32 <= len(provider_secret) <= 4096
+                    or any(character.isspace() for character in provider_secret)
+                    or provider_secret == "development-only-change-me"
+                    or provider_secret.startswith("CHANGE_ME")
+                ):
+                    raise ValueError(
+                        "production provider controller secret must be a dedicated value"
+                    )
         return self
 
     def node_agent_secret(self, node_id: str) -> str:
@@ -158,6 +183,26 @@ class Settings(BaseSettings):
             "control-4090": self.node_agent_hmac_secret_control_4090,
         }
         return per_node.get(node_id) or self.node_agent_hmac_secret
+
+    def asset_worker_secret(self, worker_id: str) -> str:
+        secret_dir = self.asset_worker_hmac_secret_dir
+        if secret_dir is None or re.fullmatch(r"asset-[a-z0-9-]{1,120}", worker_id) is None:
+            return self.asset_worker_hmac_secret
+        secret_path = secret_dir / f"{worker_id}.secret"
+        if not secret_path.exists():
+            return self.asset_worker_hmac_secret
+        try:
+            value = secret_path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise ValueError(f"asset worker secret is unreadable: {worker_id}") from exc
+        if (
+            not 32 <= len(value) <= 4096
+            or any(char.isspace() for char in value)
+            or value.startswith("CHANGE_ME")
+            or value == "development-only-change-me"
+        ):
+            raise ValueError(f"asset worker secret is invalid: {worker_id}")
+        return value
 
     @property
     def test_system_max_queued(self) -> int:
@@ -177,6 +222,25 @@ class Settings(BaseSettings):
         return {
             item.strip().lower() for item in self.allowed_callback_hosts.split(",") if item.strip()
         }
+
+    @property
+    def asset_cors_origins(self) -> tuple[str, ...]:
+        """Exact browser origins allowed to call the public Asset API.
+
+        Keep this list explicit: the Asset API accepts large uploads and may
+        authenticate with an API key, so a wildcard origin is never valid.
+        """
+
+        origins = tuple(
+            dict.fromkeys(
+                item.strip().rstrip("/")
+                for item in self.asset_cors_allowed_origins.split(",")
+                if item.strip()
+            )
+        )
+        if "*" in origins:
+            raise ValueError("ASSET_CORS_ALLOWED_ORIGINS must not contain '*'")
+        return origins
 
     @property
     def overflow_windows(self) -> tuple[tuple[time, time], ...]:

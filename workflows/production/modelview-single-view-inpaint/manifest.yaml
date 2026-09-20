@@ -1,5 +1,5 @@
 workflow_key: modelview-single-view-inpaint
-version: 2026.09.05-d49d622-single-view-inpaint-prompt-r2
+version: 2026.09.18-refcontrol-normal-single-view-inpaint-2step-r1
 template_file: template.api.json
 parameter_schema:
   type: object
@@ -16,6 +16,10 @@ parameter_schema:
       type: string
       minLength: 1
       maxLength: 512
+    normal_image_filename:
+      type: string
+      minLength: 1
+      maxLength: 512
     noise_seed:
       type: integer
       minimum: 0
@@ -27,12 +31,14 @@ parameter_schema:
     - image_filename
     - material_image_filename
     - mask_filename
+    - normal_image_filename
     - noise_seed
   additionalProperties: false
 bindings:
   image_filename: 4.inputs.image
   material_image_filename: 5.inputs.image
   mask_filename: 44.inputs.image
+  normal_image_filename: 64.inputs.image
   noise_seed: 14.inputs.noise_seed
   prompt: 61.inputs.text
 allowed_class_types:
@@ -63,7 +69,8 @@ required_models:
   - text_encoders/qwen_3_8b_fp8mixed.safetensors
   - unet/Flux2-Klein-9B-True-V3-Q5_K.gguf
   - vae/flux2-vae.safetensors
-  - lora/flux-kelin/baimo_shangcaizhi_klein_v1_000005500.safetensors
+  - lora/flux-kelin/li3d_000004500.safetensors
+  - lora/flux-kelin/flux2_klein_9b_refcontrol_normal.safetensors
 required_custom_nodes:
   - Cherry_KleinWorkflowTools@a9dbbca846ee80734d0a6123ac32d8a8e51c7fcd
   - ComfyUI_essentials@9d9f4bedfc9f0321c19faf71855e228c93bd0dc9
@@ -72,7 +79,8 @@ required_custom_nodes:
   - WAS-Node-Suite@afeee09ba44e713ec52a413ac6b105fd06b2d356
 min_vram_mb: 24000
 timeout_seconds: 2400
-node_labels: {}
+node_labels:
+  modelview_normal_single_flows_20260918: validated
 output_nodes:
   - "29"
 enabled: true

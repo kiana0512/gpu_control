@@ -1,5 +1,11 @@
 manifest_version: 1
 models:
+  - path: lora/flux-kelin/li3d_000004500.safetensors
+    size_bytes: 165704368
+    sha256: 80c1e864ebe62c2a5e975385e0b70d2d7c7fb679cc39cb8f458a12c46cb3343e
+  - path: lora/flux-kelin/flux2_klein_9b_refcontrol_normal.safetensors
+    size_bytes: 165704512
+    sha256: baa97f297d048330850f0cb8063392678927a34282de961760693f6897983fd2
   - path: clip/qwen_2.5_vl_7b_fp8_scaled.safetensors
     size_bytes: 9384670680
     sha256: cb5636d852a0ea6a9075ab1bef496c0db7aef13c02350571e388aea959c5c0b4

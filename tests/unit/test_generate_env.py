@@ -1,3 +1,4 @@
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -51,6 +52,13 @@ def test_control_env_generator_produces_consistent_ready_to_copy_files(tmp_path:
     assert values["POSTGRES_PASSWORD"] in values["DATABASE_URL"]
     assert values["REDIS_PASSWORD"] in values["REDIS_URL"]
     assert all("CHANGE_ME" not in value for value in values.values())
+    provider_secret = values["PROVIDER_CONTROLLER_HMAC_SECRET"]
+    assert re.fullmatch(r"[0-9a-f]{64}", provider_secret)
+    assert provider_secret not in {
+        values["JWT_SECRET"],
+        values["NODE_AGENT_HMAC_SECRET"],
+        values["ASSET_WORKER_HMAC_SECRET"],
+    }
     worker_a = parse_env(bundle / "worker-3090-a.env")
     worker_b = parse_env(bundle / "worker-3090-b.env")
     worker_4070ti = parse_env(bundle / "worker-4070ti-animation-host-01.env")

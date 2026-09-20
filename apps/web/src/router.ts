@@ -5,6 +5,7 @@ const Dashboard = () => import("./views/Dashboard.vue");
 const Jobs = () => import("./views/Jobs.vue");
 const Analysis = () => import("./views/Analysis.vue");
 const Nodes = () => import("./views/Nodes.vue");
+const CloudServers = () => import("./views/CloudServers.vue");
 const Assets = () => import("./views/Assets.vue");
 const Realesrgan = () => import("./views/Realesrgan.vue");
 const CodexRuntime = () => import("./views/CodexRuntime.vue");
@@ -16,12 +17,18 @@ const Login = () => import("./views/Login.vue");
 
 export const router = createRouter({
   history: createWebHistory(),
+  scrollBehavior(to, from, savedPosition) {
+    if (savedPosition) return savedPosition;
+    if (to.path !== from.path) return { left: 0, top: 0 };
+    return false;
+  },
   routes: [
     { path: "/login", component: Login, meta: { public: true } },
     { path: "/", component: Dashboard },
     { path: "/jobs", component: Jobs },
     { path: "/analysis", component: Analysis },
     { path: "/nodes", component: Nodes },
+    { path: "/cloud-servers", component: CloudServers },
     { path: "/asset-processing", component: Assets },
     { path: "/realesrgan", component: Realesrgan },
     { path: "/codex", component: CodexRuntime },

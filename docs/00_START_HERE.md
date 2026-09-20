@@ -97,6 +97,9 @@ MOF，并在统一排版后恢复原物体边界；单 Mesh 仅在复杂多结�
 
 部署完成后看 `docs/IMPLEMENTATION_STATUS.md`，把“现场待测”项改成实际日期、主机和结果，不要覆盖本机验证记录。
 
+最新控制中心稳定性、AutoDL PRO 6000 重连/输入缓存契约、真实局部重绘测速和官网式多路由 WebUI 发布记录见
+`docs/210_2026-09-20_CONTROL_CENTER_STABILITY_AND_SITE_UI.md`。
+
 ## 2. 文档结构
 
 | 层级 | 文档 | 用途 |
@@ -166,7 +169,7 @@ MOF Agent 明确直接运行于 Windows，不通过 WSL/WSL2 控制。
 | `apps/asset_api` | 与 GPU Scheduler 隔离的 Asset API、CPU 作业队列、租约和最终产物发布 |
 | `apps/blender_worker` | 可并发的 Blender 5.1.2 CPU Worker |
 | `apps/mof_worker` | Windows 原生 PowerShell MOF Agent、安装、SSH 管理与 canary 脚本 |
-| `apps/web` | LiClick 风格 Vue 管理后台 |
+| `apps/web` | 白色产品站式 Vue 控制台；横向业务导航、独立路由与按需下钻 |
 | `packages/gpu_control_core` | 数据模型、状态机、设置、日志和通用核心逻辑 |
 | `migrations` | PostgreSQL/SQLite Alembic 迁移 |
 | `docker/comfyui` | 可复现统一 ComfyUI 镜像、自定义节点锁和依赖锁 |

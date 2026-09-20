@@ -1,0 +1,1171 @@
+/* Product UI contract -------------------------------------------------------
+ * The application has several generations of route-local styles. This final
+ * layer owns information density and geometry across the control center so a
+ * route cannot become a different-sized product on 1440p versus 4K screens.
+ */
+:root {
+  --product-canvas: #f4f7fb;
+  --product-surface: #ffffff;
+  --product-surface-soft: #f7f9fc;
+  --product-line: #dfe7f0;
+  --product-line-strong: #cbd8e6;
+  --product-ink: #203047;
+  --product-copy: #4e6178;
+  --product-muted: #73849a;
+  --product-blue: #1877d2;
+  --product-blue-soft: #eaf4ff;
+  --product-shadow: 0 6px 22px rgba(33, 68, 104, 0.065);
+  --product-radius: 12px;
+}
+
+html {
+  font-size: 16px;
+}
+
+body {
+  color: var(--product-ink);
+  background: var(--product-canvas) !important;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.control-shell,
+.control-shell.nav-compact {
+  --site-nav-height: 66px;
+  --command-bar-height: 52px;
+  background: var(--product-canvas) !important;
+}
+
+.control-nav {
+  color: var(--product-ink);
+  border-bottom-color: var(--product-line);
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 3px 14px rgba(36, 72, 108, 0.055);
+}
+
+.control-brand,
+.nav-compact .control-brand {
+  min-width: 236px;
+  height: var(--site-nav-height);
+  padding-left: clamp(22px, 3vw, 52px);
+}
+
+.control-brand-mark {
+  width: 36px;
+  height: 36px;
+  border-radius: 13px 6px 13px 6px;
+  font-size: 11px;
+}
+
+.control-brand-copy strong {
+  color: #21354d;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+}
+
+.control-brand-copy small {
+  color: #7893ad;
+  font-size: 9px !important;
+}
+
+.control-nav > nav {
+  gap: clamp(2px, 0.55vw, 10px);
+}
+
+.control-nav-group,
+.control-nav-group + .control-nav-group {
+  min-width: 108px;
+}
+
+.control-nav-group > header,
+.nav-compact .control-nav-group > header {
+  height: var(--site-nav-height);
+  min-height: var(--site-nav-height);
+  color: #5b6d82;
+  font-size: 14px;
+}
+
+.control-nav-group > header > a {
+  padding: 0 12px;
+}
+
+.control-nav-group.nav-group-current > header {
+  color: var(--product-blue);
+}
+
+.control-nav-group.nav-group-current > header::after {
+  right: 25px;
+  left: 25px;
+  height: 2px;
+}
+
+.nav-command,
+.nav-compact .nav-command {
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  margin: 14px clamp(20px, 2.4vw, 38px) 14px 12px;
+  color: var(--product-blue);
+  background: #f4f8fc;
+}
+
+.control-stage {
+  height: 100dvh;
+  padding-top: var(--site-nav-height);
+  background: var(--product-canvas) !important;
+}
+
+.control-command-bar {
+  min-height: var(--command-bar-height);
+  flex: 0 0 var(--command-bar-height);
+  grid-template-columns: minmax(210px, 0.9fr) minmax(380px, auto) minmax(
+      220px,
+      0.9fr
+    );
+  gap: 20px;
+  padding: 0 clamp(24px, 4vw, 64px);
+  border-bottom-color: var(--product-line);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 1px 0 rgba(31, 68, 106, 0.02);
+}
+
+.route-context {
+  gap: 1px;
+}
+
+.route-context span {
+  color: var(--product-blue);
+  font-size: 10px !important;
+  letter-spacing: 0.1em;
+}
+
+.route-context strong {
+  color: #718197;
+  font-size: 11px !important;
+}
+
+.route-shortcuts {
+  height: 36px;
+  gap: 2px;
+  padding: 3px;
+  border: 0;
+  border-radius: 9px;
+  background: #f0f4f8;
+}
+
+.route-shortcuts > a {
+  height: 30px;
+  padding: 0 12px;
+  color: #607287;
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.route-shortcuts > a.router-link-exact-active {
+  color: #126abf;
+  background: #fff;
+  box-shadow:
+    0 1px 4px rgba(31, 76, 121, 0.1),
+    inset 0 0 0 1px rgba(24, 119, 210, 0.1);
+}
+
+.live-status {
+  color: #596c82;
+  font-size: 12px !important;
+}
+
+.operator-avatar {
+  width: 29px;
+  height: 29px;
+  border-radius: 7px;
+}
+
+.operator-copy b {
+  color: #34495f;
+  font-size: 11px;
+}
+
+.operator-copy small {
+  color: #8190a2;
+  font-size: 10px !important;
+}
+
+.control-stage > #main-content {
+  padding: 30px clamp(28px, 4vw, 68px) 72px;
+  color: var(--product-ink);
+  background:
+    radial-gradient(
+      circle at 52% -160px,
+      rgba(99, 172, 239, 0.11),
+      transparent 460px
+    ),
+    var(--product-canvas) !important;
+  background-size: auto !important;
+  scrollbar-gutter: stable;
+}
+
+.control-stage > #main-content::before {
+  display: none;
+}
+
+.page {
+  width: 100%;
+  max-width: 1720px;
+  margin: 0 auto;
+  color: var(--product-ink);
+}
+
+.page-heading,
+.ops-command-header,
+.ops-hero {
+  min-height: 0 !important;
+  margin: 0 0 22px !important;
+  padding: 4px 0 20px !important;
+  border-bottom: 1px solid var(--product-line) !important;
+}
+
+.page-heading h1,
+.workspace-heading h1,
+.ops-heading h1,
+.ops-hero h1,
+.cloud-page .page-heading h1,
+.jobs-operations-page .ops-command-header h1,
+.analysis-page .ops-command-header h1 {
+  margin: 5px 0 7px !important;
+  color: #1f3148 !important;
+  background: none !important;
+  font-size: clamp(30px, 2.4vw, 38px) !important;
+  font-weight: 680 !important;
+  letter-spacing: -0.025em !important;
+  line-height: 1.16 !important;
+  -webkit-text-fill-color: currentColor;
+}
+
+.page-heading p,
+.workspace-heading p,
+.ops-heading p,
+.ops-hero p {
+  max-width: 820px;
+  margin: 0 !important;
+  color: var(--product-copy) !important;
+  font-size: 15px !important;
+  line-height: 1.65 !important;
+}
+
+.eyebrow,
+.workspace-kicker,
+.ops-kicker,
+.context-kicker {
+  color: var(--product-blue) !important;
+  font-size: 11px !important;
+  letter-spacing: 0.13em !important;
+}
+
+.heading-actions,
+.ops-header-tools,
+.ops-hero-controls {
+  gap: 12px !important;
+}
+
+.primary,
+.secondary,
+.sync-button,
+.table-action,
+.detail-toggle,
+.pause-button,
+.danger-button,
+.danger-outline,
+.text-action {
+  min-height: 38px !important;
+  border-radius: 8px !important;
+  font-size: 14px !important;
+  font-weight: 650 !important;
+}
+
+.primary,
+.el-button--primary {
+  background: var(--product-blue) !important;
+  box-shadow: 0 5px 14px rgba(24, 119, 210, 0.18) !important;
+}
+
+.refresh-state,
+.sync-state,
+.refresh-state small,
+.sync-state small {
+  color: #697b90 !important;
+  font-size: 12px !important;
+}
+
+.dashboard-control-page,
+.jobs-operations-page,
+.nodes-page,
+.cloud-page,
+.codex-workspace,
+.resource-page {
+  gap: 20px !important;
+}
+
+.dashboard-control-page .ops-hero {
+  min-height: 118px !important;
+  align-items: center;
+}
+
+.dashboard-control-page .ops-hero-copy {
+  max-width: 760px;
+}
+
+.dashboard-control-page .ops-hero h1 {
+  font-size: clamp(32px, 2.5vw, 40px) !important;
+}
+
+.dashboard-control-page .situation-board {
+  grid-template-columns: minmax(520px, 1.3fr) minmax(420px, 0.9fr) !important;
+  overflow: hidden;
+}
+
+.dashboard-control-page .situation-primary {
+  min-height: 210px !important;
+  grid-template-columns: 132px minmax(0, 1fr) !important;
+  padding: 34px 32px 26px !important;
+}
+
+.dashboard-control-page .capacity-orbit {
+  width: 124px !important;
+  height: 124px !important;
+}
+
+.dashboard-control-page .capacity-orbit strong {
+  font-size: 34px !important;
+}
+
+.dashboard-control-page .situation-message h2 {
+  font-size: 27px !important;
+}
+
+.dashboard-control-page .situation-message p {
+  color: var(--product-copy) !important;
+  font-size: 14px !important;
+  line-height: 1.65 !important;
+}
+
+.dashboard-control-page .signal-rail article {
+  min-height: 105px !important;
+  padding: 20px !important;
+}
+
+.dashboard-control-page .signal-rail strong {
+  font-size: 25px !important;
+}
+
+.dashboard-control-page .operation-routes > a {
+  min-height: 86px !important;
+  grid-template-columns: 32px minmax(0, 1fr) !important;
+  padding: 17px 20px !important;
+}
+
+.dashboard-control-page .ops-section-heading,
+.codex-workspace .section-bar {
+  min-height: 76px !important;
+  padding: 17px 20px !important;
+}
+
+.dashboard-control-page .ops-section-heading h2,
+.codex-workspace .section-bar h2 {
+  font-size: 19px !important;
+}
+
+.dashboard-control-page .situation-board,
+.dashboard-control-page .compute-fabric,
+.dashboard-control-page .telemetry-panel,
+.dashboard-control-page .attention-panel,
+.dashboard-control-page .activity-ledger,
+.task-overview,
+.task-facets,
+.task-surface,
+.cloud-summary,
+.cloud-context,
+.cloud-toolbar,
+.instance-card,
+.control-strip,
+.runtime-console,
+.execution-ledger,
+.nodes-page .gpu-specialization-guide,
+.nodes-page .node-card,
+.resource-page .resource-card,
+.resource-page .onboarding-strip {
+  border: 1px solid var(--product-line) !important;
+  border-radius: var(--product-radius) !important;
+  background: var(--product-surface) !important;
+  box-shadow: var(--product-shadow) !important;
+}
+
+.jobs-operations-page .ops-command-header {
+  min-height: 128px !important;
+  align-items: center;
+}
+
+.jobs-operations-page .ops-view-switch {
+  margin-top: 13px !important;
+}
+
+.jobs-operations-page .ops-view-switch a,
+.jobs-operations-page .scope-tabs button {
+  min-height: 36px !important;
+  font-size: 13px !important;
+}
+
+.task-overview {
+  grid-template-columns: minmax(250px, 1.25fr) repeat(4, minmax(130px, 0.75fr)) !important;
+}
+
+.task-overview article {
+  min-height: 106px !important;
+  padding: 18px 20px !important;
+}
+
+.task-overview article > span,
+.task-overview article small {
+  color: var(--product-muted) !important;
+  font-size: 12px !important;
+}
+
+.task-overview article > strong {
+  margin: 7px 0 5px !important;
+  color: var(--product-ink) !important;
+  font-size: 26px !important;
+}
+
+.task-overview .overview-primary > div:first-child strong {
+  font-size: 34px !important;
+}
+
+.task-workspace {
+  grid-template-columns: 220px minmax(0, 1fr) !important;
+  gap: 16px !important;
+}
+
+.task-facets {
+  padding: 18px 13px !important;
+}
+
+.jobs-operations-page .facet-heading strong {
+  color: #294158 !important;
+  font-size: 16px !important;
+}
+
+.jobs-operations-page .facet-heading span,
+.jobs-operations-page .facet-group > small,
+.jobs-operations-page .facet-note span,
+.jobs-operations-page .facet-note p {
+  color: #60758b !important;
+}
+
+.jobs-operations-page .facet-group button {
+  min-height: 38px !important;
+  font-size: 13px !important;
+}
+
+.task-surface {
+  padding: 18px !important;
+}
+
+.surface-heading {
+  min-height: 64px;
+  padding: 0 2px 15px !important;
+}
+
+.surface-heading h2,
+.panel-heading h2 {
+  font-size: 20px !important;
+}
+
+.surface-heading p,
+.panel-heading p {
+  font-size: 13px !important;
+}
+
+.task-toolbar {
+  grid-template-columns: minmax(260px, 1.4fr) repeat(2, minmax(170px, 0.8fr)) !important;
+  gap: 10px !important;
+  padding: 12px !important;
+  border: 1px solid var(--product-line) !important;
+  border-radius: 10px !important;
+  background: var(--product-surface-soft) !important;
+}
+
+.task-toolbar label > span {
+  font-size: 12px !important;
+}
+
+.task-toolbar input,
+.task-toolbar select,
+.jobs-pagination select {
+  min-height: 40px !important;
+  color: #30475f !important;
+  border-color: var(--product-line-strong) !important;
+  background: #fff !important;
+  font-size: 14px !important;
+}
+
+.jobs-operations-page .result-summary,
+.jobs-operations-page .jobs-pagination {
+  min-height: 38px;
+  color: #66788e !important;
+  font-size: 12px !important;
+}
+
+.jobs-operations-page .task-surface .task-list-panel {
+  border: 1px solid var(--product-line) !important;
+  border-radius: 10px !important;
+  background: #fff !important;
+  box-shadow: none !important;
+}
+
+.jobs-operations-page .task-surface .task-table {
+  font-size: 14px !important;
+}
+
+.jobs-operations-page .task-surface .task-table th {
+  height: 44px !important;
+  padding: 0 14px !important;
+  color: #60748a !important;
+  border-color: var(--product-line) !important;
+  background: #f4f7fa !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+}
+
+.jobs-operations-page .task-surface .task-table td,
+.jobs-operations-page .task-surface .task-row td:last-child {
+  min-height: 88px !important;
+  padding: 14px !important;
+  color: #435970 !important;
+  border-color: #e8edf3 !important;
+  background: #fff !important;
+  font-size: 13px !important;
+}
+
+.jobs-operations-page .task-surface .task-row,
+.jobs-operations-page .task-surface .task-row td,
+.jobs-operations-page .task-surface .task-row td > * {
+  opacity: 1 !important;
+}
+
+.jobs-operations-page .task-surface .task-row:nth-child(even) td,
+.jobs-operations-page .task-surface .task-row:nth-child(even) td:last-child {
+  background: #fbfcfe !important;
+}
+
+.jobs-operations-page .task-surface .task-row:hover td,
+.jobs-operations-page .task-surface .task-row:focus td,
+.jobs-operations-page .task-surface .task-row:hover td:last-child,
+.jobs-operations-page .task-surface .task-row:focus td:last-child {
+  background: #eff7ff !important;
+}
+
+.jobs-operations-page .task-surface .task-name,
+.jobs-operations-page .task-surface .service-name {
+  color: #263c54 !important;
+  font-size: 14px !important;
+}
+
+.jobs-operations-page .task-surface .api-path,
+.jobs-operations-page .task-surface .duration-primary {
+  color: #126ebf !important;
+}
+
+.jobs-operations-page .task-surface .task-table td > code,
+.jobs-operations-page .task-surface .api-path {
+  width: fit-content;
+  max-width: 100%;
+  padding: 2px 6px;
+  color: #1c659f !important;
+  border-radius: 4px;
+  background: #eef5fb !important;
+  font-size: 12px !important;
+}
+
+.jobs-operations-page .task-surface .workflow-version,
+.jobs-operations-page .task-surface .progress-copy,
+.jobs-operations-page .task-surface .inline-facts dt,
+.jobs-operations-page .task-surface td > small {
+  color: #64788e !important;
+  font-size: 12px !important;
+}
+
+.jobs-operations-page .task-surface .inline-facts dd,
+.jobs-operations-page .task-surface .node-summary {
+  color: #344c64 !important;
+  font-size: 13px !important;
+}
+
+.jobs-operations-page .task-surface .task-progress {
+  background: #dfe8f1 !important;
+}
+
+.jobs-operations-page .task-surface .task-table th:last-child,
+.jobs-operations-page .task-surface .task-table td:last-child {
+  box-shadow: -8px 0 14px rgba(42, 76, 111, 0.06) !important;
+}
+
+.jobs-operations-page .task-surface .detail-button {
+  min-height: 34px !important;
+  color: #156fc1 !important;
+  border-color: #bdd9f2 !important;
+  background: #f2f8fe !important;
+  font-size: 12px !important;
+}
+
+.status-mark {
+  min-height: 26px !important;
+  padding: 0 9px !important;
+  border-radius: 999px !important;
+  font-size: 12px !important;
+}
+
+.nodes-page .gpu-specialization-guide {
+  margin-bottom: 18px !important;
+}
+
+.nodes-page .node-list {
+  gap: 14px !important;
+}
+
+.nodes-page .node-main-row {
+  min-height: 126px !important;
+  grid-template-columns: minmax(200px, 0.85fr) auto minmax(440px, 1.7fr) !important;
+  padding: 20px 22px !important;
+}
+
+.nodes-page .node-identity h2 {
+  color: #253a51 !important;
+  font-size: 18px !important;
+}
+
+.nodes-page .node-identity p,
+.nodes-page .node-metric span,
+.nodes-page .node-policy-strip,
+.nodes-page .offline-node-note {
+  color: #697c92 !important;
+  font-size: 13px !important;
+}
+
+.nodes-page .node-metric strong {
+  color: #2f455c !important;
+  font-size: 16px !important;
+}
+
+.nodes-page .node-policy-strip {
+  min-height: 46px !important;
+  padding: 10px 22px !important;
+  background: #f8fafc !important;
+}
+
+.nodes-page .node-primary-actions button {
+  min-height: 38px !important;
+  padding: 0 14px !important;
+}
+
+.cloud-summary {
+  min-height: 94px !important;
+}
+
+.cloud-page .cloud-summary > button,
+.cloud-page .cloud-summary > div {
+  min-height: 94px !important;
+  padding: 16px 18px !important;
+}
+
+.cloud-page .cloud-summary span,
+.cloud-page .cloud-summary small,
+.cloud-page .instance-identity p,
+.cloud-page .provider-state,
+.cloud-page .actionability,
+.cloud-page .operation-state {
+  font-size: 12px !important;
+}
+
+.cloud-page .cloud-summary strong {
+  font-size: 27px !important;
+}
+
+.cloud-page .cloud-context {
+  min-height: 70px;
+  padding: 16px 20px !important;
+}
+
+.cloud-page .cloud-context strong,
+.cloud-page .resource-group-heading h2 {
+  font-size: 17px !important;
+}
+
+.cloud-page .cloud-toolbar {
+  min-height: 58px !important;
+  padding: 9px 12px !important;
+}
+
+.cloud-page .instance-list {
+  gap: 12px !important;
+}
+
+.cloud-page .instance-head {
+  min-height: 92px !important;
+  padding: 18px 22px !important;
+}
+
+.cloud-page .instance-identity h3 {
+  color: #263b52 !important;
+  font-size: 18px !important;
+}
+
+.cloud-page .instance-quickfacts div {
+  min-height: 50px !important;
+  padding: 10px 12px !important;
+}
+
+.cloud-page .detail-heading {
+  padding: 16px 22px 0 54px !important;
+}
+
+.cloud-page .instance-body {
+  padding: 14px 22px 20px 54px !important;
+}
+
+.cloud-page .control-evidence {
+  margin: 0 22px 18px 54px !important;
+}
+
+.cloud-page .control-evidence section {
+  min-height: 72px !important;
+  padding: 13px !important;
+}
+
+.cloud-page .instance-card > footer {
+  min-height: 62px !important;
+  padding: 11px 22px 11px 54px !important;
+  border-top-color: var(--product-line) !important;
+}
+
+.codex-workspace .control-strip {
+  min-height: 96px !important;
+}
+
+.codex-workspace .runtime-console {
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.75fr) !important;
+}
+
+.codex-workspace .runtime-row {
+  min-height: 66px !important;
+  padding: 11px 18px !important;
+}
+
+.codex-workspace .runtime-inspector {
+  padding: 20px !important;
+}
+
+.codex-workspace .runtime-inspector h2,
+.codex-workspace .execution-ledger h2 {
+  color: #263b52 !important;
+  font-size: 18px !important;
+}
+
+.codex-workspace .evidence-grid,
+.codex-workspace .selected-task {
+  border: 1px solid var(--product-line) !important;
+  border-radius: 10px !important;
+  background: var(--product-surface-soft) !important;
+}
+
+.codex-workspace .execution-ledger > header {
+  min-height: 76px !important;
+  padding: 17px 20px !important;
+}
+
+.resource-page .resource-toolbar {
+  min-height: 60px !important;
+  height: auto !important;
+  padding: 9px 14px !important;
+  background: #f8fafc !important;
+}
+
+.resource-page .search-field {
+  height: 40px !important;
+  border-color: var(--product-line-strong) !important;
+  background: #fff !important;
+}
+
+.resource-page .resource-card th {
+  height: 44px !important;
+  color: #60748a !important;
+  border-color: var(--product-line) !important;
+  background: #f4f7fa !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+}
+
+.resource-page .resource-card td {
+  height: 64px !important;
+  padding: 11px 16px !important;
+  color: #425970 !important;
+  border-color: #e8edf3 !important;
+  background: #fff !important;
+  font-size: 14px !important;
+}
+
+.resource-page .resource-card tbody tr:nth-child(even) td {
+  background: #fbfcfe !important;
+}
+
+.resource-page .resource-card tbody tr:hover td {
+  background: #f1f7fd !important;
+}
+
+.resource-page .table-primary {
+  color: #2a4057 !important;
+  font-size: 14px !important;
+}
+
+.resource-page .table-secondary,
+.resource-page .record-count,
+.resource-page .empty-state,
+.resource-page .action-empty {
+  color: #718398 !important;
+  font-size: 12px !important;
+}
+
+.resource-alerts .resource-card {
+  border-top: 3px solid #ef9a3d !important;
+}
+
+.resource-alerts .resource-heading h1 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.resource-alerts .resource-heading h1::before {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ef9a3d;
+  box-shadow: 0 0 0 5px rgba(239, 154, 61, 0.12);
+  content: "";
+}
+
+.empty-state strong,
+.workspace-empty,
+.empty-task-list strong,
+.action-empty strong {
+  color: #30475f !important;
+  opacity: 1 !important;
+}
+
+.empty-state span,
+.empty-task-list span,
+.action-empty span {
+  color: #6d8096 !important;
+  opacity: 1 !important;
+}
+
+.empty-icon {
+  color: var(--product-blue) !important;
+  border-color: #a8caea !important;
+  background: #f3f8fd !important;
+}
+
+.dashboard-control-page .ops-scope button,
+.dashboard-control-page .ops-refresh,
+.dashboard-control-page .ops-refresh b,
+.dashboard-control-page .ops-refresh small {
+  color: #566d84 !important;
+  opacity: 1 !important;
+}
+
+.dashboard-control-page .ops-scope button.active {
+  color: #126abf !important;
+  background: #e6f3ff !important;
+}
+
+@media (min-width: 1800px) {
+  html {
+    font-size: 17px;
+  }
+
+  body {
+    font-size: 16px;
+  }
+
+  .control-shell,
+  .control-shell.nav-compact {
+    --site-nav-height: 70px;
+    --command-bar-height: 54px;
+  }
+
+  .control-nav,
+  .control-brand,
+  .nav-compact .control-brand,
+  .control-nav-group > header,
+  .nav-compact .control-nav-group > header {
+    height: var(--site-nav-height);
+    min-height: var(--site-nav-height);
+  }
+
+  .control-stage > #main-content {
+    padding: 34px clamp(48px, 4.5vw, 92px) 84px;
+  }
+
+  .page {
+    max-width: 1880px;
+  }
+
+  .page-heading h1,
+  .workspace-heading h1,
+  .ops-heading h1,
+  .ops-hero h1,
+  .cloud-page .page-heading h1 {
+    font-size: 40px !important;
+  }
+}
+
+@media (max-width: 1440px) {
+  .control-brand,
+  .nav-compact .control-brand {
+    min-width: 214px;
+    padding-left: 24px;
+  }
+
+  .control-stage > #main-content {
+    padding-right: 32px;
+    padding-left: 32px;
+  }
+
+  .dashboard-control-page .situation-board {
+    grid-template-columns: minmax(460px, 1.2fr) minmax(360px, 0.8fr) !important;
+  }
+
+  .task-workspace {
+    grid-template-columns: 204px minmax(0, 1fr) !important;
+  }
+
+  .nodes-page .node-main-row {
+    grid-template-columns: minmax(180px, 0.8fr) auto minmax(390px, 1.55fr) !important;
+  }
+}
+
+@media (max-width: 1180px) {
+  .control-command-bar {
+    grid-template-columns: minmax(170px, 0.7fr) minmax(320px, auto) auto;
+    gap: 12px;
+    padding: 0 24px;
+  }
+
+  .route-shortcuts > a {
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .dashboard-control-page .situation-board,
+  .codex-workspace .runtime-console {
+    grid-template-columns: 1fr !important;
+  }
+
+  .task-overview {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
+
+  .task-overview .overview-primary {
+    grid-column: 1 / -1;
+  }
+
+  .task-workspace {
+    grid-template-columns: 1fr !important;
+  }
+
+  .task-facets {
+    display: grid;
+    grid-template-columns: minmax(150px, 0.6fr) repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+
+  .task-facets .facet-note {
+    display: none;
+  }
+
+  .nodes-page .node-main-row {
+    grid-template-columns: minmax(180px, 1fr) auto !important;
+  }
+
+  .nodes-page .node-metrics {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 900px) {
+  .control-shell,
+  .control-shell.nav-compact {
+    --command-bar-height: 58px;
+  }
+
+  .control-brand,
+  .nav-compact .control-brand {
+    height: 66px;
+  }
+
+  .control-stage {
+    padding-top: 0;
+  }
+
+  .control-command-bar {
+    min-height: var(--command-bar-height);
+    flex-basis: var(--command-bar-height);
+    padding: 0 14px;
+  }
+
+  .control-stage > #main-content {
+    padding: 22px 18px 56px;
+  }
+
+  .page-heading,
+  .ops-command-header,
+  .ops-hero {
+    align-items: flex-start !important;
+    flex-direction: column !important;
+    gap: 18px !important;
+  }
+
+  .page-heading > div:first-child,
+  .workspace-heading > div:first-child,
+  .ops-heading > div:first-child {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .heading-actions,
+  .ops-header-tools,
+  .ops-hero-controls {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: space-between;
+  }
+
+  .dashboard-control-page .ops-hero,
+  .jobs-operations-page .ops-command-header {
+    min-height: 0 !important;
+  }
+
+  .dashboard-control-page .situation-primary {
+    grid-template-columns: 106px minmax(0, 1fr) !important;
+    padding: 24px !important;
+  }
+
+  .dashboard-control-page .capacity-orbit {
+    width: 98px !important;
+    height: 98px !important;
+  }
+
+  .cloud-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+
+  .cloud-page .cloud-toolbar {
+    grid-template-columns: minmax(0, 1fr) auto !important;
+  }
+
+  .cloud-page .instance-head {
+    grid-template-columns: auto minmax(0, 1fr) auto !important;
+  }
+
+  .cloud-page .instance-quickfacts {
+    grid-column: 2 / -1;
+  }
+}
+
+@media (max-width: 680px) {
+  .control-stage > #main-content {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .page-heading h1,
+  .workspace-heading h1,
+  .ops-heading h1,
+  .ops-hero h1,
+  .cloud-page .page-heading h1 {
+    font-size: 28px !important;
+  }
+
+  .task-overview,
+  .cloud-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .task-overview .overview-primary,
+  .cloud-summary .balance {
+    grid-column: 1 / -1;
+  }
+
+  .task-facets,
+  .task-toolbar {
+    grid-template-columns: 1fr !important;
+  }
+
+  .task-facets {
+    display: block;
+  }
+
+  .jobs-operations-page .task-surface .task-row {
+    border-color: var(--product-line) !important;
+    background: #fff !important;
+  }
+
+  .nodes-page .node-main-row {
+    grid-template-columns: 1fr !important;
+  }
+
+  .nodes-page .node-metrics,
+  .nodes-page .node-primary-actions {
+    grid-column: auto;
+  }
+
+  .cloud-page .cloud-toolbar,
+  .cloud-page .instance-head {
+    grid-template-columns: 1fr !important;
+  }
+
+  .cloud-page .instance-quickfacts,
+  .cloud-page .state-column {
+    grid-column: auto;
+  }
+
+  .cloud-page .detail-heading,
+  .cloud-page .instance-body,
+  .cloud-page .instance-card > footer {
+    padding-right: 16px !important;
+    padding-left: 16px !important;
+  }
+
+  .cloud-page .control-evidence {
+    margin-right: 16px !important;
+    margin-left: 16px !important;
+  }
+
+  .resource-page .resource-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .resource-page .search-field {
+    width: 100%;
+  }
+}
+
+@media (max-width: 580px) {
+  .control-stage > #main-content {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .dashboard-control-page .ops-hero h1 {
+    font-size: 40px;
+  }
+}

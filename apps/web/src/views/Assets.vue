@@ -408,7 +408,9 @@ async function retrySubstanceJob(job: AssetJobInfo) {
     await run();
   } catch (cause) {
     if (cause !== "cancel" && cause !== "close") {
-      ElMessage.error(cause instanceof Error ? cause.message : "烘焙任务重试失败");
+      ElMessage.error(
+        cause instanceof Error ? cause.message : "烘焙任务重试失败",
+      );
     }
   } finally {
     retryingJobId.value = "";

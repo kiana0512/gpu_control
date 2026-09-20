@@ -47,11 +47,11 @@
     "class_type": "BasicGuider",
     "inputs": {
       "conditioning": [
-        "11",
+        "74",
         0
       ],
       "model": [
-        "21",
+        "78",
         0
       ]
     }
@@ -62,7 +62,7 @@
     },
     "class_type": "RandomNoise",
     "inputs": {
-      "noise_seed": 468546072632498
+      "noise_seed": 238589373036856
     }
   },
   "15": {
@@ -73,7 +73,7 @@
     "inputs": {
       "denoise": 1,
       "model": [
-        "21",
+        "78",
         0
       ],
       "scheduler": "simple",
@@ -150,12 +150,12 @@
     },
     "class_type": "LoraLoaderModelOnly",
     "inputs": {
-      "lora_name": "flux-kelin/baimo_shangcaizhi_klein_v1_000005500.safetensors",
+      "lora_name": "flux-kelin/li3d_000004500.safetensors",
       "model": [
         "1",
         0
       ],
-      "strength_model": 0.9
+      "strength_model": 1
     }
   },
   "22": {
@@ -166,7 +166,7 @@
     "inputs": {
       "aspect_threshold": 1.2,
       "image": [
-        "4",
+        "73",
         0
       ],
       "long_size": 1528,
@@ -185,7 +185,7 @@
         3
       ],
       "image": [
-        "4",
+        "73",
         0
       ],
       "interpolation": "area",
@@ -273,7 +273,7 @@
     "inputs": {
       "使用Alpha": true,
       "图像A": [
-        "4",
+        "73",
         0
       ],
       "图像B": [
@@ -285,15 +285,6 @@
       "画布尺寸": 2048,
       "背景模式": "自动采样",
       "背景色": ""
-    }
-  },
-  "4": {
-    "_meta": {
-      "title": "图1｜白模主图（锁定构图）"
-    },
-    "class_type": "LoadImage",
-    "inputs": {
-      "image": "509caff28e32103999d6a06a5a06b1a1907751ee58706edd1731a95eabdff15d.png"
     }
   },
   "43": {
@@ -318,7 +309,7 @@
     },
     "class_type": "LoadImage",
     "inputs": {
-      "image": "img_v3_02150_3491781e-bae6-45de-99b0-384d6b692a6g.png"
+      "image": "img_v3_0215l_e15d3a2c-831f-4bd7-8b10-20392168ea7g.png"
     }
   },
   "45": {
@@ -340,7 +331,7 @@
     },
     "class_type": "LoadImage",
     "inputs": {
-      "image": "b4c6465b6bd7dd0d455adc09419b385672b34d42fa212898015849730fab4628.png"
+      "image": "img_v3_0215l_c85586c5-2748-4e32-8b6e-e822e1ab641g.png"
     }
   },
   "52": {
@@ -373,7 +364,7 @@
     },
     "class_type": "ttN text",
     "inputs": {
-      "text": ""
+      "text": "Using image 1 as the current view of the object, in which every pure white area marks the region to be generated, and image 2 as the multi-view design reference sheet of the same object, render the white region with the object's true appearance from exactly the viewpoint of image 1, whether it is a top-down, bottom-up, oblique, or eye-level view, so that the object's silhouette, proportions, and surfaces follow image 1 precisely. Reconstruct the geometry, materials, textures, colors, and fine details by matching image 2, using it only for identity, material, and structure cues and never copying its layout, background, or multiple views. Where image 1 already shows rendered surfaces, continue them seamlessly into the white region; where the entire object is white, produce the complete object. Keep every non-white pixel, the camera view, the soft even unlit shading, and the pure black background unchanged, and output a single clean rendered image of the object."
     }
   },
   "7": {
@@ -390,6 +381,70 @@
         "3",
         0
       ]
+    }
+  },
+  "73": {
+    "_meta": {
+      "title": "LoadImage"
+    },
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "img_v3_0215l_641d5181-7885-4999-bdd3-2a6fdf5b139g.png"
+    }
+  },
+  "74": {
+    "_meta": {
+      "title": "参考条件2｜材质六视图"
+    },
+    "class_type": "ReferenceLatent",
+    "inputs": {
+      "conditioning": [
+        "11",
+        0
+      ],
+      "latent": [
+        "77",
+        0
+      ]
+    }
+  },
+  "77": {
+    "_meta": {
+      "title": "编码法线图"
+    },
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "79",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "78": {
+    "_meta": {
+      "title": "法线 RefControl LoRA｜0.8"
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "flux-kelin/flux2_klein_9b_refcontrol_normal.safetensors",
+      "model": [
+        "21",
+        0
+      ],
+      "strength_model": 0.8
+    }
+  },
+  "79": {
+    "_meta": {
+      "title": "LoadImage"
+    },
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "img_v3_0215l_641d5181-7885-4999-bdd3-2a6fdf5b139g (1).png"
     }
   },
   "8": {

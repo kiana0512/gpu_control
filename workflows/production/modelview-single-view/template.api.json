@@ -47,11 +47,11 @@
     "class_type": "BasicGuider",
     "inputs": {
       "conditioning": [
-        "11",
+        "45",
         0
       ],
       "model": [
-        "21",
+        "43",
         0
       ]
     }
@@ -79,7 +79,7 @@
     },
     "class_type": "RandomNoise",
     "inputs": {
-      "noise_seed": 354126340055704
+      "noise_seed": 836948875351431
     }
   },
   "15": {
@@ -90,11 +90,11 @@
     "inputs": {
       "denoise": 1,
       "model": [
-        "21",
+        "43",
         0
       ],
       "scheduler": "simple",
-      "steps": 4
+      "steps": 2
     }
   },
   "16": {
@@ -167,7 +167,7 @@
     },
     "class_type": "LoraLoaderModelOnly",
     "inputs": {
-      "lora_name": "flux-kelin/baimo_shangcaizhi_klein_v1_000005500.safetensors",
+      "lora_name": "flux-kelin/li3d_000004500.safetensors",
       "model": [
         "1",
         0
@@ -262,7 +262,7 @@
   },
   "29": {
     "_meta": {
-      "title": "ModelView Single-view API Final"
+      "title": "ImageClip API Final RGBA"
     },
     "class_type": "SaveImage",
     "inputs": {
@@ -328,7 +328,7 @@
     },
     "class_type": "LoadImage",
     "inputs": {
-      "image": "509caff28e32103999d6a06a5a06b1a1907751ee58706edd1731a95eabdff15d.png"
+      "image": "img_v3_0214u_ae721110-63b8-42a4-a7f8-667dc285193g.jpg"
     }
   },
   "40": {
@@ -337,7 +337,7 @@
     },
     "class_type": "ttN text",
     "inputs": {
-      "text": "Task: view-locked material transfer, not object generation.\n\nIMAGE1_GEOMETRY_LOCK: Image 1 is the only source for canvas, aspect ratio, background, object identity, silhouette, outer contour, pixel boundary, inner contours, component count, camera view, perspective, pose, scale, position, framing, visible surfaces, occlusion relationships, and every visible surface boundary. Preserve the white-model mask and all existing parts exactly. Do not shift, scale, rotate, recrop, thicken, simplify, fill, open, close, or reinterpret any part.\n\nIMAGE2_MATERIAL_ONLY: Use image 2 only to infer the material appearance of the corresponding same object. Ignore image 2's layout, multi-view arrangement, camera angle, background, ground, shadows, lighting, reflections, unrelated objects, contents, and any component not visible in image 1.\n\nPARTWISE_MATERIAL_MAPPING: Map material region to matching existing visible part only: shell to shell, edge to edge, panel to panel, frame to frame, handle to handle, fastener/control to the same existing part. Preserve corresponding color zones, paint boundaries, bare-metal areas, wood grain, paper or fabric fibers, rust, scratches, stains, wear, labels on matching surfaces, and fine albedo texture at the correct scale and direction. Do not spread the dominant color across unrelated parts.\n\nWHITE_MODEL_SILHOUETTE_LOCK: The final output must keep image 1's exact white-model outer contour, pixel boundary, internal part boundaries, current view, crop, and background. Only visible surface color and micro-texture may change. Do not add, remove, move, resize, rotate, replace, reshape, merge, or reconstruct geometry. Do not hallucinate geometry. Do not create extra objects, copied multi-view sheets, new viewpoints, attachments, openings, holes, controls, text, logos, or mechanical details absent from image 1.\n\nFINAL_RESULT: The same object from image 1, in the same view and framing, with only visible surfaces re-materialized from image 2 as clean base-color/albedo material. Avoid baked lighting, cast shadows, strong highlights, mirror reflections, environment gradients, and any change to geometry or silhouette."
+      "text": "Using image 1 as the current view of the object, in which every pure white area marks the region to be generated, and image 2 as the multi-view design reference sheet of the same object, render the white region with the object's true appearance from exactly the viewpoint of image 1, whether it is a top-down, bottom-up, oblique, or eye-level view, so that the object's silhouette, proportions, and surfaces follow image 1 precisely. Reconstruct the geometry, materials, textures, colors, and fine details by matching image 2, using it only for identity, material, and structure cues and never copying its layout, background, or multiple views. Where image 1 already shows rendered surfaces, continue them seamlessly into the white region; where the entire object is white, produce the complete object. Keep every non-white pixel, the camera view, the soft even unlit shading, and the pure black background unchanged, and output a single clean rendered image of the object."
     }
   },
   "41": {
@@ -349,13 +349,68 @@
       "text": ""
     }
   },
+  "42": {
+    "_meta": {
+      "title": "LoadImage"
+    },
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "img_v3_0215l_641d5181-7885-4999-bdd3-2a6fdf5b139g (1).png"
+    }
+  },
+  "43": {
+    "_meta": {
+      "title": "法线 RefControl LoRA｜0.8"
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "flux-kelin/flux2_klein_9b_refcontrol_normal.safetensors",
+      "model": [
+        "21",
+        0
+      ],
+      "strength_model": 0.8
+    }
+  },
+  "44": {
+    "_meta": {
+      "title": "编码法线图"
+    },
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "42",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "45": {
+    "_meta": {
+      "title": "参考条件2｜材质六视图"
+    },
+    "class_type": "ReferenceLatent",
+    "inputs": {
+      "conditioning": [
+        "11",
+        0
+      ],
+      "latent": [
+        "44",
+        0
+      ]
+    }
+  },
   "5": {
     "_meta": {
       "title": "图2｜六视图材质参考"
     },
     "class_type": "LoadImage",
     "inputs": {
-      "image": "b4c6465b6bd7dd0d455adc09419b385672b34d42fa212898015849730fab4628.png"
+      "image": "img_v3_0214u_7c5119f6-2f7d-440d-a1bb-b338a398c4bg.jpg"
     }
   },
   "7": {

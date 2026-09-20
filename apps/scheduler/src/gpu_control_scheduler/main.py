@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import ipaddress
 import json
 import math
@@ -65,6 +66,7 @@ from packages.gpu_control_core.models import (
     JobBatchItem,
     JobCallback,
     Node,
+    ProviderInstance,
     SystemSetting,
     WorkflowNodeCompatibility,
     WorkflowVersion,
@@ -80,6 +82,7 @@ from packages.gpu_control_core.scheduling import (
     IMAGECLIP_INPAINT_PREEMPTION_CODE,
     IMAGECLIP_WORKFLOW_KEY,
     MODELVIEW_INPAINT_NODE_ID,
+    MODELVIEW_INPAINT_WORKFLOW_KEY,
     MODELVIEW_MASK_WORKFLOW_KEYS,
     MODELVIEW_WORKFLOW_KEYS,
     OverflowGuard,
@@ -160,6 +163,49 @@ def uses_comfy_mask_upload_endpoint(workflow_key: str, filename: str) -> bool:
     return filename.startswith("mask-") and workflow_key not in MODELVIEW_MASK_WORKFLOW_KEYS
 
 
+def autodl_input_cache_namespace(
+    *, tenant_id: str, workflow_key: str, is_autodl_node: bool
+) -> str | None:
+    """Scope remote reuse to AutoDL ModelView inpaint and isolate tenants."""
+    if not is_autodl_node or workflow_key != MODELVIEW_INPAINT_WORKFLOW_KEY:
+        return None
+    return hashlib.sha256(f"gpu-control-autodl-input-v1\0{tenant_id}".encode()).hexdigest()
+
+
+def autodl_runtime_gpu_identity(
+    labels: dict[str, Any], system_stats: dict[str, Any]
+) -> tuple[str, str] | None:
+    """Return the GPU identity reported by the currently attached AutoDL host.
+
+    The provider instance is durable while AutoDL may replace its GPU model or
+    backing machine. The database node id therefore stays stable, but its
+    human-facing model and name must follow authoritative ComfyUI runtime
+    telemetry instead of a historical ``5090`` label.
+    """
+
+    if labels.get("provider") != "autodl":
+        return None
+    devices = system_stats.get("devices")
+    if not isinstance(devices, list) or not devices or not isinstance(devices[0], dict):
+        return None
+    raw_name = devices[0].get("name")
+    if not isinstance(raw_name, str):
+        return None
+    gpu_model = re.sub(r"\s+", " ", raw_name).strip()
+    # ComfyUI decorates CUDA device names as
+    # ``cuda:0 <vendor model> : cudaMallocAsync``. Those transport/allocator
+    # details are not hardware identity and make the control-plane label noisy.
+    gpu_model = re.sub(r"^cuda:\d+\s+", "", gpu_model, flags=re.IGNORECASE)
+    gpu_model = re.sub(
+        r"\s+:\s+(?:cudaMallocAsync|native)$", "", gpu_model, flags=re.IGNORECASE
+    )
+    if not gpu_model:
+        return None
+    gpu_model = gpu_model[:96]
+    display_model = re.sub(r"^NVIDIA\s+", "", gpu_model, flags=re.IGNORECASE)
+    return gpu_model, f"AutoDL {display_model}"[:128]
+
+
 BUILD_INFO = Info(
     "gpu_control_scheduler_build",
     "Scheduler package, immutable build version and source revision",
@@ -235,6 +281,7 @@ ARCHIVE_BUILD_CANCEL_GRACE_SECONDS = 2.5
 CALLBACK_DELIVERY_LEASE_SECONDS = 30
 CALLBACK_DNS_TIMEOUT_SECONDS = 5
 PROMPT_SUBMISSION_SETTLE_SECONDS = 35.0
+AUTODL_EVENT_RECOVERY_GRACE_SECONDS = 10.0
 WSL_PERFORMANCE_TARGET_NODE_ID = "worker-3090-b"
 WSL_PERFORMANCE_REFERENCE_NODE_ID = "worker-3090-a"
 WSL_PERFORMANCE_WORKFLOW_KEY = "imageclip-rgba"
@@ -426,6 +473,24 @@ async def reconcile_prompt_submission(
                 {"client_id": client_id, "settle_seconds": settle_seconds},
             )
         await asyncio.sleep(min(poll_interval_seconds, remaining))
+
+
+def prompt_submission_was_rejected(error: ComfyError) -> bool:
+    """Return true only when Comfy definitely rejected the prompt.
+
+    Transport failures and 5xx responses can be ambiguous after a remote
+    service accepted work, so they still require queue/history reconciliation.
+    A 4xx response is a synchronous validation rejection and cannot have
+    created a prompt; waiting 35 seconds only hides the real node errors and
+    inflates the apparent GPU latency.
+    """
+
+    status = error.details.get("status")
+    return (
+        error.code == "COMFY_HTTP_ERROR"
+        and type(status) is int
+        and 400 <= status < 500
+    )
 
 
 async def current_job_attempt(
@@ -1639,6 +1704,27 @@ class Scheduler:
                                         current.total_vram_mb = int(
                                             device.get("vram_total", 0)
                                         ) // (1024 * 1024)
+                                runtime_identity = autodl_runtime_gpu_identity(labels, stats)
+                                if runtime_identity is not None:
+                                    gpu_model, display_name = runtime_identity
+                                    if (
+                                        labels.get("gpu_model") != gpu_model
+                                        or current.display_name != display_name
+                                    ):
+                                        logger().info(
+                                            "node.autodl_gpu_identity_changed",
+                                            node_id=current.id,
+                                            previous_gpu_model=labels.get("gpu_model"),
+                                            gpu_model=gpu_model,
+                                            previous_display_name=current.display_name,
+                                            display_name=display_name,
+                                        )
+                                    labels["gpu_model"] = gpu_model
+                                    labels["gpu_model_source"] = "comfy_system_stats"
+                                    labels["gpu_model_observed_at"] = (
+                                        probe_completed_at.isoformat()
+                                    )
+                                    current.display_name = display_name
                                 current.labels = labels
                                 if isinstance(inventory, dict):
                                     labels["comfy_class_types"] = sorted(
@@ -2997,6 +3083,16 @@ class Scheduler:
                 if snapshot.depth == 0:
                     break
                 nodes = list((await session.scalars(select(Node))).all())
+                autodl_instances = list(
+                    (
+                        await session.scalars(
+                            select(ProviderInstance).where(
+                                ProviderInstance.provider == "autodl",
+                                ProviderInstance.node_id.is_not(None),
+                            )
+                        )
+                    ).all()
+                )
                 guard = await self.guard(session)
                 target_workflow = await session.scalar(
                     select(Job.workflow_key)
@@ -3029,23 +3125,55 @@ class Scheduler:
                     )
                     == target_cache_family
                 }
+                autodl_by_node: dict[str, list[ProviderInstance]] = {}
+                for instance in autodl_instances:
+                    if instance.node_id:
+                        autodl_by_node.setdefault(str(instance.node_id), []).append(instance)
+                cloud_modelview_nodes = {
+                    node_id
+                    for node_id, instances in autodl_by_node.items()
+                    if all(
+                        instance.managed
+                        and instance.scheduling_enabled
+                        and instance.desired_state == "running"
+                        and instance.observed_state == "running"
+                        for instance in instances
+                    )
+                }
+                promoted_nodes: set[str] | None = None
                 if target_workflow in MODELVIEW_WORKFLOW_KEYS:
                     # The control 4090 is the preferred low-latency lane, not
                     # an exclusive pin. Compatible 24 GiB 3090 nodes remain
                     # available for parallel/fallback ModelView work.
                     warm_nodes.add(MODELVIEW_INPAINT_NODE_ID)
+                    promoted_nodes = {MODELVIEW_INPAINT_NODE_ID}
                 candidates, exclusions = rank_nodes(
                     nodes,
                     snapshot,
                     guard,
                     self.settings.node_heartbeat_timeout_seconds,
                     preferred_node_ids=warm_nodes,
-                    promoted_node_ids=(
-                        {MODELVIEW_INPAINT_NODE_ID}
-                        if target_workflow in MODELVIEW_WORKFLOW_KEYS
-                        else None
-                    ),
+                    promoted_node_ids=promoted_nodes,
                 )
+                if target_workflow == MODELVIEW_INPAINT_WORKFLOW_KEY:
+                    # Running AutoDL capacity is already incurring cost. Try
+                    # the strongest cloud lane first, while preserving the
+                    # complete original local ranking as the stable fallback.
+                    # Claim-time compatibility, lifecycle and test-only gates
+                    # remain authoritative if state changes after this read.
+                    candidates.sort(
+                        key=lambda candidate: (
+                            0 if candidate.id in cloud_modelview_nodes else 1,
+                            -candidate.total_vram_mb
+                            if candidate.id in cloud_modelview_nodes
+                            else 0,
+                            -candidate.free_vram_mb if candidate.id in cloud_modelview_nodes else 0,
+                            candidate.gpu_util_percent
+                            if candidate.id in cloud_modelview_nodes
+                            else 0,
+                            candidate.id if candidate.id in cloud_modelview_nodes else "",
+                        )
+                    )
                 if not candidates:
                     logger().debug(
                         "scheduler.no_node", exclusions=exclusions
@@ -3133,6 +3261,17 @@ class Scheduler:
                 )
                 if node is None or workflow is None:
                     return
+                is_autodl_node = (
+                    await session.scalar(
+                        select(ProviderInstance.id)
+                        .where(
+                            ProviderInstance.provider == "autodl",
+                            ProviderInstance.node_id == node.id,
+                        )
+                        .limit(1)
+                    )
+                    is not None
+                )
                 # Do not retain the epoch row or a database snapshot across a
                 # multi-minute GPU execution. This read fence proves startup
                 # ownership, then every later mutation is fenced separately.
@@ -3147,9 +3286,22 @@ class Scheduler:
                     attempt=job.attempt_count,
                 )
                 client = ComfyClient(node.base_url)
+                if is_autodl_node:
+                    configure_remote_integrity = getattr(
+                        client,
+                        "enable_remote_input_integrity",
+                        None,
+                    )
+                    if callable(configure_remote_integrity):
+                        configure_remote_integrity(
+                            self.settings.autodl_integrity_base_url,
+                        )
                 parent_task = asyncio.current_task()
                 if parent_task is None:
                     raise RuntimeError("executor task is unavailable")
+                workflow_deadline = (
+                    asyncio.get_running_loop().time() + workflow.timeout_seconds
+                )
                 timeout_task = asyncio.create_task(
                     self.timeout_watchdog(
                         job.id,
@@ -3159,6 +3311,7 @@ class Scheduler:
                         timeout_event,
                     )
                 )
+                terminal_history_task: asyncio.Task[dict[str, Any]] | None = None
                 try:
                     current_job = await self.lock_job_as_leader(session, job.id)
                     if current_job is None:
@@ -3405,18 +3558,30 @@ class Scheduler:
                         self.storage.atomic_json(
                             root / "comfy" / "free.response.json", free_result
                         )
-                        uploads: list[dict[str, Any]] = []
-                        for path in sorted((root / "input").glob("*")):
-                            if path.is_file() and not path.name.endswith(".json"):
-                                uploads.append(
-                                    await client.upload(
-                                        path,
-                                        mask=uses_comfy_mask_upload_endpoint(
-                                            job.workflow_key, path.name
-                                        ),
-                                        subfolder=job.id,
-                                    )
-                                )
+                        upload_inputs = [
+                            (
+                                path,
+                                uses_comfy_mask_upload_endpoint(job.workflow_key, path.name),
+                            )
+                            for path in sorted((root / "input").glob("*"))
+                            if path.is_file() and not path.name.endswith(".json")
+                        ]
+                        cache_namespace = autodl_input_cache_namespace(
+                            tenant_id=job.tenant_id,
+                            workflow_key=job.workflow_key,
+                            is_autodl_node=is_autodl_node,
+                        )
+                        if cache_namespace is not None:
+                            uploads = await client.upload_many(
+                                upload_inputs,
+                                subfolder=job.id,
+                                cache_namespace=cache_namespace,
+                            )
+                        else:
+                            uploads = await client.upload_many(
+                                upload_inputs,
+                                subfolder=job.id,
+                            )
                         self.storage.atomic_json(root / "comfy" / "upload.responses.json", uploads)
                         refreshed_job = await self.lock_job_as_leader(session, job.id)
                         if refreshed_job is None:
@@ -3456,22 +3621,28 @@ class Scheduler:
                         try:
                             submitted_prompt_id = await client.submit(rendered, client_id)
                         except ComfyError as submit_error:
-                            try:
-                                submitted_prompt_id = await reconcile_prompt_submission(
-                                    client,
-                                    client_id,
-                                    settle_seconds=PROMPT_SUBMISSION_SETTLE_SECONDS,
-                                )
-                                recovered_after_submit_error = True
-                            except ComfyError as reconcile_error:
-                                error = ComfyError(
-                                    reconcile_error.code,
-                                    str(reconcile_error),
-                                    {
-                                        **reconcile_error.details,
-                                        "submit_error_code": submit_error.code,
-                                    },
-                                )
+                            terminal_submit_error: ComfyError | None = None
+                            if prompt_submission_was_rejected(submit_error):
+                                terminal_submit_error = submit_error
+                            else:
+                                try:
+                                    submitted_prompt_id = await reconcile_prompt_submission(
+                                        client,
+                                        client_id,
+                                        settle_seconds=PROMPT_SUBMISSION_SETTLE_SECONDS,
+                                    )
+                                    recovered_after_submit_error = True
+                                except ComfyError as reconcile_error:
+                                    terminal_submit_error = ComfyError(
+                                        reconcile_error.code,
+                                        str(reconcile_error),
+                                        {
+                                            **reconcile_error.details,
+                                            "submit_error_code": submit_error.code,
+                                        },
+                                    )
+                            if terminal_submit_error is not None:
+                                error = terminal_submit_error
                                 refreshed_job = await self.lock_job_as_leader(
                                     session,
                                     job.id,
@@ -3627,14 +3798,48 @@ class Scheduler:
                     cancellation_task = asyncio.create_task(
                         self.watch_cancellation(job.id, client)
                     )
+                    recovered_terminal_history: dict[str, Any] | None = None
                     try:
                         try:
+                            event_recovery_options = (
+                                {
+                                    "reconnect_deadline": workflow_deadline
+                                    + AUTODL_EVENT_RECOVERY_GRACE_SECONDS,
+                                }
+                                if is_autodl_node
+                                else {}
+                            )
                             async for event in client.events(
                                 job.prompt_id or "",
                                 job.submission_client_id
                                 or prompt_client_id(job.id, job.attempt_count),
+                                **event_recovery_options,
                             ):
                                 event_type = str(event.get("type", ""))
+                                if event_type == "history_recovered":
+                                    event_data = event.get("data")
+                                    candidate_history = (
+                                        event_data.get("history")
+                                        if isinstance(event_data, dict)
+                                        else None
+                                    )
+                                    if isinstance(candidate_history, dict):
+                                        recovered_terminal_history = candidate_history
+                                elif (
+                                    event_type
+                                    in {
+                                        "execution_success",
+                                        "execution_error",
+                                    }
+                                    and terminal_history_task is None
+                                ):
+                                    # Comfy history becomes available at the
+                                    # terminal event. Fetch it immediately and
+                                    # overlap that network round trip with the
+                                    # durable GPU-finished transition below.
+                                    terminal_history_task = asyncio.create_task(
+                                        client.history(execution_prompt_id or "")
+                                    )
                                 if event_type in {
                                     "execution_start",
                                     "executing",
@@ -3729,9 +3934,32 @@ class Scheduler:
                     # End the refresh transaction before the external history
                     # request so no idle snapshot/epoch lock spans network I/O.
                     await self.commit_as_leader(session)
-                    history = await client.history(job.prompt_id or "")
+                    if recovered_terminal_history is not None:
+                        history = recovered_terminal_history
+                    elif terminal_history_task is not None:
+                        try:
+                            history = await terminal_history_task
+                        except ComfyError:
+                            # The eager request can race a transient tunnel
+                            # break or a Comfy history publication boundary.
+                            # Preserve the previous serialized read as the
+                            # fail-safe path instead of turning prefetch into
+                            # a new completion failure mode.
+                            history = {}
+                        finally:
+                            terminal_history_task = None
+                        if (job.prompt_id or "") not in history:
+                            history = await client.history(job.prompt_id or "")
+                    else:
+                        history = await client.history(job.prompt_id or "")
                     await self.finish_from_history(session, job, workflow, client, history)
                 finally:
+                    if terminal_history_task is not None:
+                        terminal_history_task.cancel()
+                        await asyncio.gather(
+                            terminal_history_task,
+                            return_exceptions=True,
+                        )
                     await client.close()
         except ComfyError as exc:
             await self.fail_job(job_id, exc.code, str(exc), exc.details)
