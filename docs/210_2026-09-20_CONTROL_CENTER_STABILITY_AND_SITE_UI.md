@@ -227,7 +227,7 @@ r4 将清理 trap 与复制、SHA 校验、原子 rename 放进同一个 AND-lis
 物理下限仍是约 8.5–8.6 秒原生推理，加上约 0.35 秒输入准备及可变结果回传。报告和结果保存于
 `output/autodl-pro6000-flow-control-r5-20260920/`，临时客户端已再次禁用。
 
-### r19 ComfyUI 稳定直连与云优先复核
+### r20 ComfyUI 稳定直连与云优先复核
 
 供应商 `:8443` 页面依赖浏览器会话授权，实例替换或重启后可能返回 HTTP 403；这不代表
 ComfyUI 或调度数据面离线。控制中心现在通过既有常驻 SSH 隧道提供独立的 LAN TLS 入口：
@@ -280,8 +280,8 @@ RUNNING，API 与 Scheduler 全程 healthy，证明页面发布没有干扰数�
 
 当前生产镜像：
 
-- Web：`gpu-control-web:1.5.23.post4-studio-ui-r19-20260920`
-  - manifest digest：`sha256:1069b589522deee8a4f4d92ad7628f1f311ca8aecb854ea48d9d3cb7554bc316`
+- Web：`gpu-control-web:1.5.23.post4-studio-ui-r20-20260920`
+  - manifest digest：`sha256:112d1409ee1a6acc9740504ead42504d1ecf203b283b92c5ce721827a953d348`
 - Scheduler：`gpu-control-scheduler:1.5.23.post4-pro6000-identity-r6-20260920`
   - manifest digest：`sha256:8e9fe616bce287f667420fb1feb7d20f1fa761a395812cec86acdf24691d5b52`
 - Tunnel：`gpu-control-autodl-tunnel:1.5.23.post4-flow-control-r5-20260920`
