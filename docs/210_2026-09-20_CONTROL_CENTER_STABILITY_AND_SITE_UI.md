@@ -227,6 +227,49 @@ r4 将清理 trap 与复制、SHA 校验、原子 rename 放进同一个 AND-lis
 物理下限仍是约 8.5–8.6 秒原生推理，加上约 0.35 秒输入准备及可变结果回传。报告和结果保存于
 `output/autodl-pro6000-flow-control-r5-20260920/`，临时客户端已再次禁用。
 
+### r6 Tunnel 与 r7–r9 Scheduler 极限延迟收敛
+
+为把热态总耗时继续逼近 ComfyUI 原生执行时间，本轮没有改工作流 JSON、模型、采样器、步数、
+分辨率或输出格式，只删除控制面可避免的串行等待：
+
+- Scheduler 直接复用 WebSocket `executed` 事件携带的最终输出元数据，成功路径不再额外读取一次
+  `/history/{prompt_id}`；缺失或异常事件仍保留原有 history 降级路径。
+- WebSocket 成功事件到达后关闭握手上限改为 0.1 秒，不再让远端关闭等待阻塞结果下载。
+- AutoDL 节点存在权威活跃租约时，健康循环不再用旧快照并发打开 SSH 探针；领取、上传、执行和
+  下载期间都把业务传输置于健康探针之前。
+- Tunnel 的供应商 SSH TCP 连接和本地转发 TCP 连接都启用 `TCP_NODELAY`，消除 Nagle 与延迟
+  ACK 对 WebSocket 完成事件、小型 prompt 和控制帧的纯尾延迟；16 MiB SSH window、64 KiB
+  packet、1 MiB relay 块、流式 SHA-256 与原子持久化继续保留。
+
+生产发布后使用同一组四输入、法线版两步工作流连续执行两次，四个远端输入均为缓存命中，
+结果响应头 SHA-256 与客户端重新计算值一致：
+
+| 阶段 | r6 第 1 次 | r6 第 2 次 |
+|---|---:|---:|
+| 客户端上传进入 API | 0.165 秒 | 0.160 秒 |
+| 调度排队 | 0.038 秒 | 0.039 秒 |
+| 缓存物化、完整 SHA 与 prompt 提交 | 0.390 秒 | 0.356 秒 |
+| PRO 6000 ComfyUI 原生执行 | 8.392 秒 | 8.171 秒 |
+| Comfy 成功事件到 Scheduler | 0.030 秒 | 0.030 秒 |
+| 结果下载、SHA 校验、原子持久化与终态提交 | 1.098 秒 | 0.615 秒 |
+| 数据库端到端 | 9.825 秒 | 9.095 秒 |
+| 客户端收到完整 PNG | **10.001 秒** | **9.266 秒** |
+
+两张结果分别为 2,341,719 和 2,355,464 字节的 2048×2048 PNG。第二次最优热态相对原生
+ComfyUI 只多 1.095 秒，其中包括约 6.61 MiB 请求体进入 API、云端缓存安全物化与 prompt
+提交、约 2.35 MiB PNG 回传、SHA-256、`fsync`/原子发布、数据库终态提交和客户端收包。
+原先观测到的 0.681 秒 WebSocket 完成通知抖动已在两次实测中收敛为 0.030 秒。
+
+同步“返回原始 PNG 字节”的 API 不可能把物理网络传输降为 0 秒。若取消 SHA、原子落盘和终态
+提交，可以让页面数字更接近 8.2 秒，但会使响应丢失后无法恢复、审计结果与客户端结果不一致，
+因此没有用破坏稳定性的方式伪造低延迟。若业务接受改为异步结果 URL 或让客户端直接从云端读取，
+可以另建低持久性快速通道；当前生产接口维持完整字节、完整校验和可恢复契约。
+
+本轮真实任务为 `33d2ca3d-eb0b-4222-8ec4-8d08474f102b` 与
+`a0df12fa-e0f7-41f7-bcba-a015af5e4447`，客户端报告位于
+`output/autodl-pro6000-low-latency-r6-20260920/scheduled-canary-client-report.json`；测试结束后
+临时 canary client 已重新禁用。
+
 ### r20 ComfyUI 稳定直连与云优先复核
 
 供应商 `:8443` 页面依赖浏览器会话授权，实例替换或重启后可能返回 HTTP 403；这不代表
@@ -268,6 +311,7 @@ https://10.3.34.11:16006/
 - Python changed scope：`apps/api`、`apps/asset_api`、`packages/gpu_control_core` Ruff 通过。
 - AutoDL/环境契约：10 项相关单测通过。
 - 缓存回执、旧回执降级、确定性 4xx、动态 GPU 身份及既有上传路由：66 项定向单测通过。
+- AutoDL Tunnel、Comfy 事件快速路径、Scheduler 云节点健康竞争与部署契约：69 项定向测试通过。
 - 5090 工作流白名单：5 项定向兼容性、陈旧缓存抢单和云优先/本地回退测试通过。
 - 全仓库非 Blender 广测：809 passed、16 skipped；其余包括历史 MOF hidden-seam fixture 错误和
   当前 MOF-only 路由与三项 legacy PBR 测试的未版本化契约冲突。本轮没有修改外部 UV/MOF
@@ -282,10 +326,12 @@ RUNNING，API 与 Scheduler 全程 healthy，证明页面发布没有干扰数�
 
 - Web：`gpu-control-web:1.5.23.post4-studio-ui-r20-20260920`
   - manifest digest：`sha256:112d1409ee1a6acc9740504ead42504d1ecf203b283b92c5ce721827a953d348`
-- Scheduler：`gpu-control-scheduler:1.5.23.post4-pro6000-identity-r6-20260920`
-  - manifest digest：`sha256:8e9fe616bce287f667420fb1feb7d20f1fa761a395812cec86acdf24691d5b52`
-- Tunnel：`gpu-control-autodl-tunnel:1.5.23.post4-flow-control-r5-20260920`
-  - manifest digest：`sha256:d66a550f100bf5caf66c1fe958c99e535d374eef578b0afbdd52f68c953c61f6`
+- Scheduler：`gpu-control-scheduler:1.5.23.post4-autodl-latency-r9-20260920`
+  - manifest digest：`sha256:1e64a20b395c4b1a97d5d03dae87bfe9eec9061cd5e1fa50e6bc1a0d676b4702`
+  - revision：`d01653ae0f4d81337dc770774da76b7d4db0771d`
+- Tunnel：`gpu-control-autodl-tunnel:1.5.23.post4-low-latency-r6-20260920`
+  - manifest digest：`sha256:088bb11aa49534bc083fb6a3c65da18ea1f899e56d68a21f400a01b7766d42ac`
+  - revision：`5dbe22ae7b34eb73a2d7cef11f70ebc59d2eb857`
 - API：`gpu-control-api:1.5.23.post4-event-wakeup-r1-20260920`
 - Provider Controller：`gpu-control-provider-controller:1.5.23.post4-autodl-contract-r1-20260920`
 
