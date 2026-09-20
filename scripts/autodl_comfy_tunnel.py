@@ -244,10 +244,32 @@ def relay(source: Readable, target: Writable) -> None:
         _send_all(target, data)
 
 
+def _configure_low_latency_socket(sock: Any) -> None:
+    """Disable Nagle where the object is a real TCP socket.
+
+    The tunnel carries both multi-megabyte artifacts and tiny WebSocket
+    terminal/control frames over the same long-lived SSH connection.  Nagle
+    can hold the latter behind a delayed ACK after GPU execution has already
+    completed, adding pure control-plane tail latency.  Socket-like test and
+    proxy objects without ``setsockopt`` remain supported.
+    """
+    setter = getattr(sock, "setsockopt", None)
+    if setter is None:
+        return
+    try:
+        setter(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        # Some Paramiko-compatible socket wrappers don't expose TCP options.
+        # Low-latency mode is an optimization; connection establishment must
+        # remain available through those wrappers.
+        return
+
+
 def _high_throughput_transport(sock: Any, **kwargs: Any) -> Any:
     """Create Paramiko transport tuned for binary ComfyUI payloads over WAN."""
     import paramiko
 
+    _configure_low_latency_socket(sock)
     return paramiko.Transport(
         sock,
         default_window_size=SSH_CHANNEL_WINDOW_BYTES,
@@ -260,6 +282,7 @@ class ForwardHandler(socketserver.BaseRequestHandler):
     server: ForwardServer
 
     def handle(self) -> None:
+        _configure_low_latency_socket(self.request)
         transport = self.server.tunnel_state.transport()
         if transport is None:
             return

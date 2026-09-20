@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import io
 import json
+import socket
 import stat
 import sys
 import threading
@@ -62,13 +63,17 @@ def test_ssh_transport_advertises_one_result_sized_receive_window(
 ) -> None:
     captured: dict[str, object] = {}
 
+    class FakeSocket:
+        def setsockopt(self, level: int, option: int, value: int) -> None:
+            captured["socket_option"] = (level, option, value)
+
     class FakeTransport:
         def __init__(self, sock: object, **kwargs: object) -> None:
             captured["sock"] = sock
             captured.update(kwargs)
 
     monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(Transport=FakeTransport))
-    sock = object()
+    sock = FakeSocket()
 
     created = tunnel._high_throughput_transport(  # noqa: SLF001
         sock,
@@ -81,7 +86,20 @@ def test_ssh_transport_advertises_one_result_sized_receive_window(
     assert captured["sock"] is sock
     assert captured["default_window_size"] == 16 * 1024 * 1024
     assert captured["default_max_packet_size"] == 64 * 1024
+    assert captured["socket_option"] == (socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     assert tunnel.COPY_CHUNK_BYTES == 1024 * 1024
+
+
+def test_low_latency_socket_configuration_tolerates_socket_wrappers() -> None:
+    tunnel._configure_low_latency_socket(object())  # noqa: SLF001
+
+
+def test_low_latency_socket_configuration_tolerates_unsupported_option() -> None:
+    class UnsupportedSocket:
+        def setsockopt(self, _level: int, _option: int, _value: int) -> None:
+            raise OSError("unsupported")
+
+    tunnel._configure_low_latency_socket(UnsupportedSocket())  # noqa: SLF001
 
 
 def test_ssh_endpoint_is_restricted_to_expected_provider_domains() -> None:
