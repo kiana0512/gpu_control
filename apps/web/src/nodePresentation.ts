@@ -105,13 +105,9 @@ export function resolveCloudInstanceComfyUiAccessUrl(
   browserHostname: string,
 ): string | null {
   const providerUrl = cloudComfyUiUrl(instance.access.service_6006, null);
-  if (instance.management?.node_id !== "autodl-5090-01") return providerUrl;
-  const fragment = providerUrl
-    ? new URL(providerUrl).hash.replace(/^#/, "")
-    : undefined;
-  return (
-    controlPlaneComfyUiUrl(browserHostname, 16006, fragment) ?? providerUrl
-  );
+  if (providerUrl) return providerUrl;
+  if (instance.management?.node_id !== "autodl-5090-01") return null;
+  return controlPlaneComfyUiUrl(browserHostname, 16006);
 }
 
 export function resolveComfyUiAccessUrl(
@@ -128,13 +124,16 @@ export function resolveComfyUiAccessUrl(
     return localComfyUiUrl(node, browserHostname);
   }
   if (bindings.length !== 1) return null;
-  const direct = controlPlaneComfyUiUrl(
+  const providerUrl = cloudComfyUiUrl(
+    bindings[0].access.service_6006,
+    node.labels,
+  );
+  if (providerUrl) return providerUrl;
+  return controlPlaneComfyUiUrl(
     browserHostname,
     node.labels?.comfyui_browser_proxy_port,
     node.labels?.comfyui_browser_fragment,
   );
-  if (direct) return direct;
-  return cloudComfyUiUrl(bindings[0].access.service_6006, node.labels);
 }
 
 export function isKnownAutoDlNode(

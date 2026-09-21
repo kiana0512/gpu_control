@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import io
 import json
@@ -34,6 +35,16 @@ def request_json(
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--instance-id", required=True)
+    args = parser.parse_args()
+    system_stats = request_json("GET", "/system_stats")
+    devices = system_stats.get("devices")
+    if not isinstance(devices, list) or not devices or not isinstance(devices[0], dict):
+        raise RuntimeError("ComfyUI system_stats did not report a GPU device")
+    gpu_name = str(devices[0].get("name") or "").strip()
+    if not gpu_name:
+        raise RuntimeError("ComfyUI system_stats reported an empty GPU name")
     template = json.loads((ROOT / "workflow/template.api.json").read_text())
     assert template["15"]["inputs"] == {
         "denoise": 1,
@@ -94,7 +105,7 @@ def main() -> None:
         raise RuntimeError(f"unexpected output dimensions: {image.size}")
     evidence = ROOT / "evidence"
     evidence.mkdir(parents=True, exist_ok=True)
-    output_path = evidence / "autodl-5090-modelview-normal-canary.png"
+    output_path = evidence / "autodl-modelview-normal-canary.png"
     output_path.write_bytes(result)
     input_hashes = {
         path.name: hashlib.sha256(path.read_bytes()).hexdigest()
@@ -103,8 +114,8 @@ def main() -> None:
     report = {
         "schema_version": "gpu-control.autodl-modelview-canary.v1",
         "status": "PASSED",
-        "instance_id": "pro-7894be501780",
-        "gpu": "RTX 5090",
+        "instance_id": args.instance_id,
+        "gpu": gpu_name,
         "workflow": "modelview-inpaint",
         "workflow_version": "2026.09.18-refcontrol-normal-2step-r1",
         "prompt_id": prompt_id,
@@ -119,7 +130,7 @@ def main() -> None:
         "output_size": list(image.size),
         "elapsed_seconds": round(time.monotonic() - started, 2),
     }
-    (evidence / "autodl-5090-modelview-normal-canary.json").write_text(
+    (evidence / "autodl-modelview-normal-canary.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2)
     )
     print(json.dumps(report, ensure_ascii=False), flush=True)

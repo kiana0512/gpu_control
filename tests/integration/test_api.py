@@ -19,6 +19,7 @@ from gpu_control_api.main import (
     _ensure_provider_instance,
     _merge_service_parameter,
     _register_job_waiter,
+    _safe_autodl_comfyui_endpoint,
     _wake_job_waiters,
     create_app,
     inject_server_owned_workflow_parameters,
@@ -72,6 +73,19 @@ def test_modelview_prompt_form_field_merges_without_ambiguity() -> None:
         assert "不能冲突" in str(exc)
     else:
         raise AssertionError("conflicting prompt sources must fail closed")
+
+
+def test_autodl_comfyui_endpoint_accepts_only_official_root_origins() -> None:
+    assert _safe_autodl_comfyui_endpoint(
+        "https://u1.bjb1.seetacloud.com:8443/#workspace"
+    ) == "https://u1.bjb1.seetacloud.com:8443/"
+    assert _safe_autodl_comfyui_endpoint("https://u1.autodl.com/") == (
+        "https://u1.autodl.com/"
+    )
+    assert _safe_autodl_comfyui_endpoint("https://attacker.example/redirect") is None
+    assert _safe_autodl_comfyui_endpoint("https://u:p@u1.autodl.com/") is None
+    assert _safe_autodl_comfyui_endpoint("https://u1.autodl.com:9443/") is None
+    assert _safe_autodl_comfyui_endpoint("https://u1.autodl.com/path") is None
 
 
 def test_scheduler_event_wakes_all_waiters_and_cleanup_is_isolated() -> None:
@@ -326,6 +340,91 @@ async def test_provider_instance_first_discovery_is_concurrency_safe(tmp_path: P
             )
         assert len(set(discovered_ids)) == 1
         assert len(instances) == 1
+
+
+async def test_autodl_inventory_refreshes_only_the_bound_node_official_endpoint(
+    tmp_path: Path,
+) -> None:
+    async for app, client in prepared_app(tmp_path):
+        def provider_handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path.endswith("/inventory")
+            return httpx.Response(
+                200,
+                json={
+                    "configured": True,
+                    "provider": "AutoDL",
+                    "instances": [
+                        {
+                            "product": "pro",
+                            "instance_id": "pro-new6000",
+                            "name": "RTX PRO 6000",
+                            "state": "running",
+                            "provider_status": "running",
+                            "access": {
+                                "service_6006": (
+                                    "https://u1.bjb1.seetacloud.com:8443/#workspace"
+                                )
+                            },
+                        }
+                    ],
+                },
+                request=request,
+            )
+
+        previous_http = app.state.provider_http
+        app.state.provider_http = httpx.AsyncClient(
+            base_url="http://provider-controller:8020",
+            transport=httpx.MockTransport(provider_handler),
+        )
+        await previous_http.aclose()
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-a", with_for_update=True)
+            assert node is not None
+            node.base_url = "http://obsolete-tunnel:16006"
+            node.labels = {
+                "provider": "autodl",
+                "provider_ref": "pro:pro-new6000",
+                "comfyui_browser_proxy_port": 16006,
+                "comfyui_browser_fragment": "old-workspace",
+            }
+            db.add(
+                ProviderInstance(
+                    provider="autodl",
+                    product="pro",
+                    instance_id="pro-new6000",
+                    node_id=node.id,
+                    managed=True,
+                    scheduling_enabled=True,
+                )
+            )
+            await db.commit()
+
+        login = await client.post(
+            "/admin/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        )
+        response = await client.get(
+            "/admin/providers/autodl?force=true",
+            headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+        )
+        assert response.status_code == 200
+
+        async with app.state.db.session() as db:
+            node = await db.get(Node, "worker-3090-a")
+            audit_row = await db.scalar(
+                select(AuditLog).where(
+                    AuditLog.action == "cloud.node.endpoint.refresh",
+                    AuditLog.target_id == "worker-3090-a",
+                )
+            )
+        assert node is not None
+        assert node.base_url == "https://u1.bjb1.seetacloud.com:8443/"
+        assert node.labels["provider_service_6006_url"] == node.base_url
+        assert node.labels["provider_data_path"] == "direct_https"
+        assert "comfyui_browser_proxy_port" not in node.labels
+        assert "comfyui_browser_fragment" not in node.labels
+        assert audit_row is not None
+        assert audit_row.after["provider_ref"] == "pro:pro-new6000"
 
 
 async def test_autodl_reconciler_sends_bootstrap_profile_once_then_reads_only(

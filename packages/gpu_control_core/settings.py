@@ -59,7 +59,12 @@ class Settings(BaseSettings):
     feishu_webhook_url: str = ""
     feishu_signing_secret: str = ""
     scheduler_fallback_scan_ms: int = Field(500, ge=100, le=60_000)
-    node_heartbeat_timeout_seconds: int = Field(20, ge=5, le=600)
+    # Health probes are intentionally serialized with bounded network timeouts.
+    # Six nodes plus an AutoDL SSH reconnect can make a healthy observation
+    # arrive just after the old 20-second eligibility cutoff.  A failed probe
+    # still changes the node to DEGRADED/OFFLINE immediately, so this margin
+    # prevents false local fallback without masking an observed outage.
+    node_heartbeat_timeout_seconds: int = Field(45, ge=5, le=600)
     node_max_concurrency: int = Field(1, ge=1, le=1)
     default_tenant_max_queued: int = Field(20, ge=1, le=10_000)
     default_tenant_max_running: int = Field(1, ge=1, le=10)

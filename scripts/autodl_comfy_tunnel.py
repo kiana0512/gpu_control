@@ -190,6 +190,11 @@ def credentials(base_url: str, secret_file: Path, instance_id: str) -> dict[str,
 class TunnelState:
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        # Some AutoDL/SeetaCloud SSH gateways mis-correlate concurrent
+        # direct-tcpip open confirmations (Paramiko then reports "Success for
+        # unrequested channel").  Serialize only channel establishment; once
+        # opened, every HTTP/WebSocket stream still relays concurrently.
+        self._channel_open_lock = threading.Lock()
         self._client: paramiko.SSHClient | None = None
 
     def replace(self, client: paramiko.SSHClient | None) -> None:
@@ -205,6 +210,52 @@ class TunnelState:
                 return None
             transport = self._client.get_transport()
             return transport if transport is not None and transport.is_active() else None
+
+    def invalidate(self, expected: paramiko.Transport) -> bool:
+        """Drop only the SSH client that owns a failed channel operation.
+
+        Some provider proxies can leave the SSH transport itself marked active
+        after new ``direct-tcpip`` channels stop opening.  Keeping that client
+        makes every later request fail until the container is restarted.  The
+        identity guard prevents a late handler from closing a newer connection.
+        """
+        previous = None
+        with self._lock:
+            if self._client is not None and self._client.get_transport() is expected:
+                previous = self._client
+                self._client = None
+        if previous is not None:
+            previous.close()
+            return True
+        return False
+
+    def open_direct_channel(
+        self,
+        expected: paramiko.Transport,
+        remote: tuple[str, int],
+        source: tuple[str, int],
+        *,
+        timeout: float,
+    ) -> paramiko.Channel | None:
+        """Open one provider channel without racing its SSH gateway.
+
+        The identity check is repeated after entering the serialization lock:
+        a handler that waited behind a failed channel must not use a transport
+        that another handler has already invalidated and replaced.
+        """
+
+        with self._channel_open_lock:
+            with self._lock:
+                if self._client is None or self._client.get_transport() is not expected:
+                    return None
+                if not expected.is_active():
+                    return None
+            return expected.open_channel(
+                "direct-tcpip",
+                remote,
+                source,
+                timeout=timeout,
+            )
 
 
 class ForwardServer(socketserver.ThreadingTCPServer):
@@ -287,15 +338,27 @@ class ForwardHandler(socketserver.BaseRequestHandler):
         if transport is None:
             return
         try:
-            channel = transport.open_channel(
-                "direct-tcpip",
+            channel = self.server.tunnel_state.open_direct_channel(
+                transport,
                 self.server.remote,
                 cast(tuple[str, int], self.client_address),
                 timeout=10,
             )
-        except Exception:
+        except Exception as exc:
+            if self.server.tunnel_state.invalidate(transport):
+                print(
+                    json.dumps(
+                        {
+                            "event": "tunnel_transport_invalidated",
+                            "operation": "direct-tcpip",
+                            "error_type": type(exc).__name__,
+                        }
+                    ),
+                    flush=True,
+                )
             return
         if channel is None:
+            self.server.tunnel_state.invalidate(transport)
             return
 
         closed = threading.Event()

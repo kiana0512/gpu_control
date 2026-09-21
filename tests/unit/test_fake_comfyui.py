@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from packages.comfy_client import client as comfy_client_module
-from packages.comfy_client.client import ComfyClient, ComfyError
+from packages.comfy_client.client import ComfyClient, ComfyError, ComfyOutput
 from tests.fake_comfyui.app import Behavior, State, create_app
 
 
@@ -233,6 +233,84 @@ async def test_comfy_client_upload_many_settles_verification_before_preserving_e
 
     assert failure.value.code == "COMFY_UPLOAD_INTEGRITY_FAILED"
     assert verified == set(expected)
+
+
+async def test_autodl_output_download_uses_verified_parallel_ranges(tmp_path) -> None:
+    payload = bytes(range(251)) * 3000
+    output = ComfyOutput("result.png", "", "output")
+    destination = tmp_path / "result.png"
+    range_requests: list[str] = []
+
+    async def ranged_output(request: httpx.Request) -> httpx.Response:
+        if request.method == "HEAD":
+            return httpx.Response(
+                200,
+                headers={
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": str(len(payload)),
+                },
+            )
+        requested = request.headers.get("range")
+        assert requested is not None
+        range_requests.append(requested)
+        match = re.fullmatch(r"bytes=(\d+)-(\d+)", requested)
+        assert match is not None
+        start, end = (int(value) for value in match.groups())
+        return httpx.Response(
+            206,
+            content=payload[start : end + 1],
+            headers={"Content-Range": f"bytes {start}-{end}/{len(payload)}"},
+        )
+
+    client = ComfyClient(
+        "https://instance.seetacloud.com:8443",
+        transport=httpx.MockTransport(ranged_output),
+    )
+    try:
+        size, digest = await client.download(output, destination)
+    finally:
+        await client.close()
+
+    assert len(range_requests) == 8
+    assert destination.read_bytes() == payload
+    assert size == len(payload)
+    assert digest == hashlib.sha256(payload).hexdigest()
+
+
+async def test_invalid_autodl_range_contract_falls_back_to_stream(tmp_path) -> None:
+    payload = bytes(range(251)) * 3000
+    output = ComfyOutput("result.png", "", "output")
+    destination = tmp_path / "result.png"
+    full_downloads = 0
+
+    async def invalid_ranges(request: httpx.Request) -> httpx.Response:
+        nonlocal full_downloads
+        if request.method == "HEAD":
+            return httpx.Response(
+                200,
+                headers={
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": str(len(payload)),
+                },
+            )
+        if request.headers.get("range"):
+            return httpx.Response(200, content=payload)
+        full_downloads += 1
+        return httpx.Response(200, content=payload)
+
+    client = ComfyClient(
+        "https://instance.seetacloud.com:8443",
+        transport=httpx.MockTransport(invalid_ranges),
+    )
+    try:
+        size, digest = await client.download(output, destination)
+    finally:
+        await client.close()
+
+    assert full_downloads == 1
+    assert destination.read_bytes() == payload
+    assert size == len(payload)
+    assert digest == hashlib.sha256(payload).hexdigest()
 
 
 async def test_comfy_client_verifies_upload_with_remote_digest_without_readback(

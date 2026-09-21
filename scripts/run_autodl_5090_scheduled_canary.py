@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Submit two real ModelView requests through the public API canary lane."""
+"""Submit bounded ModelView requests through the public API canary lane."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def ensure_test_client(
     ).json()
     existing = next((item for item in clients if item.get("id") == CLIENT_ID), None)
     payload: dict[str, Any] = {
-        "name": "AutoDL 5090 scheduled canary",
+        "name": "AutoDL cloud scheduled canary",
         "client_kind": "test",
         "max_queued": 4,
         "max_running": 1,
@@ -95,7 +95,7 @@ def ensure_test_client(
                 json={
                     **payload,
                     "enabled": True,
-                    "reason": "运行 AutoDL 5090 隔离调度验收",
+                    "reason": "运行 AutoDL 云节点隔离调度验收",
                     "confirm": True,
                 },
                 timeout=20,
@@ -107,13 +107,44 @@ def ensure_test_client(
         session.post(
             base_url + f"/admin/clients/{CLIENT_ID}/keys",
             headers=headers,
-            json={"reason": "AutoDL 5090 调度验收临时密钥", "confirm": True},
+            json={"reason": "AutoDL 云节点调度验收临时密钥", "confirm": True},
             timeout=20,
             verify=False,
         ),
         {200},
     ).json()
     return str(key_result["api_key"])
+
+
+def disable_test_client(
+    session: requests.Session,
+    base_url: str,
+    headers: dict[str, str],
+) -> None:
+    """Leave the temporary canary principal fenced after every run."""
+
+    checked(
+        session.put(
+            base_url + f"/admin/clients/{CLIENT_ID}",
+            headers=headers,
+            json={
+                "name": "AutoDL cloud scheduled canary",
+                "client_kind": "test",
+                "max_queued": 4,
+                "max_running": 1,
+                "daily_quota": 0,
+                "weight": 1,
+                "allowed_ips": [],
+                "callback_hosts": [],
+                "enabled": False,
+                "reason": "AutoDL 云节点调度验收结束，重新禁用临时客户端",
+                "confirm": True,
+            },
+            timeout=20,
+            verify=False,
+        ),
+        {200},
+    )
 
 
 def submit(
@@ -187,30 +218,30 @@ def main() -> None:
         default=Path("/tmp/modelview-normal-2step-20260918/input"),  # noqa: S108
     )
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--runs", type=int, choices=(1, 2), default=1)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     base_url = env_value(args.env_file, "PUBLIC_BASE_URL").rstrip("/")
     secret = env_value(args.env_file, "JWT_SECRET")
     session = requests.Session()
-    api_key = ensure_test_client(session, base_url, admin_headers(secret))
-    results = [
-        submit(
-            session,
-            base_url,
-            api_key,
-            args.inputs,
-            args.output_dir / "scheduled-model-cold.png",
-            "model-cold",
-        ),
-        submit(
-            session,
-            base_url,
-            api_key,
-            args.inputs,
-            args.output_dir / "scheduled-warm.png",
-            "warm",
-        ),
-    ]
+    headers = admin_headers(secret)
+    api_key = ensure_test_client(session, base_url, headers)
+    results: list[dict[str, Any]] = []
+    try:
+        for index in range(args.runs):
+            label = f"run-{index + 1}"
+            results.append(
+                submit(
+                    session,
+                    base_url,
+                    api_key,
+                    args.inputs,
+                    args.output_dir / f"scheduled-{label}.png",
+                    label,
+                )
+            )
+    finally:
+        disable_test_client(session, base_url, headers)
     report = {
         "status": "PASSED",
         "client_id": CLIENT_ID,

@@ -163,7 +163,7 @@ describe("ComfyUI browser access", () => {
         "control.example.com",
       ),
     ).toBe(
-      "https://control.example.com:16006/#ec7efee0-62d2-4ef6-aa39-f13776e3d8a1",
+      "https://u765793-7894be501780.westd.seetacloud.com:8443/#ec7efee0-62d2-4ef6-aa39-f13776e3d8a1",
     );
   });
 
@@ -176,7 +176,9 @@ describe("ComfyUI browser access", () => {
         ),
         "10.3.34.11",
       ),
-    ).toBe("https://10.3.34.11:16006/#ec7efee0-62d2-4ef6-aa39-f13776e3d8a1");
+    ).toBe(
+      "https://u765793-7894be501780.westd.seetacloud.com:8443/#ec7efee0-62d2-4ef6-aa39-f13776e3d8a1",
+    );
     expect(
       controlPlaneComfyUiUrl("10.3.34.11", "javascript:alert(1)"),
     ).toBeNull();

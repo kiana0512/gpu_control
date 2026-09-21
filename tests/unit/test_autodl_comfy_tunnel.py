@@ -8,6 +8,7 @@ import socket
 import stat
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -100,6 +101,94 @@ def test_low_latency_socket_configuration_tolerates_unsupported_option() -> None
             raise OSError("unsupported")
 
     tunnel._configure_low_latency_socket(UnsupportedSocket())  # noqa: SLF001
+
+
+def test_tunnel_state_invalidates_only_the_failed_transport() -> None:
+    class FakeTransport:
+        def is_active(self) -> bool:
+            return True
+
+    class FakeClient:
+        def __init__(self, transport: FakeTransport) -> None:
+            self.transport = transport
+            self.closed = False
+
+        def get_transport(self) -> FakeTransport:
+            return self.transport
+
+        def close(self) -> None:
+            self.closed = True
+
+    first_transport = FakeTransport()
+    second_transport = FakeTransport()
+    first_client = FakeClient(first_transport)
+    second_client = FakeClient(second_transport)
+    state = tunnel.TunnelState()
+    state.replace(first_client)  # type: ignore[arg-type]
+    state.replace(second_client)  # type: ignore[arg-type]
+
+    assert first_client.closed is True
+    assert state.invalidate(first_transport) is False  # type: ignore[arg-type]
+    assert second_client.closed is False
+    assert state.transport() is second_transport
+    assert state.invalidate(second_transport) is True  # type: ignore[arg-type]
+    assert second_client.closed is True
+    assert state.transport() is None
+
+
+def test_tunnel_state_serializes_only_channel_establishment() -> None:
+    class FakeTransport:
+        def __init__(self) -> None:
+            self.active_opens = 0
+            self.max_active_opens = 0
+            self.lock = threading.Lock()
+
+        def is_active(self) -> bool:
+            return True
+
+        def open_channel(self, *_args: object, **_kwargs: object) -> object:
+            with self.lock:
+                self.active_opens += 1
+                self.max_active_opens = max(self.max_active_opens, self.active_opens)
+            time.sleep(0.02)
+            with self.lock:
+                self.active_opens -= 1
+            return object()
+
+    class FakeClient:
+        def __init__(self, transport: FakeTransport) -> None:
+            self.transport = transport
+
+        def get_transport(self) -> FakeTransport:
+            return self.transport
+
+        def close(self) -> None:
+            pass
+
+    transport = FakeTransport()
+    state = tunnel.TunnelState()
+    state.replace(FakeClient(transport))  # type: ignore[arg-type]
+    channels: list[object | None] = []
+
+    def open_channel() -> None:
+        channels.append(
+            state.open_direct_channel(  # type: ignore[arg-type]
+                transport,
+                ("127.0.0.1", 6006),
+                ("127.0.0.1", 12345),
+                timeout=1,
+            )
+        )
+
+    threads = [threading.Thread(target=open_channel) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(channels) == 4
+    assert all(channel is not None for channel in channels)
+    assert transport.max_active_opens == 1
 
 
 def test_ssh_endpoint_is_restricted_to_expected_provider_domains() -> None:

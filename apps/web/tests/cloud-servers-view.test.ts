@@ -247,7 +247,7 @@ describe("CloudServers inventory refresh", () => {
     expect(firstCard.text()).toContain("可关机");
   });
 
-  it("opens the managed cloud ComfyUI through the stable control-plane proxy", async () => {
+  it("opens managed cloud ComfyUI through the current official provider URL", async () => {
     const browserOpen = vi.spyOn(window, "open").mockImplementation(() => null);
     mocks.cloudServers.mockResolvedValueOnce(
       overview([
@@ -281,7 +281,7 @@ describe("CloudServers inventory refresh", () => {
     expect(button).toBeDefined();
     await button?.trigger("click");
     expect(browserOpen).toHaveBeenCalledWith(
-      "https://localhost:16006/#ec7efee0-62d2-4ef6-aa39-f13776e3d8a1",
+      "https://u765793-7894be501780.westd.seetacloud.com:8443/#ec7efee0-62d2-4ef6-aa39-f13776e3d8a1",
       "_blank",
       "noopener,noreferrer",
     );

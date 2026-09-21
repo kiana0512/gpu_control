@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 import websockets
@@ -17,6 +17,10 @@ TRANSFER_CHUNK_BYTES = 1024 * 1024
 CACHE_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 CACHE_CONTROL_TIMEOUT_SECONDS = 3.0
 WEBSOCKET_CLOSE_TIMEOUT_SECONDS = 0.1
+PARALLEL_DOWNLOAD_PARTS = 8
+PARALLEL_DOWNLOAD_MIN_BYTES = 512 * 1024
+PARALLEL_DOWNLOAD_MAX_BYTES = 64 * 1024 * 1024
+AUTODL_ACCESS_HOST_SUFFIXES = (".autodl.com", ".autodl.art", ".seetacloud.com")
 
 # ComfyUI reports an operator/API interrupt as ``execution_interrupted``.
 # It is a terminal websocket event just like success and execution_error; if
@@ -52,6 +56,27 @@ def _file_identity(path: Path) -> tuple[int, str]:
     return size, digest.hexdigest()
 
 
+def _write_download_parts(
+    temporary: Path,
+    parts: list[tuple[int, bytes]],
+    expected_size: int,
+) -> tuple[int, str] | None:
+    """Persist already bounded range parts and hash the assembled artifact."""
+
+    digest = hashlib.sha256()
+    written = 0
+    with temporary.open("wb") as target:
+        for _, payload in sorted(parts, key=lambda part: part[0]):
+            target.write(payload)
+            digest.update(payload)
+            written += len(payload)
+        target.flush()
+        os.fsync(target.fileno())
+    if written != expected_size:
+        return None
+    return written, digest.hexdigest()
+
+
 class ComfyClient:
     def __init__(
         self,
@@ -62,6 +87,10 @@ class ComfyClient:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        hostname = (urlsplit(self.base_url).hostname or "").lower()
+        self.parallel_range_downloads = any(
+            hostname.endswith(suffix) for suffix in AUTODL_ACCESS_HOST_SUFFIXES
+        )
         self.http = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=httpx.Timeout(read_timeout, connect=connect_timeout),
@@ -812,22 +841,94 @@ class ComfyClient:
         descriptor, temporary = tempfile.mkstemp(
             prefix=f".{destination.name}.", dir=destination.parent
         )
-        total = 0
-        digest = hashlib.sha256()
         try:
-            async with self.http.stream("GET", f"/view?{query}") as response:
-                response.raise_for_status()
-                with os.fdopen(descriptor, "wb") as target:
-                    async for chunk in response.aiter_bytes(chunk_size=TRANSFER_CHUNK_BYTES):
-                        total += len(chunk)
-                        if total > max_bytes:
-                            raise ComfyError("OUTPUT_DOWNLOAD_FAILED", "output exceeds limit")
-                        target.write(chunk)
-                        digest.update(chunk)
-                    target.flush()
-                    os.fsync(target.fileno())
+            ranged = await self._parallel_range_download(query, Path(temporary), max_bytes)
+            if ranged is None:
+                total = 0
+                digest = hashlib.sha256()
+                async with self.http.stream("GET", f"/view?{query}") as response:
+                    response.raise_for_status()
+                    with os.fdopen(descriptor, "wb") as target:
+                        descriptor = -1
+                        async for chunk in response.aiter_bytes(chunk_size=TRANSFER_CHUNK_BYTES):
+                            total += len(chunk)
+                            if total > max_bytes:
+                                raise ComfyError("OUTPUT_DOWNLOAD_FAILED", "output exceeds limit")
+                            target.write(chunk)
+                            digest.update(chunk)
+                        target.flush()
+                        os.fsync(target.fileno())
+                ranged = total, digest.hexdigest()
+            else:
+                os.close(descriptor)
+                descriptor = -1
             os.replace(temporary, destination)
-            return total, digest.hexdigest()
+            return ranged
         finally:
+            if descriptor >= 0:
+                os.close(descriptor)
             if os.path.exists(temporary):
                 os.unlink(temporary)
+
+    async def _parallel_range_download(
+        self,
+        query: str,
+        temporary: Path,
+        max_bytes: int,
+    ) -> tuple[int, str] | None:
+        """Bound AutoDL result latency with verified parallel byte ranges.
+
+        Only the provider's allowlisted HTTPS data plane opts in.  Any missing
+        or inconsistent range contract falls back to the ordinary streaming
+        download; the caller still hashes every final byte before publishing.
+        """
+
+        if not self.parallel_range_downloads:
+            return None
+        try:
+            metadata = await self.http.head(f"/view?{query}")
+            metadata.raise_for_status()
+            if metadata.headers.get("accept-ranges", "").lower() != "bytes":
+                return None
+            total = int(metadata.headers.get("content-length", ""))
+        except (httpx.HTTPError, TypeError, ValueError):
+            return None
+        if not PARALLEL_DOWNLOAD_MIN_BYTES <= total <= min(
+            max_bytes, PARALLEL_DOWNLOAD_MAX_BYTES
+        ):
+            return None
+
+        part_size = (total + PARALLEL_DOWNLOAD_PARTS - 1) // PARALLEL_DOWNLOAD_PARTS
+        ranges = [
+            (start, min(total - 1, start + part_size - 1))
+            for start in range(0, total, part_size)
+        ]
+
+        async def fetch(start: int, end: int) -> tuple[int, bytes]:
+            response = await self.http.get(
+                f"/view?{query}",
+                headers={"Range": f"bytes={start}-{end}"},
+            )
+            response.raise_for_status()
+            expected_header = f"bytes {start}-{end}/{total}"
+            if (
+                response.status_code != 206
+                or response.headers.get("content-range") != expected_header
+                or len(response.content) != end - start + 1
+            ):
+                raise ComfyError(
+                    "OUTPUT_RANGE_INVALID",
+                    "output server returned an inconsistent byte range",
+                )
+            return start, response.content
+
+        parts = await asyncio.gather(
+            *(fetch(start, end) for start, end in ranges),
+            return_exceptions=True,
+        )
+        if any(isinstance(part, BaseException) for part in parts):
+            return None
+        successful_parts = [
+            part for part in parts if not isinstance(part, BaseException)
+        ]
+        return _write_download_parts(temporary, successful_parts, total)

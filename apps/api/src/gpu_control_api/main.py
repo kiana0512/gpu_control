@@ -19,7 +19,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Annotated, Any, Literal
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 import httpx
 import jwt
@@ -722,6 +722,46 @@ async def _ensure_provider_instance(
     return instance
 
 
+AUTODL_ACCESS_HOST_SUFFIXES = (".autodl.com", ".autodl.art", ".seetacloud.com")
+AUTODL_COMFYUI_PORTS = {443, 8443}
+
+
+def _safe_autodl_comfyui_endpoint(value: Any) -> str | None:
+    """Return a credential-free official AutoDL ComfyUI origin.
+
+    Provider inventory is external input.  A bound node may follow its updated
+    6006 address automatically, but it must never be redirected to arbitrary
+    hosts, paths or embedded credentials.
+    """
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlsplit(raw)
+        hostname = (parsed.hostname or "").lower()
+        port = parsed.port or 443
+    except ValueError:
+        return None
+    if (
+        parsed.scheme != "https"
+        or parsed.username
+        or parsed.password
+        or port not in AUTODL_COMFYUI_PORTS
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or not any(
+            hostname == suffix[1:] or hostname.endswith(suffix)
+            for suffix in AUTODL_ACCESS_HOST_SUFFIXES
+        )
+    ):
+        return None
+    # Fragments are browser-only workspace hints and must not enter the
+    # scheduler's base URL.  The provider inventory response remains the
+    # authoritative source for the Web UI launch link.
+    return urlunsplit(("https", parsed.netloc, "/", "", ""))
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     cfg = settings or get_settings()
 
@@ -1024,6 +1064,82 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                 result=result,
             )
         )
+
+    async def refresh_bound_autodl_node_endpoint(
+        db: AsyncSession,
+        instance: ProviderInstance,
+        inventory_item: dict[str, Any],
+        *,
+        observed_at: datetime,
+        actor_id: str,
+        source_ip: str,
+        request_id: str,
+    ) -> bool:
+        """Follow the official 6006 address for an explicitly bound instance."""
+
+        if not instance.node_id:
+            return False
+        access = inventory_item.get("access")
+        endpoint = _safe_autodl_comfyui_endpoint(
+            access.get("service_6006") if isinstance(access, dict) else None
+        )
+        if endpoint is None:
+            return False
+        node = await db.get(Node, instance.node_id, with_for_update=True)
+        if node is None:
+            return False
+        labels = dict(node.labels or {})
+        expected_ref = f"{instance.product}:{instance.instance_id}"
+        if labels.get("provider") != "autodl" or labels.get("provider_ref") not in {
+            None,
+            expected_ref,
+        }:
+            return False
+
+        before = {
+            "base_url": node.base_url,
+            "provider_service_6006_url": labels.get("provider_service_6006_url"),
+            "provider_data_path": labels.get("provider_data_path"),
+            "comfyui_browser_proxy_port": labels.get("comfyui_browser_proxy_port"),
+            "comfyui_browser_fragment": labels.get("comfyui_browser_fragment"),
+        }
+        changed = (
+            node.base_url != endpoint
+            or labels.get("provider_service_6006_url") != endpoint
+            or labels.get("provider_data_path") != "direct_https"
+            or "comfyui_browser_proxy_port" in labels
+            or "comfyui_browser_fragment" in labels
+        )
+        if not changed:
+            return False
+
+        labels.pop("comfyui_browser_proxy_port", None)
+        labels.pop("comfyui_browser_fragment", None)
+        labels["provider_service_6006_url"] = endpoint
+        labels["provider_data_path"] = "direct_https"
+        labels["provider_endpoint_observed_at"] = observed_at.isoformat()
+        node.base_url = endpoint
+        node.labels = labels
+        after = {
+            "base_url": endpoint,
+            "provider_service_6006_url": endpoint,
+            "provider_data_path": "direct_https",
+            "provider_ref": expected_ref,
+        }
+        db.add(
+            AuditLog(
+                actor_id=actor_id,
+                action="cloud.node.endpoint.refresh",
+                target_type="node",
+                target_id=node.id,
+                before=before,
+                after=after,
+                source_ip=source_ip,
+                request_id=request_id,
+                result="SUCCESS",
+            )
+        )
+        return True
 
     async def provider_controller_request(
         app_instance: FastAPI,
@@ -5068,7 +5184,7 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
     @app.get("/admin/providers/autodl")
     async def admin_autodl_inventory(
         request: Request,
-        _: Annotated[Principal, Depends(admin_principal)],
+        principal: Annotated[Principal, Depends(admin_principal)],
         db: Annotated[AsyncSession, Depends(session)],
         force: bool = False,
     ) -> dict[str, Any]:
@@ -5103,6 +5219,15 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
             instance.provider_status = str(item.get("provider_status") or "unknown")[:64]
             instance.last_seen_at = now
             instance.revision = int(instance.revision or 0) + 1
+            await refresh_bound_autodl_node_endpoint(
+                db,
+                instance,
+                item,
+                observed_at=now,
+                actor_id=principal.id,
+                source_ip=request.client.host if request.client else "",
+                request_id=str(request.state.request_id),
+            )
             persisted[(product, instance_id)] = instance
         await db.flush()
         active_operations = list(
@@ -6838,6 +6963,15 @@ if count > tonumber(ARGV[2]) then return 0 else return 1 end
                     instance.revision = int(instance.revision or 0) + 1
                 if changed or freshness_due:
                     instance.last_seen_at = now
+                await refresh_bound_autodl_node_endpoint(
+                    inventory_db,
+                    instance,
+                    item,
+                    observed_at=now,
+                    actor_id="system:provider-inventory",
+                    source_ip="",
+                    request_id=str(uuid.uuid4()),
+                )
             await inventory_db.commit()
 
     async def provider_inventory_sync_loop(app_instance: FastAPI) -> None:

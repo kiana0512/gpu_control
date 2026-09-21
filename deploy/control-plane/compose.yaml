@@ -104,7 +104,7 @@ services:
     init: true
     command:
       - --instance-id
-      - ${AUTODL_5090_INSTANCE_ID:-pro-7894be501780}
+      - ${AUTODL_5090_INSTANCE_ID:-pro-78993043bdb0}
       - --bind-host
       - 0.0.0.0
       - --bind-port

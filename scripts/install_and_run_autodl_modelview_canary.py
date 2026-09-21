@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reversibly install the staged bundle and run one real AutoDL 5090 canary."""
+"""Reversibly install the staged bundle and run one real AutoDL canary."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def main() -> None:
     parser.add_argument(
         "--evidence-dir",
         type=Path,
-        default=Path("/srv/gpu-control/jobs/deployment-autodl-5090-modelview-normal-20260918"),
+        default=Path("/srv/gpu-control/jobs/deployment-autodl-modelview-normal"),
     )
     args = parser.parse_args()
     info = snapshot(TOKEN_FILE.read_text().strip(), args.instance_id)
@@ -126,6 +126,32 @@ done
             client,
             "if curl -fsS --max-time 3 http://127.0.0.1:6006/system_stats >/dev/null 2>&1; then echo running; else echo stopped; fi",
         )
+        if health == "running":
+            # A healthy process that was already running cannot see newly linked
+            # custom nodes.  Refuse to interrupt any live or queued prompt, then
+            # restart only the exact ComfyUI process (never the instance).
+            remote(
+                client,
+                "curl -fsS --max-time 5 http://127.0.0.1:6006/queue | "
+                "/root/miniconda3/bin/python -c 'import json,sys; q=json.load(sys.stdin); "
+                "raise SystemExit(0 if not q.get(\"queue_running\") and "
+                "not q.get(\"queue_pending\") else 42)'",
+            )
+            stop_script = """
+set -eu
+pid="$(pgrep -f '(^|/)(python|python3|python3\\.11) main\\.py --port 6006([[:space:]]|$)' | head -1 || true)"
+if [ -n "$pid" ]; then
+  kill -TERM "$pid"
+  deadline=$((SECONDS + 30))
+  while kill -0 "$pid" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do sleep 1; done
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "ComfyUI did not stop after SIGTERM" >&2
+    exit 1
+  fi
+fi
+"""
+            remote(client, stop_script, timeout=45)
+            health = "stopped"
         if health != "running":
             start_script = f"""
 set -eu
@@ -152,7 +178,8 @@ echo $! > {shlex.quote(REMOTE_ROOT)}/evidence/comfyui.pid
 
         output = remote(
             client,
-            f"/root/miniconda3/bin/python {shlex.quote(remote_runner)}",
+            f"/root/miniconda3/bin/python {shlex.quote(remote_runner)} "
+            f"--instance-id {shlex.quote(args.instance_id)}",
             timeout=2700,
         )
         report = json.loads(output.splitlines()[-1])
@@ -162,12 +189,12 @@ echo $! > {shlex.quote(REMOTE_ROOT)}/evidence/comfyui.pid
         sftp = client.open_sftp()
         try:
             sftp.get(
-                REMOTE_ROOT + "/evidence/autodl-5090-modelview-normal-canary.json",
-                str(args.evidence_dir / "autodl-5090-modelview-normal-canary.json"),
+                REMOTE_ROOT + "/evidence/autodl-modelview-normal-canary.json",
+                str(args.evidence_dir / "autodl-modelview-normal-canary.json"),
             )
             sftp.get(
-                REMOTE_ROOT + "/evidence/autodl-5090-modelview-normal-canary.png",
-                str(args.evidence_dir / "autodl-5090-modelview-normal-canary.png"),
+                REMOTE_ROOT + "/evidence/autodl-modelview-normal-canary.png",
+                str(args.evidence_dir / "autodl-modelview-normal-canary.png"),
             )
             sftp.get(
                 REMOTE_ROOT + "/manifest.json",
